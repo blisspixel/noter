@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Formatting & Linting (fast, runs on one platform)
+  # ---------------------------------------------------------------------------
+  fmt-clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  # Tests (matrix across the three platforms we care about)
+  # ---------------------------------------------------------------------------
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Future: add aarch64 macos runner or specific ubuntu version when needed
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (debug)
+        run: cargo build --verbose
+
+      - name: Run tests
+        run: cargo test --verbose --all-features
+
+      # Optional: coverage on one platform (Linux is usually fastest)
+      - name: Install cargo-llvm-cov
+        if: matrix.os == 'ubuntu-latest'
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate coverage (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      - name: Upload coverage artifact
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-linux
+          path: lcov.info
+
+  # ---------------------------------------------------------------------------
+  # Documentation & planning doc sanity (we treat the MD files as code)
+  # ---------------------------------------------------------------------------
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that key planning documents exist and are not empty
+        run: |
+          test -s README.md
+          test -s REQUIREMENTS.md
+          test -s DESIGN.md
+          test -s ROADMAP.md
+          echo "All core planning documents present and non-empty."
+
+  # ---------------------------------------------------------------------------
+  # (Future Phase 4) cargo-dist dry-run or plan on tags
+  # We keep a placeholder job so the intent is visible in the workflow from day one.
+  # ---------------------------------------------------------------------------
+  # dist-plan:
+  #   if: startsWith(github.ref, 'refs/tags/')
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: Swatinem/rust-cache@v2
+  #     - name: cargo dist plan (dry run)
+  #       run: cargo dist plan --output-format=json | cat

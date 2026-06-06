@@ -1,0 +1,95 @@
+[package]
+name = "noter"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"   # Conservative baseline; raise only after testing. 2026 reality will likely be 1.88–1.92.
+authors = ["Nick <noter@local>"]  # Update when you have a real identity / org
+description = "A pure, reliable, cross-platform plain text editor in Rust. The notepad you actually want."
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourname/noter"  # Update on first publish
+keywords = ["notepad", "text-editor", "plain-text", "egui", "cross-platform", "rust"]
+categories = ["gui", "text-editors", "command-line-utilities"]  # "command-line-utilities" is a stretch but fine for discoverability
+
+# =============================================================================
+# Planned dependencies (introduced gradually by phase — see ROADMAP.md + DESIGN.md)
+# =============================================================================
+# Phase 0–1 (core reliability & classic notepad experience)
+#   rfd              = "0.15"   # Native file dialogs (mandatory)
+#   directories      = "5"      # Cross-platform config/cache paths
+#   serde            = { version = "1", features = ["derive"] }
+#   toml             = "0.8"    # Human-readable, git-friendly config
+#   thiserror        = "2"      # Typed errors with good Display
+#   ropey            = "1.6"    # The text buffer. Non-negotiable for real editing.
+#   tracing          = "0.1"
+#   tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "time"] }
+#
+# Phase 2–3 (polish + markdown QOL)
+#   pulldown-cmark   = "0.12"   # CommonMark parser for the preview (pure Rust)
+#   proptest         = "1"      # Property-based tests for invariants (dev-dependency)
+#   tempfile         = "3"      # Golden tests & recovery simulation (dev-dependency)
+#
+# Future / only if justified
+#   notify           = "6"      # Optional file watcher (polling is acceptable first)
+#
+# We deliberately keep the tree tiny. New entries require justification in DESIGN.md.
+
+[dependencies]
+
+# =============================================================================
+# Profiles tuned for a small, fast, reliable GUI tool
+# =============================================================================
+[profile.release]
+opt-level = 3          # "z" for maximum size reduction if we are desperate; 3 usually wins on speed+size for egui
+lto = true
+codegen-units = 1
+strip = true           # Strip symbols (huge win for size)
+panic = "abort"        # We handle errors gracefully; abort is fine and smaller
+
+[profile.dev]
+opt-level = 1          # Slightly faster debug builds for UI work without killing compile time
+
+# =============================================================================
+# Lints (modern 2024 style — we will tighten over time)
+# =============================================================================
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"   # We want good docs on core types
+
+[lints.clippy]
+# 2026-era priority syntax required because we mix group lints with specific allows.
+# Lower priority on the broad groups so the specific "allow" entries can override.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# These are often too noisy for GUI apps early on; we can re-enable selectively.
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+
+# =============================================================================
+# cargo-dist metadata (Phase 4 packaging)
+# See https://github.com/axodotdev/cargo-dist
+# =============================================================================
+[workspace.metadata.dist]
+cargo-dist-version = "0.28.0"   # Update to current when we reach Phase 4
+ci = ["github"]
+installers = ["shell", "msi", "homebrew"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+# pr-run-mode = "plan"  # Use "upload" for real releases
+
+# =============================================================================
+# Notes for future maintainers
+# =============================================================================
+# - Keep dependencies under very tight control. Binary size and compile time are features.
+# - The core editing and I/O logic must remain completely independent of egui (see DESIGN.md).
+# - Every time you add a dependency, run `cargo tree -i <crate>` and document the justification.
