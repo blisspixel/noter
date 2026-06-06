@@ -17,16 +17,55 @@ Noter is the notepad you actually want in 2026: fast, trustworthy, boring in the
 
 Noter will never become a second VS Code, a note-taking app with accounts, or a "productivity suite."
 
+## Engineering Philosophy — How We Intend to Avoid Slopware
+
+Your original pain points were very specific:
+
+- The Windows 11 Notepad rewrite feels like spyware + bloat (telemetry, "modern" UI that got slower and more opinionated, OneDrive nagging, features nobody who loved the old one asked for).
+- You want something that feels like the *earlier* Notepads: instant, dead simple, plain text, no surprises, keyboard native.
+- Cross-platform that actually works well on Win/mac/Linux without becoming Electron garbage.
+- A tiny bit of 2026 QOL (system theme + optional Markdown view) but "keep it pretty pure" otherwise.
+
+**Is this a good idea in June 2026?**
+
+Yes — *conditionally*.
+
+The world does not need another "I built a text editor in a weekend" project. But there is still room for a *deliberately* small, zero-compromise, reliability-obsessed plain text tool whose entire reason for existence is "I am sick of the shit the OS vendors ship and I want something I can actually trust for the next 10 years."
+
+Risks of turning into slopware are real and high:
+- Scope creep ( "just tabs", "just some syntax", "just a plugin system", "just Copilot integration because it's 2026").
+- Dependency bloat (one "nice" crate pulls in 40 others).
+- UI/UX debt (egui makes it easy to add things that feel half-baked).
+- Maintenance collapse (solo project that becomes too big to touch).
+
+**How we make this exceptionally well made instead:**
+
+- The phased roadmap + hard quality gates (coverage numbers, property tests proving invariants, simulated crash recovery, multi-platform manual sign-off) are not theater. They are the primary defense.
+- Every new feature or dependency must survive the "Classic 2015 Notepad power user" test: Would they be happy, or would they feel the tool has started making decisions for them?
+- Core logic (`core/`) has zero knowledge of egui. This is architectural hygiene that also makes the thing testable and potentially portable later.
+- We publish binary size, RAM, and reliability numbers with releases. If they regress, we treat it as a bug.
+- We maintain an explicit, living "Non-Goals and Why We Said No" list (this README + DESIGN).
+- Dependency policy is draconian (see Cargo.toml and DESIGN). Latest GA only when it makes sense; betas almost never for core pieces (see the ropey 2.0 call we made).
+- We dogfood it ourselves for weeks as a daily driver before calling any phase "done".
+- We treat data loss and line-ending corruption as security-level bugs.
+
+If at any point this starts feeling like "yet another text editor with ambitions", we delete features and go back to the boring notepad that just works.
+
+This is the bar. The planning documents exist to make it hard to lower that bar later under time pressure or "just one more thing" requests.
+
 ## Current Status
 
 This project is in the **exceptional planning phase**. All major requirements, design decisions, architecture, testing strategy, and phased roadmap have been written out in detail before any significant code was written.
 
-See:
-- [REQUIREMENTS.md](REQUIREMENTS.md) — what must be true
-- [DESIGN.md](DESIGN.md) — how it will be built (deep technical)
-- [ROADMAP.md](ROADMAP.md) — how we get there with quality gates
+A critical, professor-level review (Prof. Dr. Lena K. Voss) was performed on the initial planning corpus. The review and our responses are captured in [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
 
-Implementation will proceed in strict phases with explicit "Definition of Done" criteria that include code quality, test coverage, and cross-platform verification.
+See:
+- [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md) — external critical analysis + our action plan
+- [REQUIREMENTS.md](REQUIREMENTS.md) — what must be true (now includes mental model protection and traceability)
+- [DESIGN.md](DESIGN.md) — how it will be built (deep technical + formal-ish spec + FMEA)
+- [ROADMAP.md](ROADMAP.md) — how we get there with quality gates that incorporate the review items
+
+Implementation will proceed in strict phases with explicit "Definition of Done" criteria that include code quality, test coverage, and cross-platform verification. The bar has been deliberately raised by the review process.
 
 ## Planned Features (High Level)
 

@@ -12,6 +12,29 @@ Noter is a single-document-focused, plain-text editor whose primary purpose is t
 
 It is deliberately **not** a code editor, note app, or rich text tool.
 
+### 1.1 Mental Model Alignment (Critical for "Not Slopware")
+
+In response to the critical review, every major user-visible operation must preserve or explicitly communicate the user's expected model of a classic Notepad:
+
+**User Mental Model (to be protected):**
+- "The file on disk contains exactly the characters I see in the window (modulo the line-ending convention I chose or that was present when I opened the file)."
+- "Save means the bytes on disk become what I have in memory right now. No background rewriting, no cloud sync side effects, no 'smart' Unicode normalization I did not request."
+- "Undo undoes my last intentional change. Consecutive typing is one change."
+- "If I force-quit or the power fails, I will be offered my recent work back (within ~30 seconds) and nothing will have been silently lost or altered."
+
+**Mental Model Impact Statement requirement:** Before any feature is declared complete in a phase, its implementing engineer must write a one-paragraph statement answering: "How does this feature either reinforce the above model or clearly signal where it deviates, and what UI/affordance makes the deviation visible to the user?"
+
+This is non-negotiable for maintaining the restorative design goal stated in the original pain points.
+
+### 1.2 Verification Criteria & Traceability
+
+Each FR and NFR below is accompanied (or will be in later revisions) by:
+- A direct reference to one or more Safety/Liveness properties from DESIGN.md §3.5.
+- The primary verification method (property test name, golden file, FMEA row, manual matrix item, fault-injection case).
+- The mental model impact statement (or pointer to it).
+
+This creates a lightweight traceability matrix so that when a test fails or a user reports a surprise, we can immediately point to the originating requirement and the verification artifact.
+
 ## 2. Functional Requirements
 
 ### 2.1 Core File Operations (MUST)
@@ -86,10 +109,14 @@ All primary actions must be reachable without a mouse. Standard platform shortcu
 
 ### 3.1 Reliability (Highest Priority)
 
-- **NFR-REL-01** Under normal operation (including force-kill of the process at any moment after an edit), the user must never lose more than the last ~30 seconds of typing when recovery is offered.
-- **NFR-REL-02** Save must never leave a zero-byte or truncated file on disk when the original existed. Atomic rename is mandatory.
-- **NFR-REL-03** Line ending and BOM fidelity tests must pass for CRLF, LF, and mixed files. Round-trip byte equality for the text content (modulo the intentional normalization we document).
-- **NFR-REL-04** Undo/Redo must be information-theoretically lossless for the operations it claims to support. Property tests must prove that applying a sequence of edits + undos + redos returns to an identical rope state.
+- **NFR-REL-01** Under normal operation (including force-kill of the process at any moment after an edit), the user must never lose more than the last ~30 seconds of typing when recovery is offered.  
+  **Verification:** Fault-injection harness (corrupt/kill during autosave + restart) run at least 30 times per phase gate. Cross-references Safety Property S4 and FMEA F3.
+- **NFR-REL-02** Save must never leave a zero-byte or truncated file on disk when the original existed. Atomic rename is mandatory.  
+  **Verification:** Property test exercising S1 under normal, full-disk, and simulated-rename-failure conditions. Golden files + external `cmp` / `xxd` checks. FMEA F1.
+- **NFR-REL-03** Line ending and BOM fidelity tests must pass for CRLF, LF, and mixed files. Round-trip byte equality for the text content (modulo the intentional normalization we document).  
+  **Verification:** Exhaustive golden-file matrix (all three endings × BOM × empty / single-line / multi-line / trailing-newline cases). Property test for S2. Mental model impact statement required.
+- **NFR-REL-04** Undo/Redo must be information-theoretically lossless for the operations it claims to support. Property tests must prove that applying a sequence of edits + undos + redos returns to an identical rope state.  
+  **Verification:** `proptest` generator for arbitrary (but bounded) sequences of insert/delete/replace commands; assert U1 / S3 after each undo/redo cycle. Coalescing rules are part of the test specification.
 
 ### 3.2 Performance
 
@@ -110,11 +137,16 @@ All primary actions must be reachable without a mouse. Standard platform shortcu
 
 - **NFR-QUAL-01** Rust edition 2024. `rust-version` in Cargo.toml set to the minimum we actually test (initially 1.85+ or 1.90+).
 - **NFR-QUAL-02** `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings` must be clean on every commit that lands in `main`. CI enforces this.
-- **NFR-QUAL-03** Core modules (`document`, `editor`, `io`, `config`, `theme`) must achieve ≥ 85% line coverage and ≥ 70% branch coverage (measured by `cargo llvm-cov` or equivalent) before Phase 2 completion.
-- **NFR-QUAL-04** All critical invariants have property-based tests (`proptest` or `quickcheck`): undo/redo roundtrips, line-ending detection + save fidelity, atomic save success under simulated failure (via tempfs tricks or post-write corruption tests), config serialization roundtrips.
-- **NFR-QUAL-05** No `unwrap()`, `expect("...")` is allowed in hot user paths except where the comment explains why the invariant is truly impossible to violate. Prefer `?` + typed errors + user-facing messages.
-- **NFR-QUAL-06** Every non-trivial public or `pub(crate)` function must have a doc comment explaining intent, edge cases, and performance characteristics.
-- **NFR-QUAL-07** We will maintain a small but growing set of golden-file tests for save/load behavior with tricky inputs (BOM + CRLF, very long lines, unicode, empty files, files with only newlines).
+- **NFR-QUAL-03** Core modules (`document`, `editor`, `io`, `config`, `theme`) must achieve ≥ 85% line coverage and ≥ 70% branch coverage (measured by `cargo llvm-cov` or equivalent) before Phase 2 completion.  
+  **Additional rigor:** Coverage must include the executable forms of S1–S4 and U1 (see DESIGN §3.5). Mutation testing (via `cargo-mutants` or equivalent) on the core rope/document path is a stretch goal for Phase 2+.
+- **NFR-QUAL-04** All critical invariants have property-based tests (`proptest` or `quickcheck`): undo/redo roundtrips, line-ending detection + save fidelity, atomic save success under simulated failure (via tempfs tricks or post-write corruption tests), config serialization roundtrips.  
+  **Traceability:** Every property test must be annotated with the Safety/Liveness property ID it is attempting to falsify.
+- **NFR-QUAL-05** No `unwrap()`, `expect("...")` is allowed in hot user paths except where the comment explains why the invariant is truly impossible to violate. Prefer `?` + typed errors + user-facing messages.  
+  **Verification:** `grep` + manual review at each phase gate; `cargo clippy` deny of `unwrap_used` in `src/core` (gradually enforced).
+- **NFR-QUAL-06** Every non-trivial public or `pub(crate)` function must have a doc comment explaining intent, edge cases, and performance characteristics.  
+  **Additional:** Doc comments for core operations must reference the relevant safety property or FMEA row they participate in.
+- **NFR-QUAL-07** We will maintain a small but growing set of golden-file tests for save/load behavior with tricky inputs (BOM + CRLF, very long lines, unicode, empty files, files with only newlines).  
+  **Rigor:** Golden files are the primary executable evidence for S2 and are re-run as part of the "reproducibility envelope" in STEWARDSHIP.md.
 
 ### 3.5 Security & Privacy
 

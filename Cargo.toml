@@ -12,27 +12,35 @@ keywords = ["notepad", "text-editor", "plain-text", "egui", "cross-platform", "r
 categories = ["gui", "text-editors", "command-line-utilities"]  # "command-line-utilities" is a stretch but fine for discoverability
 
 # =============================================================================
-# Planned dependencies (introduced gradually by phase — see ROADMAP.md + DESIGN.md)
+# Planned dependencies (June 2026 GA versions — latest sensible stable releases)
+# Introduced gradually by phase. See ROADMAP.md + DESIGN.md for justification policy.
+# We are conservative on pre-release crates for a "reliability first" tool.
 # =============================================================================
 # Phase 0–1 (core reliability & classic notepad experience)
-#   rfd              = "0.15"   # Native file dialogs (mandatory)
-#   directories      = "5"      # Cross-platform config/cache paths
-#   serde            = { version = "1", features = ["derive"] }
-#   toml             = "0.8"    # Human-readable, git-friendly config
-#   thiserror        = "2"      # Typed errors with good Display
-#   ropey            = "1.6"    # The text buffer. Non-negotiable for real editing.
-#   tracing          = "0.1"
-#   tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "time"] }
+#   egui             = "0.34"   # + eframe = "0.34.3" (latest GA as of June 2026, MSRV 1.85)
+#   rfd              = "0.17"   # Native file dialogs (mandatory). 0.17.2 current.
+#   directories      = "6.0"    # Cross-platform config/cache paths. 6.0.0 current.
+#   serde            = { version = "1.0", features = ["derive"] }
+#   toml             = "1.1"    # Human-readable, git-friendly config. 1.1.2+spec current.
+#   thiserror        = "2.0"    # Typed errors with good Display. 2.0.18 current.
+#   ropey            = "1.6"    # The text buffer. Latest stable 1.x series.
+#                               # 2.0.0-beta.1 exists (June 2026) but we stay on proven 1.x
+#                               # for v0.x reliability. Re-evaluate post-stabilization.
+#   tracing          = "0.1.44"
+#   tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter", "time"] }
+#   dark-light       = "2.0"    # Clean system theme detection (Windows registry, macOS appearance,
+#                               # Linux gsettings). MSRV 1.78. Preferred over hand-rolled for v1.
 #
 # Phase 2–3 (polish + markdown QOL)
-#   pulldown-cmark   = "0.12"   # CommonMark parser for the preview (pure Rust)
-#   proptest         = "1"      # Property-based tests for invariants (dev-dependency)
-#   tempfile         = "3"      # Golden tests & recovery simulation (dev-dependency)
+#   pulldown-cmark   = "0.13"   # CommonMark parser for the preview (pure Rust). 0.13.4 current.
+#   proptest         = "1.11"   # Property-based tests for invariants (dev-dependency).
+#   tempfile         = "3.27"   # Golden tests & recovery simulation (dev-dependency).
 #
-# Future / only if justified
-#   notify           = "6"      # Optional file watcher (polling is acceptable first)
+# Future / only if justified (and after GA)
+#   notify           = "9"      # 9.0.0-rc.4 in June 2026 — still pre-release. Use mtime polling first.
 #
-# We deliberately keep the tree tiny. New entries require justification in DESIGN.md.
+# Strict policy: Every added dependency requires (a) written justification in DESIGN.md,
+# (b) `cargo tree -i <name>` audit, (c) binary size impact measurement at the phase gate.
 
 [dependencies]
 

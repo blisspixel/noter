@@ -21,8 +21,10 @@ We will achieve this by refusing to ship until each phase's quality gates are pa
 Each phase has:
 - Clear goals
 - Deliverables
-- **Quality Gate** (these are mandatory before moving on)
+- **Quality Gate** (these are mandatory before moving on). Gates now incorporate the rigor items from RIGOROUS_REVIEW.md (FMEA updates, mental model statements, dependency health tables, re-reading of the critical review, executable safety properties, etc.).
 - Estimated effort (solo developer, calendar time, very rough)
+
+The entire roadmap is a direct response to the original user pain points (hate of bloat/telemetry/unpredictability in modern Notepad) and the subsequent professor-level critique aimed at preventing "slopware." We are building a *restorative, minimalist, high-integrity* tool, not just another editor.
 
 ---
 
@@ -74,16 +76,21 @@ Deliver a genuinely usable classic notepad replacement with the fundamentals of 
 - All primary keyboard shortcuts working on Windows + at least documented for other platforms
 - Graceful handling of line endings + BOM fidelity (with golden tests)
 
-**Quality Gate (Mandatory)**
+**Quality Gate (Mandatory) — Phase 0/1 Rigor Enhancements**
 - `cargo fmt -- --check` && `cargo clippy --all-targets -- -D warnings` clean.
-- Core modules (`core/document`, `core/editor`, `io` logic) achieve **≥ 80% line coverage**.
+- Core modules (`core/document`, `core/editor`, `io` logic) achieve **≥ 80% line coverage**, including the executable forms of Safety Properties S1–S4 and U1 (see DESIGN.md §3.5, added in response to RIGOROUS_REVIEW.md).
+- First-cut FMEA table (DESIGN §13.1) is committed and at least the Phase-1 rows (F1–F3, F6) have corresponding fault-injection or property tests.
 - Property tests exist and pass for:
-  - Line ending detection + `to_bytes()` roundtrip for CRLF / LF / CR + BOM combinations.
-  - Atomic save never leaves a truncated file (simulated via temp dir tests).
-- At least 5 golden integration tests in `tests/integration/` covering empty file, CRLF-heavy log, unicode, very long single line, file with only newlines.
-- Manual test pass on Windows (author's machine) using the written checklist in `docs/manual-test-matrix.md` (to be created in this phase).
+  - Line ending detection + `to_bytes()` roundtrip for CRLF / LF / CR + BOM combinations (S2).
+  - Atomic save never leaves a truncated file (simulated via temp dir tests) — evidence for S1.
+  - Undo roundtrips under arbitrary edit sequences (U1 / S3).
+- At least 5 golden integration tests in `tests/integration/` covering empty file, CRLF-heavy log, unicode, very long single line, file with only newlines. These are the primary artifacts for S2.
+- Mental model impact statements written for every feature delivered in the phase (REQUIREMENTS §1.1).
+- Dependency health table (per DESIGN §1.4) committed for all crates introduced.
+- Manual test pass on Windows (author's machine) using the written checklist in `docs/manual-test-matrix.md`.
 - The author can use the binary for real note-taking for 3 consecutive days without data loss or major workflow breakage.
 - Binary size (release) on Windows < 18 MiB.
+- RIGOROUS_REVIEW.md has been re-read; a short "Professor Review Response" subsection added noting which recommendations were actioned.
 
 **Rough Calendar:** 2–4 weeks of focused work (depending on how quickly the custom editor widget is needed).
 
@@ -110,14 +117,16 @@ Make the editor feel excellent and make the reliability story bulletproof.
 - Crash recovery simulation harness (documented script or test that actually exercises the recovery path under process kill).
 
 **Quality Gate**
-- Core coverage **≥ 85% line / 70% branch**.
+- Core coverage **≥ 85% line / 70% branch**, with explicit coverage of the safety properties and FMEA rows addressed in this phase.
 - Property tests now also cover:
-  - Arbitrary sequences of inserts/deletes + undos + redos return to identical document + cursor state.
+  - Arbitrary sequences of inserts/deletes + undos + redos return to identical document + cursor state (U1/S3).
   - Undo stack memory stays bounded under heavy typing.
-- Full manual test matrix executed and signed off on **Windows + Linux** (Wayland preferred for one run).
-- No data loss in 30 simulated "kill during heavy editing + restart + recover" cycles.
-- `cargo bloat` or equivalent used to produce a report; top 5 largest contributors documented in an issue or DESIGN addendum.
+- Updated FMEA table with new rows discovered during implementation; corresponding fault-injection cases added to the harness.
+- Full manual test matrix executed and signed off on **Windows + Linux** (Wayland preferred for one run). Includes mental model impact validation for delivered features.
+- No data loss in 30 simulated "kill during heavy editing + restart + recover" cycles (evidence for NFR-REL-01 and F1/F3).
+- `cargo bloat` or equivalent used to produce a report; top 5 largest contributors documented in an issue or DESIGN addendum. Dependency health table refreshed.
 - All NFR-REL reliability requirements have passing tests or documented manual verification.
+- RIGOROUS_REVIEW.md re-read; response notes updated.
 
 **Rough Calendar:** 3–5 weeks.
 
@@ -177,11 +186,13 @@ Make the release process professional and ensure the product is supportable on a
 
 **Quality Gate**
 - Full CI matrix (Windows, macOS 13/14, Ubuntu 22.04/24.04, both X11 and Wayland where possible) is green on the release tag.
-- Coverage report for the release shows core ≥ 85%.
-- At least two people (author + one external tester) have used the release candidate as daily driver for ≥ 7 days with no data loss incidents.
+- Coverage report for the release shows core ≥ 85%, including the safety properties.
+- At least two people (author + one external tester) have used the release candidate as daily driver for ≥ 7 days with no data loss incidents. Structured dogfooding log (including mental model surprises) is committed.
 - Binary sizes on all published artifacts meet or are documented against the NFR-PERF-05 targets.
 - `cargo clippy -- -D warnings` and fmt are clean on the exact commit tagged for release.
 - A "v0.1 Release Checklist" issue is created, all items checked, and closed with the release.
+- `STEWARDSHIP.md` (per DESIGN §12.1), updated FMEA, final dependency health table, and Markdown scope contract are part of the release tag.
+- RIGOROUS_REVIEW.md has a final response note summarizing what was achieved vs. deferred.
 
 **Rough Calendar:** 2–4 weeks (a lot of this is infrastructure + waiting for CI runs and tester feedback).
 
