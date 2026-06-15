@@ -1,0 +1,22 @@
+[
+  {
+    "kind": "vision",
+    "description": "draft Vision awaiting ratification",
+    "context": "The proposal ratifies a draft Vision (Noter: a reliable, data-integrity-first, minimal Markdown editor in Rust) as the project's enduring direction, and as a rider unlocks the steward to work the queue autonomously onto draft branches.",
+    "question": "Will you unbundle the decision — ratify the Vision documents on their own merits, and decide the autonomous-steward unlock separately with its own evidence of guardrails?",
+    "recommendation": "defer",
+    "rationale": "All four reviewers cross-examined the documents against the code and found the Vision/Principles/Scope/Roadmap content largely grounded (atomic_io.rs, recovery.rs, md_syntax.rs, golden/, ADR-001 all corroborate), so the docs are committable after light edits. But every reviewer independently flagged that the stated proof covers only document accuracy while ratification also grants autonomous write access — a higher-stakes, unproven half — onto a tree carrying fresh crash and choppy-repaint logs.",
+    "dissent": "The autonomy is onto draft branches, not main — presumably still gated by human merge plus the mandatory gate triple. That bounds the blast radius to a review-attention cost rather than a data-integrity threat, which materially softens the autonomy objection.",
+    "changes": [
+      "Split the proposal into two decisions: ratify the Vision documents now, and decide the autonomous-steward unlock separately — gated on stated guardrails (queue/branch scope limits, the gate triple enforced on the steward's output, and a cap on open draft branches), held to the same evidence bar the project holds its own core logic.",
+      "Cut 'fast' from the Vision or cite a benchmark, and demote 'trustworthy', 'reliable', and 'boring in the best way' from asserted current properties to stated goals — after triaging or resolving the launch_crash.log and launch-choppy-repaint logs in the tree.",
+      "Relabel SCOPE's out-of-scope items (tabs, preview pane, syntax highlighting, LSP/git, plugins) as 'out-of-scope for v0.1' inside the document, so a per-release boundary is not frozen as enduring doctrine.",
+      "Reframe the PRINCIPLES line 'core logic is only done when property and golden tests demonstrate its invariants' as a standard the project holds rather than a description of present state, given the surviving mutants recorded in mutants.out/missed.txt for src/core/search.rs (lines 24, 29).",
+      "Before authorizing autonomous branch work, regenerate the 4-day-stale MODEL.md (stamped 2026-06-10) and clear working-tree scratch — 'hello world temp', the qa-*/launch-* logs, mutants.out.old/, and release-capture-*.txt — so the agent acts on a current model and a clean baseline.",
+      "Confirm the 'system-matched themes' and 'zero telemetry' claims against a citable source or soften them to goals, since no theme/style module appears in the repo map and 'zero telemetry' carries no dedicated evidence citation."
+    ],
+    "deliberated_at": "2026-06-14T21:07:24.0743367Z",
+    "move": "stew ratify noter",
+    "vision_stamp": "2026-06-14T21:07:24Z"
+  }
+]
