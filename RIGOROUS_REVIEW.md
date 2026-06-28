@@ -1,9 +1,8 @@
-# Rigorous Review: Noter — A Critical Analysis
+# Rigorous Review: Noter - Planning Critique
 
-**Reviewer:** Prof. Dr. Lena K. Voss, Ph.D.  
-**Affiliation (mock):** Professor Emerita of Dependable Computing, Human-Computer Interaction, and Software Engineering, Department of Computer Science.  
-**Date of Review:** June 2026 (planning baseline)  
-**Document under Review:** README.md, REQUIREMENTS.md, DESIGN.md, ROADMAP.md, and supporting artifacts (as of the post-version-hygiene state).  
+**Review type:** Internal adversarial planning critique.
+**Date of Review:** June 2026 (planning baseline)
+**Document under Review:** README.md, REQUIREMENTS.md, DESIGN.md, ROADMAP.md, and supporting artifacts (as of the post-version-hygiene state).
 **Context:** Private consultation requested by the lead engineer to "make this not a pile of complete dog shit."
 
 ---
@@ -22,13 +21,13 @@ However, it is not yet at the level of an *exceptionally engineered* artifact. I
 
 **Verdict:** Promising foundation. With the additions below, this can become a reference example of how to build a small, trustworthy, cross-platform interactive application in 2026 without descending into the usual accretion of accidental complexity. Without them, it will be "better than Win11 Notepad for a niche" but still fundamentally slop-adjacent in its engineering discipline.
 
-I recommend treating the next 2–3 weeks of "Phase 0 refinement" as a miniature research project: produce a minimal formal model, a first-cut FMEA, and an expanded verification plan before writing the first line of the real editor widget.
+I recommend treating the next 2-3 weeks of "Phase 0 refinement" as a miniature research project: produce a minimal formal model, a first-cut FMEA, and an expanded verification plan before writing the first line of the real editor widget.
 
-## 2. Discussion of the Stated Pain Points (with Academic Distance)
+## 2. Discussion of the Stated Pain Points
 
 **Engineer:** The user hates the Win11 Notepad because of telemetry, bloat, loss of the "just works" quality of the classic versions, and a general feeling that the OS vendor no longer respects the simple text-editing workflow.
 
-**Prof. Voss:** This is a classic case of *technological displacement of user values*. The original Notepad embodied what Norman (1988) and later Carroll & Rosson would call a "minimalist" or "training-wheels" artifact: low cognitive load, high predictability, immediate feedback, no hidden state that violates the user's mental model of "a bag of characters on disk."
+**Reviewer:** This is a classic case of technological displacement of user values. The original Notepad embodied a minimalist artifact: low cognitive load, high predictability, immediate feedback, no hidden state that violates the user's mental model of "a bag of characters on disk."
 
 The Win11 version (and many "modern" rewrites) optimizes for different stakeholders: telemetry for product telemetry teams, discoverability for novice users via "modern" UI chrome, and integration with cloud identity surfaces. The result is a violation of the *principle of least astonishment* for the original user population.
 
@@ -99,7 +98,7 @@ Missing or weak:
 
 You aspire to something users can rely on "for a decade." A solo project with no succession plan is, by definition, time-bombed.
 
-**Prof. Voss:** Every dependable system I have studied that survived its original author had at minimum:
+**Reviewer:** Every dependable system I have studied that survived its original author had at minimum:
 - A written "handover" or "stewardship" document.
 - A minimal "reproducibility envelope" (exact pinned toolchain + how to build the release binaries on a fresh machine in 2031).
 - Criteria for "when to declare the project unmaintained and point users at alternatives."
@@ -118,13 +117,13 @@ Each addition increases the attack surface for "weird file makes the preview do 
 
 ### 4.1 Add a Lightweight Formal Model (Prose + Rust Enums + Properties)
 
-Create in DESIGN.md (or a new `CORE_SPEC.md`) a section titled "Core Model — Safety and Liveness Properties."
+Create in DESIGN.md (or a new `CORE_SPEC.md`) a section titled "Core Model - Safety and Liveness Properties."
 
-Example skeleton the professor would expect:
+Example skeleton the review expects:
 
 ```text
 Safety Property S1 (Save Fidelity):
-  ∀ doc, path.
+  for all doc, path.
     if save_atomic(doc, path) returns Ok(()) then
       on_disk_bytes(path) == to_bytes(doc)   (modulo the documented line-ending and BOM policy at load time)
 
@@ -143,7 +142,7 @@ These are then turned into property tests with clear comments: "This test is the
 
 A one- or two-page table in DESIGN.md is worth more than paragraphs of "we will be careful."
 
-Columns the professor would demand:
+Columns the review expects:
 - Failure Mode
 - Potential Effect (on user data, user trust, etc.)
 - Severity (1-10)
@@ -177,25 +176,21 @@ Current non-goals list is good. Make it stronger by adding 1-2 sentences of reje
 
 "Purity" (plain text on disk, no web tech in core, no telemetry) is a *value* and a *constraint*. It is not a substitute for rigorous engineering of the parts that must be complex.
 
-The text editing core (rope + cursor + undo + viewport) will be the most complex and bug-prone part of the system regardless of how "pure" the rest of the UI is. Your plan already recognizes this by mandating ropey and a custom widget. The professor review simply asks you to make the complexity *explicit and verified* rather than hoping "simple UI" will make the hard parts easy.
+The text editing core (rope + cursor + undo + viewport) will be the most complex and bug-prone part of the system regardless of how "pure" the rest of the UI is. The plan already recognizes this by mandating ropey and a custom widget. The review asks you to make the complexity explicit and verified rather than hoping "simple UI" will make the hard parts easy.
 
 ## 6. Final Recommendations (Prioritized)
 
 1. **Immediate (before any substantial implementation code):** Add the Core Behavioral Specification (safety/liveness properties) and a first FMEA table to DESIGN.md. This is the highest-leverage anti-slop activity.
 2. **Phase 0 gate enhancement:** Require the dependency health table and mental model impact statements for the first features.
-3. **Phase 1–2:** Build a small fault-injection harness (separate from the main binary) that can corrupt `.tmp` files, simulate rename failures, etc., and assert that recovery or error paths behave as specified.
+3. **Phase 1-2:** Build a small fault-injection harness (separate from the main binary) that can corrupt `.tmp` files, simulate rename failures, etc., and assert that recovery or error paths behave as specified.
 4. **Phase 4 (release):** Produce `STEWARDSHIP.md` + reproducibility recipe + the Markdown scope contract as part of the release artifacts.
-5. **Ongoing:** Treat the RIGOROUS_REVIEW.md (this document) as a living artifact. Re-read it at the start of each phase and add a "Professor Review Response" subsection noting which recommendations have been actioned and which were consciously deferred with rationale.
+5. **Ongoing:** Treat the RIGOROUS_REVIEW.md (this document) as a living artifact. Re-read it at the start of each phase and add a review response subsection noting which recommendations have been actioned and which were consciously deferred with rationale.
 
-## 7. Closing Remark from Prof. Voss
+## 7. Closing Remark
 
 Small tools are not exempt from the laws of dependable systems; they are simply smaller instances of the same problems. The difference between a tool that users quietly trust for years and one that eventually betrays them with a silent data loss or a "why did my line endings change?" surprise is almost always the presence or absence of the kind of explicit reasoning you are now being asked to document.
 
 If you do the work outlined here, Noter will not merely be "the notepad I wish existed." It can become a case study in how to do minimalist interactive software with professional-grade engineering discipline in the 2020s.
-
-I am willing to review the next revision of DESIGN.md and REQUIREMENTS.md when they contain the specification and FMEA artifacts.
-
-— LKV
 
 ---
 
