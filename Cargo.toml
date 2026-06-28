@@ -2,7 +2,7 @@
 name = "noter"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"   # Conservative baseline; raise only after testing. 2026 reality will likely be 1.88–1.92.
+rust-version = "1.85"   # Conservative baseline; raise only after testing. 2026 reality will likely be 1.88-1.92.
 authors = ["Nick <noter@local>"]  # Update when you have a real identity / org
 description = "A pure, reliable, cross-platform plain text editor in Rust. The notepad you actually want."
 readme = "README.md"
@@ -12,11 +12,11 @@ keywords = ["notepad", "text-editor", "plain-text", "egui", "cross-platform", "r
 categories = ["gui", "text-editors", "command-line-utilities"]  # "command-line-utilities" is a stretch but fine for discoverability
 
 # =============================================================================
-# Planned dependencies (June 2026 GA versions — latest sensible stable releases)
+# Planned dependencies (June 2026 GA versions - latest sensible stable releases)
 # Introduced gradually by phase. See ROADMAP.md + DESIGN.md for justification policy.
 # We are conservative on pre-release crates for a "reliability first" tool.
 # =============================================================================
-# Phase 0–1 (core reliability & classic notepad experience)
+# Phase 0-1 (core reliability & classic notepad experience)
 #   egui             = "0.34"   # + eframe = "0.34.3" (latest GA as of June 2026, MSRV 1.85)
 #   rfd              = "0.17"   # Native file dialogs (mandatory). 0.17.2 current.
 #   directories      = "6.0"    # Cross-platform config/cache paths. 6.0.0 current.
@@ -31,13 +31,13 @@ categories = ["gui", "text-editors", "command-line-utilities"]  # "command-line-
 #   dark-light       = "2.0"    # Clean system theme detection (Windows registry, macOS appearance,
 #                               # Linux gsettings). MSRV 1.78. Preferred over hand-rolled for v1.
 #
-# Phase 2–3 (polish + markdown QOL)
+# Phase 2-3 (polish + markdown QOL)
 #   pulldown-cmark   = "0.13"   # CommonMark parser for the preview (pure Rust). 0.13.4 current.
 #   proptest         = "1.11"   # Property-based tests for invariants (dev-dependency).
 #   tempfile         = "3.27"   # Golden tests & recovery simulation (dev-dependency).
 #
 # Future / only if justified (and after GA)
-#   notify           = "9"      # 9.0.0-rc.4 in June 2026 — still pre-release. Use mtime polling first.
+#   notify           = "9"      # 9.0.0-rc.4 in June 2026 - still pre-release. Use mtime polling first.
 #
 # Strict policy: Every added dependency requires (a) written justification in DESIGN.md,
 # (b) `cargo tree -i <name>` audit, (c) binary size impact measurement at the phase gate.
@@ -58,7 +58,7 @@ panic = "abort"        # We handle errors gracefully; abort is fine and smaller
 opt-level = 1          # Slightly faster debug builds for UI work without killing compile time
 
 # =============================================================================
-# Lints (modern 2024 style — we will tighten over time)
+# Lints (modern 2024 style - we will tighten over time)
 # =============================================================================
 [lints.rust]
 unsafe_code = "forbid"

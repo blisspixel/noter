@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**How we will build an exceptionally high-quality, reliable, pure cross-platform notepad in 2026 — with code quality and test coverage designed in, not added later.**
+**How we will build an exceptionally high-quality, reliable, pure cross-platform notepad in 2026 - with code quality and test coverage designed in, not added later.**
 
 ## Vision
 
@@ -24,11 +24,11 @@ Each phase has:
 - **Quality Gate** (these are mandatory before moving on). Gates now incorporate the rigor items from RIGOROUS_REVIEW.md (FMEA updates, mental model statements, dependency health tables, re-reading of the critical review, executable safety properties, etc.).
 - Estimated effort (solo developer, calendar time, very rough)
 
-The entire roadmap is a direct response to the original user pain points (hate of bloat/telemetry/unpredictability in modern Notepad) and the subsequent professor-level critique aimed at preventing "slopware." We are building a *restorative, minimalist, high-integrity* tool, not just another editor.
+The entire roadmap is a direct response to the original user pain points (hate of bloat, telemetry, and unpredictability in modern Notepad) and the internal critical review aimed at preventing slopware. We are building a restorative, minimalist, high-integrity tool, not just another editor.
 
 ---
 
-### Phase 0 — Foundation & Planning (Current — Target: Complete within days of starting)
+### Phase 0 - Foundation & Planning (Current - Target: Complete within days of starting)
 
 **Goals**
 - All major planning artifacts exist and are high quality.
@@ -44,17 +44,19 @@ The entire roadmap is a direct response to the original user pain points (hate o
 - Cargo.toml with rich metadata, release profile, lints section started
 - Basic GitHub Actions CI skeleton (fmt, clippy, test on all three OS)
 - `cargo fmt`, `cargo clippy`, and `cargo test` all green on the skeleton
+- `cargo llvm-cov --all-targets --all-features --workspace --fail-under-lines 80` green on the skeleton
 
 **Quality Gate**
 - All four planning documents reviewed by the author for internal consistency.
 - `cargo clippy --all-targets -- -D warnings` produces zero warnings on the initial commit.
+- Coverage gate fails below 80% line coverage, even for the skeleton.
 - Git history contains the planning docs as the first real commits.
 
-**Status:** In progress. This document is part of the gate.
+**Status:** In progress. The planning documents, skeleton binary, CI, and skeleton coverage gate exist. No usable editor features exist yet.
 
 ---
 
-### Phase 1 — Core Pure Notepad MVP (The "It Just Works" Release)
+### Phase 1 - Core Pure Notepad MVP (The "It Just Works" Release)
 
 **Goals**
 Deliver a genuinely usable classic notepad replacement with the fundamentals of reliability.
@@ -76,29 +78,29 @@ Deliver a genuinely usable classic notepad replacement with the fundamentals of 
 - All primary keyboard shortcuts working on Windows + at least documented for other platforms
 - Graceful handling of line endings + BOM fidelity (with golden tests)
 
-**Quality Gate (Mandatory) — Phase 0/1 Rigor Enhancements**
+**Quality Gate (Mandatory) - Phase 0/1 Rigor Enhancements**
 - `cargo fmt -- --check` && `cargo clippy --all-targets -- -D warnings` clean.
-- Core modules (`core/document`, `core/editor`, `io` logic) achieve **≥ 80% line coverage**, including the executable forms of Safety Properties S1–S4 and U1 (see DESIGN.md §3.5, added in response to RIGOROUS_REVIEW.md).
-- First-cut FMEA table (DESIGN §13.1) is committed and at least the Phase-1 rows (F1–F3, F6) have corresponding fault-injection or property tests.
+- Core modules (`core/document`, `core/editor`, `io` logic) achieve **>= 80% line coverage**, including the executable forms of Safety Properties S1-S4 and U1 (see DESIGN.md section 3.5, added in response to RIGOROUS_REVIEW.md).
+- First-cut FMEA table (DESIGN section 13.1) is committed and at least the Phase-1 rows (F1-F3, F6) have corresponding fault-injection or property tests.
 - Property tests exist and pass for:
   - Line ending detection + `to_bytes()` roundtrip for CRLF / LF / CR + BOM combinations (S2).
-  - Atomic save never leaves a truncated file (simulated via temp dir tests) — evidence for S1.
+  - Atomic save never leaves a truncated file (simulated via temp dir tests) - evidence for S1.
   - Undo roundtrips under arbitrary edit sequences (U1 / S3).
 - At least 5 golden integration tests in `tests/integration/` covering empty file, CRLF-heavy log, unicode, very long single line, file with only newlines. These are the primary artifacts for S2.
-- Mental model impact statements written for every feature delivered in the phase (REQUIREMENTS §1.1).
-- Dependency health table (per DESIGN §1.4) committed for all crates introduced.
+- Mental model impact statements written for every feature delivered in the phase (REQUIREMENTS section 1.1).
+- Dependency health table (per DESIGN section 1.4) committed for all crates introduced.
 - Manual test pass on Windows (author's machine) using the written checklist in `docs/manual-test-matrix.md`.
 - The author can use the binary for real note-taking for 3 consecutive days without data loss or major workflow breakage.
 - Binary size (release) on Windows < 18 MiB.
-- RIGOROUS_REVIEW.md has been re-read; a short "Professor Review Response" subsection added noting which recommendations were actioned.
+- RIGOROUS_REVIEW.md has been re-read; a short review response subsection added noting which recommendations were actioned.
 
-**Rough Calendar:** 2–4 weeks of focused work (depending on how quickly the custom editor widget is needed).
+**Rough Calendar:** 2-4 weeks of focused work (depending on how quickly the custom editor widget is needed).
 
 **Exit Criteria:** We have something that can replace Notepad for plain text work on the primary platform.
 
 ---
 
-### Phase 2 — Editing Trust & Polish (The "I Actually Trust This" Release)
+### Phase 2 - Editing Trust & Polish (The "I Actually Trust This" Release)
 
 **Goals**
 Make the editor feel excellent and make the reliability story bulletproof.
@@ -107,7 +109,7 @@ Make the editor feel excellent and make the reliability story bulletproof.
 - Production-grade custom `EditorWidget` (virtualized, only visible lines, proper cursor/selection, horizontal scroll when needed).
 - Excellent undo/redo with full coalescing rules + bounded memory (property tests proving roundtrips).
 - Replace (Ctrl+H) with "Replace" and "Replace All".
-- Go To Line (Ctrl+G) — works instantly even on 500k line files.
+- Go To Line (Ctrl+G) - works instantly even on 500k line files.
 - File-changed-on-disk detection (mtime + quick content check) with clear reload prompt.
 - Mature autosave + recovery UX (timestamped list, "Discard this recovery", auto-clean on successful save).
 - Find improvements: case sensitive, "whole word", live match count + highlight in the document (if editor widget supports it).
@@ -117,7 +119,7 @@ Make the editor feel excellent and make the reliability story bulletproof.
 - Crash recovery simulation harness (documented script or test that actually exercises the recovery path under process kill).
 
 **Quality Gate**
-- Core coverage **≥ 85% line / 70% branch**, with explicit coverage of the safety properties and FMEA rows addressed in this phase.
+- Core coverage **>= 85% line / 70% branch**, with explicit coverage of the safety properties and FMEA rows addressed in this phase.
 - Property tests now also cover:
   - Arbitrary sequences of inserts/deletes + undos + redos return to identical document + cursor state (U1/S3).
   - Undo stack memory stays bounded under heavy typing.
@@ -128,13 +130,13 @@ Make the editor feel excellent and make the reliability story bulletproof.
 - All NFR-REL reliability requirements have passing tests or documented manual verification.
 - RIGOROUS_REVIEW.md re-read; response notes updated.
 
-**Rough Calendar:** 3–5 weeks.
+**Rough Calendar:** 3-5 weeks.
 
 **Exit Criteria:** This is the point at which the author (and early testers) can switch their daily plain-text workflow to Noter with high confidence.
 
 ---
 
-### Phase 3 — 2026 Quality-of-Life — Markdown View + Power User Features
+### Phase 3 - 2026 Quality-of-Life - Markdown View + Power User Features
 
 **Goals**
 Add the Markdown preview that was promised without compromising the pure text soul. Add the last set of "I use this every day" features.
@@ -153,19 +155,19 @@ Add the Markdown preview that was promised without compromising the pure text so
 - All shortcuts verified on macOS (Cmd key) and Linux.
 
 **Quality Gate**
-- Preview feature has its own small test suite (parser events → expected egui draw calls, or at least "does not panic on common markdown" + snapshot of rendered structure if we adopt `insta`).
+- Preview feature has its own small test suite (parser events -> expected egui draw calls, or at least "does not panic on common markdown" + snapshot of rendered structure if we adopt `insta`).
 - Adding the preview crate does not push release binary over the size budget (or we accept a documented increase and re-optimize elsewhere).
 - Manual test on all three platforms (or at least Windows + one other) including "edit while preview is open", "toggle preview on a 10k line .md file", "preview with code blocks and lists looks usable".
-- No regressions in Phase 1–2 core tests.
+- No regressions in Phase 1-2 core tests.
 - Documentation updated (README features list, user-facing "Markdown Preview" section in a small `docs/USAGE.md`).
 
-**Rough Calendar:** 2–3 weeks.
+**Rough Calendar:** 2-3 weeks.
 
 **Exit Criteria:** The "Markdown for QOL" promise from the original request is delivered without having turned Noter into a webview or Markdown-first app.
 
 ---
 
-### Phase 4 — Cross-Platform Hardening, Packaging & v0.1 Release
+### Phase 4 - Cross-Platform Hardening, Packaging & v0.1 Release
 
 **Goals**
 Make the release process professional and ensure the product is supportable on all target platforms.
@@ -186,21 +188,21 @@ Make the release process professional and ensure the product is supportable on a
 
 **Quality Gate**
 - Full CI matrix (Windows, macOS 13/14, Ubuntu 22.04/24.04, both X11 and Wayland where possible) is green on the release tag.
-- Coverage report for the release shows core ≥ 85%, including the safety properties.
-- At least two people (author + one external tester) have used the release candidate as daily driver for ≥ 7 days with no data loss incidents. Structured dogfooding log (including mental model surprises) is committed.
+- Coverage report for the release shows core >= 85%, including the safety properties.
+- At least two people (author + one external tester) have used the release candidate as daily driver for >= 7 days with no data loss incidents. Structured dogfooding log (including mental model surprises) is committed.
 - Binary sizes on all published artifacts meet or are documented against the NFR-PERF-05 targets.
 - `cargo clippy -- -D warnings` and fmt are clean on the exact commit tagged for release.
 - A "v0.1 Release Checklist" issue is created, all items checked, and closed with the release.
-- `STEWARDSHIP.md` (per DESIGN §12.1), updated FMEA, final dependency health table, and Markdown scope contract are part of the release tag.
+- `STEWARDSHIP.md` (per DESIGN section 12.1), updated FMEA, final dependency health table, and Markdown scope contract are part of the release tag.
 - RIGOROUS_REVIEW.md has a final response note summarizing what was achieved vs. deferred.
 
-**Rough Calendar:** 2–4 weeks (a lot of this is infrastructure + waiting for CI runs and tester feedback).
+**Rough Calendar:** 2-4 weeks (a lot of this is infrastructure + waiting for CI runs and tester feedback).
 
 **Exit Criteria:** We have a real, shippable v0.1 that we are proud to point people at.
 
 ---
 
-### Post-v0.1 (Future Phases — Only After Demand & Maintainer Capacity)
+### Post-v0.1 (Future Phases - Only After Demand & Maintainer Capacity)
 
 - Optional tabs / multi-document interface (many classic Notepad users prefer multiple windows; this is controversial).
 - Better horizontal scrolling / very long line handling.

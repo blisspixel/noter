@@ -1,8 +1,8 @@
 # Noter Requirements Specification
 
-**Version:** 0.1 (Planning Baseline)  
-**Date:** June 2026  
-**Status:** Frozen for Phase 0–1 implementation. Changes require explicit update to this document + ROADMAP.
+**Version:** 0.1 (Planning Baseline)
+**Date:** June 2026
+**Status:** Frozen for Phase 0-1 implementation. Changes require explicit update to this document + ROADMAP.
 
 This document defines what "extremely well" means for Noter. Everything in DESIGN.md and the implementation must trace back to these requirements.
 
@@ -29,7 +29,7 @@ This is non-negotiable for maintaining the restorative design goal stated in the
 ### 1.2 Verification Criteria & Traceability
 
 Each FR and NFR below is accompanied (or will be in later revisions) by:
-- A direct reference to one or more Safety/Liveness properties from DESIGN.md §3.5.
+- A direct reference to one or more Safety/Liveness properties from DESIGN.md section 3.5.
 - The primary verification method (property test name, golden file, FMEA row, manual matrix item, fault-injection case).
 - The mental model impact statement (or pointer to it).
 
@@ -42,8 +42,8 @@ This creates a lightweight traceability matrix so that when a test fails or a us
 - **FR-010** Open an existing file via native file dialog (rfd).
 - **FR-011** Create a new untitled document (Ctrl+N or menu).
 - **FR-012** Save current document (Ctrl+S). Must be atomic (see NFR-Reliability).
-- **FR-013** Save As… (Ctrl+Shift+S) — always shows dialog.
-- **FR-014** Recent files list (max 10–12 entries, persisted, clickable, missing files are gracefully removed).
+- **FR-013** Save As... (Ctrl+Shift+S) - always shows dialog.
+- **FR-014** Recent files list (max 10-12 entries, persisted, clickable, missing files are gracefully removed).
 - **FR-015** On open, detect and preserve the file's line ending convention (CRLF, LF, or CR). New files on Windows default to CRLF; elsewhere LF. User can change via status bar or Format menu (rarely needed).
 - **FR-016** Graceful handling of UTF-8 (with or without BOM). On save, reproduce the BOM state that was present on load. Non-UTF-8 files: offer "Open with lossy UTF-8 conversion" or "Cancel". Never silently corrupt.
 
@@ -55,11 +55,11 @@ This creates a lightweight traceability matrix so that when a test fails or a us
   - Consecutive character insertions are one undo step.
   - Consecutive deletions (backspace or delete) are one step.
   - Paste or large operations are their own step.
-  - Undo stack must be bounded (e.g. 500–1000 entries or ~50 MiB of retained rope history).
+  - Undo stack must be bounded (e.g. 500-1000 entries or ~50 MiB of retained rope history).
 - **FR-023** Find (Ctrl+F): opens a find bar (not modal dialog). Supports case-sensitive toggle. "Find Next" (F3) and "Find Previous".
 - **FR-024** Replace (Ctrl+H): basic string replace with "Replace", "Replace All". Must respect current selection scope when possible.
 - **FR-025** Word wrap toggle (Format > Word Wrap or Alt+Z). Persisted per session or globally (TBD in design, but default on).
-- **FR-026** Go To Line (Ctrl+G) — must be fast and accurate even on very large files.
+- **FR-026** Go To Line (Ctrl+G) - must be fast and accurate even on very large files.
 
 ### 2.3 View & Status (MUST)
 
@@ -80,15 +80,15 @@ This creates a lightweight traceability matrix so that when a test fails or a us
 - **FR-042** On Windows, the app should react to live system theme changes (WM_SETTINGCHANGE) when "System" is selected.
 - **FR-043** All UI elements (text, chrome, scrollbars, selection highlight) must have excellent contrast in both themes.
 
-### 2.5 Markdown Preview (SHOULD — Phase 3 QOL)
+### 2.5 Markdown Preview (SHOULD - Phase 3 QOL)
 
 - **FR-050** View > Markdown Preview (toggle) opens a read-only pane (right side preferred, or bottom on narrow windows).
 - **FR-051** The preview must render common Markdown (headings, lists, code blocks, emphasis, links, blockquotes, horizontal rules) using only pure Rust crates + egui drawing primitives. It must never interpret or execute scripts, images from network, or HTML.
 - **FR-052** Toggling preview or editing in the left pane must **never** mutate the underlying document bytes or line ending state. Preview is strictly a derived view.
-- **FR-053** Preview updates live as you type (debounced ~150–250 ms).
+- **FR-053** Preview updates live as you type (debounced ~150-250 ms).
 - **FR-054** Large documents: preview may fall back to "Rendering limited to first N lines for performance" with a clear affordance to render more.
 
-### 2.6 Reliability & Data Safety (MUST — see also NFR)
+### 2.6 Reliability & Data Safety (MUST - see also NFR)
 
 - **FR-060** On every significant edit burst or timer (configurable, default 25s), write an autosave file to the OS temp directory.
 - **FR-061** On clean launch with no command-line file, scan for stale autosave files belonging to this user. Offer "Recover unsaved changes from [timestamp]" in a non-modal but prominent way.
@@ -109,21 +109,21 @@ All primary actions must be reachable without a mouse. Standard platform shortcu
 
 ### 3.1 Reliability (Highest Priority)
 
-- **NFR-REL-01** Under normal operation (including force-kill of the process at any moment after an edit), the user must never lose more than the last ~30 seconds of typing when recovery is offered.  
+- **NFR-REL-01** Under normal operation (including force-kill of the process at any moment after an edit), the user must never lose more than the last ~30 seconds of typing when recovery is offered.
   **Verification:** Fault-injection harness (corrupt/kill during autosave + restart) run at least 30 times per phase gate. Cross-references Safety Property S4 and FMEA F3.
-- **NFR-REL-02** Save must never leave a zero-byte or truncated file on disk when the original existed. Atomic rename is mandatory.  
+- **NFR-REL-02** Save must never leave a zero-byte or truncated file on disk when the original existed. Atomic rename is mandatory.
   **Verification:** Property test exercising S1 under normal, full-disk, and simulated-rename-failure conditions. Golden files + external `cmp` / `xxd` checks. FMEA F1.
-- **NFR-REL-03** Line ending and BOM fidelity tests must pass for CRLF, LF, and mixed files. Round-trip byte equality for the text content (modulo the intentional normalization we document).  
-  **Verification:** Exhaustive golden-file matrix (all three endings × BOM × empty / single-line / multi-line / trailing-newline cases). Property test for S2. Mental model impact statement required.
-- **NFR-REL-04** Undo/Redo must be information-theoretically lossless for the operations it claims to support. Property tests must prove that applying a sequence of edits + undos + redos returns to an identical rope state.  
+- **NFR-REL-03** Line ending and BOM fidelity tests must pass for CRLF, LF, and mixed files. Round-trip byte equality for the text content (modulo the intentional normalization we document).
+  **Verification:** Exhaustive golden-file matrix (all three endings x BOM x empty / single-line / multi-line / trailing-newline cases). Property test for S2. Mental model impact statement required.
+- **NFR-REL-04** Undo/Redo must be information-theoretically lossless for the operations it claims to support. Property tests must prove that applying a sequence of edits + undos + redos returns to an identical rope state.
   **Verification:** `proptest` generator for arbitrary (but bounded) sequences of insert/delete/replace commands; assert U1 / S3 after each undo/redo cycle. Coalescing rules are part of the test specification.
 
 ### 3.2 Performance
 
-- **NFR-PERF-01** Open a 50 MiB text file and display the first page in < 2.5 seconds on mid-range 2024–2026 hardware (8–16 GB RAM, modern SSD).
+- **NFR-PERF-01** Open a 50 MiB text file and display the first page in < 2.5 seconds on mid-range 2024-2026 hardware (8-16 GB RAM, modern SSD).
 - **NFR-PERF-02** Smooth 60 fps scrolling and cursor movement on a 200,000 line file once the document is loaded (measured via manual + automated frame time logging).
 - **NFR-PERF-03** Find operation on 50 MiB file completes in < 800 ms (first match).
-- **NFR-PERF-04** Memory baseline (empty document + idle): < 120 MiB RSS on Windows, < 150 MiB on macOS/Linux. 50 MiB document loaded should stay under ~350–400 MiB.
+- **NFR-PERF-04** Memory baseline (empty document + idle): < 120 MiB RSS on Windows, < 150 MiB on macOS/Linux. 50 MiB document loaded should stay under ~350-400 MiB.
 - **NFR-PERF-05** Binary size (release, stripped, LTO): target < 10 MiB on Windows, < 12 MiB on macOS/Linux. Hard ceiling for v0.1: 18 MiB.
 
 ### 3.3 Cross-Platform Behavior
@@ -137,15 +137,15 @@ All primary actions must be reachable without a mouse. Standard platform shortcu
 
 - **NFR-QUAL-01** Rust edition 2024. `rust-version` in Cargo.toml set to the minimum we actually test (initially 1.85+ or 1.90+).
 - **NFR-QUAL-02** `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings` must be clean on every commit that lands in `main`. CI enforces this.
-- **NFR-QUAL-03** Core modules (`document`, `editor`, `io`, `config`, `theme`) must achieve ≥ 85% line coverage and ≥ 70% branch coverage (measured by `cargo llvm-cov` or equivalent) before Phase 2 completion.  
-  **Additional rigor:** Coverage must include the executable forms of S1–S4 and U1 (see DESIGN §3.5). Mutation testing (via `cargo-mutants` or equivalent) on the core rope/document path is a stretch goal for Phase 2+.
-- **NFR-QUAL-04** All critical invariants have property-based tests (`proptest` or `quickcheck`): undo/redo roundtrips, line-ending detection + save fidelity, atomic save success under simulated failure (via tempfs tricks or post-write corruption tests), config serialization roundtrips.  
+- **NFR-QUAL-03** Core modules (`document`, `editor`, `io`, `config`, `theme`) must achieve >= 85% line coverage and >= 70% branch coverage (measured by `cargo llvm-cov` or equivalent) before Phase 2 completion.
+  **Additional rigor:** Coverage must include the executable forms of S1-S4 and U1 (see DESIGN section 3.5). Mutation testing (via `cargo-mutants` or equivalent) on the core rope/document path is a stretch goal for Phase 2+.
+- **NFR-QUAL-04** All critical invariants have property-based tests (`proptest` or `quickcheck`): undo/redo roundtrips, line-ending detection + save fidelity, atomic save success under simulated failure (via tempfs tricks or post-write corruption tests), config serialization roundtrips.
   **Traceability:** Every property test must be annotated with the Safety/Liveness property ID it is attempting to falsify.
-- **NFR-QUAL-05** No `unwrap()`, `expect("...")` is allowed in hot user paths except where the comment explains why the invariant is truly impossible to violate. Prefer `?` + typed errors + user-facing messages.  
+- **NFR-QUAL-05** No `unwrap()`, `expect("...")` is allowed in hot user paths except where the comment explains why the invariant is truly impossible to violate. Prefer `?` + typed errors + user-facing messages.
   **Verification:** `grep` + manual review at each phase gate; `cargo clippy` deny of `unwrap_used` in `src/core` (gradually enforced).
-- **NFR-QUAL-06** Every non-trivial public or `pub(crate)` function must have a doc comment explaining intent, edge cases, and performance characteristics.  
+- **NFR-QUAL-06** Every non-trivial public or `pub(crate)` function must have a doc comment explaining intent, edge cases, and performance characteristics.
   **Additional:** Doc comments for core operations must reference the relevant safety property or FMEA row they participate in.
-- **NFR-QUAL-07** We will maintain a small but growing set of golden-file tests for save/load behavior with tricky inputs (BOM + CRLF, very long lines, unicode, empty files, files with only newlines).  
+- **NFR-QUAL-07** We will maintain a small but growing set of golden-file tests for save/load behavior with tricky inputs (BOM + CRLF, very long lines, unicode, empty files, files with only newlines).
   **Rigor:** Golden files are the primary executable evidence for S2 and are re-run as part of the "reproducibility envelope" in STEWARDSHIP.md.
 
 ### 3.5 Security & Privacy
@@ -180,7 +180,7 @@ All primary actions must be reachable without a mouse. Standard platform shortcu
 1. A person who has used classic Notepad for 10+ years can perform their daily workflow without reading docs.
 2. In a simulated crash test (kill -9 during heavy typing + repeated 20 times), recovery always offers the document and the recovered version contains all but the last <30s of work.
 3. Binary + RAM numbers meet the NFR-PERF targets on the reference machines.
-4. `cargo clippy -- -D warnings` and fmt clean; core coverage ≥ 85%.
+4. `cargo clippy -- -D warnings` and fmt clean; core coverage >= 85%.
 5. The author (and at least one other tester on macOS or Linux) uses it as their daily driver for plain text notes and config files for two consecutive weeks without data loss or major annoyance.
 
 ## 6. Out of Scope for v0.1 (and probably v0.2)

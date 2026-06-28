@@ -4,7 +4,7 @@
 
 This document is intentionally long and specific. It exists so that implementation decisions are not rediscovered under time pressure and so that code quality + test coverage goals are designed in from the beginning, not bolted on.
 
-**Rigor note (June 2026):** This design has undergone a critical review by Prof. Dr. Lena K. Voss (see [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md)). The review identified specification gaps, the need for explicit invariants, a first FMEA, dependency governance, and stewardship planning. The sections below (particularly 3.5, 4.6, 13, and 15) have been expanded or added in direct response. The goal is to make Noter an existence proof that small desktop tools can be engineered with professional-grade discipline rather than hobbyist accretion.
+**Rigor note (June 2026):** This design has undergone an internal critical planning review (see [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md)). The review identified specification gaps, the need for explicit invariants, a first FMEA, dependency governance, and stewardship planning. The sections below (particularly 3.5, 4.6, 13, and 15) have been expanded or added in direct response. The goal is to make Noter an existence proof that small desktop tools can be engineered with professional-grade discipline rather than hobbyist accretion.
 
 ## 1. Technology Stack & Architectural Decisions
 
@@ -20,7 +20,7 @@ We chose `eframe` (the official egui application framework) + `egui` as the sole
 - Excellent high-DPI and scaling support out of the box.
 - The egui text layout and font system (powered by cosmic-text or harfbuzz under the hood in recent versions) is good enough for a plain text + monospace editor.
 - Mature in 2026. Many production tools (hex editors, log viewers, configuration UIs, small IDEs) ship successfully with it.
-- Zero network, zero "web tech" in the core product — matches the purity requirement perfectly.
+- Zero network, zero "web tech" in the core product - matches the purity requirement perfectly.
 
 **Trade-offs accepted:**
 - We must implement (or carefully wrap) our own multi-line virtualized text editor widget. egui's `TextEdit` is convenient for prototypes but will eventually be insufficient for 100k+ line files and fine-grained undo.
@@ -49,20 +49,20 @@ We will wrap it in our own `Document` type rather than leaking `Rope` everywhere
 
 ### 1.3 Other Core Crates (June 2026 GA versions, introduced by phase)
 
-**Phase 0–1 baseline (current as of June 2026, must still be justified before addition):**
-- `egui` + `eframe` = "0.34.3" — latest GA. MSRV 1.85. This is our GUI layer (see decision record above).
-- `rfd` = "0.17" — real native file dialogs. Non-negotiable.
-- `directories` = "6.0" — correct config/cache locations.
-- `serde` + `toml` = "1.1" — human-readable, git-friendly, diffable config.
-- `thiserror` = "2.0" — clean domain error types.
-- `dark-light` = "2.0" — recommended for system theme detection. It encapsulates the Windows registry, macOS NSAppearance, and Linux gsettings logic behind a simple API. Much less maintenance than hand-rolled platform code.
+**Phase 0-1 baseline (current as of June 2026, must still be justified before addition):**
+- `egui` + `eframe` = "0.34.3" - latest GA. MSRV 1.85. This is our GUI layer (see decision record above).
+- `rfd` = "0.17" - real native file dialogs. Non-negotiable.
+- `directories` = "6.0" - correct config/cache locations.
+- `serde` + `toml` = "1.1" - human-readable, git-friendly, diffable config.
+- `thiserror` = "2.0" - clean domain error types.
+- `dark-light` = "2.0" - recommended for system theme detection. It encapsulates the Windows registry, macOS NSAppearance, and Linux gsettings logic behind a simple API. Much less maintenance than hand-rolled platform code.
 - `tracing` = "0.1.44" + `tracing-subscriber` = "0.3.23" (with file appender + env-filter for post-mortem diagnostics; we log nothing sensitive).
 
 **Phase 2+:**
-- `pulldown-cmark` = "0.13" — CommonMark compliant, fast, event-based parser. Perfect for a controlled, pure-Rust markdown renderer.
-- `proptest` = "1.11" — property-based tests for the core invariants (undo roundtrips, line-ending fidelity, etc.).
-- `tempfile` = "3.27" — for golden I/O tests and recovery simulation.
-- `notify` — deliberately deferred. As of June 2026 the 9.0 series is still at rc. We start with simple periodic mtime + size polling (2-3s when focused). Only adopt a filesystem watcher after it is GA *and* we have proven the polling version insufficient in real use.
+- `pulldown-cmark` = "0.13" - CommonMark compliant, fast, event-based parser. Perfect for a controlled, pure-Rust markdown renderer.
+- `proptest` = "1.11" - property-based tests for the core invariants (undo roundtrips, line-ending fidelity, etc.).
+- `tempfile` = "3.27" - for golden I/O tests and recovery simulation.
+- `notify` - deliberately deferred. As of June 2026 the 9.0 series is still at rc. We start with simple periodic mtime + size polling (2-3s when focused). Only adopt a filesystem watcher after it is GA *and* we have proven the polling version insufficient in real use.
 
 **Explicitly avoided (unless extraordinary justification + size audit appears later):**
 - Any async runtime (tokio etc.) on the main thread.
@@ -102,31 +102,31 @@ At every phase gate the lead must re-run the health table for crates already in 
 
 ```
 noter (bin)
-├── src
-│   ├── main.rs                 # eframe entry point, App bootstrap
-│   ├── app.rs                  # The main NoterApp struct implementing eframe::App
-│   ├── core/
-│   │   ├── mod.rs
-│   │   ├── document.rs         # Document + LineEnding + Encoding + load/save logic
-│   │   ├── editor.rs           # Editor state (cursor, selection, viewport) + edit ops
-│   │   ├── undo.rs             # Undo stack + coalescing policy
-│   │   └── recovery.rs         # Autosave + recovery scanning
-│   ├── ui/
-│   │   ├── mod.rs
-│   │   ├── menu.rs             # Menu construction (egui::menu)
-│   │   ├── editor_widget.rs    # The custom (or wrapped) text editor widget
-│   │   ├── find_bar.rs
-│   │   ├── status_bar.rs
-│   │   └── markdown_preview.rs # Pure-Rust markdown renderer
-│   ├── platform/
-│   │   ├── mod.rs
-│   │   ├── theme.rs            # System theme detection + live updates
-│   │   └── shortcuts.rs        # Cmd vs Ctrl abstraction + key binding table
-│   ├── config.rs               # AppConfig + persistence (TOML)
-│   └── error.rs                # NoterError + user-facing error mapping
-├── tests/
-│   └── integration/            # Golden file tests, cross-cutting behavior
-└── Cargo.toml
++-- src
+|   +-- main.rs                 # eframe entry point, App bootstrap
+|   +-- app.rs                  # The main NoterApp struct implementing eframe::App
+|   +-- core/
+|   |   +-- mod.rs
+|   |   +-- document.rs         # Document + LineEnding + Encoding + load/save logic
+|   |   +-- editor.rs           # Editor state (cursor, selection, viewport) + edit ops
+|   |   +-- undo.rs             # Undo stack + coalescing policy
+|   |   `-- recovery.rs         # Autosave + recovery scanning
+|   +-- ui/
+|   |   +-- mod.rs
+|   |   +-- menu.rs             # Menu construction (egui::menu)
+|   |   +-- editor_widget.rs    # The custom (or wrapped) text editor widget
+|   |   +-- find_bar.rs
+|   |   +-- status_bar.rs
+|   |   `-- markdown_preview.rs # Pure-Rust markdown renderer
+|   +-- platform/
+|   |   +-- mod.rs
+|   |   +-- theme.rs            # System theme detection + live updates
+|   |   `-- shortcuts.rs        # Cmd vs Ctrl abstraction + key binding table
+|   +-- config.rs               # AppConfig + persistence (TOML)
+|   `-- error.rs                # NoterError + user-facing error mapping
++-- tests/
+|   `-- integration/            # Golden file tests, cross-cutting behavior
+`-- Cargo.toml
 ```
 
 The `core` modules have **no knowledge of egui**. This is critical for testability and for the (remote) possibility of one day offering a terminal or headless mode. All egui types live in `ui/` and `app.rs`.
@@ -208,28 +208,28 @@ Config is loaded at startup, saved on clean exit and on major preference changes
 
 ### 3.5 Core Behavioral Specification (Lightweight Formalization)
 
-In response to the critical review (RIGOROUS_REVIEW.md §3.1), we document the intended safety and liveness properties explicitly. These are not TLA+ (yet), but they are precise enough to be turned into property tests and to serve as acceptance criteria for the core modules.
+In response to the critical review (RIGOROUS_REVIEW.md section 3.1), we document the intended safety and liveness properties explicitly. These are not TLA+ (yet), but they are precise enough to be turned into property tests and to serve as acceptance criteria for the core modules.
 
 #### Safety Properties (must never be violated)
 
-**S1 — Save Fidelity**  
+**S1 - Save Fidelity**
 For any `Document` and target `Path`, if `save_atomic(doc, path)` returns `Ok(())`, then the bytes observed on disk at `path` (after the operation) must be byte-for-byte identical to `to_bytes(doc)`, subject only to the documented line-ending normalization and BOM policy that were determined at load time for that document.
 
-**S2 — Line Ending & BOM Preservation**  
+**S2 - Line Ending & BOM Preservation**
 The `line_ending` and `had_bom` fields recorded at load time are the *only* values that `to_bytes()` is permitted to use when emitting content for a subsequent save of the same logical document. No "helpful" normalization to the host platform's native ending is allowed on save unless the user has explicitly chosen a different ending via the UI (an operation that must itself be undoable and clearly indicated in the status bar).
 
-**S3 — Undo Information Preservation (Content Only)**  
-For any sequence of mutating `EditorCommand`s C1 … Cn that the undo system classifies as "content-affecting," applying the corresponding undo actions must restore both the `Rope` content *and* the logical (line, column) cursor/selection state to a state that is information-theoretically equivalent to the state before the sequence (viewport and transient UI state are explicitly excluded from this guarantee).
+**S3 - Undo Information Preservation (Content Only)**
+For any sequence of mutating `EditorCommand`s C1 ... Cn that the undo system classifies as "content-affecting," applying the corresponding undo actions must restore both the `Rope` content *and* the logical (line, column) cursor/selection state to a state that is information-theoretically equivalent to the state before the sequence (viewport and transient UI state are explicitly excluded from this guarantee).
 
-**S4 — No Silent Data Loss on Close**  
+**S4 - No Silent Data Loss on Close**
 If `is_dirty` is true and the user requests close/quit, the only permitted outcomes are: (a) successful save to the current or a new path, (b) explicit user confirmation to discard, or (c) cancellation of the close. There must be no code path that drops the in-memory `Rope` without one of the above.
 
 #### Liveness & Progress Properties (under normal conditions)
 
-**L1 — Save Progress**  
+**L1 - Save Progress**
 If the filesystem is writable, has sufficient space, and is not experiencing pathological latency, a Save request must terminate (success or documented error) within a bounded multiple of the size of the document (modulo `fsync` costs that the OS controls).
 
-**L2 — Recovery Offer**  
+**L2 - Recovery Offer**
 On launch, if any autosave artifacts belonging to this user and newer than N hours exist and their owning process is no longer running, the application must surface a recovery offer before presenting a normal untitled or "Open recent" document.
 
 #### Accepted Residual Risks (documented, not hidden)
@@ -247,7 +247,7 @@ These properties and risks must be referenced (by ID) in the comments of the cor
 
 **Production approach (must be reached by end of Phase 2 or early Phase 3):**
 - Custom `EditorWidget` that:
-  1. Uses `rope.chunks()` + line iteration to only layout the visible ~80–120 lines.
+  1. Uses `rope.chunks()` + line iteration to only layout the visible ~80-120 lines.
   2. Caches `Galley` (egui's laid-out text) per visible line or per chunk.
   3. Handles its own cursor painting, selection rectangles, and caret blinking.
   4. Translates mouse and keyboard events into `EditorCommand`s that mutate the document + cursor atomically.
@@ -293,7 +293,7 @@ We will write extensive tests using `tempfile::TempDir`, including simulated pow
 
 - Autosave writes to a well-known location in `std::env::temp_dir()` with a name containing pid + timestamp or a uuid.
 - On launch we look for files matching `noter-autosave-*` that are newer than N hours and whose owning process is dead.
-- Recovery presents the content in a special "Recovered" document with a big "Save As…" prompt.
+- Recovery presents the content in a special "Recovered" document with a big "Save As..." prompt.
 - We keep the autosave until the user explicitly saves or discards.
 
 ### 5.4 File Changed on Disk
@@ -381,7 +381,7 @@ Because everything is pure Rust + egui primitives, the preview adds almost no at
 
 We will have two error layers:
 
-1. `NoterError` (thiserror) — internal, rich, for logging.
+1. `NoterError` (thiserror) - internal, rich, for logging.
 2. User-facing messages produced by a small `fn user_message(err: &NoterError) -> (String, Severity)`.
 
 Dialogs will be simple egui windows or `egui::Modal` (or the pattern that exists in 2026). Types: Info, Warning, Error, Confirmation (Save/Discard/Cancel).
@@ -401,19 +401,19 @@ Never use `panic!` or `unwrap` to communicate user errors.
 
 ### 11.1 Levels
 
-1. **Unit tests** — inside each module (`#[cfg(test)] mod tests`). Especially heavy in `core/document.rs`, `core/undo.rs`, `core/recovery.rs`.
-2. **Property-based tests** (`proptest`) — located in `tests/proptests.rs` or inside modules:
+1. **Unit tests** - inside each module (`#[cfg(test)] mod tests`). Especially heavy in `core/document.rs`, `core/undo.rs`, `core/recovery.rs`.
+2. **Property-based tests** (`proptest`) - located in `tests/proptests.rs` or inside modules:
    - Arbitrary edit sequences + undo/redo must produce identical final rope + cursor state.
    - Line ending roundtrips for all three styles + BOM combinations.
    - Config serialization is stable and roundtrippable.
-3. **Golden / integration tests** (in `tests/integration/`) — real small files with known tricky content. We assert that `Document::from_bytes(...).to_bytes()` produces byte-identical output, and that atomic save produces the expected file.
-4. **UI smoke tests** — limited. egui has some testing support via `egui::Context` in a headless way or by recording frames. For v1 we will rely on "the app starts and the main widget renders without panic" + extensive manual testing.
-5. **Crash & recovery simulation** — scripts or test harnesses that write an autosave, then corrupt the main process state, then launch a fresh `noter` binary (or call the recovery scanner directly) and assert the content is offered.
+3. **Golden / integration tests** (in `tests/integration/`) - real small files with known tricky content. We assert that `Document::from_bytes(...).to_bytes()` produces byte-identical output, and that atomic save produces the expected file.
+4. **UI smoke tests** - limited. egui has some testing support via `egui::Context` in a headless way or by recording frames. For v1 we will rely on "the app starts and the main widget renders without panic" + extensive manual testing.
+5. **Crash & recovery simulation** - scripts or test harnesses that write an autosave, then corrupt the main process state, then launch a fresh `noter` binary (or call the recovery scanner directly) and assert the content is offered.
 
 ### 11.2 Coverage Target
 
-- Core logic (`src/core/**`): ≥ 85% line, 70% branch by Phase 2 gate.
-- Whole workspace: ≥ 60% by v0.1 (UI code is harder to cover meaningfully).
+- Core logic (`src/core/**`): >= 85% line, 70% branch by Phase 2 gate.
+- Whole workspace: >= 60% by v0.1 (UI code is harder to cover meaningfully).
 - We will use `cargo-llvm-cov` in CI and publish the HTML report as an artifact.
 
 ### 11.3 Manual Test Matrix (documented in ROADMAP)
@@ -427,7 +427,7 @@ Checklist items include large files, mixed line endings, power-loss simulation (
 
 ## 12. Packaging & Distribution
 
-We will use `cargo-dist` (the 2025–2026 standard) for releases.
+We will use `cargo-dist` (the 2025-2026 standard) for releases.
 
 `Cargo.toml` will contain:
 
@@ -459,7 +459,7 @@ A tool that aspires to be "the one you trust for a decade" must plan for the day
 - Exact reproducibility recipe: the pinned `rust-toolchain.toml` (or rustup commands), the exact `cargo dist` version used for the release, and a one-command "build the signed release artifacts on a fresh machine" script.
 - Known fragile platform assumptions (e.g., "we assume rename is atomic within the same directory on the target FS"; "we rely on `fsync` having the documented durability semantics").
 - Criteria for declaring the project "unmaintained" and the recommended migration path (point to a maintained fork, or to a different tool, with data export guidance).
-- A minimal set of integration tests that a future maintainer can run in < 10 minutes to gain confidence that a patch has not broken S1–S4.
+- A minimal set of integration tests that a future maintainer can run in < 10 minutes to gain confidence that a patch has not broken S1-S4.
 
 This is not over-engineering for a notepad; it is the minimum hygiene for any artifact that claims reliability as its primary value proposition.
 
@@ -467,16 +467,16 @@ This is not over-engineering for a notepad; it is the minimum hygiene for any ar
 
 ### 13.1 Initial Failure Modes and Effects Analysis (FMEA)
 
-In response to the critical review (RIGOROUS_REVIEW.md §3.1 and §4.2), we maintain an explicit FMEA. This table is a living artifact; it is updated at each phase gate with new modes discovered during implementation or testing. Severity is from the user's perspective (data loss = 10, annoyance = 3).
+In response to the critical review (RIGOROUS_REVIEW.md section 3.1 and section 4.2), we maintain an explicit FMEA. This table is a living artifact; it is updated at each phase gate with new modes discovered during implementation or testing. Severity is from the user's perspective (data loss = 10, annoyance = 3).
 
 | ID  | Failure Mode                                      | Potential Effect on User                                      | Sev | Current / Planned Detection & Mitigation                                                                 | Residual Risk (after mitigation)                          | Phase First Addressed |
 |-----|---------------------------------------------------|---------------------------------------------------------------|-----|----------------------------------------------------------------------------------------------------------|-----------------------------------------------------------|-----------------------|
 | F1  | Partial/truncated write during save (power loss, kill -9, disk full mid-rename) | Silent data loss or zero-byte file replacing original        | 10  | Atomic write to sibling `.tmp` + `fsync` before `rename`. Recovery scanner on launch. Fault-injection harness that corrupts the `.tmp` or simulates rename failure. | Network/OneDrive filesystems can still lose visibility or durability. Documented. | 1 |
 | F2  | Line-ending or BOM detection is wrong or "helpful" normalization occurs on save | User's version control or downstream tools see spurious diffs; trust destroyed | 9   | Single-pass detection at load; `to_bytes()` is the *only* emitter and is driven exclusively by the recorded `line_ending`/`had_bom`. Golden-file roundtrip tests for all three endings + BOM combinations. Property test S2. | Mixed-ending files inside one document have no perfect single-style representation; we pick one and stay consistent. | 1 |
-| F3  | Autosave file itself is corrupted, from another instance, or from a different Noter version | Recovery offers garbage or the wrong document                 | 8   | Autosave filenames contain PID + timestamp + a small header magic + version. Recovery code verifies header and that the owning process is dead. Content is still presented as "Recovered — Save As required." | User may still be confused; clear UI language and "Discard this recovery" are mandatory. | 1–2 |
+| F3  | Autosave file itself is corrupted, from another instance, or from a different Noter version | Recovery offers garbage or the wrong document                 | 8   | Autosave filenames contain PID + timestamp + a small header magic + version. Recovery code verifies header and that the owning process is dead. Content is still presented as "Recovered - Save As required." | User may still be confused; clear UI language and "Discard this recovery" are mandatory. | 1-2 |
 | F4  | External writer (or OneDrive sync) changes the file while we have it open | Lost work or "which version is real?" confusion               | 7   | Periodic mtime+size check on focus regain + 3s timer. Quick content fingerprint (first+last 4 KiB + len). Prompt: Reload / Keep Mine / (future) Diff. | True concurrent editing is out of scope; we only detect after the fact. | 2 |
 | F5  | Very long lines or pathological Unicode (combining chars, ZWJ, BiDi) cause cursor/column mismatch or OOM during layout | User cannot reliably edit or the editor freezes               | 6   | Logical (scalar-value) columns only. Viewport virtualization + line-length clamping for layout. Explicit horizontal scroll when wrap is off. Performance tests on 10k-char lines. | Visual column count in status bar is best-effort only; documented. | 2 |
-| F6  | Undo stack grows unbounded or coalescing is incorrect | Memory exhaustion or "undo did something surprising"          | 7   | Bounded undo stack (entries + approximate byte cost). Coalescing rules are property-tested (U1). | Very long editing sessions may lose the very first edits; this is accepted and the bound is user-visible in config. | 1–2 |
+| F6  | Undo stack grows unbounded or coalescing is incorrect | Memory exhaustion or "undo did something surprising"          | 7   | Bounded undo stack (entries + approximate byte cost). Coalescing rules are property-tested (U1). | Very long editing sessions may lose the very first edits; this is accepted and the bound is user-visible in config. | 1-2 |
 | F7  | Markdown preview renders something surprising or expensive from a crafted .md | User thinks the file contains active content; performance cliff | 5   | Pure event-based renderer from pulldown-cmark only. No HTML, no images, no network. Explicit scope contract (see 8). Time-budgeted rendering with "first N lines" cutoff + user affordance to render more. | Users may still paste weird Markdown expecting rich behavior; we never claim to be a full renderer. | 3 |
 | F8  | Theme detection fails or goes stale on a platform update | App looks wrong or fights the system setting                  | 4   | `dark-light` 2.0 as primary + manual override always available + live Windows `WM_SETTINGCHANGE` hook. Fall back to "Light" + status message. | Platform APIs can change; we treat this as a high-priority bug on any reported mismatch. | 1 |
 
@@ -484,16 +484,16 @@ New rows are added whenever a test, code review, or dogfooding session reveals a
 
 ### 13.2 Narrative Risk Mitigations (Retained & Updated)
 
-- **Editor performance on huge files** — Mitigated by designing the virtual widget from the start and having clear performance tests. Fallback: keep `TextEdit` path as a "SimpleEditor" mode for Phase 1 delivery. See performance numbers in NFR-PERF.
-- **Theme detection bit-rot on macOS/Windows** — See F7 row and the dark-light governance note above.
-- **Atomic save races on Windows** — See F1. We will research `ReplaceFile` / transactional NTFS patterns current in 2026 and implement the best portable compromise we can prove in the fault harness.
-- **OneDrive / cloud sync folders** — See F1 and F4. We will add a one-time "Using Noter with cloud-synced folders" warning dialog on first save into a known sync root, plus clear documentation.
-- **Scope creep** — The REQUIREMENTS.md non-goals list, the explicit Markdown scope contract (section 8), the mental-model impact statements, and the phase gates that require "no new features until quality bar is met" are the primary defenses. Any proposed addition must also survive the "Classic Notepad power user would this make their life better or introduce hidden state?" test.
+- **Editor performance on huge files** - Mitigated by designing the virtual widget from the start and having clear performance tests. Fallback: keep `TextEdit` path as a "SimpleEditor" mode for Phase 1 delivery. See performance numbers in NFR-PERF.
+- **Theme detection bit-rot on macOS/Windows** - See F7 row and the dark-light governance note above.
+- **Atomic save races on Windows** - See F1. We will research `ReplaceFile` / transactional NTFS patterns current in 2026 and implement the best portable compromise we can prove in the fault harness.
+- **OneDrive / cloud sync folders** - See F1 and F4. We will add a one-time "Using Noter with cloud-synced folders" warning dialog on first save into a known sync root, plus clear documentation.
+- **Scope creep** - The REQUIREMENTS.md non-goals list, the explicit Markdown scope contract (section 8), the mental-model impact statements, and the phase gates that require "no new features until quality bar is met" are the primary defenses. Any proposed addition must also survive the "Classic Notepad power user would this make their life better or introduce hidden state?" test.
 
 ## 14. Open Questions (to be closed before or during Phase 1)
 
 - Exact default font stack and whether we embed a font (increases binary size).
-- Whether the find bar should support regex in v0.1 (probably not — start with literal).
+- Whether the find bar should support regex in v0.1 (probably not - start with literal).
 - How aggressive to be with horizontal scrolling vs forcing wrap on extremely long lines.
 - Whether to persist "last used directory" separately from recent files.
 

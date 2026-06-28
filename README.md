@@ -17,7 +17,7 @@ Noter is the notepad you actually want in 2026: fast, trustworthy, boring in the
 
 Noter will never become a second VS Code, a note-taking app with accounts, or a "productivity suite."
 
-## Engineering Philosophy — How We Intend to Avoid Slopware
+## Engineering Philosophy - How We Intend to Avoid Slopware
 
 Your original pain points were very specific:
 
@@ -28,7 +28,7 @@ Your original pain points were very specific:
 
 **Is this a good idea in June 2026?**
 
-Yes — *conditionally*.
+Yes - *conditionally*.
 
 The world does not need another "I built a text editor in a weekend" project. But there is still room for a *deliberately* small, zero-compromise, reliability-obsessed plain text tool whose entire reason for existence is "I am sick of the shit the OS vendors ship and I want something I can actually trust for the next 10 years."
 
@@ -55,17 +55,26 @@ This is the bar. The planning documents exist to make it hard to lower that bar 
 
 ## Current Status
 
-This project is in the **exceptional planning phase**. All major requirements, design decisions, architecture, testing strategy, and phased roadmap have been written out in detail before any significant code was written.
+This project is in **Phase 0: planning skeleton**. The repository has a Rust binary crate, CI, formatting and lint gates, a minimal tested status output, and planning documents. It is not yet a usable text editor.
 
-A critical, professor-level review (Prof. Dr. Lena K. Voss) was performed on the initial planning corpus. The review and our responses are captured in [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
+What is currently proven:
+- `cargo fmt --all -- --check` is expected to pass.
+- `cargo clippy --all-targets --all-features -- -D warnings` is expected to pass.
+- `cargo test --all-targets --all-features` is expected to pass.
+- `cargo llvm-cov --all-targets --all-features --workspace --fail-under-lines 80` is expected to pass for the skeleton.
+
+What is not built yet:
+- No GUI window, editor widget, open/save flow, autosave, recovery, or markdown preview exists on `master`.
+- The roadmap quality gates for Phase 1 and later are design targets, not shipped capability.
+- Cross-platform behavior is CI-compiled only until real UI work lands and is manually verified.
 
 See:
-- [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md) — external critical analysis + our action plan
-- [REQUIREMENTS.md](REQUIREMENTS.md) — what must be true (now includes mental model protection and traceability)
-- [DESIGN.md](DESIGN.md) — how it will be built (deep technical + formal-ish spec + FMEA)
-- [ROADMAP.md](ROADMAP.md) — how we get there with quality gates that incorporate the review items
+- [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md) - internal critical planning review and action plan
+- [REQUIREMENTS.md](REQUIREMENTS.md) - what must be true
+- [DESIGN.md](DESIGN.md) - how the editor is intended to be built
+- [ROADMAP.md](ROADMAP.md) - shipped status versus future phases
 
-Implementation will proceed in strict phases with explicit "Definition of Done" criteria that include code quality, test coverage, and cross-platform verification. The bar has been deliberately raised by the review process.
+Implementation will proceed in strict phases with explicit quality gates that include code quality, test coverage, and cross-platform verification.
 
 ## Planned Features (High Level)
 
@@ -80,7 +89,7 @@ Implementation will proceed in strict phases with explicit "Definition of Done" 
 - Atomic safe saves + basic autosave/recovery
 - Close prompt when dirty
 
-**Phase 2–3 (Polish + 2026 QOL)**
+**Phase 2-3 (Polish + 2026 QOL)**
 - Go To Line
 - Improved search (case, whole word, live match highlighting)
 - File-changed-on-disk detection with reload prompt
@@ -120,15 +129,15 @@ Useful quality commands (these will be enforced in CI and before every phase gat
 ```bash
 cargo fmt -- --check
 cargo clippy --all-targets -- -D warnings
-cargo test
-# Coverage (once set up)
+cargo test --all-targets --all-features
+# Coverage gate used by CI
 cargo install cargo-llvm-cov
-cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+cargo llvm-cov --all-targets --all-features --workspace --fail-under-lines 80
 ```
 
 ### Release binary size (target)
 
-We aim for final stripped release binaries under ~8–12 MiB on all platforms through:
+We aim for final stripped release binaries under ~8-12 MiB on all platforms through:
 - `opt-level = "z"` or "3" + LTO + strip in `Cargo.toml` profiles
 - Careful dependency selection
 - `cargo bloat` and `cargo tree` audits
