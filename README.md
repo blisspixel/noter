@@ -71,8 +71,8 @@ See:
 - [docs/RESEARCH.md](docs/RESEARCH.md) - repository audit, ecosystem research, and decisions
 - [docs/BASELINE.md](docs/BASELINE.md) - measured M0 quality, coverage, size, and dependency baseline
 - [docs/ROADMAP.md](docs/ROADMAP.md) - milestone order, gates, metrics, and immediate backlog
-- [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) - current requirements, with M0 reconciliation still in progress
-- [docs/DESIGN.md](docs/DESIGN.md) - current technical design and FMEA, with M0 corrections still in progress
+- [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) - ratified v0.1 and v0.2 product contract
+- [docs/DESIGN.md](docs/DESIGN.md) - active architecture, trust protocols, verification strategy, and FMEA
 - [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md) - prior internal critical analysis and response
 
 No milestone is marked complete until its tests, measurements, manual sign-off, and documentation exist on the same green commit.

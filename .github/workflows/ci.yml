@@ -1,10 +1,15 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,6 +24,7 @@ jobs:
   # ---------------------------------------------------------------------------
   fmt-clippy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
@@ -41,6 +47,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         # Future: add aarch64 macos runner or specific ubuntu version when needed
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
@@ -77,6 +84,7 @@ jobs:
   # ---------------------------------------------------------------------------
   docs:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check that key planning documents exist and are not empty

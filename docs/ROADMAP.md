@@ -140,10 +140,12 @@ set, and see exactly what is implemented and what remains.
 - **Verified locally:** requirements, technical design, UX, privacy, manual
   verification, and ADR-001 through ADR-003 are reconciled with the research and
   roadmap. ADR-003 remains Proposed pending its named platform evidence.
-- **In progress:** review of the divergent remote commit and preparation for an
-  intentional safety-branch reconciliation.
-- **Planned:** intentional branch reconciliation, exact-commit GitHub CI on all
-  three operating systems, and final M0 evidence commit.
+- **Verified locally:** the divergent remote honesty commit is integrated on the
+  `m0-foundation` branch. The original local `master` pointer remains as a
+  recovery point.
+- **In progress:** exact-commit GitHub CI on all three operating systems.
+- **Planned:** address any platform CI findings and record the final M0 evidence
+  commit.
 
 **Exit evidence:**
 
@@ -419,23 +421,21 @@ silently rewriting content.
 
 These are the next tasks in dependency order:
 
-1. Capture the coherent M0 worktree on a safety branch and intentional commit.
-2. Integrate the divergent remote commit with a reviewed conflict resolution.
-3. Run local gates, publish the reconciled branch, and make exact-commit
+1. Run local gates, publish the reconciled branch, and make exact-commit
    Windows, macOS, and Linux CI green.
-4. Create the pure command and application-state reducer.
-5. Add the benchmark corpus generator and automate the M0 baseline.
-6. Close ADR-003 metadata, symlink, commit-state, and platform questions.
-7. Implement `LineEndingProfile` and the accepted mixed-EOL insertion policy.
-8. Build the complete golden-file matrix and serialization property tests.
-9. Implement the durable-write adapter behind injected I/O traits.
-10. Add pre-commit and post-commit fault injection plus mutation testing.
-11. Implement the edit transaction and selection model.
-12. Add reference-model undo and redo property tests.
-13. Implement the dirty-document lifecycle state machine.
-14. Implement versioned state-directory recovery records and crash scanning.
-15. Build the controlled child-process crash harness.
-16. Connect the proven core to the complete M4 UI.
+2. Create the pure command and application-state reducer.
+3. Add the benchmark corpus generator and automate the M0 baseline.
+4. Close ADR-003 metadata, symlink, commit-state, and platform questions.
+5. Implement `LineEndingProfile` and the accepted mixed-EOL insertion policy.
+6. Build the complete golden-file matrix and serialization property tests.
+7. Implement the durable-write adapter behind injected I/O traits.
+8. Add pre-commit and post-commit fault injection plus mutation testing.
+9. Implement the edit transaction and selection model.
+10. Add reference-model undo and redo property tests.
+11. Implement the dirty-document lifecycle state machine.
+12. Implement versioned state-directory recovery records and crash scanning.
+13. Build the controlled child-process crash harness.
+14. Connect the proven core to the complete M4 UI.
 
 The answer to "what is next" is therefore unambiguous: finish M0, then prove M1.
 Do not begin the custom editor or Markdown engine while save, undo, close, and
