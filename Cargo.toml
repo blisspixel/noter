@@ -33,7 +33,6 @@ categories = ["gui", "text-editors"]
 #
 # Phase 2–3 (polish + markdown QOL)
 #   pulldown-cmark   = "0.13"   # CommonMark parser for the preview (pure Rust). 0.13.4 current.
-#   proptest         = "1.11"   # Property-based tests for invariants (dev-dependency).
 #   tempfile         = "3.27"   # Golden tests & recovery simulation (dev-dependency).
 #
 # Future / only if justified (and after GA)
@@ -49,6 +48,7 @@ thiserror = "2.0"
 ropey = "1.6"
 
 [dev-dependencies]
+proptest = { version = "1.11", default-features = false, features = ["std"] }
 tempfile = "3.10"
 
 # =============================================================================

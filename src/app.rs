@@ -1,5 +1,5 @@
 use eframe::egui;
-use noter::core::document::{Document, LineEnding};
+use noter::core::document::Document;
 
 #[derive(Default)]
 pub struct NoterApp {
@@ -264,11 +264,7 @@ impl NoterApp {
                 ui.label(document_label);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    match self.document.line_ending {
-                        LineEnding::Lf => ui.label("LF"),
-                        LineEnding::CrLf => ui.label("CRLF"),
-                        LineEnding::Cr => ui.label("CR"),
-                    };
+                    ui.label(self.document.line_endings.status_label());
                     ui.separator();
                     ui.label("UTF-8");
                     if self.document.had_bom {

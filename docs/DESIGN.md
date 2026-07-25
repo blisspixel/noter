@@ -13,13 +13,17 @@ records own narrow irreversible choices.
 
 ## 1. Current implementation checkpoint
 
-The M0 worktree has:
+The current M1 worktree has:
 
 - a binary crate containing the egui shell;
 - a library crate containing the UI-independent document module;
 - strict UTF-8 loading with BOM and existing newline-byte preservation;
+- exact newline-free, uniform, and mixed line-ending profiles with counts,
+  deterministic dominant fallback, and edit-point insertion decisions;
+- a 19-case external golden corpus and three 512-case generated properties for
+  strict byte round-trip, classification, and insertion policy;
 - an interim same-directory write, sync, and rename save path;
-- seven document tests and 96.43 percent line coverage in that module.
+- 18 tests and 99.14 percent line coverage across the testable trust core.
 
 It does not yet have the durable replacement adapter, edit transaction model,
 dirty lifecycle, recovery, external conflict handling, complete commands,
@@ -161,7 +165,7 @@ enum LineEnding {
 
 enum LineEndingProfile {
     None { insertion: LineEnding },
-    Uniform(LineEnding),
+    Uniform { ending: LineEnding, count: usize },
     Mixed {
         counts: LineEndingCounts,
         insertion: LineEnding,
@@ -570,6 +574,20 @@ Each direct dependency records:
 - build-script, native-code, filesystem, process, and network capability;
 - debug and release binary-size delta;
 - removal or replacement strategy.
+
+M1 adds `proptest` 1.11 as a development-only dependency for shrinking
+counterexamples to byte-round-trip, line-ending, edit, and state-machine
+invariants. Default features are disabled and only `std` is enabled, excluding
+the unneeded fork, timeout, and bit-set surfaces. Its Rust requirement is below
+Noter's pinned toolchain, its license is MIT or Apache-2.0, and it adds nothing
+to release binaries. It can be removed only if an equivalent shrinking
+property-test harness replaces the required invariant suites.
+
+The addition resolves eight test-only packages, moving the cross-target lock
+graph from 325 to 333 packages. The audited feature path is only
+`proptest/std`; it does not enter the normal dependency graph. The accompanying
+product code changes moved the measured Windows release binary from 4,748,800
+to 4,749,312 bytes, remaining 4.53 MiB.
 
 CI uses the pinned Rust toolchain, locked Cargo graph, immutable action commits,
 minimum permissions, formatting, strict Clippy, cross-platform tests, coverage,

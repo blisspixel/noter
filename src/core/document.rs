@@ -5,54 +5,9 @@ use std::path::{Path, PathBuf};
 
 use crate::error::NoterError;
 
-/// The byte sequence used to terminate logical lines in a text file.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LineEnding {
-    /// Unix line feed (`\n`).
-    Lf,
-    /// Windows carriage return plus line feed (`\r\n`).
-    CrLf,
-    /// Legacy carriage return (`\r`).
-    Cr,
-}
+use super::line_endings::LineEndingProfile;
 
-impl LineEnding {
-    /// Returns the encoded line-ending sequence.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Lf => "\n",
-            Self::CrLf => "\r\n",
-            Self::Cr => "\r",
-        }
-    }
-
-    /// Returns the first detected line ending and the UTF-8 BOM length.
-    pub fn detect_from_bytes(bytes: &[u8]) -> (Self, usize) {
-        let bom_len = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-            3
-        } else {
-            0
-        };
-
-        let content = &bytes[bom_len..];
-        for (index, byte) in content.iter().enumerate() {
-            match byte {
-                b'\r' if content.get(index + 1) == Some(&b'\n') => {
-                    return (Self::CrLf, bom_len);
-                }
-                b'\r' => return (Self::Cr, bom_len),
-                b'\n' => return (Self::Lf, bom_len),
-                _ => {}
-            }
-        }
-
-        // A file without a line break has no on-disk convention to preserve.
-        #[cfg(windows)]
-        return (Self::CrLf, bom_len);
-        #[cfg(not(windows))]
-        return (Self::Lf, bom_len);
-    }
-}
+const UTF8_BOM: &[u8; 3] = b"\xEF\xBB\xBF";
 
 /// The authoritative text and file metadata for one open document.
 pub struct Document {
@@ -60,8 +15,8 @@ pub struct Document {
     pub rope: Rope,
     /// Current save path, or `None` for an untitled document.
     pub path: Option<PathBuf>,
-    /// Detected or user-selected line-ending convention.
-    pub line_ending: LineEnding,
+    /// Exact detected line-ending profile and insertion fallback.
+    pub line_endings: LineEndingProfile,
     /// Whether the loaded file began with a UTF-8 byte-order mark.
     pub had_bom: bool,
     /// Whether in-memory text differs from the last successful save.
@@ -74,10 +29,7 @@ impl Document {
         Self {
             rope: Rope::new(),
             path: None,
-            #[cfg(windows)]
-            line_ending: LineEnding::CrLf,
-            #[cfg(not(windows))]
-            line_ending: LineEnding::Lf,
+            line_endings: LineEndingProfile::detect(""),
             had_bom: false,
             is_dirty: false,
         }
@@ -106,14 +58,18 @@ impl Document {
     /// Returns [`NoterError::InvalidUtf8`] when the bytes after an optional UTF-8
     /// byte-order mark are not valid UTF-8.
     pub fn from_bytes(bytes: &[u8], path: Option<PathBuf>) -> Result<Self, NoterError> {
-        let (line_ending, bom_len) = LineEnding::detect_from_bytes(bytes);
+        let bom_len = if bytes.starts_with(UTF8_BOM) {
+            UTF8_BOM.len()
+        } else {
+            0
+        };
         let had_bom = bom_len > 0;
         let text = std::str::from_utf8(&bytes[bom_len..])?;
 
         Ok(Self {
             rope: Rope::from_str(text),
             path,
-            line_ending,
+            line_endings: LineEndingProfile::detect(text),
             had_bom,
             is_dirty: false,
         })
@@ -175,33 +131,19 @@ impl Default for Document {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
+    use crate::core::line_endings::{LineEnding, LineEndingCounts};
+    use tempfile::{NamedTempFile, tempdir};
 
     #[test]
-    fn detects_line_endings_and_bom() {
-        assert_eq!(
-            LineEnding::detect_from_bytes(b"hello\nworld"),
-            (LineEnding::Lf, 0)
-        );
-        assert_eq!(
-            LineEnding::detect_from_bytes(b"hello\r\nworld"),
-            (LineEnding::CrLf, 0)
-        );
-        assert_eq!(
-            LineEnding::detect_from_bytes(b"\xEF\xBB\xBFhello\rworld"),
-            (LineEnding::Cr, 3)
-        );
-    }
+    fn default_document_matches_new_document() {
+        let default = Document::default();
+        let new = Document::new();
 
-    #[test]
-    fn line_endings_encode_expected_sequences() {
-        for (line_ending, expected) in [
-            (LineEnding::Lf, "\n"),
-            (LineEnding::CrLf, "\r\n"),
-            (LineEnding::Cr, "\r"),
-        ] {
-            assert_eq!(line_ending.as_str(), expected);
-        }
+        assert_eq!(default.rope, new.rope);
+        assert_eq!(default.path, new.path);
+        assert_eq!(default.line_endings, new.line_endings);
+        assert_eq!(default.had_bom, new.had_bom);
+        assert_eq!(default.is_dirty, new.is_dirty);
     }
 
     #[test]
@@ -214,7 +156,13 @@ mod tests {
 
         assert_eq!(document.path.as_deref(), Some(file.path()));
         assert_eq!(document.rope.to_string(), "first\nsecond");
-        assert_eq!(document.line_ending, LineEnding::Lf);
+        assert_eq!(
+            document.line_endings,
+            LineEndingProfile::Uniform {
+                ending: LineEnding::Lf,
+                count: 1
+            }
+        );
         Ok(())
     }
 
@@ -223,7 +171,13 @@ mod tests {
         let original = b"\xEF\xBB\xBFhello\r\nworld\r\n";
         let document = Document::from_bytes(original, None)?;
 
-        assert_eq!(document.line_ending, LineEnding::CrLf);
+        assert_eq!(
+            document.line_endings,
+            LineEndingProfile::Uniform {
+                ending: LineEnding::CrLf,
+                count: 2
+            }
+        );
         assert!(document.had_bom);
         assert_eq!(original.as_slice(), document.to_bytes());
         Ok(())
@@ -236,6 +190,26 @@ mod tests {
             .expect("invalid UTF-8 must produce an error");
 
         assert!(matches!(error, NoterError::InvalidUtf8(_)));
+    }
+
+    #[test]
+    fn mixed_line_endings_are_counted_without_normalization() -> Result<(), NoterError> {
+        let original = b"one\ntwo\r\nthree\rfour\r\n";
+        let document = Document::from_bytes(original, None)?;
+
+        assert_eq!(
+            document.line_endings,
+            LineEndingProfile::Mixed {
+                counts: LineEndingCounts {
+                    lf: 1,
+                    crlf: 2,
+                    cr: 1
+                },
+                insertion: LineEnding::CrLf
+            }
+        );
+        assert_eq!(document.to_bytes(), original);
+        Ok(())
     }
 
     #[test]
@@ -267,6 +241,28 @@ mod tests {
         File::open(&path)?.read_to_end(&mut saved)?;
         assert!(!document.is_dirty);
         assert_eq!(saved, document.to_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_replace_removes_temporary_and_preserves_dirty_state() -> Result<(), NoterError> {
+        let parent = tempdir()?;
+        let destination = parent.path().join("destination");
+        std::fs::create_dir(&destination)?;
+        let temporary = destination.with_extension(format!("tmp.{}", std::process::id()));
+        let mut document = Document::new();
+        document.path = Some(destination.clone());
+        document.rope = Rope::from_str("must remain dirty");
+        document.is_dirty = true;
+
+        let error = document
+            .save_atomic()
+            .expect_err("a file cannot replace an existing directory");
+
+        assert!(matches!(error, NoterError::AtomicRenameFailed(_)));
+        assert!(destination.is_dir());
+        assert!(!temporary.exists());
+        assert!(document.is_dirty);
         Ok(())
     }
 }

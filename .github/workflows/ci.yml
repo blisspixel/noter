@@ -70,7 +70,7 @@ jobs:
         run: >
           cargo llvm-cov --locked --all-targets --all-features --workspace
           --ignore-filename-regex 'src[/\\](app|main)\.rs$'
-          --fail-under-lines 80
+          --fail-under-lines 90
           --lcov --output-path lcov.info
       - name: Upload coverage artifact
         if: matrix.os == 'ubuntu-latest'

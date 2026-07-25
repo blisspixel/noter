@@ -226,6 +226,13 @@ Coverage must be enforced, not merely uploaded. `cargo-llvm-cov` supports
 must be supplemented by property, fault-injection, mutation, UI semantic, and
 manual platform tests.
 
+For M1 invariant testing, [`proptest` 1.11](https://docs.rs/proptest/1.11.0/proptest/)
+provides generated cases, shrinking, and composable strategies. Its published
+features show that `std` can be selected without the default fork, timeout, and
+bit-set features, and its Rust requirement is below Noter's pinned 1.97.1
+toolchain. The M1 suite therefore uses it only as a narrowly configured
+development dependency; it does not enter release artifacts.
+
 For releases, use a current `cargo-dist` configuration, generate an SBOM and
 checksums, pin GitHub Actions by immutable commit SHA, minimize token permissions,
 and attach provenance. Current research found cargo-dist 0.32.0, so the existing

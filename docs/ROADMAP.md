@@ -174,6 +174,24 @@ set, and see exactly what is implemented and what remains.
 **Outcome:** Loading and saving are boring, strict, fault-tested, and independent
 of the GUI.
 
+**Checkpoint on 2026-07-25:**
+
+- **Verified locally:** newline-free, uniform, and mixed profiles count LF,
+  CRLF, and CR without changing authoritative text. Dominant ties use first
+  occurrence, and mixed insertion prefers preceding, following, then fallback.
+- **Verified locally:** the insertion API rejects out-of-range positions and
+  positions that split an existing CRLF sequence.
+- **Verified locally:** 19 golden byte cases cover BOM, all EOL forms, Unicode,
+  embedded BOM, NUL, and invalid UTF-8. Three properties each run 512 generated
+  cases for strict byte round-trip, exact classification, and insertion policy.
+- **Verified locally:** all 18 tests and strict Clippy pass. Trust-core line
+  coverage is 99.14 percent with every core function executed; CI now enforces
+  the M1 trust-kernel floor of 90 percent.
+- **Measured:** the test harness adds eight lock-graph packages. The release
+  binary remains 4.53 MiB at 4,749,312 bytes.
+- **Next:** obtain exact-commit cross-platform CI, then close ADR-003 and build
+  the injected durable-write adapter and failure matrix.
+
 **Work:**
 
 - Define `DocumentId`, `Revision`, `Encoding`, `Bom`, `LineEndingPolicy`,

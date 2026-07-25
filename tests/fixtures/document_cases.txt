@@ -1,0 +1,20 @@
+# name|hex bytes|result|bom|profile|lf|crlf|cr|fallback
+empty||valid|false|none|0|0|0|platform
+ascii_no_eol|706c61696e2074657874|valid|false|none|0|0|0|platform
+bom_only|efbbbf|valid|true|none|0|0|0|platform
+lf|6f6e650a74776f0a|valid|false|uniform|2|0|0|lf
+crlf|6f6e650d0a74776f0d0a|valid|false|uniform|0|2|0|crlf
+cr|6f6e650d74776f0d|valid|false|uniform|0|0|2|cr
+mixed_tie_lf_first|610a620d0a630d64|valid|false|mixed|1|1|1|lf
+mixed_crlf_dominant|610d620d0a630d0a640a|valid|false|mixed|1|2|1|crlf
+trailing_newline|610a|valid|false|uniform|1|0|0|lf
+newline_only|0d0a0a0d|valid|false|mixed|1|1|1|crlf
+emoji|f09f98800a|valid|false|uniform|1|0|0|lf
+cjk|e4b8ade696870d0a|valid|false|uniform|0|1|0|crlf
+combining_mark|65cc81|valid|false|none|0|0|0|platform
+rtl|d7a9d79cd795d79d0a|valid|false|uniform|1|0|0|lf
+embedded_bom|61efbbbf62|valid|false|none|0|0|0|platform
+double_bom|efbbbfefbbbf|valid|true|none|0|0|0|platform
+nul|610062|valid|false|none|0|0|0|platform
+invalid_utf8|61ff|invalid|-|-|-|-|-|-
+bom_then_invalid|efbbbfff|invalid|-|-|-|-|-|-

@@ -150,7 +150,7 @@ cargo test --locked --all-targets --all-features
 cargo install cargo-llvm-cov --locked
 cargo llvm-cov --locked --all-targets --all-features --workspace \
   --ignore-filename-regex 'src[/\\](app|main)\.rs$' \
-  --fail-under-lines 80 --summary-only
+  --fail-under-lines 90 --summary-only
 ```
 
 ### Release binary size (target)
