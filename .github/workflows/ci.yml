@@ -75,6 +75,7 @@ jobs:
           test -s REQUIREMENTS.md
           test -s DESIGN.md
           test -s ROADMAP.md
+          test -s PRIVACY.md
           echo "All core planning documents present and non-empty."
 
   # ---------------------------------------------------------------------------

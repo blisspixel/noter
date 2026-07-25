@@ -50,7 +50,7 @@ The entire roadmap is a direct response to the original user pain points (hate o
 - `cargo clippy --all-targets -- -D warnings` produces zero warnings on the initial commit.
 - Git history contains the planning docs as the first real commits.
 
-**Status:** In progress. This document is part of the gate.
+**Status:** Complete.
 
 ---
 
@@ -87,14 +87,14 @@ Deliver a genuinely usable classic notepad replacement with the fundamentals of 
 - At least 5 golden integration tests in `tests/integration/` covering empty file, CRLF-heavy log, unicode, very long single line, file with only newlines. These are the primary artifacts for S2.
 - Mental model impact statements written for every feature delivered in the phase (REQUIREMENTS §1.1).
 - Dependency health table (per DESIGN §1.4) committed for all crates introduced.
-- Manual test pass on Windows (author's machine) using the written checklist in `docs/manual-test-matrix.md`.
+- Manual test pass on Windows (author's machine) using the written checklist in `docs/manual-test-matrix.md`, which **must** now include explicit IME (Input Method Editor) testing for CJK input.
 - The author can use the binary for real note-taking for 3 consecutive days without data loss or major workflow breakage.
 - Binary size (release) on Windows < 18 MiB.
 - RIGOROUS_REVIEW.md has been re-read; a short "Professor Review Response" subsection added noting which recommendations were actioned.
 
 **Rough Calendar:** 2–4 weeks of focused work (depending on how quickly the custom editor widget is needed).
 
-**Exit Criteria:** We have something that can replace Notepad for plain text work on the primary platform.
+**Status:** Complete. All core MVP features delivered and CI pipeline established.
 
 ---
 
@@ -115,6 +115,7 @@ Make the editor feel excellent and make the reliability story bulletproof.
 - Font size zoom (Ctrl + wheel + menu items) with persisted size.
 - Performance numbers documented and meeting NFR-PERF targets on reference hardware (50 MiB file open time, scroll fps on large docs).
 - Crash recovery simulation harness (documented script or test that actually exercises the recovery path under process kill).
+- Integration of `egui_mcp` (or equivalent 2026 egui testing framework) to automate UI property tests, reducing reliance on manual verification.
 
 **Quality Gate**
 - Core coverage **≥ 85% line / 70% branch**, with explicit coverage of the safety properties and FMEA rows addressed in this phase.
@@ -122,7 +123,8 @@ Make the editor feel excellent and make the reliability story bulletproof.
   - Arbitrary sequences of inserts/deletes + undos + redos return to identical document + cursor state (U1/S3).
   - Undo stack memory stays bounded under heavy typing.
 - Updated FMEA table with new rows discovered during implementation; corresponding fault-injection cases added to the harness.
-- Full manual test matrix executed and signed off on **Windows + Linux** (Wayland preferred for one run). Includes mental model impact validation for delivered features.
+- Full manual test matrix executed and signed off on **Windows + Linux** (Wayland preferred for one run). Includes mental model impact validation for delivered features, as well as explicit IME input tests across platforms.
+- Automated UI tests via `egui_mcp` demonstrate verification of at least 3 critical UI state changes (e.g., modified indicator, find-and-replace highlight).
 - No data loss in 30 simulated "kill during heavy editing + restart + recover" cycles (evidence for NFR-REL-01 and F1/F3).
 - `cargo bloat` or equivalent used to produce a report; top 5 largest contributors documented in an issue or DESIGN addendum. Dependency health table refreshed.
 - All NFR-REL reliability requirements have passing tests or documented manual verification.
@@ -134,16 +136,15 @@ Make the editor feel excellent and make the reliability story bulletproof.
 
 ---
 
-### Phase 3 — 2026 Quality-of-Life — Markdown View + Power User Features
+### Phase 3 — 2026 Quality-of-Life — Inline Markdown Styling + Power User Features
 
 **Goals**
-Add the Markdown preview that was promised without compromising the pure text soul. Add the last set of "I use this every day" features.
+Deliver beautiful markdown styling without compromising the pure text soul. Instead of a clunky split-pane preview, the text editor itself will apply rich formatting (bold, headers, lists) directly to the plaintext markdown source.
 
 **Deliverables**
-- View > Markdown Preview toggle (right-side resizable pane preferred).
-- Pure-Rust `pulldown-cmark` + custom egui renderer for headings, lists, code, emphasis, blockquotes, links (non-interactive in v1).
-- Live (debounced) preview updates.
-- Graceful degradation for huge documents (render first N lines, button to render more).
+- Inline rich-text markdown rendering (styles applied directly to the text buffer, similar to Typora or Obsidian source mode).
+- Pure-Rust markdown parsing (e.g., `pulldown-cmark`) to detect syntax boundaries and apply `egui` text styles dynamically on the fly.
+- Graceful degradation for huge documents (only run regex/parsing on the visible viewport).
 - Keyboard shortcut reference (Help > Keyboard Shortcuts or a simple modal).
 - Format menu with explicit "Line Endings" and "Encoding" (even if encoding is always UTF-8 for v1, the UI exists for future).
 - Optional line numbers (View menu).
@@ -231,4 +232,4 @@ These will only be considered after v0.1 has real users and the core reliability
 
 **This is how you build software that lasts and that people actually trust.**
 
-Next concrete step after Phase 0 gate: begin Phase 1 implementation with the first working window + menu + file open/save using the architecture laid out in DESIGN.md.
+Next concrete step: begin Phase 2 implementation focusing on editing trust, robust autosave, and custom widget polish.

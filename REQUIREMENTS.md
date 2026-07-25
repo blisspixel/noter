@@ -1,4 +1,4 @@
-# Noter Requirements Specification
+# Noter Product Requirements Document (PRD)
 
 **Version:** 0.1 (Planning Baseline)  
 **Date:** June 2026  

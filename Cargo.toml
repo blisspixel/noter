@@ -43,6 +43,20 @@ categories = ["gui", "text-editors", "command-line-utilities"]  # "command-line-
 # (b) `cargo tree -i <name>` audit, (c) binary size impact measurement at the phase gate.
 
 [dependencies]
+egui = "0.34"
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+rfd = "0.17"
+directories = "6.0"
+serde = { version = "1.0", features = ["derive"] }
+toml = "1.1"
+thiserror = "2.0"
+ropey = "1.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "time"] }
+dark-light = "2.0"
+
+[dev-dependencies]
+tempfile = "3.10"
 
 # =============================================================================
 # Profiles tuned for a small, fast, reliable GUI tool

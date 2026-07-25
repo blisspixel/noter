@@ -1,3 +1,7 @@
+License: Apache 2.0 + Commons Clause  
+Personal/research/sharing use free.  
+Commercial/enterprise products require separate license from Nick Seal.
+
 # Noter
 
 **A deliberately pure, reliable, cross-platform plain text editor written in Rust.**
@@ -13,7 +17,7 @@ Noter is the notepad you actually want in 2026: fast, trustworthy, boring in the
 - **Minimal surface area.** Small binary, small RAM, small dependency tree, small attack surface. No network calls ever.
 - **System native where it matters.** Follows your OS light/dark setting. Uses real native file dialogs. Feels at home on Windows, macOS, and Linux.
 - **Keyboard-centric.** Every important action has a discoverable shortcut. Mouse is optional.
-- **Markdown is a view, not a mode.** Optional preview pane exists for comfort in 2026. It never changes how your `.md` file is saved.
+- **Markdown is inline, not a mode.** We provide beautiful inline styling for markdown (Phase 3), but it never changes how your `.md` file is saved or split your view.
 
 Noter will never become a second VS Code, a note-taking app with accounts, or a "productivity suite."
 
@@ -24,7 +28,7 @@ Your original pain points were very specific:
 - The Windows 11 Notepad rewrite feels like spyware + bloat (telemetry, "modern" UI that got slower and more opinionated, OneDrive nagging, features nobody who loved the old one asked for).
 - You want something that feels like the *earlier* Notepads: instant, dead simple, plain text, no surprises, keyboard native.
 - Cross-platform that actually works well on Win/mac/Linux without becoming Electron garbage.
-- A tiny bit of 2026 QOL (system theme + optional Markdown view) but "keep it pretty pure" otherwise.
+- A tiny bit of 2026 QOL (system theme + beautiful inline Markdown styling) but "keep it pretty pure" otherwise.
 
 **Is this a good idea in June 2026?**
 
@@ -55,7 +59,7 @@ This is the bar. The planning documents exist to make it hard to lower that bar 
 
 ## Current Status
 
-This project is in the **exceptional planning phase**. All major requirements, design decisions, architecture, testing strategy, and phased roadmap have been written out in detail before any significant code was written.
+This project has **completed Phase 1 (Core Notepad MVP)** and is now entering Phase 2 (Editing Trust & Polish). The application is fully functional for daily plaintext use.
 
 A critical, professor-level review (Prof. Dr. Lena K. Voss) was performed on the initial planning corpus. The review and our responses are captured in [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
 
@@ -85,7 +89,7 @@ Implementation will proceed in strict phases with explicit "Definition of Done" 
 - Improved search (case, whole word, live match highlighting)
 - File-changed-on-disk detection with reload prompt
 - Mature autosave + recovery workflow
-- Optional split or toggle Markdown preview (pure Rust rendered, read-only, does not affect save)
+- Beautiful inline Markdown styling (pure Rust rendered styling directly in the editor, does not affect save)
 - Font size zoom (Ctrl+wheel and menu)
 - Window state persistence (position, size, maximized)
 

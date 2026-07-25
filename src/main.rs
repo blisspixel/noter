@@ -10,21 +10,30 @@
 //! - System light/dark theme + optional Markdown preview as the only 2026 QOL additions.
 //! - Reliability (atomic saves, recovery, line-ending fidelity) is the #1 feature.
 
-fn main() {
-    // In Phase 0 this is intentionally just a marker.
-    // Real implementation will use eframe::run_native(...) with a NoterApp.
-    //
-    // Planned structure (see DESIGN.md):
-    //   - src/app.rs          → NoterApp implementing eframe::App
-    //   - src/core/*          → Document, Editor, Undo, Recovery (zero egui knowledge)
-    //   - src/ui/*            → egui widgets, menu, find bar, status, markdown preview
-    //   - src/platform/*      → theme detection, shortcut mapping
-    //
-    // Every commit that touches main must keep `cargo fmt -- --check` and
-    // `cargo clippy --all-targets -- -D warnings` completely clean.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-    println!("Noter (planning skeleton)");
-    println!("Version: {}", env!("CARGO_PKG_VERSION"));
-    println!("See README.md for build instructions and current status.");
-    println!("All planning documents live in the repo root and are part of the product.");
+pub mod core;
+pub mod error;
+mod app;
+
+use app::NoterApp;
+
+fn main() -> eframe::Result {
+    // Initialize tracing
+    tracing_subscriber::fmt::init();
+
+    let options = eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_inner_size([900.0, 700.0])
+            .with_min_inner_size([300.0, 200.0])
+            .with_transparent(false), // Disable transparency to prevent DWM choppiness
+        ..Default::default()
+    };
+    
+    eframe::run_native(
+        "Noter",
+        options,
+        Box::new(|cc| Ok(Box::new(NoterApp::new(cc)))),
+    )
 }
+

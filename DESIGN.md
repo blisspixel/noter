@@ -1,4 +1,4 @@
-# Noter Design Document
+# Noter Technical Design Document
 
 **Deep technical design for a high-quality, pure, reliable 2026 cross-platform notepad.**
 
@@ -24,7 +24,9 @@ We chose `eframe` (the official egui application framework) + `egui` as the sole
 
 **Trade-offs accepted:**
 - We must implement (or carefully wrap) our own multi-line virtualized text editor widget. egui's `TextEdit` is convenient for prototypes but will eventually be insufficient for 100k+ line files and fine-grained undo.
-- Markdown preview will require a custom renderer (see section 8). It will be "good enough" rather than pixel-perfect beautiful.
+- ### 6.2 Inline Markdown Styling (Phase 3)
+We will NOT use a split-pane HTML webview. That violates the purity mandate.
+Instead, we will parse the plaintext buffer using `pulldown-cmark` (or a lightweight regex highlighter) and dynamically apply `egui` rich-text styles (bold, larger fonts for headings, colors for links) directly to the plaintext characters in the editor view itself. The file remains 100% pure text, but the user gets a beautiful "rich text" experience while editing.
 - Native menu bar on macOS is slightly more work (egui can do global menus or we can use platform-specific code via `objc2` / `windows` crate later if needed; start with in-window top panel for simplicity and consistency).
 
 **Considered & Rejected Alternatives (recorded for posterity):**
@@ -46,6 +48,13 @@ Reasons (nerd consensus):
 - We will re-evaluate ropey 2.0 (or its GA successor) only after v0.1 and only if it demonstrates superior reliability characteristics in our own test harness.
 
 We will wrap it in our own `Document` type rather than leaking `Rope` everywhere. This also gives us an abstraction seam if we ever need to swap the rope implementation.
+
+**Byte-to-Char Indexing Strategy (Crucial for 1.x):**
+Because `ropey 1.x` uses character-based indexing while `egui` and many standard APIs use byte-based indexing, we are exposed to severe Unicode boundary bugs (the exact issue Ropey 2.0 fixes). 
+Our `EditorWidget` and `Document` translation layer must explicitly isolate this:
+- All external APIs (egui events, OS clipboards) speak strictly in byte offsets.
+- Only the very innermost boundary of `Document` is allowed to translate a byte offset to a `ropey` char index using `rope.byte_to_char()`.
+- We will write property tests that throw arbitrary combining characters (ZWJ, emoji, CJK) at the editor and verify that byte-to-char-to-byte roundtrips never panic or slice strings midway through a codepoint.
 
 ### 1.3 Other Core Crates (June 2026 GA versions, introduced by phase)
 
@@ -407,7 +416,7 @@ Never use `panic!` or `unwrap` to communicate user errors.
    - Line ending roundtrips for all three styles + BOM combinations.
    - Config serialization is stable and roundtrippable.
 3. **Golden / integration tests** (in `tests/integration/`) — real small files with known tricky content. We assert that `Document::from_bytes(...).to_bytes()` produces byte-identical output, and that atomic save produces the expected file.
-4. **UI smoke tests** — limited. egui has some testing support via `egui::Context` in a headless way or by recording frames. For v1 we will rely on "the app starts and the main widget renders without panic" + extensive manual testing.
+4. **UI smoke tests & Automated UI Testing** — By Phase 2, we will integrate the new 2026 `egui_mcp` inspection protocol. Instead of relying solely on manual testing, we will write programmatic tests that inspect the live UI tree (e.g., verifying the "Modified" flag appears in the status bar without manual clicking). For v1, we rely on "the app starts and renders" + extensive manual testing.
 5. **Crash & recovery simulation** — scripts or test harnesses that write an autosave, then corrupt the main process state, then launch a fresh `noter` binary (or call the recovery scanner directly) and assert the content is offered.
 
 ### 11.2 Coverage Target
@@ -479,6 +488,7 @@ In response to the critical review (RIGOROUS_REVIEW.md §3.1 and §4.2), we main
 | F6  | Undo stack grows unbounded or coalescing is incorrect | Memory exhaustion or "undo did something surprising"          | 7   | Bounded undo stack (entries + approximate byte cost). Coalescing rules are property-tested (U1). | Very long editing sessions may lose the very first edits; this is accepted and the bound is user-visible in config. | 1–2 |
 | F7  | Markdown preview renders something surprising or expensive from a crafted .md | User thinks the file contains active content; performance cliff | 5   | Pure event-based renderer from pulldown-cmark only. No HTML, no images, no network. Explicit scope contract (see 8). Time-budgeted rendering with "first N lines" cutoff + user affordance to render more. | Users may still paste weird Markdown expecting rich behavior; we never claim to be a full renderer. | 3 |
 | F8  | Theme detection fails or goes stale on a platform update | App looks wrong or fights the system setting                  | 4   | `dark-light` 2.0 as primary + manual override always available + live Windows `WM_SETTINGCHANGE` hook. Fall back to "Light" + status message. | Platform APIs can change; we treat this as a high-priority bug on any reported mismatch. | 1 |
+| F9  | IME (Input Method Editor) input fails, crashes, or corrupts text during composition | User typing in CJK/other languages loses text or crashes the app | 9 | Explicit manual test pass using IME on Windows and macOS. Leverage latest `egui` IME improvements. Automated tests via `egui_mcp` simulating complex input events if possible. | IME state machines are notoriously platform-dependent and brittle; regressions are common. | 1–2 |
 
 New rows are added whenever a test, code review, or dogfooding session reveals a mode not previously considered. The table is the single source of truth for "what can still go wrong and why we accept it."
 
