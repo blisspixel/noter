@@ -31,8 +31,10 @@ The current M1 worktree has:
   content fingerprint, length, hard-link count, and modification stamp;
 - a narrow internal platform crate that preserves the main crate's unsafe-code
   prohibition while querying preferred and reduced Windows file identities;
+- 128-bit random, exclusive, owner-tracked sibling files with bounded collision
+  handling, standard file synchronization, and identity-safe cleanup;
 - an interim same-directory write, sync, and rename save path;
-- 47 Windows-local tests and 96.20 percent line coverage across the expanded
+- 57 Windows-local tests and 95.16 percent line coverage across the expanded
   workspace trust kernel.
 
 It does not yet have the durable replacement adapter, edit transaction model,
@@ -648,6 +650,18 @@ identity, detects an all-zero unsupported ID, and labels the 64-bit fallback as
 reduced. The fallback is never silently represented as preferred. This internal
 member adds one lock entry but no new external package, bringing the graph to
 338 packages.
+
+M1 directly uses `getrandom` 0.4 only to fill the 16-byte private sibling-name
+nonce from the operating system's preferred random source. No optional features
+are enabled. The crate is MIT or Apache-2.0, declares Rust 1.85, and was already
+present at version 0.4.3 through the development graph, so direct use adds no
+lock entry or duplicate. It has no network capability; its intended capability
+is narrowly the operating-system entropy interface. Random-source errors and
+partial fills are terminal before file creation. The 2026-07-25 RustSec audit
+of the 338-package graph is clean. With the new path still unreachable from the
+GUI, the stripped Windows release remains 4,749,312 bytes. The dependency can
+be removed only if an equivalent operating-system random API preserves the
+128-bit naming and injected-failure tests.
 
 CI uses the pinned Rust toolchain, locked Cargo graph, immutable action commits,
 minimum permissions, formatting, strict Clippy, cross-platform tests, coverage,

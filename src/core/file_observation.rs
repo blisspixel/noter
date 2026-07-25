@@ -144,7 +144,7 @@ fn non_regular_state(metadata: &Metadata) -> Option<TargetState> {
 }
 
 #[cfg(windows)]
-fn is_final_link(metadata: &Metadata) -> bool {
+pub(crate) fn is_final_link(metadata: &Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
 
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
@@ -154,7 +154,7 @@ fn is_final_link(metadata: &Metadata) -> bool {
 }
 
 #[cfg(not(windows))]
-fn is_final_link(metadata: &Metadata) -> bool {
+pub(crate) fn is_final_link(metadata: &Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 

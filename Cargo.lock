@@ -1367,6 +1367,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "eframe",
+ "getrandom 0.4.3",
  "noter-platform",
  "proptest",
  "rfd",

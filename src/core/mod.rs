@@ -4,6 +4,8 @@
 pub mod document;
 /// Stable destination classification, identity, and content observations.
 pub mod file_observation;
+/// Production filesystem storage primitives.
+pub mod fs_storage;
 /// Exact line-ending classification and insertion policy.
 pub mod line_endings;
 /// Monotonic document revision values.

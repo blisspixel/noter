@@ -173,4 +173,6 @@ matrix at commit `0edc342`. BLAKE3-256 slice and streaming fingerprints are
 implemented with reference-vector and read-failure tests. Production file
 identity observations now prefer 128-bit Windows IDs, label reduced fallbacks,
 detect hard links, hash an open handle, and refuse final links. Replacement
-adapters and the named platform evidence remain required before M1 is Verified.
+staging now uses 128-bit random exclusive siblings, exact writes and sync, and
+identity-safe cleanup. Metadata transfer, commit operations, complete adapters,
+and the named platform evidence remain required before M1 is Verified.

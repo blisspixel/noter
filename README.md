@@ -84,9 +84,12 @@ and conflict fingerprints now use the official BLAKE3-256 implementation with
 both in-memory and streaming APIs. That digest slice is verified at commit
 `613cbcd` in [GitHub Actions run 30178217482](https://github.com/blisspixel/noter/actions/runs/30178217482).
 Stable open-handle identity, hard-link counts, streamed content observations,
-and final-link refusal are implemented locally. Production replacement adapters
-and their metadata and crash fixtures are still in progress, so the GUI remains
-a prototype rather than a safe daily editor.
+and final-link refusal are verified at commit `73413a8` in
+[GitHub Actions run 30178728784](https://github.com/blisspixel/noter/actions/runs/30178728784).
+The next local slice creates 128-bit random, exclusive, same-directory siblings
+and verifies ownership before cleanup. Production metadata and replacement
+operations and their crash fixtures are still in progress, so the GUI remains a
+prototype rather than a safe daily editor.
 
 A structured adversarial design review was performed on the initial planning corpus. The review and our responses are captured in [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
 

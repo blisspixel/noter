@@ -212,18 +212,27 @@ of the GUI.
   by-handle queries are isolated behind a safe internal crate and documented
   safety contracts. Preferred 128-bit IDs and labeled reduced fallbacks have
   deterministic tests.
-- **Verified locally:** all 47 Windows-local tests and strict workspace Clippy
-  pass. Workspace trust-kernel line coverage is 96.20 percent; CI enforces the
+- **Verified in CI:** file-observation evidence commit `73413a8` passed Windows,
+  macOS, Linux, strict workspace lint, rustdoc, documentation, and the 90 percent
+  coverage gate in
+  [GitHub Actions run 30178728784](https://github.com/blisspixel/noter/actions/runs/30178728784).
+- **Verified locally:** exclusive siblings use 128 bits from the operating-system
+  random source, create-new semantics, and a bounded collision loop. Tests cover
+  collisions, random failure, owner-only Unix staging, exact writes and sync,
+  drop and explicit cleanup, missing artifacts, and path replacement. Cleanup
+  refuses to delete a different file that acquired the random path.
+- **Verified locally:** all 57 Windows-local tests and strict workspace Clippy
+  pass. Workspace trust-kernel line coverage is 95.16 percent; CI enforces the
   M1 floor of 90 percent.
 - **Measured:** the property harness adds eight test-only lock entries and the
   digest adds four runtime lock entries, bringing the cross-target graph to
   337 packages. The internal platform workspace member brings the graph to
-  338 without adding an external package. The currently dead-stripped path leaves the release
-  binary at 4.53 MiB and 4,749,312 bytes; the adapter integration will be
-  measured again.
-- **Next:** implement unpredictable exclusive sibling creation, metadata
-  transfer, synchronization, cleanup, and commit operations behind the accepted
-  ADR-003 `Storage` boundary.
+  338 without adding an external package. Direct use of the already-resolved
+  `getrandom` package adds no lock entry. The currently dead-stripped path
+  leaves the release binary at 4.53 MiB and 4,749,312 bytes; the adapter
+  integration will be measured again.
+- **Next:** implement metadata transfer and platform commit operations, then
+  connect these proven primitives to the accepted ADR-003 `Storage` boundary.
 
 **Work:**
 

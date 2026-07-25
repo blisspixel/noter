@@ -302,6 +302,22 @@ open handle, checks stable metadata around the read, and reopens the final path
 before accepting the result. Final links and Windows reparse points are
 classified without following them.
 
+For private sibling names, [`getrandom::fill`](https://docs.rs/getrandom/0.4.3/getrandom/fn.fill.html)
+uses the operating system's preferred random source and reports every failure,
+including a partial fill. Noter requests 16 bytes per candidate, hex-encodes all
+128 bits, and combines that unpredictable name with `create_new`. Randomness is
+not treated as exclusivity: deterministic tests force a collision and prove the
+existing file is untouched before the adapter retries. Repeated collisions are
+bounded, and a random-source error creates no artifact.
+
+The temporary file records identity from its original open handle. Both
+explicit cleanup and best-effort drop cleanup revalidate that identity before
+removing the path, so an external replacement is not deleted as if Noter still
+owned it. Unix siblings begin at mode 0600; final new-file mode and inherited
+metadata remain a separate pre-commit policy step. Direct `getrandom` use adds
+no lock entry because the exact version was already present, and dead-code
+elimination leaves the current release binary unchanged.
+
 For releases, use a current `cargo-dist` configuration, generate an SBOM and
 checksums, pin GitHub Actions by immutable commit SHA, minimize token permissions,
 and attach provenance. Current research found cargo-dist 0.32.0, so the existing
