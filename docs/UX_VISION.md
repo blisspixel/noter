@@ -31,5 +31,7 @@ Exceptional UX means the user *never has to think about saving*.
 * **Bulletproof Autosave:** Every single keystroke is captured. If your computer loses power, or Windows forces an update and kills Noter, the exact state of your document—down to where your cursor was blinking—is waiting for you when you reopen it.
 * **Frictionless Exit:** When you hit the `X` button, Noter just closes. If you had unsaved work, it quietly saves it to a local cache and restores it next time. You never get yelled at by a "Do you want to save?" dialog unless you explicitly try to discard a file.
 
-## Summary
+## Summary: The "Slam Dunk" Goal
 The goal for 2026 is **Hyper-Competence**. Noter won't have AI sidebars, floating widgets, or workspaces. Its UX will be exceptional because it will be the fastest, most reliable, most beautifully rendered plain-text canvas on your machine.
+
+The ultimate test of Noter's UX is trust and responsiveness. It must be so responsive and polished that it completely gets out of your way. The choice between bloated spyware slop and Noter must be an absolute slam dunk.

@@ -9,6 +9,11 @@ Noter is the notepad you actually want in 2026: fast, trustworthy, boring in the
 
 > "I just want to open a file, edit text, and save it without drama, across every machine I use."
 
+## The "Slam Dunk" Goal
+
+The choice between modern bloated spyware slop and Noter must be an absolute slam dunk.
+When you open Noter, it shouldn't just feel "okay for a hobby app"—it must feel like holding a perfectly balanced, professionally machined tool. It opens instantly. The typography is stunning. The scrolling is buttery smooth. And you instinctively know, without even thinking about it, that this app is never going to phone home, nag you for a subscription, or lose your text. It gets in, and then it gets entirely out of your way so you can just write.
+
 ## Philosophy
 
 - **Purity first.** Core experience is always plain text. No hidden formats, no "smart" rewriting of your content.
