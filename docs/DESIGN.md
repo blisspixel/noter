@@ -254,15 +254,16 @@ These properties and risks must be referenced (by ID) in the comments of the cor
 
 **Initial approach (Phase 1):** Wrap `egui::TextEdit` inside a container that gives us the status bar and find bar. This lets us deliver a working editor in hours instead of days.
 
-**Production approach (must be reached by end of Phase 2 or early Phase 3):**
-- Custom `EditorWidget` that:
-  1. Uses `rope.chunks()` + line iteration to only layout the visible ~80–120 lines.
-  2. Caches `Galley` (egui's laid-out text) per visible line or per chunk.
-  3. Handles its own cursor painting, selection rectangles, and caret blinking.
-  4. Translates mouse and keyboard events into `EditorCommand`s that mutate the document + cursor atomically.
-- This gives us full control over undo grouping, exact column behavior on wrapped lines, and performance.
+**Production approach (Phase 2 - The Zero-Latency Engine):**
+- Custom `EditorWidget` rendering engine focused on achieving <16ms latency for massive (500MB+) files and 120Hz scrolling:
+  1. **Viewport Virtualization:** Only fetches `rope.chunks()` mapping strictly to the currently visible vertical scroll window (approx 80-120 lines).
+  2. **Galley Caching:** `egui::Galley` (text layout) objects are cached per logical line. Scrolling vertically re-uses layout caches.
+  3. **Memory Mapped Loading:** Files larger than a threshold (e.g. 10MB) are memory-mapped (`mmap`) into the `Rope` rather than loaded into heap `Vec<u8>`.
+  4. Handles its own cursor painting, selection rectangles, and caret blinking on the paint layer without triggering full UI passes.
+  5. Translates events to atomic `EditorCommand`s, keeping the main UI thread pristine.
+- This gives us full control over undo grouping, typographic spacing, sub-pixel rendering, and unmatched performance.
 
-Long lines (> 2000 chars) are a known difficult case. We will clip or horizontally scroll them with an explicit horizontal scrollbar when word wrap is off.
+Long lines (> 2000 chars) are clipped and horizontally scrolled using a subtle horizontal scrollbar when wrap is off.
 
 ## 5. File I/O & Reliability Subsystem (The Heart of Trust)
 
@@ -359,17 +360,23 @@ egui `Visuals` are swapped by calling `ctx.set_visuals(visuals_for(theme))`. We 
 
 - Fenced code blocks with a slightly different background and monospace
 - Emphasis / strong
-- Links as colored text (non-interactive in v1; later we can make them copy-to-clipboard on click)
-- Blockquotes with a left border
+## 8. The "Ruff" of Markdown (Strict Linter & Inline Styling)
 
-We will **not** support:
-- Raw HTML
-- Images (or only data: URIs with extreme caution)
-- Tables (stretch goal; pulldown-cmark supports them with an extension)
+**Parser:** `pulldown-cmark` 0.13+ (current GA June 2026 is 0.13.4). We use the event iterator to build an `egui::text::LayoutJob`.
 
-The preview widget will be given a `&Rope` slice or the full rope + a "render up to line N" limit for large files.
+**Rendering & Formatting Philosophy:**
+We do NOT use a split-pane preview. The text editor buffer applies text styles (bold, headers, links) directly to the plaintext source as you type, identical to a word processor but leaving the raw markdown characters intact.
 
-Because everything is pure Rust + egui primitives, the preview adds almost no attack surface.
+**The "Ruff" Linter Rules:**
+Noter is not just a viewer; it is a strict structural enforcer. When in Markdown mode, the editor provides:
+1. **Smart Indentation:** Hitting enter on a bullet list (`- item`) automatically inserts the next `- ` at the exact correct indentation level.
+2. **One-Keystroke Alignment:** A global format shortcut (e.g., `Ctrl+Shift+F`) instantly normalizes the entire `.md` file to strict Markdown standards:
+   - Ensuring a single space after `#` for headers.
+   - Re-aligning markdown tables with perfect padding.
+   - Fixing disordered numbered lists (`1.`, `2.`, `3.`).
+   - Stripping trailing whitespace.
+
+Because everything is pure Rust + egui primitives, this adds almost no attack surface, while keeping your `.md` files immaculate.
 
 ## 9. Error Handling & User Communication
 

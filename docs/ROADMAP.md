@@ -98,21 +98,21 @@ Deliver a genuinely usable classic notepad replacement with the fundamentals of 
 
 ---
 
-### Phase 2 — Editing Trust & Polish (The "I Actually Trust This" Release)
+### Phase 2 — The High-Performance Text Engine & Trust
 
 **Goals**
-Make the editor feel excellent and make the reliability story bulletproof.
+Build the custom virtualized text-rendering engine to achieve zero-latency execution (<16ms open times, 120Hz scrolling on massive files) and make the reliability story (bulletproof autosave) absolute. Deliver "invisible chrome" UX.
 
 **Deliverables**
-- Production-grade custom `EditorWidget` (virtualized, only visible lines, proper cursor/selection, horizontal scroll when needed).
-- Excellent undo/redo with full coalescing rules + bounded memory (property tests proving roundtrips).
-- Replace (Ctrl+H) with "Replace" and "Replace All".
+- Production-grade custom `EditorWidget` text-rendering engine (virtualized over `ropey` chunks, layout caching, only visible lines, perfect sub-pixel typography).
+- Zero-latency large file handling: Open 500MB files in <16ms (memory-mapped or streaming chunks).
+- Bulletproof autosave + recovery UX: Every keystroke captured, frictionless exit without nagging dialogs (unless discarding).
+- Invisible Chrome UI: Elegant borderless canvas, meticulously selected monospace typography.
+- Quiet Intelligence: File-changed-on-disk detection triggers a subtle amber status indicator, not a modal popup.
+- Excellent undo/redo with full coalescing rules + bounded memory.
+- Find / Replace (Ctrl+H) with live match count.
 - Go To Line (Ctrl+G) — works instantly even on 500k line files.
-- File-changed-on-disk detection (mtime + quick content check) with clear reload prompt.
-- Mature autosave + recovery UX (timestamped list, "Discard this recovery", auto-clean on successful save).
-- Find improvements: case sensitive, "whole word", live match count + highlight in the document (if editor widget supports it).
-- Better error messages and confirmation dialogs (Save / Discard / Cancel is rock solid).
-- Font size zoom (Ctrl + wheel + menu items) with persisted size.
+- Font size zoom (Ctrl + wheel) with persisted size.
 - Performance numbers documented and meeting NFR-PERF targets on reference hardware (50 MiB file open time, scroll fps on large docs).
 - Crash recovery simulation harness (documented script or test that actually exercises the recovery path under process kill).
 - Integration of `egui_mcp` (or equivalent 2026 egui testing framework) to automate UI property tests, reducing reliance on manual verification.
@@ -136,14 +136,15 @@ Make the editor feel excellent and make the reliability story bulletproof.
 
 ---
 
-### Phase 3 — 2026 Quality-of-Life — Inline Markdown Styling + Power User Features
+### Phase 3 — The "Ruff" of Markdown (Strict Linter & Inline Formatting)
 
 **Goals**
-Deliver beautiful markdown styling without compromising the pure text soul. Instead of a clunky split-pane preview, the text editor itself will apply rich formatting (bold, headers, lists) directly to the plaintext markdown source.
+Deliver beautiful inline Markdown formatting that acts as a strict structural linter. Instead of arbitrary rich text or clunky split panes, Noter enforces pristine Markdown syntax directly in the editor buffer.
 
 **Deliverables**
-- Inline rich-text markdown rendering (styles applied directly to the text buffer, similar to Typora or Obsidian source mode).
-- Pure-Rust markdown parsing (e.g., `pulldown-cmark`) to detect syntax boundaries and apply `egui` text styles dynamically on the fly.
+- Inline styling view (styles applied directly to the text buffer).
+- Smart Indentation: Auto-aligning lists and blocks when hitting enter.
+- One-Keystroke Alignment: A formatting shortcut (like running `ruff format`) that instantly standardizes header spacing, aligns tables, and fixes broken list numbers in the raw text.
 - Graceful degradation for huge documents (only run regex/parsing on the visible viewport).
 - Keyboard shortcut reference (Help > Keyboard Shortcuts or a simple modal).
 - Format menu with explicit "Line Endings" and "Encoding" (even if encoding is always UTF-8 for v1, the UI exists for future).
@@ -162,7 +163,7 @@ Deliver beautiful markdown styling without compromising the pure text soul. Inst
 
 **Rough Calendar:** 2–3 weeks.
 
-**Exit Criteria:** The "Markdown for QOL" promise from the original request is delivered without having turned Noter into a webview or Markdown-first app.
+**Exit Criteria:** The UX vision of a strict, highly-structured "Ruff for Markdown" is achieved, enforcing best practices without ever changing the plain text nature of the file.
 
 ---
 
