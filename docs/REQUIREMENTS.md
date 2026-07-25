@@ -59,9 +59,14 @@ Feature presence alone is not verification.
   may create a new untitled converted document, but it must never overwrite the
   source implicitly.
 - **FR-013 Save:** Save to the current path through the durable replacement
-  protocol in NFR-REL-02.
+  protocol in NFR-REL-02. An opened final symlink is revalidated and Save writes
+  its recorded regular-file target without replacing the link entry. A
+  multiply hard-linked destination requires explicit confirmation that only the
+  selected directory entry will advance.
 - **FR-014 Save As:** Ask for a destination every time. The document path and
   clean revision change only after the new destination commits successfully.
+  Refuse an existing final symlink or unsupported reparse point rather than
+  replacing or following it implicitly.
 - **FR-015 Recent files:** Maintain at most ten deduplicated user-opened paths.
   Missing or inaccessible entries fail safely and can be removed without
   reading their parent directories.
@@ -186,7 +191,10 @@ Feature presence alone is not verification.
 - **NFR-REL-02 Durable replacement:** Saving writes a unique sibling, writes all
   bytes, flushes, syncs the file, performs an atomic platform replacement, and
   syncs the parent directory where supported. A pre-commit failure leaves the
-  original complete and unchanged.
+  original complete and unchanged. Outcomes distinguish Committed, Conflict,
+  Not Committed, and Commit State Unknown. A post-commit barrier failure is
+  Committed with a durability warning; an uncertain commit retains dirty state
+  and recovery until reconciliation.
 - **NFR-REL-03 Revision safety:** A successful save clears dirty state only when
   the committed revision is still the current revision.
 - **NFR-REL-04 Undo fidelity:** Applying edits and their inverse transactions

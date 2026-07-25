@@ -266,8 +266,8 @@ impl NoterApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(self.document.line_endings.status_label());
                     ui.separator();
-                    ui.label("UTF-8");
-                    if self.document.had_bom {
+                    ui.label(self.document.encoding.status_label());
+                    if self.document.bom.is_present() {
                         ui.separator();
                         ui.label("BOM");
                     }

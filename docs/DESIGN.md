@@ -22,8 +22,12 @@ The current M1 worktree has:
   deterministic dominant fallback, and edit-point insertion decisions;
 - a 19-case external golden corpus and three 512-case generated properties for
   strict byte round-trip, classification, and insertion policy;
+- explicit `Encoding`, `Bom`, and checked `Revision` values;
+- an injected save protocol with exact conflict, non-commit, commit, uncertain
+  commit, durability, and cleanup outcomes;
 - an interim same-directory write, sync, and rename save path;
-- 18 tests and 99.14 percent line coverage across the testable trust core.
+- 31 tests and 98.87 percent line coverage across the testable trust core, with
+  every core function executed.
 
 It does not yet have the durable replacement adapter, edit transaction model,
 dirty lifecycle, recovery, external conflict handling, complete commands,
@@ -235,23 +239,28 @@ Filesystem operations are injected:
 trait Storage {
     type Temp;
 
-    fn inspect(&self, path: &Path) -> Result<FileObservation, StorageError>;
-    fn create_unique_sibling(&self, path: &Path) -> Result<Self::Temp, StorageError>;
-    fn write_all(&self, temp: &mut Self::Temp, chunks: &mut dyn ByteChunks)
+    fn inspect(&mut self, path: &Path, stage: SaveStage)
+        -> Result<TargetState, StorageError>;
+    fn create_unique_sibling(&mut self, path: &Path)
+        -> Result<Self::Temp, StorageError>;
+    fn write_all(&mut self, temp: &mut Self::Temp, bytes: &[u8])
         -> Result<(), StorageError>;
-    fn flush(&self, temp: &mut Self::Temp) -> Result<(), StorageError>;
-    fn sync_file(&self, temp: &mut Self::Temp) -> Result<(), StorageError>;
-    fn apply_metadata(&self, temp: &mut Self::Temp, source: &FileObservation)
+    fn flush(&mut self, temp: &mut Self::Temp) -> Result<(), StorageError>;
+    fn apply_metadata(&mut self, temp: &mut Self::Temp, source: Option<&FileObservation>)
         -> Result<(), StorageError>;
-    fn replace(&self, temp: Self::Temp, destination: &Path)
-        -> Result<ReplaceReceipt, StorageError>;
-    fn sync_parent(&self, destination: &Path) -> Result<Durability, StorageError>;
+    fn sync_file(&mut self, temp: &mut Self::Temp) -> Result<(), StorageError>;
+    fn replace(&mut self, temp: Self::Temp, destination: &Path, expected: TargetState)
+        -> ReplaceOutcome<Self::Temp>;
+    fn sync_parent(&mut self, destination: &Path) -> DurabilityOutcome;
+    fn discard(&mut self, temp: Self::Temp) -> Result<(), StorageError>;
 }
 ```
 
 The test adapter can fail every operation before and after the replacement
-commit point. Production code never infers commit state from a generic I/O
-error.
+commit point. The current matrix proves original-byte preservation at initial
+inspection, unique creation, partial write, flush, metadata, file sync,
+revalidation, and proven non-committing replacement failures. Production code
+never infers commit state from a generic I/O error.
 
 ### 6.2 Save protocol
 
@@ -262,12 +271,14 @@ error.
    before creating a temporary file.
 3. Create an unpredictable sibling with create-new semantics. Never reuse or
    truncate a guessed temporary name.
-4. Stream all bytes, flush user-space buffers, and sync the temporary file.
+4. Stream all bytes and flush user-space buffers.
 5. Copy required permissions and supported metadata from an existing target.
-6. Revalidate target identity immediately before replacement.
-7. Replace atomically without deleting the destination first.
-8. Sync the parent directory where the platform provides a meaningful operation.
-9. Report the exact outcome to the application state.
+6. Sync the temporary file's data and metadata.
+7. Revalidate target identity immediately before replacement.
+8. Replace atomically without deleting the destination first.
+9. Reconcile platform results whose documented failure may have side effects.
+10. Sync the parent directory where the platform provides a meaningful operation.
+11. Report the exact outcome to application state and clean private artifacts.
 
 On Windows, the adapter evaluates `ReplaceFileW` for existing destinations and
 an atomic move for new destinations. On Unix, it uses same-filesystem rename
@@ -286,16 +297,19 @@ enum SaveOutcome {
     },
     Conflict(Conflict),
     NotCommitted(StorageError),
+    CommitStateUnknown(StorageError),
 }
 ```
 
 If replacement commits but directory sync fails, the result is committed with a
 durability warning. The UI must not tell the user nothing was written. A
-successful older snapshot does not clear a newer dirty revision.
+successful older snapshot does not clear a newer dirty revision. An uncertain
+commit keeps dirty state and recovery and blocks blind retry until paths are
+reconciled.
 
 ### 6.3 Metadata and symlinks
 
-M1 closes these policies through ADR-003 and platform tests:
+ADR-003 resolves these policies, and M1 verifies them through platform tests:
 
 - preserve ordinary permissions and supported ownership, ACL, alternate stream,
   quarantine, and extended-attribute semantics where the platform permits;
@@ -304,6 +318,12 @@ M1 closes these policies through ADR-003 and platform tests:
 - refuse an ambiguous or changed link with a safe Save As path;
 - document weaker durability on network, cloud, removable, and unusual
   filesystems.
+
+An opened final symlink records and revalidates both the link and resolved
+target; Save commits to the resolved target without replacing the link entry.
+Save As refuses an existing final link. A file with multiple hard links requires
+explicit confirmation that atomic replacement updates only the selected
+directory entry. Read-only files are not made writable implicitly.
 
 No implementation may claim durable atomic save while these cases are silently
 undefined.
@@ -613,6 +633,9 @@ artifacts verified on clean systems.
 | F12 | Sensitive content enters logs | 8 | redaction tests and diagnostic review | Every gate |
 | F13 | A dependency introduces network behavior | 9 | feature audit and runtime traffic inspection | Every gate |
 | F14 | Markdown formatter changes meaning | 9 | diff preview, parse equivalence, idempotence, undo | M7 |
+| F15 | Platform reports failure after changing replacement state | 10 | explicit unknown-commit outcome, backup-aware reconciliation, recovery retention | M1 |
+| F16 | Atomic replacement silently drops permissions or extended metadata | 9 | platform metadata fixtures and pre-commit refusal on preservation failure | M1 |
+| F17 | Save replaces a symlink entry or surprises other hard links | 9 | link identity revalidation, Save As refusal, hard-link confirmation | M1/M3 |
 
 The FMEA is updated whenever a test, incident, dependency, or platform behavior
 reveals a new path. Critical and high rows require executable evidence or a
@@ -627,6 +650,6 @@ clearly accepted residual risk before release.
 - **ADR-003:** durable replacement uses an injected adapter, platform commit
   semantics, identity revalidation, and explicit durability outcomes.
 
-ADR-002 is accepted. ADR-003 remains proposed until platform tests close
-metadata and symlink semantics. No custom editor implementation starts
-before the M5 feasibility entry criteria are satisfied.
+ADR-002 and ADR-003 are accepted. ADR-003 implementation verification remains
+in progress until its named platform matrix is green. No custom editor
+implementation starts before the M5 feasibility entry criteria are satisfied.

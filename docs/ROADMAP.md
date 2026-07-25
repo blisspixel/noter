@@ -184,13 +184,23 @@ of the GUI.
 - **Verified locally:** 19 golden byte cases cover BOM, all EOL forms, Unicode,
   embedded BOM, NUL, and invalid UTF-8. Three properties each run 512 generated
   cases for strict byte round-trip, exact classification, and insertion policy.
-- **Verified locally:** all 18 tests and strict Clippy pass. Trust-core line
-  coverage is 99.14 percent with every core function executed; CI now enforces
-  the M1 trust-kernel floor of 90 percent.
+- **Verified in CI:** line-ending evidence commit `62dc49f` passed Windows,
+  macOS, Linux, strict lint, documentation, and the 90 percent coverage gate in
+  [GitHub Actions run 30177403255](https://github.com/blisspixel/noter/actions/runs/30177403255).
+- **Verified locally:** explicit `Encoding`, `Bom`, and checked `Revision` values
+  replace ambiguous primitive metadata.
+- **Verified locally:** the injected save protocol distinguishes Committed,
+  Conflict, Not Committed, and Commit State Unknown. Its fault matrix proves
+  original-byte preservation through every modeled pre-commit failure, two
+  conflict windows, partial temporary writes, and cleanup failure. A failed
+  post-commit parent barrier is reported as committed with a warning.
+- **Verified locally:** all 31 tests and strict Clippy pass. Trust-core line
+  coverage is 98.87 percent with every core function executed; CI enforces the
+  M1 trust-kernel floor of 90 percent.
 - **Measured:** the test harness adds eight lock-graph packages. The release
   binary remains 4.53 MiB at 4,749,312 bytes.
-- **Next:** obtain exact-commit cross-platform CI, then close ADR-003 and build
-  the injected durable-write adapter and failure matrix.
+- **Next:** implement and verify the accepted ADR-003 production adapters,
+  cryptographic content fingerprinting, metadata fixtures, and platform matrix.
 
 **Work:**
 
@@ -449,22 +459,25 @@ silently rewriting content.
 
 These are the next tasks in dependency order:
 
-1. Implement `LineEndingProfile` and the accepted mixed-EOL policy, including
-   edit-point insertion decisions.
-2. Build the complete golden-file matrix and byte-round-trip property tests.
-3. Close ADR-003 metadata, symlink, commit-state, and platform questions with
-   platform evidence.
-4. Implement the durable-write adapter behind injected I/O traits.
-5. Add pre-commit and post-commit fault injection plus mutation testing.
-6. Define document identity, revision, saved snapshot, and save outcome types.
-7. Add the benchmark corpus generator and automate the trust-kernel baseline.
-8. Implement the edit transaction and selection model.
-9. Add reference-model undo and redo property tests.
-10. Implement the dirty-document lifecycle state machine.
-11. Implement versioned state-directory recovery records and crash scanning.
-12. Build the controlled child-process crash harness.
-13. Create the pure command and application-state reducer.
-14. Connect the proven core to the complete M4 UI.
+1. Implement cryptographic content fingerprints and platform file identity
+   observations.
+2. Implement unique sibling creation, metadata transfer, synchronization, and
+   cleanup behind the accepted `Storage` boundary.
+3. Implement and reconcile Windows existing-file and new-file commit paths.
+4. Implement Linux and macOS existing-file and no-overwrite commit paths.
+5. Add platform fixtures for metadata, symlinks, hard links, read-only files,
+   external writers, and weaker filesystems.
+6. Add mutation testing for serialization, conflict, commit-state, and cleanup
+   decisions.
+7. Integrate revision-tagged snapshots and outcomes into the document model.
+8. Add the benchmark corpus generator and automate the trust-kernel baseline.
+9. Implement the edit transaction and selection model.
+10. Add reference-model undo and redo property tests.
+11. Implement the dirty-document lifecycle state machine.
+12. Implement versioned state-directory recovery records and crash scanning.
+13. Build the controlled child-process crash harness.
+14. Create the pure command and application-state reducer, then connect the
+    proven core to the complete M4 UI.
 
 The answer to "what is next" is therefore unambiguous: prove M1, starting with
 exact encoding and line-ending behavior, then make durable replacement survive

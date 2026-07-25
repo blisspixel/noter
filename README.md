@@ -73,6 +73,15 @@ rejection, a pinned toolchain, enforced coverage, dependency cleanup, and
 warning-free CI on Windows, macOS, and Linux. The exact M0 evidence commit is
 `7512534`, verified by [GitHub Actions run 30176526028](https://github.com/blisspixel/noter/actions/runs/30176526028).
 
+M1 now has exact UTF-8 BOM and mixed-line-ending profiles, an external golden
+byte corpus, generated round-trip properties, explicit revisions, and a
+fault-injected save protocol that does not confuse a failed call with a proven
+non-commit. The line-ending slice is verified on all three operating systems at
+commit `62dc49f` in [GitHub Actions run 30177403255](https://github.com/blisspixel/noter/actions/runs/30177403255).
+The production platform storage adapters and their metadata and crash fixtures
+are still in progress, so the GUI remains a prototype rather than a safe daily
+editor.
+
 A structured adversarial design review was performed on the initial planning corpus. The review and our responses are captured in [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
 
 See:

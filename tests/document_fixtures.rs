@@ -2,6 +2,7 @@
 
 use noter::core::document::Document;
 use noter::core::line_endings::{LineEnding, LineEndingCounts, LineEndingProfile};
+use noter::core::text_format::Bom;
 use noter::error::NoterError;
 
 const CASES: &str = include_str!("fixtures/document_cases.txt");
@@ -73,7 +74,12 @@ fn golden_document_matrix_is_exact() {
 
         let document = Document::from_bytes(&bytes, None)
             .unwrap_or_else(|error| panic!("{name}: valid fixture failed: {error}"));
-        assert_eq!(document.had_bom, fields[3] == "true", "{name}: BOM");
+        let expected_bom = if fields[3] == "true" {
+            Bom::Utf8
+        } else {
+            Bom::Absent
+        };
+        assert_eq!(document.bom, expected_bom, "{name}: BOM");
         assert_eq!(
             document.line_endings,
             expected_profile(&fields),

@@ -129,28 +129,57 @@ read-only or incrementally indexed viewer with explicit limitations.
 
 Atomic visibility and crash durability are related but different properties.
 
-- [`std::fs::rename`](https://doc.rust-lang.org/std/fs/fn.rename.html) maps to
-  different platform operations and documents platform-specific replacement
-  behavior.
-- [Windows `ReplaceFile`](https://learn.microsoft.com/en-us/windows/win32/fileio/moving-and-replacing-files)
-  is specifically designed to replace one file with another while preserving
-  important attributes such as ACLs and encryption metadata.
-- The audited implementation pattern is write a unique sibling, flush, sync the
-  file, replace the destination, and sync the parent directory where supported.
-  The [atomic-write-file crate](https://docs.rs/atomic-write-file) is one current
-  implementation worth evaluating rather than casually re-creating every
-  platform edge case.
+- [`std::fs::rename`](https://doc.rust-lang.org/1.97.1/std/fs/fn.rename.html)
+  maps to different Unix and Windows operations. It does not supply metadata,
+  conflict, symlink, or durability policy by itself.
+- Microsoft documents that
+  [`ReplaceFileW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+  preserves several security and filesystem properties, but also documents
+  error states where names or inherited streams may already have changed. A
+  false return value cannot always mean Not Committed.
+- Microsoft documents exclusive same-volume creation and the optional
+  `MOVEFILE_WRITE_THROUGH` barrier in
+  [`MoveFileExW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw).
+  Cross-volume copy-and-delete is not an atomic-save fallback.
+- Linux [`rename`](https://man7.org/linux/man-pages/man2/rename.2.html) provides
+  atomic replacement and keeps a destination instance on failure. Linux
+  [`fsync`](https://man7.org/linux/man-pages/man2/fsync.2.html) explicitly says
+  a separate directory `fsync` is needed to persist the directory entry.
+- On macOS, the platform `copyfile` API can copy POSIX metadata, ACLs, and
+  extended attributes independently from content. `F_FULLFSYNC` is the stronger
+  persistence request. See the [Xcode copyfile manual](https://keith.github.io/xcode-man-pages/copyfile.3.html)
+  and [Apple persistence guidance](https://developer.apple.com/documentation/xcode/reducing-disk-writes).
+- The evaluated
+  [`atomic-write-file` 0.3](https://docs.rs/atomic-write-file/0.3.0/atomic_write_file/)
+  implementation has valuable opened-directory and unique-sibling techniques,
+  but its own limitations say a final symlink is replaced and ACLs, extended
+  attributes, timestamps, and SELinux contexts are not preserved. It is not a
+  sufficient production adapter for Noter.
 
 Product decision:
 
-- Create an I/O adapter with injected failure points and a documented platform
-  contract.
-- Decide symlink behavior explicitly before implementation.
-- Preserve permissions and important metadata where the platform permits.
+- Use an injected I/O adapter with explicit create, write, flush, metadata,
+  file-sync, revalidation, commit, reconciliation, parent-sync, and cleanup
+  boundaries.
+- Model `Committed`, `Conflict`, `NotCommitted`, and `CommitStateUnknown`.
+  Indeterminate commit keeps recovery and cannot be retried blindly.
+- Save through an opened final symlink only after recording and revalidating the
+  link and resolved regular-file target. Save As refuses an existing final
+  symlink or reparse point.
+- Require explicit confirmation before atomic replacement separates one name
+  from other hard links to the same file.
+- Preserve required permissions, ACLs, extended attributes, security context,
+  encryption, compression, and named streams through platform-native behavior.
+  If required metadata cannot be preserved, fail before commit rather than lose
+  it silently.
 - Never delete the destination first to make a rename succeed.
-- A successful save clears dirty state only after replacement completes.
-- Distinguish local filesystems from cloud, network, and unusual filesystems in
-  documentation and tests.
+- A post-commit directory-sync failure is Committed with a durability warning,
+  not Not Committed.
+- Cloud, network, removable, and unknown filesystems return only the durability
+  level actually demonstrated. Filesystem naming alone is not proof.
+
+The complete platform decision and remaining evidence matrix are in
+[ADR-0003](adr/0003-durable-replacement.md).
 
 ## Recovery semantics
 

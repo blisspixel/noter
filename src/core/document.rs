@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::error::NoterError;
 
 use super::line_endings::LineEndingProfile;
-
-const UTF8_BOM: &[u8; 3] = b"\xEF\xBB\xBF";
+use super::text_format::{Bom, Encoding};
 
 /// The authoritative text and file metadata for one open document.
 pub struct Document {
@@ -17,8 +16,10 @@ pub struct Document {
     pub path: Option<PathBuf>,
     /// Exact detected line-ending profile and insertion fallback.
     pub line_endings: LineEndingProfile,
-    /// Whether the loaded file began with a UTF-8 byte-order mark.
-    pub had_bom: bool,
+    /// Strict on-disk text encoding.
+    pub encoding: Encoding,
+    /// Optional on-disk UTF-8 byte-order mark.
+    pub bom: Bom,
     /// Whether in-memory text differs from the last successful save.
     pub is_dirty: bool,
 }
@@ -30,7 +31,8 @@ impl Document {
             rope: Rope::new(),
             path: None,
             line_endings: LineEndingProfile::detect(""),
-            had_bom: false,
+            encoding: Encoding::Utf8,
+            bom: Bom::Absent,
             is_dirty: false,
         }
     }
@@ -58,19 +60,15 @@ impl Document {
     /// Returns [`NoterError::InvalidUtf8`] when the bytes after an optional UTF-8
     /// byte-order mark are not valid UTF-8.
     pub fn from_bytes(bytes: &[u8], path: Option<PathBuf>) -> Result<Self, NoterError> {
-        let bom_len = if bytes.starts_with(UTF8_BOM) {
-            UTF8_BOM.len()
-        } else {
-            0
-        };
-        let had_bom = bom_len > 0;
-        let text = std::str::from_utf8(&bytes[bom_len..])?;
+        let (bom, content) = Bom::split_utf8(bytes);
+        let text = std::str::from_utf8(content)?;
 
         Ok(Self {
             rope: Rope::from_str(text),
             path,
             line_endings: LineEndingProfile::detect(text),
-            had_bom,
+            encoding: Encoding::Utf8,
+            bom,
             is_dirty: false,
         })
     }
@@ -81,9 +79,7 @@ impl Document {
     /// model will own insertion and explicit normalization policy.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        if self.had_bom {
-            bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
-        }
+        bytes.extend_from_slice(self.bom.as_bytes());
 
         for chunk in self.rope.chunks() {
             bytes.extend_from_slice(chunk.as_bytes());
@@ -142,7 +138,8 @@ mod tests {
         assert_eq!(default.rope, new.rope);
         assert_eq!(default.path, new.path);
         assert_eq!(default.line_endings, new.line_endings);
-        assert_eq!(default.had_bom, new.had_bom);
+        assert_eq!(default.encoding, new.encoding);
+        assert_eq!(default.bom, new.bom);
         assert_eq!(default.is_dirty, new.is_dirty);
     }
 
@@ -178,7 +175,8 @@ mod tests {
                 count: 2
             }
         );
-        assert!(document.had_bom);
+        assert_eq!(document.encoding, Encoding::Utf8);
+        assert_eq!(document.bom, Bom::Utf8);
         assert_eq!(original.as_slice(), document.to_bytes());
         Ok(())
     }
