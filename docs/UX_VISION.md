@@ -1,37 +1,74 @@
-# Exceptional UX for Noter (2026-2027 Vision)
+# Exceptional UX for Noter
 
-When I used the word "widget," I was speaking in pure UI programming terms (as in a software component). But you are entirely right—to a user, "widget" implies something cheap, bolted-on, clunky, or disjointed. Noter is none of those things.
+**Reviewed:** 2026-07-25
 
-We are not building a "widget." We are building a **custom, high-performance text-rendering engine**. 
+This is the experiential direction. [REQUIREMENTS.md](REQUIREMENTS.md) owns
+behavior and [ROADMAP.md](ROADMAP.md) owns measurable delivery gates.
 
-In 2026, the text editor market is flooded with Electron apps, Copilot sidebars, and sluggish web-views. "Exceptional UX" in this era is not about adding *more* features; it is about absolute, uncompromising mastery of the basics. It is about a tool that feels like a physical extension of your keyboard.
+## 1. Trust is the primary interaction
 
-Here is the plan for what exceptional UI/UX means for Noter.
+Noter should feel predictable before it feels clever:
 
-## 1. Zero-Latency Execution (The Invisible Engine)
-The most important UX feature is speed. In 2026, latency is the ultimate friction.
-* **Instant Open:** Clicking a 500MB `.log` file or a 2KB `.txt` file should take the exact same amount of time: **less than 16 milliseconds**. We achieve this by never loading the whole file into RAM at once; the engine only renders the exact lines you are looking at.
-* **120Hz Scrolling:** The text should never stutter, tear, or lag behind your scroll wheel, even if you are scrolling through 100,000 lines. 
-* **Input to Pixel:** When you strike a key, the character must appear on screen instantly. No background "smart prediction" slowing down the render thread.
+- Open shows the selected bytes or an explicit unsupported-encoding error.
+- Save has one meaning and never performs an invisible conversion.
+- Every destructive action uses the same Save / Discard / Cancel decision.
+- Recovery is quiet while healthy, visible when needed, and never impersonates a
+  successful Save.
+- Errors explain what happened to the original file and where current work
+  remains.
 
-## 2. Invisible Chrome (The UI gets out of your way)
-The UI should feel timeless, heavily inspired by physical paper and classic typography, not "modern app" trends.
-* **Typographic Obsession:** We don't just use the default system font. We meticulously select and configure a premium, highly readable monospace font (like JetBrains Mono or a custom build) with perfect line height and sub-pixel anti-aliasing. The text is the UI.
-* **Border-less Canvas:** As we already started doing, the text spans the window elegantly. No weird boxes, no artificial boundaries.
-* **Quiet Intelligence:** If a file changes on disk (e.g., a background process writes to your log file), Noter shouldn't throw a giant modal popup in your face interrupting your typing. Instead, a subtle, elegant indicator (like a gentle amber pulse in the status bar) lets you know, and a simple shortcut reloads it.
+The best trust UI is consistent behavior. Status indicators and dialogs support
+that behavior rather than compensating for ambiguity.
 
-## 3. The "Ruff" of Markdown (Strict, Beautiful Enforcement)
-You mentioned Noter should be the "Ruff of Markdown." This is a brilliant UX concept. 
-* **Auto-Formatting, Not Just Styling:** In Markdown mode, the UX isn't just about making `#` look bold. It's about enforcing a pristine, standardized document structure.
-* **Smart Indentation:** If you type a bullet point, pressing enter perfectly aligns the next one. 
-* **One-Keystroke Alignment:** A simple shortcut instantly formats your raw markdown text—aligning tables perfectly with spaces, standardizing your header depths, and fixing broken list numbers. It acts as a strict, invisible linter that keeps your raw files immaculate without you having to manually count spacebars.
+## 2. Text is the visual hierarchy
 
-## 4. Subconscious Reliability
-Exceptional UX means the user *never has to think about saving*.
-* **Bulletproof Autosave:** Every single keystroke is captured. If your computer loses power, or Windows forces an update and kills Noter, the exact state of your document—down to where your cursor was blinking—is waiting for you when you reopen it.
-* **Frictionless Exit:** When you hit the `X` button, Noter just closes. If you had unsaved work, it quietly saves it to a local cache and restores it next time. You never get yelled at by a "Do you want to save?" dialog unless you explicitly try to discard a file.
+The editing surface receives most of the window. Chrome is compact, calm, and
+legible:
 
-## Summary: The "Slam Dunk" Goal
-The goal for 2026 is **Hyper-Competence**. Noter won't have AI sidebars, floating widgets, or workspaces. Its UX will be exceptional because it will be the fastest, most reliable, most beautifully rendered plain-text canvas on your machine.
+- a crisp default monospace stack with tested fallbacks;
+- comfortable line height and margins;
+- obvious caret, selection, focus, modified, error, and conflict states;
+- System, Light, and Dark themes with measured contrast;
+- stable layout while menus, find, recovery, and errors appear;
+- no decorative animation that delays input or hides state.
 
-The ultimate test of Noter's UX is trust and responsiveness. It must be so responsive and polished that it completely gets out of your way. The choice between bloated spyware slop and Noter must be an absolute slam dunk.
+Noter is system-integrated through dialogs, shortcuts, theme preference,
+accessibility, IME, and window behavior. It does not imitate native widget
+appearance.
+
+## 3. Responsiveness is measured
+
+The visible result of ordinary input should arrive within one display frame in
+the common case. Launch, open, search, scroll, memory, and long-line behavior are
+measured against the corpus and percentile budgets in
+[REQUIREMENTS.md](REQUIREMENTS.md).
+
+The product does not promise instant editing of 500 MB files. A future large-file
+viewer or incremental mode must earn a separate contract.
+
+## 4. Quiet intelligence stays reversible
+
+Find, conflict detection, recovery, list continuation, and Markdown diagnostics
+may help without taking ownership from the user:
+
+- background results are revision-tagged and cannot overwrite newer intent;
+- automatic-looking edits are visible and one-step undoable;
+- a changed file produces a calm but unmistakable conflict state;
+- no alert relies on color alone;
+- keyboard and screen-reader users receive the same state and choices.
+
+## 5. Markdown follows the plain-text release
+
+Markdown assistance keeps punctuation visible. Diagnostics do not mutate text.
+Formatting requires an explicit command, a diff preview, a semantic-equivalence
+check, and confirmation. Markdown disabled means no background parser and no
+behavioral difference from a plain-text document.
+
+## 6. The quality test
+
+An experienced Notepad user should complete the ordinary workflow without
+documentation. An unfamiliar user should recover from every error without
+guessing. A keyboard, IME, or screen-reader user should not receive a reduced
+editor. Performance should be demonstrated, not described with adjectives.
+
+That combination of restraint, evidence, and care is the exceptional UX.

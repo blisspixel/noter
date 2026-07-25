@@ -1,504 +1,614 @@
-# Noter Technical Design Document
+# Noter Technical Design
 
-**Deep technical design for a high-quality, pure, reliable 2026 cross-platform notepad.**
+**Version:** 0.2
 
-This document is intentionally long and specific. It exists so that implementation decisions are not rediscovered under time pressure and so that code quality + test coverage goals are designed in from the beginning, not bolted on.
+**Reviewed:** 2026-07-25
 
-**Rigor note (June 2026):** This design has undergone a structured adversarial design review (see [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md)). The review identified specification gaps, the need for explicit invariants, a first FMEA, dependency governance, and stewardship planning. The sections below (particularly 3.5, 4.6, 13, and 15) have been expanded or added in direct response. The goal is to make Noter an existence proof that small desktop tools can be engineered with professional-grade discipline rather than hobbyist accretion.
+**Status:** Active architecture contract
 
-## 1. Technology Stack & Architectural Decisions
+This document translates [REQUIREMENTS.md](REQUIREMENTS.md) into an
+implementation architecture. [ROADMAP.md](ROADMAP.md) owns sequencing,
+[RESEARCH.md](RESEARCH.md) owns external evidence, and architecture decision
+records own narrow irreversible choices.
 
-### 1.1 GUI Layer: egui + eframe (Chosen)
+## 1. Current implementation checkpoint
 
-**Decision Record (DR-001)**
+The M0 worktree has:
 
-We chose `eframe` (the official egui application framework) + `egui` as the sole GUI technology.
+- a binary crate containing the egui shell;
+- a library crate containing the UI-independent document module;
+- strict UTF-8 loading with BOM and existing newline-byte preservation;
+- an interim same-directory write, sync, and rename save path;
+- seven document tests and 96.43 percent line coverage in that module.
 
-**Why egui wins for Noter's values:**
-- Produces genuinely small, self-contained binaries (no webview runtime, no JS engine, no hundreds of MB of Chromium).
-- Immediate mode is an excellent fit for a text editor: the entire UI is a pure function of state on every frame. This dramatically reduces "I edited text but the UI didn't notice" classes of bugs.
-- Excellent high-DPI and scaling support out of the box.
-- The egui text layout and font system (powered by cosmic-text or harfbuzz under the hood in recent versions) is good enough for a plain text + monospace editor.
-- Mature in 2026. Many production tools (hex editors, log viewers, configuration UIs, small IDEs) ship successfully with it.
-- Zero network, zero "web tech" in the core product — matches the purity requirement perfectly.
+It does not yet have the durable replacement adapter, edit transaction model,
+dirty lifecycle, recovery, external conflict handling, complete commands,
+configuration, accessibility evidence, or release performance evidence.
+The interim save path is not the final implementation of NFR-REL-02.
 
-**Trade-offs accepted:**
-- We must implement (or carefully wrap) our own multi-line virtualized text editor widget. egui's `TextEdit` is convenient for prototypes but will eventually be insufficient for 100k+ line files and fine-grained undo.
-- ### 6.2 Inline Markdown Styling (Phase 3)
-We will NOT use a split-pane HTML webview. That violates the purity mandate.
-Instead, we will parse the plaintext buffer using `pulldown-cmark` (or a lightweight regex highlighter) and dynamically apply `egui` rich-text styles (bold, larger fonts for headings, colors for links) directly to the plaintext characters in the editor view itself. The file remains 100% pure text, but the user gets a beautiful "rich text" experience while editing.
-- Native menu bar on macOS is slightly more work (egui can do global menus or we can use platform-specific code via `objc2` / `windows` crate later if needed; start with in-window top panel for simplicity and consistency).
+## 2. Architectural principles
 
-**Considered & Rejected Alternatives (recorded for posterity):**
-- **Tauri v2**: Excellent packaging and trivial Markdown (just HTML). Loses on binary size, purity (webview + web technologies in the stack), startup time, and "this is a native tool" feel. Would be the right choice for a more complex app or one where rich preview was the #1 feature. For a notepad whose soul is "plain text that I trust," it is the wrong default.
-- **Iced**: More principled Elm-like architecture. More boilerplate for the simple things we need. Better for very large, complex UIs that will live for years. Overkill here.
-- **Slint**: Promising declarative UI. Still smaller ecosystem for custom text-heavy widgets in mid-2026.
-- **GTK4-rs / Adwaita**: Poor native experience on Windows and macOS. Not worth the pain for a tool that must feel at home everywhere.
-- **Winit + raw wgpu + manual everything**: Too much work for the scope. egui gives us the right 80% for free.
+1. **One authoritative revision:** Content and file metadata have one owner.
+   UI caches and worker results carry a revision and cannot silently win over a
+   newer state.
+2. **Pure decisions, effectful edges:** Lifecycle, conflict, undo, and command
+   decisions are pure library code. Filesystem, dialogs, clocks, process IDs, and
+   GUI events are adapters.
+3. **Commit points are explicit:** Save and recovery distinguish pre-commit
+   failure, committed success, and committed success with a durability warning.
+4. **No hidden transformation:** Encoding, EOL conversion, formatting, and
+   conflict resolution are explicit commands.
+5. **Accessibility is architecture:** IME and accessibility semantics are part
+   of the editor engine contract, not release polish.
+6. **Measured scope:** Performance claims name a corpus, percentile, machine,
+   build, and measurement method.
+7. **Small trusted core:** The code that can lose or rewrite text remains
+   UI-independent, dependency-light, and heavily tested.
 
-We will re-evaluate only if egui fundamentally cannot deliver the editor performance or accessibility we need after Phase 2 prototype.
+## 3. Target module boundaries
 
-### 1.2 Core Text Buffer: ropey (June 2026 decision)
+```text
+src/
+  lib.rs
+  core/
+    document.rs       content, revisions, encoding, EOL policy
+    edit.rs           edit transactions, selection, caret
+    undo.rs           bounded history and coalescing
+    lifecycle.rs      Save / Discard / Cancel state machine
+    recovery.rs       recovery records and pure decisions
+    conflict.rs       file identity and conflict decisions
+  io/
+    mod.rs            storage traits and save orchestration
+    native.rs         platform replacement implementation
+    state.rs          durable config and recovery storage
+  app/
+    state.rs          UI-independent application state
+    command.rs        command dispatch and effect requests
+  config.rs
+  error.rs
 
-As of June 2026 the latest published version is `ropey 2.0.0-beta.1`. We are **intentionally staying on the latest stable 1.x series** (target `ropey = "1.6"`) for Noter v0.x.
-
-Reasons (nerd consensus):
-- A "never lose the user's text" tool should be built on the most battle-tested, non-beta foundation possible for its core data structure.
-- 1.x has years of production use in editors and tools. The 2.0 beta brings SIMD and metric improvements that are nice-to-have, not must-have for a notepad.
-- We will re-evaluate ropey 2.0 (or its GA successor) only after v0.1 and only if it demonstrates superior reliability characteristics in our own test harness.
-
-We will wrap it in our own `Document` type rather than leaking `Rope` everywhere. This also gives us an abstraction seam if we ever need to swap the rope implementation.
-
-**Byte-to-Char Indexing Strategy (Crucial for 1.x):**
-Because `ropey 1.x` uses character-based indexing while `egui` and many standard APIs use byte-based indexing, we are exposed to severe Unicode boundary bugs (the exact issue Ropey 2.0 fixes). 
-Our `EditorWidget` and `Document` translation layer must explicitly isolate this:
-- All external APIs (egui events, OS clipboards) speak strictly in byte offsets.
-- Only the very innermost boundary of `Document` is allowed to translate a byte offset to a `ropey` char index using `rope.byte_to_char()`.
-- We will write property tests that throw arbitrary combining characters (ZWJ, emoji, CJK) at the editor and verify that byte-to-char-to-byte roundtrips never panic or slice strings midway through a codepoint.
-
-### 1.3 Other Core Crates (June 2026 GA versions, introduced by phase)
-
-**Phase 0–1 baseline (current as of June 2026, must still be justified before addition):**
-- `egui` + `eframe` = "0.34.3" — latest GA. MSRV 1.85. This is our GUI layer (see decision record above).
-- `rfd` = "0.17" — real native file dialogs. Non-negotiable.
-- `directories` = "6.0" — correct config/cache locations.
-- `serde` + `toml` = "1.1" — human-readable, git-friendly, diffable config.
-- `thiserror` = "2.0" — clean domain error types.
-- `dark-light` = "2.0" — recommended for system theme detection. It encapsulates the Windows registry, macOS NSAppearance, and Linux gsettings logic behind a simple API. Much less maintenance than hand-rolled platform code.
-- `tracing` = "0.1.44" + `tracing-subscriber` = "0.3.23" (with file appender + env-filter for post-mortem diagnostics; we log nothing sensitive).
-
-**Phase 2+:**
-- `pulldown-cmark` = "0.13" — CommonMark compliant, fast, event-based parser. Perfect for a controlled, pure-Rust markdown renderer.
-- `proptest` = "1.11" — property-based tests for the core invariants (undo roundtrips, line-ending fidelity, etc.).
-- `tempfile` = "3.27" — for golden I/O tests and recovery simulation.
-- `notify` — deliberately deferred. As of June 2026 the 9.0 series is still at rc. We start with simple periodic mtime + size polling (2-3s when focused). Only adopt a filesystem watcher after it is GA *and* we have proven the polling version insufficient in real use.
-
-**Explicitly avoided (unless extraordinary justification + size audit appears later):**
-- Any async runtime (tokio etc.) on the main thread.
-- Large egui widget crates or egui_extras unless a tiny specific module is extracted.
-- Any image loading or network-capable crates (the markdown preview will never load remote images).
-- Heavy regex engines for find (start with literal search + memchr; add the `regex` crate only with written justification).
-
-### 1.4 Dependency Governance Policy (June 2026)
-
-In direct response to the critical review, we adopt an explicit (if lightweight) governance process rather than ad-hoc "latest GA" decisions.
-
-For every crate introduced or upgraded at a phase gate, the following must be recorded in an appendix or commit message and summarized in a table committed alongside the gate:
-
-- Exact version pinned (or range with upper bound).
-- Date of last upstream release and number of active maintainers (bus-factor estimate from GitHub/org activity).
-- Transitive dependency count (`cargo tree -i <crate>` + `cargo tree --duplicates`).
-- Our usage surface (which features, which modules import it).
-- Upgrade risk assessment (breaking change likelihood, API stability history).
-- Security / supply-chain posture (does it do I/O or networking at initialization? Any "phone home" in tests or build scripts?).
-- Rationale tied back to a specific requirement (e.g., "required for S1 atomic save cross-platform").
-
-**Current conservative stance examples (as of June 2026):**
-- ropey stays on 1.6.x stable series until 2.x demonstrates multi-year production use in at least two other editors; 2.0-beta.1 is monitored but not adopted for v0.x.
-- notify 9 remains deferred while at rc; mtime polling is the baseline because it has a vastly smaller failure mode surface.
-- dark-light 2.0 is accepted because its entire purpose is narrow, its MSRV is reasonable, and it eliminates hand-maintained platform bindings that are a common source of bit-rot.
-
-At every phase gate the lead must re-run the health table for crates already in the tree and present it as part of the "Definition of Done" evidence.
-
-### 1.5 Rust Edition & Tooling
-
-- Edition: 2024 (already set in the initial `Cargo.toml`).
-- `rust-version`: will be set to a recent but supportable version once we have CI (likely 1.90+ or whatever the 2026 stable baseline is).
-- Profiles: aggressive release optimizations for size + speed (see Packaging section).
-- Lints: We will have a `[lints.clippy]` table with `pedantic` + selected restrictions turned on gradually, and `-D warnings` in CI.
-
-## 2. High-Level Architecture
-
-```
-noter (bin)
-├── src
-│   ├── main.rs                 # eframe entry point, App bootstrap
-│   ├── app.rs                  # The main NoterApp struct implementing eframe::App
-│   ├── core/
-│   │   ├── mod.rs
-│   │   ├── document.rs         # Document + LineEnding + Encoding + load/save logic
-│   │   ├── editor.rs           # Editor state (cursor, selection, viewport) + edit ops
-│   │   ├── undo.rs             # Undo stack + coalescing policy
-│   │   └── recovery.rs         # Autosave + recovery scanning
-│   ├── ui/
-│   │   ├── mod.rs
-│   │   ├── menu.rs             # Menu construction (egui::menu)
-│   │   ├── editor_widget.rs    # The custom (or wrapped) text editor widget
-│   │   ├── find_bar.rs
-│   │   ├── status_bar.rs
-│   │   └── markdown_preview.rs # Pure-Rust markdown renderer
-│   ├── platform/
-│   │   ├── mod.rs
-│   │   ├── theme.rs            # System theme detection + live updates
-│   │   └── shortcuts.rs        # Cmd vs Ctrl abstraction + key binding table
-│   ├── config.rs               # AppConfig + persistence (TOML)
-│   └── error.rs                # NoterError + user-facing error mapping
-├── tests/
-│   └── integration/            # Golden file tests, cross-cutting behavior
-└── Cargo.toml
+src/main.rs           process bootstrap only
+src/app.rs            eframe adapter
+src/ui/               menus, bars, dialogs, editor adapter
+src/platform/         shortcuts, theme events, native integration
 ```
 
-The `core` modules have **no knowledge of egui**. This is critical for testability and for the (remote) possibility of one day offering a terminal or headless mode. All egui types live in `ui/` and `app.rs`.
+The library cannot depend on egui, eframe, rfd, or other GUI types. The binary
+may depend on the library. Platform-specific unsafe code, if eventually needed,
+is isolated in a small adapter crate or module with a documented safety
+contract. The workspace-wide default remains `unsafe_code = "forbid"`.
 
-## 3. Core Domain Model
+## 4. Domain model
 
-### 3.1 LineEnding (strong type)
+### 4.1 Identity and revisions
 
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub enum LineEnding {
-    Lf,      // \n
-    CrLf,    // \r\n
-    Cr,      // \r (rare, but must round-trip)
+struct DocumentId(UuidLike);
+struct Revision(u64);
+
+struct Document {
+    id: DocumentId,
+    content: Rope,
+    revision: Revision,
+    saved_revision: Option<Revision>,
+    source: Option<FileSource>,
+    encoding: Encoding,
+    eol: LineEndingProfile,
 }
 
-impl LineEnding {
-    pub fn as_str(&self) -> &'static str { ... }
-    pub fn detect_from_bytes(bytes: &[u8]) -> (Self, usize /* bom len or 0 */);
+struct FileSource {
+    display_path: PathBuf,
+    resolved_path: PathBuf,
+    identity: FileIdentity,
+    saved_fingerprint: ContentFingerprint,
 }
 ```
 
-### 3.2 Document
+Every content mutation increments `revision`. A document is dirty when its
+current revision or serialized bytes differ from the last committed snapshot.
+Path selection alone does not make content clean.
+
+`DocumentId` and recovery instance IDs use collision-resistant random values.
+The implementation may use a narrowly configured UUID crate or an equivalent
+OS random source after dependency review.
+
+### 4.2 Positions and selections
+
+Core positions use rope character indexes with validated UTF-8 boundaries.
+Public editor commands use a strong `TextPosition` type instead of mixing byte,
+character, grapheme, line, and visual-column indexes.
 
 ```rust
-pub struct Document {
-    pub rope: Rope,
-    pub path: Option<PathBuf>,
-    pub line_ending: LineEnding,
-    pub had_bom: bool,
-    pub is_dirty: bool,
-    // last_saved_mtime, content_hash for change detection, etc.
+struct TextPosition {
+    char_index: usize,
+    affinity: Affinity,
 }
 
-impl Document {
-    pub fn from_path(path: &Path) -> Result<Self, NoterError>;
-    pub fn from_bytes(bytes: &[u8], path: Option<PathBuf>) -> Self;
-    pub fn to_bytes(&self) -> Vec<u8>;   // applies BOM + chosen line endings
-    pub fn save_atomic(&self) -> Result<(), NoterError>; // the critical method
+struct Selection {
+    anchor: TextPosition,
+    head: TextPosition,
 }
 ```
 
-`Document` owns the authoritative text. `Editor` owns transient UI state (cursor position, scroll, selection, viewport offset).
+The status bar reports one-based logical line and Unicode-scalar column in v0.1.
+Grapheme-aware visual movement belongs to the editor adapter and is tested with
+combining marks, emoji sequences, CJK, and bidirectional samples.
 
-### 3.3 Editor & Undo
+### 4.3 Encoding
 
-The editor will contain:
-- Reference to (or owned) `Document`
-- `Cursor { line: usize, column: usize }` (logical, not visual)
-- `Selection` (anchor + head, or collapsed)
-- `UndoStack` (Vec of `UndoAction` or a more sophisticated structure with checkpoints)
-- Viewport state (first visible line, scroll offset in pixels for sub-line precision)
+v0.1 supports strict UTF-8 with optional UTF-8 BOM:
 
-Undo coalescing rules are defined in `undo.rs` and must be property-tested.
+1. Read bytes without conversion.
+2. Detect and remove only the exact UTF-8 BOM prefix.
+3. Validate the remaining bytes with strict UTF-8.
+4. On failure, keep the source untouched and return a typed error containing a
+   safe byte offset, not document contents.
+5. Serialize the recorded BOM followed by exact UTF-8 content bytes.
 
-### 3.4 AppConfig (persisted)
+An explicit lossy import, if later added, creates a new untitled dirty document
+and requires Save As. It cannot inherit the source path.
+
+### 4.4 Line endings
+
+The current single `LineEnding` field becomes:
+
+```rust
+enum LineEnding {
+    Lf,
+    CrLf,
+    Cr,
+}
+
+enum LineEndingProfile {
+    None { insertion: LineEnding },
+    Uniform(LineEnding),
+    Mixed {
+        counts: LineEndingCounts,
+        insertion: LineEnding,
+    },
+}
+```
+
+Existing newline bytes remain inside the authoritative content. Loading and
+saving an untouched document is therefore byte-identical.
+
+Insertion policy:
+
+- A uniform document inserts its uniform ending.
+- A new or newline-free document uses CRLF on Windows and LF elsewhere.
+- A mixed document uses the nearest preceding existing ending, then the nearest
+  following ending, then its deterministic dominant ending.
+- Pasted logical newlines use the insertion policy at the insertion point.
+- Existing unrelated lines are never rewritten.
+
+An explicit Convert Line Endings command rewrites the full document in one edit
+transaction and is independently undoable. Ties in dominant-ending detection
+use first occurrence, making the result deterministic.
+
+## 5. Edit and undo architecture
+
+All mutations are `EditTransaction` values:
+
+```rust
+struct EditTransaction {
+    base_revision: Revision,
+    edits: Vec<TextEdit>,
+    selection_before: Selection,
+    selection_after: Selection,
+    origin: EditOrigin,
+    timestamp: MonotonicInstant,
+}
+
+enum TextEdit {
+    Replace {
+        range: TextRange,
+        inserted: RopeSliceOwned,
+        removed: RopeSliceOwned,
+    },
+}
+```
+
+The transaction validator rejects stale revisions, invalid ranges, overlap, and
+non-boundary positions before mutating content. Applying a transaction returns
+its exact inverse.
+
+Undo history is bounded by both transaction count and retained byte cost.
+Coalescing is a pure policy over origin, time, adjacency, selection, and edit
+shape. Paste, Replace All, EOL conversion, recovery acceptance, and Markdown
+formatting never coalesce with ordinary typing.
+
+A simple reference model based on `String` is used in property tests. Random
+valid edit sequences must produce identical content and selection in the
+reference and rope implementations, including after every undo and redo.
+
+## 6. Durable file I/O
+
+### 6.1 Storage boundary
+
+Filesystem operations are injected:
+
+```rust
+trait Storage {
+    type Temp;
+
+    fn inspect(&self, path: &Path) -> Result<FileObservation, StorageError>;
+    fn create_unique_sibling(&self, path: &Path) -> Result<Self::Temp, StorageError>;
+    fn write_all(&self, temp: &mut Self::Temp, chunks: &mut dyn ByteChunks)
+        -> Result<(), StorageError>;
+    fn flush(&self, temp: &mut Self::Temp) -> Result<(), StorageError>;
+    fn sync_file(&self, temp: &mut Self::Temp) -> Result<(), StorageError>;
+    fn apply_metadata(&self, temp: &mut Self::Temp, source: &FileObservation)
+        -> Result<(), StorageError>;
+    fn replace(&self, temp: Self::Temp, destination: &Path)
+        -> Result<ReplaceReceipt, StorageError>;
+    fn sync_parent(&self, destination: &Path) -> Result<Durability, StorageError>;
+}
+```
+
+The test adapter can fail every operation before and after the replacement
+commit point. Production code never infers commit state from a generic I/O
+error.
+
+### 6.2 Save protocol
+
+1. Capture an immutable `SaveSnapshot` containing document ID, revision,
+   serialized-byte iterator, target, expected file identity, fingerprint, BOM,
+   and EOL profile.
+2. Revalidate the target. If an external revision is present, return Conflict
+   before creating a temporary file.
+3. Create an unpredictable sibling with create-new semantics. Never reuse or
+   truncate a guessed temporary name.
+4. Stream all bytes, flush user-space buffers, and sync the temporary file.
+5. Copy required permissions and supported metadata from an existing target.
+6. Revalidate target identity immediately before replacement.
+7. Replace atomically without deleting the destination first.
+8. Sync the parent directory where the platform provides a meaningful operation.
+9. Report the exact outcome to the application state.
+
+On Windows, the adapter evaluates `ReplaceFileW` for existing destinations and
+an atomic move for new destinations. On Unix, it uses same-filesystem rename
+after metadata application and parent-directory sync. An audited crate may
+replace custom platform code only if its documented behavior and tests satisfy
+this contract.
+
+Save outcomes are explicit:
+
+```rust
+enum SaveOutcome {
+    Committed {
+        revision: Revision,
+        durability: Durability,
+        observation: FileObservation,
+    },
+    Conflict(Conflict),
+    NotCommitted(StorageError),
+}
+```
+
+If replacement commits but directory sync fails, the result is committed with a
+durability warning. The UI must not tell the user nothing was written. A
+successful older snapshot does not clear a newer dirty revision.
+
+### 6.3 Metadata and symlinks
+
+M1 closes these policies through ADR-003 and platform tests:
+
+- preserve ordinary permissions and supported ownership, ACL, alternate stream,
+  quarantine, and extended-attribute semantics where the platform permits;
+- never replace a symlink directory entry accidentally;
+- revalidate a previously resolved regular-file target before commit;
+- refuse an ambiguous or changed link with a safe Save As path;
+- document weaker durability on network, cloud, removable, and unusual
+  filesystems.
+
+No implementation may claim durable atomic save while these cases are silently
+undefined.
+
+## 7. Lifecycle, recovery, and conflicts
+
+### 7.1 One destructive-action state machine
+
+`New`, `Open`, `Reload`, `Close`, and `Quit` produce a
+`DestructiveIntent`. If the document is dirty, the pure application state emits
+`NeedsDirtyDecision`. Save success continues the original intent, Discard
+continues after explicit confirmation, and Cancel returns to editing.
+
+Dialogs cannot directly mutate document state. They emit commands to the same
+dispatcher used by keyboard shortcuts and menus. Repeated close events are
+idempotent while a decision is open.
+
+### 7.2 Recovery storage
+
+Recovery uses the application state or local-data directory returned by
+`directories::ProjectDirs`. Each document has a private versioned record:
+
+```text
+magic
+schema_version
+document_id
+instance_id
+revision
+created_at
+updated_at
+original_path_metadata
+encoding_and_eol_profile
+selection
+content_length
+content_checksum
+content_bytes
+```
+
+Records are written with the durable state-file protocol and restrictive
+permissions. The recovery worker receives immutable revision snapshots. It
+acknowledges a persisted revision back to application state, and stale
+acknowledgements are ignored.
+
+Scheduling uses a 2-second idle debounce plus a 15-second maximum interval while
+dirty. A clean close after Save or explicit Discard removes the owned record. A
+recovery write failure is a visible warning and never permits silent close.
+
+Startup scans only Noter's own versioned state directory. Valid orphan records
+are offered before a normal untitled document. Unknown versions and checksum
+failures are quarantined with a non-destructive explanation.
+
+### 7.3 External changes
+
+`FileObservation` combines platform file identity, length, modified time, and a
+content fingerprint. Focus regain and a bounded focused timer inspect metadata.
+A changed observation triggers a full confirmation before reload or overwrite.
+
+The conflict UI initially offers:
+
+- Reload Disk Version, guarded by the dirty decision state machine;
+- Keep Editing, which does not authorize overwrite;
+- Save As;
+- Overwrite Disk Version only behind an explicit second confirmation showing
+  that the disk version will be replaced.
+
+True concurrent merge is out of scope.
+
+## 8. Application and command architecture
+
+`AppState::reduce(Command) -> Vec<Effect>` is the testable center. Commands
+include New, OpenRequested, OpenCompleted, Edit, SaveRequested, SaveCompleted,
+DirtyDecision, RecoveryPersisted, ExternalObservation, and window events.
+
+Effects include ShowOpenDialog, ShowSaveDialog, LoadFile, SaveSnapshot,
+PersistRecovery, InspectFile, ShowMessage, and CloseWindow. Effect completions
+carry correlation IDs and revisions so duplicate, cancelled, and stale results
+are harmless.
+
+Every menu item and shortcut maps to the same `CommandId` table. Enabled state,
+label, platform shortcut, and help text derive from that table. A command that
+has no behavior is absent.
+
+## 9. GUI and editor strategy
+
+### 9.1 M4 correctness adapter
+
+The built-in egui `TextEdit` remains a bounded alpha adapter. Because its
+`TextBuffer` contract requires a contiguous string, the adapter maintains a
+revision-tagged `String` view cache, derives the changed range, and submits an
+`EditTransaction` to the authoritative core.
+
+This path is for workflow correctness, UI automation, and dogfooding on ordinary
+files. It is not evidence for the 50 MiB performance contract.
+
+### 9.2 M5 feasibility gate
+
+A one-week vertical slice must demonstrate:
+
+- authoritative rope edits with no full-document copy per frame;
+- visible-row layout with bounded caches and long-line limits;
+- caret, selection, hit testing, horizontal scrolling, and expected movement;
+- IME pre-edit rendering and candidate-window placement;
+- accessibility text runs, selection, caret, and editable actions;
+- search and styled-source ranges;
+- deterministic frame-time instrumentation.
+
+The slice must pass correctness tests, 1 MiB interaction budgets, one real CJK
+IME, NVDA or another real screen reader, and show a measured route to 50 MiB.
+Failure means retaining the correctness adapter with reduced performance claims
+or explicitly evaluating another GUI and text stack. Accessibility or IME
+cannot be traded away for throughput.
+
+### 9.3 Production renderer
+
+Only after the gate passes:
+
+- lay out visible logical and wrapped rows plus bounded overscan;
+- key caches by document revision, line identity, width, font, and theme;
+- bound galley, highlight, undo, search, and worker memory;
+- handle pathological single lines without allocating proportional per-frame
+  layout state;
+- keep file I/O and indexing off the render thread;
+- cancel or ignore stale work by revision;
+- publish p50, p95, and p99 results on named hardware.
+
+## 10. IME and accessibility
+
+The platform adapter preserves the full IME lifecycle: enabled, pre-edit text,
+pre-edit cursor range, commit text, and disabled. Pre-edit does not enter undo or
+recovery until commit. Candidate-area coordinates update whenever the caret or
+viewport moves.
+
+The editor accessibility node exposes:
+
+- editable text value or bounded text runs;
+- caret and selection;
+- line and character navigation;
+- replace-selection and set-selection actions;
+- read-only, modified, and validation state;
+- find, recovery, error, and conflict announcements.
+
+Semantic tests use the current egui testing and accessibility tree tooling.
+Manual release tests cover NVDA, VoiceOver, Orca, CJK IME, dead keys, emoji,
+combining marks, bidirectional samples, keyboard-only use, high contrast, and
+125 to 200 percent scaling.
+
+## 11. Configuration, state, and theme
+
+Configuration has a versioned schema with conservative defaults:
 
 ```toml
-[app]
-theme = "System"          # or "Light" | "Dark"
+schema_version = 1
+theme = "system"
 font_size = 15.0
 word_wrap = true
 show_line_numbers = false
-recent_files = ["/path/to/a.txt", ...]   # capped + deduped
+recent_files = []
 
 [window]
-x = 120
-y = 80
 width = 900
 height = 700
 maximized = false
-
-[editor]
-autosave_interval_secs = 25
-undo_limit = 800
 ```
 
-Config is loaded at startup, saved on clean exit and on major preference changes. We use a simple "write whole file" strategy (the file is tiny).
-
-### 3.5 Core Behavioral Specification (Lightweight Formalization)
-
-In response to the critical review (RIGOROUS_REVIEW.md §3.1), we document the intended safety and liveness properties explicitly. These are not TLA+ (yet), but they are precise enough to be turned into property tests and to serve as acceptance criteria for the core modules.
-
-#### Safety Properties (must never be violated)
-
-**S1 — Save Fidelity**  
-For any `Document` and target `Path`, if `save_atomic(doc, path)` returns `Ok(())`, then the bytes observed on disk at `path` (after the operation) must be byte-for-byte identical to `to_bytes(doc)`, subject only to the documented line-ending normalization and BOM policy that were determined at load time for that document.
-
-**S2 — Line Ending & BOM Preservation**  
-The `line_ending` and `had_bom` fields recorded at load time are the *only* values that `to_bytes()` is permitted to use when emitting content for a subsequent save of the same logical document. No "helpful" normalization to the host platform's native ending is allowed on save unless the user has explicitly chosen a different ending via the UI (an operation that must itself be undoable and clearly indicated in the status bar).
-
-**S3 — Undo Information Preservation (Content Only)**  
-For any sequence of mutating `EditorCommand`s C1 … Cn that the undo system classifies as "content-affecting," applying the corresponding undo actions must restore both the `Rope` content *and* the logical (line, column) cursor/selection state to a state that is information-theoretically equivalent to the state before the sequence (viewport and transient UI state are explicitly excluded from this guarantee).
-
-**S4 — No Silent Data Loss on Close**  
-If `is_dirty` is true and the user requests close/quit, the only permitted outcomes are: (a) successful save to the current or a new path, (b) explicit user confirmation to discard, or (c) cancellation of the close. There must be no code path that drops the in-memory `Rope` without one of the above.
-
-#### Liveness & Progress Properties (under normal conditions)
-
-**L1 — Save Progress**  
-If the filesystem is writable, has sufficient space, and is not experiencing pathological latency, a Save request must terminate (success or documented error) within a bounded multiple of the size of the document (modulo `fsync` costs that the OS controls).
-
-**L2 — Recovery Offer**  
-On launch, if any autosave artifacts belonging to this user and newer than N hours exist and their owning process is no longer running, the application must surface a recovery offer before presenting a normal untitled or "Open recent" document.
-
-#### Accepted Residual Risks (documented, not hidden)
-
-- Networked or distributed filesystems (NFS, SMB, OneDrive "Files On-Demand", etc.) may violate atomic rename visibility or `fsync` durability. We detect some cases via mtime races but cannot guarantee S1 in the presence of external writers or caching layers.
-- Mandatory file locks or anti-virus scanners that hold the target file open across the rename window on Windows.
-- Power loss or kernel panic *after* `fsync` on the `.tmp` but before the rename inode update is durable on certain non-journaling or log-structured filesystems.
-- User confusion about "what a character is" when combining characters, zero-width joiners, or BiDi text affect column counting. We will use logical (Unicode scalar value) columns; visual columns are a best-effort status-bar hint only.
-
-These properties and risks must be referenced (by ID) in the comments of the corresponding implementation and in the property tests that attempt to falsify them.
-
-## 4. Text Editing Engine & Rendering
-
-**Initial approach (Phase 1):** Wrap `egui::TextEdit` inside a container that gives us the status bar and find bar. This lets us deliver a working editor in hours instead of days.
-
-**Production approach (Phase 2 - The Zero-Latency Engine):**
-- Custom `EditorWidget` rendering engine focused on achieving <16ms latency for massive (500MB+) files and 120Hz scrolling:
-  1. **Viewport Virtualization:** Only fetches `rope.chunks()` mapping strictly to the currently visible vertical scroll window (approx 80-120 lines).
-  2. **Galley Caching:** `egui::Galley` (text layout) objects are cached per logical line. Scrolling vertically re-uses layout caches.
-  3. **Memory Mapped Loading:** Files larger than a threshold (e.g. 10MB) are memory-mapped (`mmap`) into the `Rope` rather than loaded into heap `Vec<u8>`.
-  4. Handles its own cursor painting, selection rectangles, and caret blinking on the paint layer without triggering full UI passes.
-  5. Translates events to atomic `EditorCommand`s, keeping the main UI thread pristine.
-- This gives us full control over undo grouping, typographic spacing, sub-pixel rendering, and unmatched performance.
-
-Long lines (> 2000 chars) are clipped and horizontally scrolled using a subtle horizontal scrollbar when wrap is off.
-
-## 5. File I/O & Reliability Subsystem (The Heart of Trust)
-
-### 5.1 Load Path
-1. Read entire file into `Vec<u8>` (memory map is future optimization).
-2. Detect BOM + line ending style using a single pass.
-3. Convert to `String` (lossy or strict per user choice).
-4. Build `Rope` from the string.
-5. Record original `line_ending` and `had_bom`.
-
-### 5.2 Atomic Save (Non-negotiable implementation sketch)
-
-```rust
-fn save_atomic(&self) -> Result<()> {
-    let path = self.path.as_ref().ok_or(NoterError::NoPath)?;
-    let tmp = path.with_extension("txt.tmp");   // or a better unique name
-
-    {
-        let mut f = File::create(&tmp)?;
-        let bytes = self.to_bytes();
-        f.write_all(&bytes)?;
-        f.sync_all()?;           // crucial on Windows and Linux
-    }
-
-    // On Windows, rename can fail if target exists and is locked.
-    // We may need a small retry or a "replace if exists" dance.
-    fs::rename(&tmp, path)?;
-
-    // Update our metadata (mtime, dirty=false, etc.)
-    Ok(())
-}
-```
-
-We will write extensive tests using `tempfile::TempDir`, including simulated power-loss by writing the tmp file, then killing the conceptual "process" before rename, then verifying recovery logic.
-
-### 5.3 Autosave & Recovery
-
-- Autosave writes to a well-known location in `std::env::temp_dir()` with a name containing pid + timestamp or a uuid.
-- On launch we look for files matching `noter-autosave-*` that are newer than N hours and whose owning process is dead.
-- Recovery presents the content in a special "Recovered" document with a big "Save As…" prompt.
-- We keep the autosave until the user explicitly saves or discards.
-
-### 5.4 File Changed on Disk
-
-Simple but effective:
-- When the window regains focus or on a 3-second timer (while focused), stat the file.
-- If mtime or size differs from what we last knew, read the first 4 KiB + last 4 KiB + total size. If they differ, raise the prompt.
-- Full content hash only on user request ("Reload").
-
-## 6. UI Layout (egui)
-
-Typical frame:
-
-```rust
-fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-    // Top menu
-    egui::TopBottomPanel::top("menu").show(ctx, |ui| {
-        ui.horizontal(|ui| { self.build_menu(ui); });
-    });
-
-    // Optional find bar (appears below menu when active)
-    if self.find_shown {
-        egui::TopBottomPanel::top("find").show(...);
-    }
-
-    // Main area (Inline Markdown styling applied natively within the text view)
-    egui::CentralPanel::default().show(ctx, |ui| {
-        self.editor_widget.ui(ui, &mut self.editor);
-    });
-
-    // Status
-    egui::TopBottomPanel::bottom("status").show(...);
-}
-```
-
-Menus are built with `egui::menu::bar` + submenus. We will define a `Command` enum and a central dispatch so keyboard shortcuts and menu items share the same code path.
-
-## 7. Theming & System Integration
-
-`platform/theme.rs` (or a thin wrapper) will use the `dark-light` crate (2.0.0 as of June 2026) for the heavy lifting:
-
-- `dark_light::detect()` gives us the current system preference.
-- On Windows it reads the expected registry key.
-- On macOS it queries effective appearance.
-- On Linux it uses gsettings / freedesktop standards.
-
-We still own a small `ThemePreference` enum (`System | Light | Dark`) and the persistence logic. `dark-light` is just the detector.
-
-When the user chooses "System", we react to changes:
-- Windows: hook `WM_SETTINGCHANGE` via the eframe/winit event loop.
-- Other platforms: reasonable polling on window focus is acceptable for v1.
-
-egui `Visuals` are swapped by calling `ctx.set_visuals(visuals_for(theme))`. We will define (or heavily customize) two clean `Visuals` structs with excellent contrast and selection colors in both modes. We do not blindly accept egui's default light/dark.
-
-- Fenced code blocks with a slightly different background and monospace
-- Emphasis / strong
-## 8. The "Ruff" of Markdown (Strict Linter & Inline Styling)
-
-**Parser:** `pulldown-cmark` 0.13+ (current GA June 2026 is 0.13.4). We use the event iterator to build an `egui::text::LayoutJob`.
-
-**Rendering & Formatting Philosophy:**
-We do NOT use a split-pane preview. The text editor buffer applies text styles (bold, headers, links) directly to the plaintext source as you type, identical to a word processor but leaving the raw markdown characters intact.
-
-**The "Ruff" Linter Rules:**
-Noter is not just a viewer; it is a strict structural enforcer. When in Markdown mode, the editor provides:
-1. **Smart Indentation:** Hitting enter on a bullet list (`- item`) automatically inserts the next `- ` at the exact correct indentation level.
-2. **One-Keystroke Alignment:** A global format shortcut (e.g., `Ctrl+Shift+F`) instantly normalizes the entire `.md` file to strict Markdown standards:
-   - Ensuring a single space after `#` for headers.
-   - Re-aligning markdown tables with perfect padding.
-   - Fixing disordered numbered lists (`1.`, `2.`, `3.`).
-   - Stripping trailing whitespace.
-
-Because everything is pure Rust + egui primitives, this adds almost no attack surface, while keeping your `.md` files immaculate.
-
-## 9. Error Handling & User Communication
-
-We will have two error layers:
-
-1. `NoterError` (thiserror) — internal, rich, for logging.
-2. User-facing messages produced by a small `fn user_message(err: &NoterError) -> (String, Severity)`.
-
-Dialogs will be simple egui windows or `egui::Modal` (or the pattern that exists in 2026). Types: Info, Warning, Error, Confirmation (Save/Discard/Cancel).
-
-Never use `panic!` or `unwrap` to communicate user errors.
-
-## 10. Code Quality Standards (Enforced)
-
-- **Formatting & Lints:** `cargo fmt` + `cargo clippy -- -D warnings` on every push. We will gradually enable more pedantic lints.
-- **Documentation:** Every item in `core/` and every UI command must have a doc comment.
-- **No silent loss:** Any path that can drop user data must be explicit and tested.
-- **Strong types over strings:** `LineEnding`, `ThemePreference`, `Command`, `FindOptions`, etc.
-- **Resource cleanup:** Use `Drop` guards or `scopeguard` for temp file cleanup where appropriate.
-- **Dependencies:** Any addition must be discussed in a short note in the commit or a DESIGN update. We will run `cargo tree --duplicates` regularly.
-
-## 11. Testing Strategy (Designed for Coverage & Trust)
-
-### 11.1 Levels
-
-1. **Unit tests** — inside each module (`#[cfg(test)] mod tests`). Especially heavy in `core/document.rs`, `core/undo.rs`, `core/recovery.rs`.
-2. **Property-based tests** (`proptest`) — located in `tests/proptests.rs` or inside modules:
-   - Arbitrary edit sequences + undo/redo must produce identical final rope + cursor state.
-   - Line ending roundtrips for all three styles + BOM combinations.
-   - Config serialization is stable and roundtrippable.
-3. **Golden / integration tests** (in `tests/integration/`) — real small files with known tricky content. We assert that `Document::from_bytes(...).to_bytes()` produces byte-identical output, and that atomic save produces the expected file.
-4. **UI smoke tests & Automated UI Testing** — By Phase 2, we will integrate the new 2026 `egui_mcp` inspection protocol. Instead of relying solely on manual testing, we will write programmatic tests that inspect the live UI tree (e.g., verifying the "Modified" flag appears in the status bar without manual clicking). For v1, we rely on "the app starts and renders" + extensive manual testing.
-5. **Crash & recovery simulation** — scripts or test harnesses that write an autosave, then corrupt the main process state, then launch a fresh `noter` binary (or call the recovery scanner directly) and assert the content is offered.
-
-### 11.2 Coverage Target
-
-- Core logic (`src/core/**`): ≥ 85% line, 70% branch by Phase 2 gate.
-- Whole workspace: ≥ 60% by v0.1 (UI code is harder to cover meaningfully).
-- We will use `cargo-llvm-cov` in CI and publish the HTML report as an artifact.
-
-### 11.3 Manual Test Matrix (documented in ROADMAP)
-
-For every phase gate we will run a written checklist on:
-- Windows 11 (author's machine)
-- At least one Linux desktop (Wayland + X11 if possible)
-- macOS (if available to contributor or via CI VM)
-
-Checklist items include large files, mixed line endings, power-loss simulation (actually pulling the power on a test laptop is dramatic but effective for early versions), theme switching, high-DPI scaling, etc.
-
-## 12. Packaging & Distribution
-
-We will use `cargo-dist` (the 2025–2026 standard) for releases.
-
-`Cargo.toml` will contain:
-
-```toml
-[workspace.metadata.dist]
-cargo-dist-version = "0.28.0"   # or whatever current
-ci = ["github"]
-installers = ["msi", "shell", "homebrew", "npm"]  # as appropriate
-targets = ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
-```
-
-Release profile:
-
-```toml
-[profile.release]
-opt-level = "z"   # or 3 if size is acceptable
-lto = true
-codegen-units = 1
-strip = true
-panic = "abort"
-```
-
-We will also produce a pure portable `.exe` / binary that requires no installer.
-
-## 12.1 Project Stewardship and Longevity (Response to Critical Review)
-
-A tool that aspires to be "the one you trust for a decade" must plan for the day the original author steps away (bus factor, life, loss of interest). By Phase 4 we will produce a committed `STEWARDSHIP.md` containing at minimum:
-
-- Exact reproducibility recipe: the pinned `rust-toolchain.toml` (or rustup commands), the exact `cargo dist` version used for the release, and a one-command "build the signed release artifacts on a fresh machine" script.
-- Known fragile platform assumptions (e.g., "we assume rename is atomic within the same directory on the target FS"; "we rely on `fsync` having the documented durability semantics").
-- Criteria for declaring the project "unmaintained" and the recommended migration path (point to a maintained fork, or to a different tool, with data export guidance).
-- A minimal set of integration tests that a future maintainer can run in < 10 minutes to gain confidence that a patch has not broken S1–S4.
-
-This is not over-engineering for a notepad; it is the minimum hygiene for any artifact that claims reliability as its primary value proposition.
-
-## 13. Risks, Mitigations, and Failure Modes Analysis
-
-### 13.1 Initial Failure Modes and Effects Analysis (FMEA)
-
-In response to the critical review (RIGOROUS_REVIEW.md §3.1 and §4.2), we maintain an explicit FMEA. This table is a living artifact; it is updated at each phase gate with new modes discovered during implementation or testing. Severity is from the user's perspective (data loss = 10, annoyance = 3).
-
-| ID  | Failure Mode                                      | Potential Effect on User                                      | Sev | Current / Planned Detection & Mitigation                                                                 | Residual Risk (after mitigation)                          | Phase First Addressed |
-|-----|---------------------------------------------------|---------------------------------------------------------------|-----|----------------------------------------------------------------------------------------------------------|-----------------------------------------------------------|-----------------------|
-| F1  | Partial/truncated write during save (power loss, kill -9, disk full mid-rename) | Silent data loss or zero-byte file replacing original        | 10  | Atomic write to sibling `.tmp` + `fsync` before `rename`. Recovery scanner on launch. Fault-injection harness that corrupts the `.tmp` or simulates rename failure. | Network/OneDrive filesystems can still lose visibility or durability. Documented. | 1 |
-| F2  | Line-ending or BOM detection is wrong or "helpful" normalization occurs on save | User's version control or downstream tools see spurious diffs; trust destroyed | 9   | Single-pass detection at load; `to_bytes()` is the *only* emitter and is driven exclusively by the recorded `line_ending`/`had_bom`. Golden-file roundtrip tests for all three endings + BOM combinations. Property test S2. | Mixed-ending files inside one document have no perfect single-style representation; we pick one and stay consistent. | 1 |
-| F3  | Autosave file itself is corrupted, from another instance, or from a different Noter version | Recovery offers garbage or the wrong document                 | 8   | Autosave filenames contain PID + timestamp + a small header magic + version. Recovery code verifies header and that the owning process is dead. Content is still presented as "Recovered — Save As required." | User may still be confused; clear UI language and "Discard this recovery" are mandatory. | 1–2 |
-| F4  | External writer (or OneDrive sync) changes the file while we have it open | Lost work or "which version is real?" confusion               | 7   | Periodic mtime+size check on focus regain + 3s timer. Quick content fingerprint (first+last 4 KiB + len). Prompt: Reload / Keep Mine / (future) Diff. | True concurrent editing is out of scope; we only detect after the fact. | 2 |
-| F5  | Very long lines or pathological Unicode (combining chars, ZWJ, BiDi) cause cursor/column mismatch or OOM during layout | User cannot reliably edit or the editor freezes               | 6   | Logical (scalar-value) columns only. Viewport virtualization + line-length clamping for layout. Explicit horizontal scroll when wrap is off. Performance tests on 10k-char lines. | Visual column count in status bar is best-effort only; documented. | 2 |
-| F6  | Undo stack grows unbounded or coalescing is incorrect | Memory exhaustion or "undo did something surprising"          | 7   | Bounded undo stack (entries + approximate byte cost). Coalescing rules are property-tested (U1). | Very long editing sessions may lose the very first edits; this is accepted and the bound is user-visible in config. | 1–2 |
-| F7  | Markdown preview renders something surprising or expensive from a crafted .md | User thinks the file contains active content; performance cliff | 5   | Pure event-based renderer from pulldown-cmark only. No HTML, no images, no network. Explicit scope contract (see 8). Time-budgeted rendering with "first N lines" cutoff + user affordance to render more. | Users may still paste weird Markdown expecting rich behavior; we never claim to be a full renderer. | 3 |
-| F8  | Theme detection fails or goes stale on a platform update | App looks wrong or fights the system setting                  | 4   | `dark-light` 2.0 as primary + manual override always available + live Windows `WM_SETTINGCHANGE` hook. Fall back to "Light" + status message. | Platform APIs can change; we treat this as a high-priority bug on any reported mismatch. | 1 |
-| F9  | IME (Input Method Editor) input fails, crashes, or corrupts text during composition | User typing in CJK/other languages loses text or crashes the app | 9 | Explicit manual test pass using IME on Windows and macOS. Leverage latest `egui` IME improvements. Automated tests via `egui_mcp` simulating complex input events if possible. | IME state machines are notoriously platform-dependent and brittle; regressions are common. | 1–2 |
-
-New rows are added whenever a test, code review, or dogfooding session reveals a mode not previously considered. The table is the single source of truth for "what can still go wrong and why we accept it."
-
-### 13.2 Narrative Risk Mitigations (Retained & Updated)
-
-- **Editor performance on huge files** — Mitigated by designing the virtual widget from the start and having clear performance tests. Fallback: keep `TextEdit` path as a "SimpleEditor" mode for Phase 1 delivery. See performance numbers in NFR-PERF.
-- **Theme detection bit-rot on macOS/Windows** — See F7 row and the dark-light governance note above.
-- **Atomic save races on Windows** — See F1. We will research `ReplaceFile` / transactional NTFS patterns current in 2026 and implement the best portable compromise we can prove in the fault harness.
-- **OneDrive / cloud sync folders** — See F1 and F4. We will add a one-time "Using Noter with cloud-synced folders" warning dialog on first save into a known sync root, plus clear documentation.
-- **Scope creep** — The REQUIREMENTS.md non-goals list, the explicit Markdown scope contract (section 8), the mental-model impact statements, and the phase gates that require "no new features until quality bar is met" are the primary defenses. Any proposed addition must also survive the "Classic Notepad power user would this make their life better or introduce hidden state?" test.
-
-## 14. Open Questions (to be closed before or during Phase 1)
-
-- Exact default font stack and whether we embed a font (increases binary size).
-- Whether the find bar should support regex in v0.1 (probably not — start with literal).
-- How aggressive to be with horizontal scrolling vs forcing wrap on extremely long lines.
-- Whether to persist "last used directory" separately from recent files.
-
----
-
-This design is the blueprint. Implementation should feel like translating well-understood specifications into clean Rust, not like exploratory coding.
+Unknown fields are preserved where practical; invalid values are diagnosed and
+replaced individually rather than discarding the whole file. Config and recent
+files use the durable state-file writer. Recovery content never enters config.
+
+Theme preference is System, Light, or Dark. System changes are delivered by
+platform events where available and checked on focus elsewhere. Contrast,
+selection, focus, disabled state, and error state are tested, not selected only
+for appearance.
+
+## 12. Markdown v0.2
+
+Markdown operates on immutable revision snapshots after v0.1:
+
+1. Parse the ratified CommonMark dialect off the UI thread.
+2. Tag syntax spans and diagnostics with the source revision.
+3. Apply only non-mutating styling and diagnostic results that still match.
+4. Build explicit fixes as `EditTransaction` values.
+5. For Format, produce a diff, parse before and after, reject semantic
+   differences, preserve BOM and EOL policy, and apply one undo transaction only
+   after confirmation.
+
+Remote images, link fetching, HTML execution, and implicit formatting have no
+implementation path. Markdown disabled schedules no parser work.
+
+## 13. Performance and concurrency
+
+Noter uses bounded worker threads and message passing, not a general async
+runtime, unless later evidence justifies one. Work items carry cancellation and
+revision tokens. The render thread never waits for disk sync, full-file search,
+recovery serialization, or Markdown parsing.
+
+The benchmark corpus contains:
+
+- empty and 1 MiB ordinary prose;
+- 50 MiB source-like and log files;
+- newline-only input;
+- mixed Unicode and mixed EOL;
+- one pathological long line;
+- early, middle, late, absent, and adversarial search matches.
+
+Benchmark reports include OS, CPU, memory, storage, display refresh, build
+profile, commit, corpus checksum, sample count, warm or cold state, and raw data.
+
+## 14. Errors, diagnostics, and privacy
+
+Internal errors are typed by operation and commit state. User messages answer:
+
+1. What failed?
+2. Was the original file changed?
+3. Is current work still in memory or recovery?
+4. What is the safest next action?
+
+Tracing is off or minimal by default. Logs never include document content,
+clipboard content, recovery bytes, or full paths unless a user explicitly
+exports a diagnostic bundle and previews it. The application has no network
+client, updater, remote fonts, remote images, or telemetry endpoint.
+
+## 15. Verification architecture
+
+### 15.1 Automated layers
+
+1. Unit tests for parsing, policies, state transitions, and errors.
+2. Golden fixtures for BOM, EOL, Unicode, empty, whitespace, trailing newline,
+   invalid UTF-8, long lines, and replacement outcomes.
+3. Property tests for byte round-trip, line classification, edit equivalence,
+   undo and redo, config round-trip, lifecycle safety, and recovery scheduling.
+4. Model tests comparing reducers and edit operations with simple reference
+   implementations.
+5. Injected I/O failures at create, write, flush, sync, metadata, revalidation,
+   replacement, and parent sync.
+6. Mutation testing for serialization, replacement decisions, lifecycle, undo,
+   and recovery validation.
+7. Semantic UI tests for command reachability, enabled state, dialogs, status,
+   focus, accessibility values, and stale-effect rejection.
+8. Child-process crash tests for save and recovery boundaries.
+9. Runtime network inspection and dependency audits.
+
+### 15.2 Coverage
+
+- Development: at least 80 percent line coverage for testable product code.
+- Trust kernel: at least 90 percent line coverage.
+- v0.1: at least 80 percent whole-workspace line coverage.
+
+Coverage exclusions require a nearby rationale and a replacement method. A high
+percentage does not replace property, mutation, fault, semantic UI, or manual
+testing.
+
+### 15.3 Manual evidence
+
+Each release candidate copies [manual-test-matrix.md](manual-test-matrix.md),
+records commit and environment, and checks every applicable item on Windows,
+macOS, X11, and Wayland. IME, screen readers, real dialogs, display scaling,
+installers, portable use, and dogfooding cannot be inferred from compilation.
+
+## 16. Dependency and release governance
+
+Each direct dependency records:
+
+- requirement and imported surface;
+- exact features and default-feature decision;
+- release and maintenance health;
+- license and advisory state;
+- transitive and duplicate impact;
+- build-script, native-code, filesystem, process, and network capability;
+- debug and release binary-size delta;
+- removal or replacement strategy.
+
+CI uses the pinned Rust toolchain, locked Cargo graph, immutable action commits,
+minimum permissions, formatting, strict Clippy, cross-platform tests, coverage,
+and documentation checks. Release work adds license and advisory audits, SBOM,
+provenance, checksums, signatures where credentials exist, and cargo-dist
+artifacts verified on clean systems.
+
+## 17. Failure modes and effects
+
+| ID | Failure mode | Severity | Required control | First gate |
+| --- | --- | ---: | --- | --- |
+| F1 | Partial or truncated save replaces original | 10 | pre-commit fault injection and durable replacement | M1 |
+| F2 | Older save clears newer dirty revision | 10 | revision-tagged snapshot and completion tests | M1 |
+| F3 | Encoding, BOM, or EOL changes silently | 9 | strict loader, byte goldens, property tests | M1 |
+| F4 | Dirty lifecycle discards content | 10 | one pure state machine and model tests | M3 |
+| F5 | Recovery is missing, corrupt, or belongs elsewhere | 9 | version, checksum, identity, quarantine, crash tests | M3 |
+| F6 | External revision is overwritten | 9 | identity revalidation and explicit conflict decision | M3 |
+| F7 | Undo restores the wrong content or selection | 8 | inverse transactions and reference-model tests | M2 |
+| F8 | IME commit corrupts or duplicates text | 9 | composition model, real IME matrix, semantic tests | M4/M5 |
+| F9 | Screen-reader user cannot inspect or edit text | 8 | accessibility contract and real reader matrix | M4/M5 |
+| F10 | Long line or large file freezes the UI | 7 | bounded layout, cancellation, adversarial benchmarks | M5 |
+| F11 | Config corruption prevents startup | 5 | versioning, per-field fallback, durable state writes | M4 |
+| F12 | Sensitive content enters logs | 8 | redaction tests and diagnostic review | Every gate |
+| F13 | A dependency introduces network behavior | 9 | feature audit and runtime traffic inspection | Every gate |
+| F14 | Markdown formatter changes meaning | 9 | diff preview, parse equivalence, idempotence, undo | M7 |
+
+The FMEA is updated whenever a test, incident, dependency, or platform behavior
+reveals a new path. Critical and high rows require executable evidence or a
+clearly accepted residual risk before release.
+
+## 18. Architecture decisions
+
+- **ADR-001:** egui remains the GUI shell, but the production editor is gated by
+  IME, accessibility, and performance evidence.
+- **ADR-002:** v0.1 uses strict UTF-8, preserves existing newline bytes, and uses
+  an explicit deterministic mixed-EOL insertion policy.
+- **ADR-003:** durable replacement uses an injected adapter, platform commit
+  semantics, identity revalidation, and explicit durability outcomes.
+
+ADR-002 is accepted. ADR-003 remains proposed until platform tests close
+metadata and symlink semantics. No custom editor implementation starts
+before the M5 feasibility entry criteria are satisfied.

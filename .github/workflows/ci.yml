@@ -10,6 +10,9 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+permissions:
+  contents: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # Formatting & Linting (fast, runs on one platform)
@@ -17,15 +20,16 @@ jobs:
   fmt-clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   # ---------------------------------------------------------------------------
   # Tests (matrix across the three platforms we care about)
@@ -38,26 +42,32 @@ jobs:
         # Future: add aarch64 macos runner or specific ubuntu version when needed
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Build (debug)
-        run: cargo build --verbose
+        run: cargo build --locked --verbose --all-features
 
       - name: Run tests
-        run: cargo test --verbose --all-features
+        run: cargo test --locked --verbose --all-targets --all-features
 
       # Optional: coverage on one platform (Linux is usually fastest)
       - name: Install cargo-llvm-cov
         if: matrix.os == 'ubuntu-latest'
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@e62b3bdab54265ba809383c8707cb0600da93f19 # cargo-llvm-cov
       - name: Generate coverage (Linux only)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+        run: >
+          cargo llvm-cov --locked --all-targets --all-features --workspace
+          --ignore-filename-regex 'src[/\\](app|main)\.rs$'
+          --fail-under-lines 80
+          --lcov --output-path lcov.info
       - name: Upload coverage artifact
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-linux
           path: lcov.info
@@ -68,15 +78,23 @@ jobs:
   docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check that key planning documents exist and are not empty
         run: |
           test -s README.md
-          test -s REQUIREMENTS.md
-          test -s DESIGN.md
-          test -s ROADMAP.md
-          test -s PRIVACY.md
+          test -s LICENSE
+          test -s docs/RESEARCH.md
+          test -s docs/BASELINE.md
+          test -s docs/REQUIREMENTS.md
+          test -s docs/DESIGN.md
+          test -s docs/ROADMAP.md
+          test -s docs/PRIVACY.md
+          test -s docs/adr/0001-egui-and-editor-gate.md
+          test -s docs/adr/0002-encoding-and-line-endings.md
+          test -s docs/adr/0003-durable-replacement.md
           echo "All core planning documents present and non-empty."
+      - name: Check local documentation links
+        run: python3 scripts/check_doc_links.py
 
   # ---------------------------------------------------------------------------
   # (Future Phase 4) cargo-dist dry-run or plan on tags
@@ -86,8 +104,10 @@ jobs:
   #   if: startsWith(github.ref, 'refs/tags/')
   #   runs-on: ubuntu-latest
   #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - uses: Swatinem/rust-cache@v2
+  #     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+  #     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+  #       with:
+  #         toolchain: 1.97.1
+  #     - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
   #     - name: cargo dist plan (dry run)
   #       run: cargo dist plan --output-format=json | cat

@@ -1,199 +1,303 @@
-# Noter Product Requirements Document (PRD)
+# Noter Product Requirements
 
-**Version:** 0.1 (Planning Baseline)  
-**Date:** June 2026  
-**Status:** Frozen for Phase 0–1 implementation. Changes require explicit update to this document + ROADMAP.
+**Version:** 0.2
 
-This document defines what "extremely well" means for Noter. Everything in DESIGN.md and the implementation must trace back to these requirements.
+**Reviewed:** 2026-07-25
 
-## 1. Scope
+**Status:** Ratified product contract for v0.1 and v0.2
 
-Noter is a single-document-focused, plain-text editor whose primary purpose is to let a user open any UTF-8 text file, edit it comfortably, and save it with extremely high confidence that their data and intent (line endings, encoding, exact bytes where possible) are preserved.
+This document defines what Noter must do. [DESIGN.md](DESIGN.md) defines how,
+[ROADMAP.md](ROADMAP.md) defines when, and dated evidence proves whether a
+requirement is complete. When those documents disagree, this contract and the
+latest ratified architecture decision record govern.
 
-It is deliberately **not** a code editor, note app, or rich text tool.
+## 1. Product promise
 
-### 1.1 Mental Model Alignment (Critical for "Not Slopware")
+Noter is a focused, single-document, cross-platform plain-text editor. It opens,
+edits, and saves user-selected UTF-8 files without hidden transformation,
+network activity, telemetry, accounts, or proprietary document formats.
 
-In response to the critical review, every major user-visible operation must preserve or explicitly communicate the user's expected model of a classic Notepad:
+The v0.1 release earns trust in ordinary text editing. Markdown assistance is a
+separate opt-in v0.2 capability and cannot weaken any v0.1 guarantee.
 
-**User Mental Model (to be protected):**
-- "The file on disk contains exactly the characters I see in the window (modulo the line-ending convention I chose or that was present when I opened the file)."
-- "Save means the bytes on disk become what I have in memory right now. No background rewriting, no cloud sync side effects, no 'smart' Unicode normalization I did not request."
-- "Undo undoes my last intentional change. Consecutive typing is one change."
-- "If I force-quit or the power fails, I will be offered my recent work back (within ~30 seconds) and nothing will have been silently lost or altered."
+### 1.1 User mental model
 
-**Mental Model Impact Statement requirement:** Before any feature is declared complete in a phase, its implementing engineer must write a one-paragraph statement answering: "How does this feature either reinforce the above model or clearly signal where it deviates, and what UI/affordance makes the deviation visible to the user?"
+The product must preserve these expectations:
 
-This is non-negotiable for maintaining the restorative design goal stated in the original pain points.
+1. The document is plain text and the visible source is the saved source.
+2. Save writes the current intended revision to the selected file.
+3. Save never silently changes encoding, BOM state, existing line endings, or
+   Unicode normalization.
+4. Undo reverses the last intentional edit transaction.
+5. New, Open, Reload, Close, and Quit cannot discard dirty work without an
+   explicit Save, Discard, or Cancel decision.
+6. Crash recovery is a safety net, not a hidden replacement for Save.
+7. The application never connects to a network or reads unrelated documents.
 
-### 1.2 Verification Criteria & Traceability
+Any intentional exception requires visible UI, an explicit command, one-step
+undo where content changes, and a testable specification.
 
-Each FR and NFR below is accompanied (or will be in later revisions) by:
-- A direct reference to one or more Safety/Liveness properties from DESIGN.md §3.5.
-- The primary verification method (property test name, golden file, FMEA row, manual matrix item, fault-injection case).
-- The mental model impact statement (or pointer to it).
+### 1.2 Release vocabulary
 
-This creates a lightweight traceability matrix so that when a test fails or a user reports a surprise, we can immediately point to the originating requirement and the verification artifact.
+- **Planned:** accepted but not implemented.
+- **In progress:** implementation exists but one or more required gates are
+  missing.
+- **Verified:** implementation and all named evidence exist on the same green
+  commit.
+- **Deferred:** intentionally outside the named release.
 
-## 2. Functional Requirements
+Feature presence alone is not verification.
 
-### 2.1 Core File Operations (MUST)
+## 2. v0.1 functional requirements
 
-- **FR-010** Open an existing file via native file dialog (rfd).
-- **FR-011** Create a new untitled document (Ctrl+N or menu).
-- **FR-012** Save current document (Ctrl+S). Must be atomic (see NFR-Reliability).
-- **FR-013** Save As… (Ctrl+Shift+S) — always shows dialog.
-- **FR-014** Recent files list (max 10–12 entries, persisted, clickable, missing files are gracefully removed).
-- **FR-015** On open, detect and preserve the file's line ending convention (CRLF, LF, or CR). New files on Windows default to CRLF; elsewhere LF. User can change via status bar or Format menu (rarely needed).
-- **FR-016** Graceful handling of UTF-8 (with or without BOM). On save, reproduce the BOM state that was present on load. Non-UTF-8 files: offer "Open with lossy UTF-8 conversion" or "Cancel". Never silently corrupt.
+### 2.1 Document and file operations
 
-### 2.2 Editing (MUST)
+- **FR-010 New:** Create one clean, untitled document per window.
+- **FR-011 Open:** Open a user-selected file through a system file dialog.
+- **FR-012 Strict UTF-8:** Accept UTF-8 with or without a UTF-8 BOM. Reject
+  invalid UTF-8 without replacement characters. A future explicit import flow
+  may create a new untitled converted document, but it must never overwrite the
+  source implicitly.
+- **FR-013 Save:** Save to the current path through the durable replacement
+  protocol in NFR-REL-02.
+- **FR-014 Save As:** Ask for a destination every time. The document path and
+  clean revision change only after the new destination commits successfully.
+- **FR-015 Recent files:** Maintain at most ten deduplicated user-opened paths.
+  Missing or inaccessible entries fail safely and can be removed without
+  reading their parent directories.
+- **FR-016 BOM fidelity:** Preserve the loaded UTF-8 BOM state until the user
+  invokes an explicit conversion command.
+- **FR-017 Line-ending fidelity:** Preserve all existing LF, CRLF, and CR byte
+  sequences. Untouched content must round-trip byte for byte. Editing a
+  mixed-EOL document must not normalize unrelated lines.
+- **FR-018 Explicit EOL conversion:** A user may convert all line endings through
+  one explicit command. The command is one undo transaction and updates the
+  status bar immediately.
+- **FR-019 File identity:** Save and external-change decisions use recorded file
+  identity and content fingerprints, not only a display path or timestamp.
 
-- **FR-020** Full keyboard text input, cursor movement (arrows, Home/End, Page Up/Down), selection (Shift+arrows, Ctrl+Shift+arrows, mouse).
-- **FR-021** Cut / Copy / Paste / Delete using both menu and standard platform shortcuts (Ctrl/Cmd + X/C/V, Delete, Backspace).
-- **FR-022** Undo and Redo with high-quality coalescing:
-  - Consecutive character insertions are one undo step.
-  - Consecutive deletions (backspace or delete) are one step.
-  - Paste or large operations are their own step.
-  - Undo stack must be bounded (e.g. 500–1000 entries or ~50 MiB of retained rope history).
-- **FR-023** Find (Ctrl+F): opens a find bar (not modal dialog). Supports case-sensitive toggle. "Find Next" (F3) and "Find Previous".
-- **FR-024** Replace (Ctrl+H): basic string replace with "Replace", "Replace All". Must respect current selection scope when possible.
-- **FR-025** Word wrap toggle (Format > Word Wrap or Alt+Z). Persisted per session or globally (TBD in design, but default on).
-- **FR-026** Go To Line (Ctrl+G) — must be fast and accurate even on very large files.
+### 2.2 Editing
 
-### 2.3 View & Status (MUST)
+- **FR-020 Text input:** Support Unicode keyboard input, dead keys, CJK IME
+  composition, emoji, combining marks, and bidirectional text without
+  corruption or panic.
+- **FR-021 Navigation:** Support expected character, word, line, document, and
+  page movement with and without selection on each platform.
+- **FR-022 Clipboard:** Cut, Copy, Paste, Delete, and Select All share the same
+  command path as their menu items and platform shortcuts.
+- **FR-023 Undo and Redo:** Maintain a bounded history of edit transactions.
+  Typing and deletion coalesce predictably; paste, replace, EOL conversion, and
+  formatting are distinct one-step transactions.
+- **FR-024 Find:** Provide a non-modal find bar, literal search, case matching,
+  next, previous, wrap indication, and visible match count.
+- **FR-025 Replace:** Provide Replace and Replace All with an explicit current
+  selection or whole-document scope.
+- **FR-026 Go To Line:** Navigate to a validated one-based logical line.
+- **FR-027 Word wrap:** Toggle wrapping without changing document bytes.
+- **FR-028 Long operations:** Search, indexing, and formatting cannot commit a
+  stale result to a newer document revision.
 
-- **FR-030** Always-visible status bar showing at minimum:
-  - Current line and column (1-based, logical)
-  - Selection length (chars or "1 char selected")
-  - Total characters in document
-  - Encoding (always UTF-8 for v1)
-  - Line ending mode (CRLF / LF / CR)
-  - Modified indicator (`*`)
-- **FR-031** Optional line numbers (View > Line Numbers). Off by default to stay true to classic Notepad spirit.
-- **FR-032** Zoom font size via Ctrl + mouse wheel and View menu (no font family picker in v1 to reduce scope; we use a good default monospace + user size).
+### 2.3 Lifecycle and recovery
 
-### 2.4 Theme (MUST)
+- **FR-060 Dirty decision:** New, Open, Reload, Close, and Quit use one
+  Save / Discard / Cancel state machine.
+- **FR-061 Window close:** Closing a dirty window cannot complete until Save
+  succeeds, Discard is explicitly confirmed, or the action is cancelled.
+- **FR-062 Recovery location:** Store private recovery records in the
+  per-user application state or local-data directory, never the general
+  temporary directory.
+- **FR-063 Recovery point objective:** After the first edit, persist a valid
+  recovery record after at most 15 seconds of continued editing and normally
+  within 2 seconds of idle time.
+- **FR-064 Recovery integrity:** Each record has a schema version, random
+  document and instance IDs, revision, checksum, original-path metadata, and
+  atomic manifest update.
+- **FR-065 Recovery launch:** On startup, validate records and offer recovery
+  before replacing them with a normal untitled document.
+- **FR-066 Recovery isolation:** Recovered content opens as dirty and never
+  writes the original file until the user invokes Save.
+- **FR-067 Recovery cleanup:** Remove a record only after a successful save or
+  explicit discard. Corrupt records are quarantined and explained, not silently
+  deleted.
+- **FR-068 Recovery failure:** A persistence failure is visible and does not
+  suppress the classic dirty prompt.
+- **FR-069 External change:** Detect changed, replaced, deleted, or recreated
+  files on focus and periodic checks. Never overwrite a detected conflicting
+  revision without a user decision.
 
-- **FR-040** On launch, detect the operating system's current light/dark preference.
-- **FR-041** Provide three explicit choices: "System", "Light", "Dark". Choice is persisted.
-- **FR-042** On Windows, the app should react to live system theme changes (WM_SETTINGCHANGE) when "System" is selected.
-- **FR-043** All UI elements (text, chrome, scrollbars, selection highlight) must have excellent contrast in both themes.
+### 2.4 Interface and status
 
-### 2.5 Markdown Preview (SHOULD — Phase 3 QOL)
+- **FR-030 Status:** Show path or Untitled, modified state, one-based logical line
+  and column, selection size, encoding, BOM, and EOL classification.
+- **FR-031 Theme:** Provide System, Light, and Dark. Persist the choice and follow
+  system changes when System is selected.
+- **FR-032 Zoom:** Provide keyboard and menu zoom with a readable bounded range.
+- **FR-033 Window state:** Restore valid size, position, and maximized state
+  without placing a window entirely off screen.
+- **FR-034 Commands:** Every visible command either works, is visibly disabled
+  with a reason, or is absent. Placeholder commands are forbidden.
+- **FR-035 Errors:** Errors state what failed, what was preserved, and the next
+  safe action. Document content and paths are not copied into logs by default.
+- **FR-036 Multiple instances:** Independent windows are supported. No global
+  single-instance lock is required.
 
-- **FR-050** View > Markdown Preview (toggle) opens a read-only pane (right side preferred, or bottom on narrow windows).
-- **FR-051** The preview must render common Markdown (headings, lists, code blocks, emphasis, links, blockquotes, horizontal rules) using only pure Rust crates + egui drawing primitives. It must never interpret or execute scripts, images from network, or HTML.
-- **FR-052** Toggling preview or editing in the left pane must **never** mutate the underlying document bytes or line ending state. Preview is strictly a derived view.
-- **FR-053** Preview updates live as you type (debounced ~150–250 ms).
-- **FR-054** Large documents: preview may fall back to "Rendering limited to first N lines for performance" with a clear affordance to render more.
+### 2.5 Platform behavior and accessibility
 
-### 2.6 Reliability & Data Safety (MUST — see also NFR)
+- **FR-080 Shortcuts:** Use Command on macOS and Control on Windows and Linux,
+  with platform-standard alternatives where conventions differ.
+- **FR-081 Keyboard reachability:** All primary workflows, dialogs, bars, menus,
+  and recovery actions work without a mouse.
+- **FR-082 Semantics:** Expose names, roles, values, selection, caret, editable
+  text actions, and status changes through the platform accessibility bridge.
+- **FR-083 Screen readers:** Release testing covers NVDA, VoiceOver, and Orca.
+- **FR-084 IME:** Pre-edit text remains distinguishable from committed text and
+  the candidate window follows the caret.
+- **FR-085 Display:** Support high DPI, 125 to 200 percent scaling, high contrast,
+  and visible focus and selection states.
+- **FR-086 Dialogs:** Use system file dialogs. The rendered application chrome is
+  consistent and system-integrated; native widget appearance is not promised.
 
-- **FR-060** On every significant edit burst or timer (configurable, default 25s), write an autosave file to the OS temp directory.
-- **FR-061** On clean launch with no command-line file, scan for stale autosave files belonging to this user. Offer "Recover unsaved changes from [timestamp]" in a non-modal but prominent way.
-- **FR-062** On normal exit (after successful save or explicit discard), best-effort cleanup of autosave files.
-- **FR-063** If the file on disk has changed since Noter loaded it (mtime + size or content hash), show a clear "File changed on disk" prompt with options: Reload (discard my changes), Keep mine, or Diff (future).
-- **FR-064** Save operations must be atomic: write to a sibling `.tmp` file in the same directory, fsync, then rename. This must survive process kill, power loss simulation, etc. in testing.
+## 3. v0.2 Markdown requirements
 
-### 2.7 Window & Session (MUST)
+- **FR-100 Opt in:** Markdown assistance is off by default and adds negligible
+  idle work when disabled.
+- **FR-101 Visible source:** Inline styling keeps all Markdown punctuation and
+  source text visible.
+- **FR-102 Diagnostics:** Lint findings are non-mutating and include a rule ID,
+  range, explanation, and explicit fix where available.
+- **FR-103 Format:** Formatting is an explicit command with a diff preview,
+  parsed-document equivalence check, EOL and BOM preservation, and one-step
+  undo.
+- **FR-104 Rule isolation:** Heading spacing, ordered-list numbering, table
+  alignment, trailing whitespace, and list continuation are independent rules.
+- **FR-105 Revision safety:** Parsing and diagnostics are revision-tagged,
+  cancellable, and cannot update a newer document with stale results.
+- **FR-106 Content safety:** Never execute HTML, fetch links, load remote images,
+  or make a network request.
+- **FR-107 Conformance:** Supported syntax is ratified against CommonMark plus an
+  explicitly listed subset of GitHub Flavored Markdown, if any.
 
-- **FR-070** Remember last window position, size, and maximized state. Restore on next launch (with sanity checks so windows don't appear off-screen).
-- **FR-071** Multiple instances are allowed and encouraged (classic Notepad behavior). No forced single-instance.
+## 4. Non-functional requirements
 
-### 2.8 Keyboard & Shortcuts (MUST)
+### 4.1 Reliability
 
-All primary actions must be reachable without a mouse. Standard platform shortcuts must work. A Help > Keyboard Shortcuts view (simple list or table) is required.
+- **NFR-REL-01 Byte fidelity:** Loading and saving an unedited supported file
+  produces identical bytes.
+- **NFR-REL-02 Durable replacement:** Saving writes a unique sibling, writes all
+  bytes, flushes, syncs the file, performs an atomic platform replacement, and
+  syncs the parent directory where supported. A pre-commit failure leaves the
+  original complete and unchanged.
+- **NFR-REL-03 Revision safety:** A successful save clears dirty state only when
+  the committed revision is still the current revision.
+- **NFR-REL-04 Undo fidelity:** Applying edits and their inverse transactions
+  restores identical content, selection, and caret state.
+- **NFR-REL-05 Lifecycle safety:** No destructive action can bypass FR-060.
+- **NFR-REL-06 Recovery safety:** Any valid acknowledged edit is either in the
+  current process, a successful save, or a recovery record within the stated
+  recovery point objective.
+- **NFR-REL-07 Conflict safety:** A changed file is never silently overwritten by
+  a stale in-memory revision.
 
-## 3. Non-Functional Requirements
+### 4.2 Performance
 
-### 3.1 Reliability (Highest Priority)
+Measurements use release builds, named hardware, a published corpus, at least 30
+samples for latency percentiles, and explicit cold or warm state.
 
-- **NFR-REL-01** Under normal operation (including force-kill of the process at any moment after an edit), the user must never lose more than the last ~30 seconds of typing when recovery is offered.  
-  **Verification:** Fault-injection harness (corrupt/kill during autosave + restart) run at least 30 times per phase gate. Cross-references Safety Property S4 and FMEA F3.
-- **NFR-REL-02** Save must never leave a zero-byte or truncated file on disk when the original existed. Atomic rename is mandatory.  
-  **Verification:** Property test exercising S1 under normal, full-disk, and simulated-rename-failure conditions. Golden files + external `cmp` / `xxd` checks. FMEA F1.
-- **NFR-REL-03** Line ending and BOM fidelity tests must pass for CRLF, LF, and mixed files. Round-trip byte equality for the text content (modulo the intentional normalization we document).  
-  **Verification:** Exhaustive golden-file matrix (all three endings × BOM × empty / single-line / multi-line / trailing-newline cases). Property test for S2. Mental model impact statement required.
-- **NFR-REL-04** Undo/Redo must be information-theoretically lossless for the operations it claims to support. Property tests must prove that applying a sequence of edits + undos + redos returns to an identical rope state.  
-  **Verification:** `proptest` generator for arbitrary (but bounded) sequences of insert/delete/replace commands; assert U1 / S3 after each undo/redo cycle. Coalescing rules are part of the test specification.
+| Measure | v0.1 requirement |
+| --- | ---: |
+| Warm launch to first interactive frame | p95 at most 250 ms |
+| Open and edit 1 MiB UTF-8 file | p95 at most 150 ms |
+| First editable frame for 50 MiB file | p95 at most 2.0 s |
+| Input to painted frame | p95 at most 16.7 ms, p99 at most 33 ms |
+| Warm scroll frame time | p99 at most 16.7 ms |
+| First literal-search match in 50 MiB | p95 at most 800 ms |
+| Idle RSS on reference Windows machine | at most 120 MiB |
+| 50 MiB document RSS | at most 350 MiB |
+| Stripped Windows release binary | target under 10 MiB, ceiling 18 MiB |
 
-### 3.2 Performance
+Files around 500 MB, files larger than memory, and instant open within one frame
+are deferred until evidence supports a separate viewer or editing mode.
 
-- **NFR-PERF-01** Open a 50 MiB text file and display the first page in < 2.5 seconds on mid-range 2024–2026 hardware (8–16 GB RAM, modern SSD).
-- **NFR-PERF-02** Smooth 60 fps scrolling and cursor movement on a 200,000 line file once the document is loaded (measured via manual + automated frame time logging).
-- **NFR-PERF-03** Find operation on 50 MiB file completes in < 800 ms (first match).
-- **NFR-PERF-04** Memory baseline (empty document + idle): < 120 MiB RSS on Windows, < 150 MiB on macOS/Linux. 50 MiB document loaded should stay under ~350–400 MiB.
-- **NFR-PERF-05** Binary size (release, stripped, LTO): target < 10 MiB on Windows, < 12 MiB on macOS/Linux. Hard ceiling for v0.1: 18 MiB.
+### 4.3 Quality and verification
 
-### 3.3 Cross-Platform Behavior
+- **NFR-QUAL-01 Toolchain:** Rust 1.97.1 is pinned in the repository and CI.
+- **NFR-QUAL-02 Local gates:** Formatting, locked strict Clippy, locked tests,
+  documentation links, and the coverage threshold pass before a commit advances.
+- **NFR-QUAL-03 Coverage:** Testable product code remains at least 80 percent line
+  coverage during development. v0.1 requires at least 80 percent whole-workspace
+  line coverage and at least 90 percent line coverage for document, I/O,
+  revision, lifecycle, and recovery modules.
+- **NFR-QUAL-04 Test strength:** Critical invariants use property or model-based
+  tests, I/O failure injection, golden fixtures, and mutation testing in addition
+  to examples.
+- **NFR-QUAL-05 UI evidence:** Semantic UI automation covers commands and state.
+  Real keyboard, IME, screen-reader, display, and platform behavior remains part
+  of the signed manual matrix.
+- **NFR-QUAL-06 No hidden skips:** Ignored, flaky, or platform-skipped critical
+  tests do not count as passing.
+- **NFR-QUAL-07 Exact commit:** Required Windows, macOS, and Linux CI is green on
+  the exact commit being advanced.
+- **NFR-QUAL-08 Documentation:** Public behavior, FMEA, architecture decisions,
+  dependency health, benchmarks, and manual evidence match the shipped commit.
+- **NFR-QUAL-09 Errors:** Production paths avoid panics and unexplained
+  unwraps. Typed errors preserve enough context for a safe user-facing message.
 
-- **NFR-XPLAT-01** Identical feature set and (as much as possible) identical keyboard shortcuts across the three platforms, with only the expected Cmd vs Ctrl and menu bar location differences (macOS menu bar at top of screen).
-- **NFR-XPLAT-02** File dialogs must be the real native ones on each platform.
-- **NFR-XPLAT-03** Theme detection and "System" following must work on all three.
-- **NFR-XPLAT-04** Line ending defaults must feel native (CRLF on Windows new files, LF elsewhere).
+### 4.4 Security and privacy
 
-### 3.4 Code Quality & Maintainability (Non-negotiable)
+- **NFR-SEC-01 Zero network:** The application makes no outgoing connection,
+  update check, telemetry submission, remote asset request, or automatic crash
+  report.
+- **NFR-SEC-02 Local scope:** Read document content only from paths the user
+  explicitly opened and versioned recovery records the application created.
+- **NFR-SEC-03 Private state:** Configuration and recovery use least-permission
+  per-user directories. Recovery content is never written to diagnostic logs.
+- **NFR-SEC-04 Dependencies:** Every direct dependency has a requirement,
+  feature, size, license, maintenance, duplicate, and network-capability review.
+- **NFR-SEC-05 Supply chain:** Release workflows use immutable action revisions,
+  locked Rust dependencies, minimum token permissions, checksums, SBOM, and
+  provenance.
 
-- **NFR-QUAL-01** Rust edition 2024. `rust-version` in Cargo.toml set to the minimum we actually test (initially 1.85+ or 1.90+).
-- **NFR-QUAL-02** `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings` must be clean on every commit that lands in `main`. CI enforces this.
-- **NFR-QUAL-03** Core modules (`document`, `editor`, `io`, `config`, `theme`) must achieve ≥ 85% line coverage and ≥ 70% branch coverage (measured by `cargo llvm-cov` or equivalent) before Phase 2 completion.  
-  **Additional rigor:** Coverage must include the executable forms of S1–S4 and U1 (see DESIGN §3.5). Mutation testing (via `cargo-mutants` or equivalent) on the core rope/document path is a stretch goal for Phase 2+.
-- **NFR-QUAL-04** All critical invariants have property-based tests (`proptest` or `quickcheck`): undo/redo roundtrips, line-ending detection + save fidelity, atomic save success under simulated failure (via tempfs tricks or post-write corruption tests), config serialization roundtrips.  
-  **Traceability:** Every property test must be annotated with the Safety/Liveness property ID it is attempting to falsify.
-- **NFR-QUAL-05** No `unwrap()`, `expect("...")` is allowed in hot user paths except where the comment explains why the invariant is truly impossible to violate. Prefer `?` + typed errors + user-facing messages.  
-  **Verification:** `grep` + manual review at each phase gate; `cargo clippy` deny of `unwrap_used` in `src/core` (gradually enforced).
-- **NFR-QUAL-06** Every non-trivial public or `pub(crate)` function must have a doc comment explaining intent, edge cases, and performance characteristics.  
-  **Additional:** Doc comments for core operations must reference the relevant safety property or FMEA row they participate in.
-- **NFR-QUAL-07** We will maintain a small but growing set of golden-file tests for save/load behavior with tricky inputs (BOM + CRLF, very long lines, unicode, empty files, files with only newlines).  
-  **Rigor:** Golden files are the primary executable evidence for S2 and are re-run as part of the "reproducibility envelope" in STEWARDSHIP.md.
+## 5. Release success criteria
 
-### 3.5 Security & Privacy
+Noter v0.1 is releasable only when:
 
-- **NFR-SEC-01** The application must make **zero** network requests at any time, including update checks, telemetry, font loading, image loading in preview, etc. This is auditable via `cargo tree` + runtime traffic inspection in CI/tests.
-- **NFR-SEC-02** Dependency tree must remain small. Any new dependency > 5 transitive crates or with "crypto", "network", "async" in its tree requires explicit justification in DESIGN.md and ROADMAP sign-off.
-- **NFR-SEC-03** We only ever read files the user explicitly chose via Open or drag-and-drop. We never scan directories, never follow symlinks outside user intent, never write anywhere except the save location the user chose + the OS temp dir for autosave.
-- **NFR-SEC-04** Reproducible builds are a long-term goal. We will track the `cargo auditable` / `cargo-cyclonedx` story and document SBOM generation for releases.
+1. All v0.1 requirements have traceable automated or manual evidence.
+2. No critical or high data-safety defect is open.
+3. The performance table passes on the named reference systems.
+4. Exact release-commit CI and coverage gates pass.
+5. Windows, macOS, X11, and Wayland manual matrices pass.
+6. Two people, including one non-primary developer and one non-Windows user, use
+   the release candidate for at least 14 days each without data loss.
+7. Install, portable use, upgrade, recovery, and uninstall are verified from
+   clean environments.
 
-### 3.6 Accessibility & Usability
+## 6. Explicit non-goals for v0.1 and v0.2
 
-- **NFR-A11Y-01** All menu items, find bar, and status information must be keyboard reachable.
-- **NFR-A11Y-02** High contrast in both themes. Text selection must be clearly visible.
-- **NFR-A11Y-03** Status bar text must be readable at 125% and 150% scaling on Windows.
-- **NFR-A11Y-04** The editor must remain usable with only a keyboard (no mouse required for 95% of workflows).
+- Tabs, projects, folder trees, and workspaces
+- Rich text or a proprietary document format
+- Programming-language syntax highlighting
+- LSP, Git integration, terminal, plugins, or command palette
+- Accounts, synchronization, collaboration, or cloud storage
+- AI features
+- Built-in network access of any kind
+- Non-UTF-8 save encodings
+- Arbitrary themes or a font marketplace
+- 500 MB editable-file guarantees
 
-### 3.7 Distribution & Packaging (v0.1 target)
+## 7. Traceability
 
-- Portable single-file executable must work when copied to any machine (no installer required).
-- Optional proper installers via `cargo-dist` (`.msi` on Windows, `.dmg`/app bundle on macOS, `.deb`/`.tar.gz` on Linux).
-- Clear "unstable / early" messaging until v0.5 or v1.0.
+The detailed matrix lives beside implementation tests and is expanded per
+milestone. The minimum mapping is:
 
-## 4. Constraints & Assumptions
+| Contract area | Milestone | Primary evidence |
+| --- | --- | --- |
+| FR-010 to FR-019, NFR-REL-01 to 03 | M1 | golden bytes, property tests, injected I/O failures |
+| FR-020 to FR-028, NFR-REL-04 | M2 | reference-model edit and undo tests |
+| FR-060 to FR-069, NFR-REL-05 to 07 | M3 | state-machine, recovery, conflict, and crash tests |
+| FR-030 to FR-036, FR-080 to FR-086 | M4 and M5 | semantic UI tests and signed platform matrices |
+| Performance requirements | M5 and M6 | reproducible benchmark reports |
+| FR-100 to FR-107 | M7 | conformance, equivalence, idempotence, and UI tests |
+| Security and release requirements | Every gate, final in M6 | audits, runtime inspection, SBOM, provenance, release checklist |
 
-- We will use **egui 0.30+ / eframe 0.30+** (or the current stable at implementation time) as the GUI layer. This decision is recorded in DESIGN.md.
-- All rendering and logic must be possible without a webview for the core experience.
-- The project is developed primarily on Windows but must compile and run cleanly on the other two platforms via CI from day one of Phase 1.
-- We will not take on `async` runtimes or tokio unless a very specific need appears (file watcher is a possible exception; we prefer simple polling or the `notify` crate's synchronous mode first).
-
-## 5. Success Metrics for v0.1
-
-1. A person who has used classic Notepad for 10+ years can perform their daily workflow without reading docs.
-2. In a simulated crash test (kill -9 during heavy typing + repeated 20 times), recovery always offers the document and the recovered version contains all but the last <30s of work.
-3. Binary + RAM numbers meet the NFR-PERF targets on the reference machines.
-4. `cargo clippy -- -D warnings` and fmt clean; core coverage ≥ 85%.
-5. The author (and at least one other tester on macOS or Linux) uses it as their daily driver for plain text notes and config files for two consecutive weeks without data loss or major annoyance.
-
-## 6. Out of Scope for v0.1 (and probably v0.2)
-
-- Multiple tabs or a "project" concept
-- Plugin system or extension
-- Git integration or "changes" gutter
-- Image embedding or rich paste
-- Collaborative editing
-- Any form of account, sync, or "sign in"
-- Heavy customization of the editing surface (vim mode, etc.)
-- Built-in terminal or command palette beyond find/goto
-
----
-
-This requirements document is the source of truth. If implementation or DESIGN.md diverges, this document must be updated first and the divergence justified.
+No requirement becomes Verified without a stable evidence link on the same
+commit.

@@ -1,236 +1,442 @@
 # Noter Roadmap
 
-**How we will build an exceptionally high-quality, reliable, pure cross-platform notepad in 2026 — with code quality and test coverage designed in, not added later.**
+**Last reviewed:** 2026-07-25
 
-## Vision
+**Current milestone:** M0, Truthful and Green Foundation
 
-By the end of Phase 4 we will have a tool that a long-time classic Notepad user can switch to without friction, that they trust with important text after weeks of daily use, and that feels like a natural, boring, reliable part of their computing environment on Windows, macOS, and Linux.
+**Release target:** a trustworthy single-document v0.1 before Markdown v0.2
 
-We will achieve this by refusing to ship until each phase's quality gates are passed.
+This roadmap is an execution contract. A milestone is complete only when its
+artifacts and measurements exist in the repository. Feature presence alone is
+not completion.
 
-## Guiding Principles
+The evidence behind the decisions below is in [RESEARCH.md](RESEARCH.md).
 
-1. **Reliability > Features.** A missing "nice to have" is acceptable. Losing data or corrupting line endings is not.
-2. **Purity has a cost and we pay it.** Markdown preview is a view only. Core editing and saving is always plain text with maximum fidelity.
-3. **Tests are part of the product.** Core logic is not "done" until property tests and golden tests demonstrate the invariants.
-4. **Small is a feature.** Every new dependency and every new UI surface must justify itself against binary size, complexity, and attack surface.
-5. **Cross-platform from day one.** We do not accept "it only works well on Windows."
+## Active objective
 
-## Phase Structure & Quality Gates
+Build Noter into an exceptional, focused, cross-platform plain-text editor whose
+reliability claims are proven, whose latency is measured, whose interface is
+accessible and international-text safe, and whose scope remains deliberately
+small.
 
-Each phase has:
-- Clear goals
-- Deliverables
-- **Quality Gate** (these are mandatory before moving on). Gates now incorporate the rigor items from RIGOROUS_REVIEW.md (FMEA updates, mental model statements, dependency health tables, re-reading of the critical review, executable safety properties, etc.).
-- Estimated effort (solo developer, calendar time, very rough)
+## What exceptional means
 
-The entire roadmap is a direct response to the original user pain points (hate of bloat/telemetry/unpredictability in modern Notepad) and the subsequent professor-level critique aimed at preventing "slopware." We are building a *restorative, minimalist, high-integrity* tool, not just another editor.
+1. **Trust:** No silent conversion, truncation, overwrite, discard, or recovery
+   failure. Save and recovery behavior are explainable in one paragraph.
+2. **Responsiveness:** Typing, navigation, search, and scrolling stay within
+   measured latency budgets on a published corpus.
+3. **Craft:** Every visible command works, shortcuts are consistent, states are
+   quiet but legible, and error paths are designed rather than improvised.
+4. **Reach:** Keyboard-only use, screen readers, CJK IME, dead keys, Unicode,
+   high DPI, Windows, macOS, X11, and Wayland are release concerns.
+5. **Restraint:** One document per window, plain text on disk, no account, no
+   sync, no telemetry, no network, no plugins, and no AI features.
+6. **Evidence:** Green CI, enforced coverage, property tests, fault injection,
+   reproducible benchmarks, signed manual matrices, and dogfooding records.
 
----
+## Honest current state
 
-### Phase 0 — Foundation & Planning (Current — Target: Complete within days of starting)
+Noter is an early GUI prototype with a partial trust core. It can type text and
+perform basic Open, Save, and Save As operations. It is not a completed Phase 1
+editor.
 
-**Goals**
-- All major planning artifacts exist and are high quality.
-- Project is correctly initialized (edition 2024, good .gitignore, git, basic CI).
-- Skeleton compiles cleanly and basic quality tooling is wired.
+Missing or unproven capabilities include dirty-state guards, real undo policy,
+find and replace, configuration, recent files, recovery, external-change
+detection, window persistence, complete themes, cross-platform shortcuts,
+automated UI tests, custom-editor accessibility, performance evidence,
+packaging, and release sign-off.
 
-**Deliverables**
-- [x] README.md (philosophy, build instructions, status)
-- [x] REQUIREMENTS.md (detailed functional + non-functional with priorities)
-- [x] DESIGN.md (deep architecture, data model, testing strategy, risks)
-- [x] ROADMAP.md (this file)
-- Professional .gitignore with OneDrive warning
-- Cargo.toml with rich metadata, release profile, lints section started
-- Basic GitHub Actions CI skeleton (fmt, clippy, test on all three OS)
-- `cargo fmt`, `cargo clippy`, and `cargo test` all green on the skeleton
+The 2026-07-25 baseline found 28.24 percent whole-program line coverage and
+85.96 percent line coverage in `core/document.rs`, with only three tests and no
+evidence for most named safety properties. Initial M0 repairs added strict
+invalid-UTF-8 rejection and restored local format, lint, and unit-test health.
 
-**Quality Gate**
-- All four planning documents reviewed by the author for internal consistency.
-- `cargo clippy --all-targets -- -D warnings` produces zero warnings on the initial commit.
-- Git history contains the planning docs as the first real commits.
+## Product contract for v0.1
 
-**Status:** Complete.
+Noter v0.1 is one plain-text document per window. It supports strict UTF-8 with
+an optional UTF-8 BOM. Invalid UTF-8 never becomes replacement characters
+without an explicit conversion flow. Uniform LF, CRLF, and CR files round-trip.
+Mixed-EOL behavior must be explicit and tested before release.
 
----
+Save updates the chosen file. Recovery stores a private local recovery record
+and never silently writes the original file. New, Open, Close, Quit, and external
+reload all use one tested dirty-document decision state machine.
 
-### Phase 1 — Core Pure Notepad MVP (The "It Just Works" Release)
+The UI is rendered consistently by egui and integrates with each system where it
+matters: native file dialogs, expected modifier keys, theme preference, recent
+files, window behavior, IME, clipboard, accessibility APIs, and packaging. It
+does not claim native widget appearance.
 
-**Goals**
-Deliver a genuinely usable classic notepad replacement with the fundamentals of reliability.
+Markdown is not in v0.1. It follows as an opt-in v0.2 capability after the editor
+has earned trust in daily use.
 
-**Deliverables**
-- Native file open / save / save-as using `rfd`
-- New document (Ctrl+N)
-- Recent files (persisted, capped, clickable)
-- Multi-line editing with egui `TextEdit` (or early custom widget)
-- Cut/Copy/Paste/Delete + basic Undo/Redo (at least character coalescing)
-- Find bar (Ctrl+F) + Find Next (F3)
-- Word wrap toggle (persisted)
-- Status bar with line/col, selection, char count, line ending, modified flag
-- Full theme system (detect + System/Light/Dark, persisted, live update on Windows)
-- Atomic save implementation (the `save_atomic` path + tests)
-- Basic autosave to temp + recovery offer on launch (even if UX is rough)
-- Close / quit prompt when document is dirty
-- Window position/size/maximized persistence
-- All primary keyboard shortcuts working on Windows + at least documented for other platforms
-- Graceful handling of line endings + BOM fidelity (with golden tests)
+## Gates that apply to every milestone
 
-**Quality Gate (Mandatory) — Phase 0/1 Rigor Enhancements**
-- `cargo fmt -- --check` && `cargo clippy --all-targets -- -D warnings` clean.
-- Core modules (`core/document`, `core/editor`, `io` logic) achieve **≥ 80% line coverage**, including the executable forms of Safety Properties S1–S4 and U1 (see DESIGN.md §3.5, added in response to RIGOROUS_REVIEW.md).
-- First-cut FMEA table (DESIGN §13.1) is committed and at least the Phase-1 rows (F1–F3, F6) have corresponding fault-injection or property tests.
-- Property tests exist and pass for:
-  - Line ending detection + `to_bytes()` roundtrip for CRLF / LF / CR + BOM combinations (S2).
-  - Atomic save never leaves a truncated file (simulated via temp dir tests) — evidence for S1.
-  - Undo roundtrips under arbitrary edit sequences (U1 / S3).
-- At least 5 golden integration tests in `tests/integration/` covering empty file, CRLF-heavy log, unicode, very long single line, file with only newlines. These are the primary artifacts for S2.
-- Mental model impact statements written for every feature delivered in the phase (REQUIREMENTS §1.1).
-- Dependency health table (per DESIGN §1.4) committed for all crates introduced.
-- Manual test pass on Windows (author's machine) using the written checklist in `docs/manual-test-matrix.md`, which **must** now include explicit IME (Input Method Editor) testing for CJK input.
-- The author can use the binary for real note-taking for 3 consecutive days without data loss or major workflow breakage.
-- Binary size (release) on Windows < 18 MiB.
-- RIGOROUS_REVIEW.md has been re-read; a short "Professor Review Response" subsection added noting which recommendations were actioned.
+- `cargo fmt --all -- --check` passes.
+- `cargo clippy --locked --all-targets --all-features -- -D warnings` passes on the pinned
+  verified toolchain.
+- `cargo test --locked --all-targets --all-features` passes on Windows, macOS,
+  and Linux.
+- Testable core code maintains at least 80 percent line coverage during
+  development. The v0.1 release requires at least 80 percent whole-workspace line
+  coverage and at least 90 percent trust-kernel line coverage.
+- No coverage exclusion is accepted without a nearby rationale and a replacement
+  verification method.
+- New trust behavior has failure-path tests. Critical invariants have property or
+  model-based tests, not only examples.
+- No ignored, flaky, or platform-skipped critical test is counted as passing.
+- The dependency health record and FMEA are updated when the change affects them.
+- Documentation describes shipped behavior, not intended behavior.
+- CI is green on the exact commit being advanced.
 
-**Rough Calendar:** 2–4 weeks of focused work (depending on how quickly the custom editor widget is needed).
+## Execution sequence
 
-**Status:** Complete. All core MVP features delivered and CI pipeline established.
+| Milestone | Outcome | Depends on | Target |
+| --- | --- | --- | --- |
+| M0 | Truthful, reproducible, green foundation | None | In progress |
+| M1 | Proven document and durable I/O trust kernel | M0 | Planned |
+| M2 | Tested edit, selection, and undo model | M1 | Planned |
+| M3 | Recovery, dirty lifecycle, and conflict safety | M1, M2 | Planned |
+| M4 | Complete classic-notepad alpha on `TextEdit` | M1, M2, M3 | Planned |
+| M5 | Custom editor feasibility gate and production engine | M4 | Planned |
+| M6 | Cross-platform v0.1 release | M5 | Planned |
+| M7 | Opt-in Markdown assist v0.2 | M6 | Planned |
 
----
+Effort ranges below are engineering estimates, not ship dates. Dogfooding and
+external sign-off are elapsed-time gates and cannot be compressed by coding
+faster.
 
-### Phase 2 — The High-Performance Text Engine & Trust
+## M0: Truthful and Green Foundation
 
-**Goals**
-Build the custom virtualized text-rendering engine to achieve zero-latency execution (<16ms open times, 120Hz scrolling on massive files) and make the reliability story (bulletproof autosave) absolute. Deliver "invisible chrome" UX.
+**Outcome:** Anyone can check out one coherent branch, run one documented command
+set, and see exactly what is implemented and what remains.
 
-**Deliverables**
-- Production-grade custom `EditorWidget` text-rendering engine (virtualized over `ropey` chunks, layout caching, only visible lines, perfect sub-pixel typography).
-- Zero-latency large file handling: Open 500MB files in <16ms (memory-mapped or streaming chunks).
-- Bulletproof autosave + recovery UX: Every keystroke captured, frictionless exit without nagging dialogs (unless discarding).
-- Invisible Chrome UI: Elegant borderless canvas, meticulously selected monospace typography.
-- Quiet Intelligence: File-changed-on-disk detection triggers a subtle amber status indicator, not a modal popup.
-- Excellent undo/redo with full coalescing rules + bounded memory.
-- Find / Replace (Ctrl+H) with live match count.
-- Go To Line (Ctrl+G) — works instantly even on 500k line files.
-- Font size zoom (Ctrl + wheel) with persisted size.
-- Performance numbers documented and meeting NFR-PERF targets on reference hardware (50 MiB file open time, scroll fps on large docs).
-- Crash recovery simulation harness (documented script or test that actually exercises the recovery path under process kill).
-- Integration of `egui_mcp` (or equivalent 2026 egui testing framework) to automate UI property tests, reducing reliance on manual verification.
+**Work:**
 
-**Quality Gate**
-- Core coverage **≥ 85% line / 70% branch**, with explicit coverage of the safety properties and FMEA rows addressed in this phase.
-- Property tests now also cover:
-  - Arbitrary sequences of inserts/deletes + undos + redos return to identical document + cursor state (U1/S3).
-  - Undo stack memory stays bounded under heavy typing.
-- Updated FMEA table with new rows discovered during implementation; corresponding fault-injection cases added to the harness.
-- Full manual test matrix executed and signed off on **Windows + Linux** (Wayland preferred for one run). Includes mental model impact validation for delivered features, as well as explicit IME input tests across platforms.
-- Automated UI tests via `egui_mcp` demonstrate verification of at least 3 critical UI state changes (e.g., modified indicator, find-and-replace highlight).
-- No data loss in 30 simulated "kill during heavy editing + restart + recover" cycles (evidence for NFR-REL-01 and F1/F3).
-- `cargo bloat` or equivalent used to produce a report; top 5 largest contributors documented in an issue or DESIGN addendum. Dependency health table refreshed.
-- All NFR-REL reliability requirements have passing tests or documented manual verification.
-- RIGOROUS_REVIEW.md re-read; response notes updated.
+- Reconcile the local five-ahead, one-behind branch with `origin/master` without
+  losing the current UI or document work.
+- Correct README and roadmap status. Link the research record.
+- Resolve the root-to-`docs/` migration in CI and all internal links.
+- Pin the verified Rust toolchain. Add an explicit MSRV policy and test it if an
+  MSRV is advertised.
+- Make format, strict Clippy, tests, and an enforced core coverage threshold pass.
+- Separate library-testable product code from the binary bootstrap.
+- Remove or defer unused dependencies. Record duplicate transitive dependencies
+  instead of treating all platform-driven duplicates as Clippy errors.
+- Add a fast local `just`, `xtask`, or documented Cargo command sequence only if
+  it reduces real friction without adding a large dependency.
+- Add documentation link checking and reject placeholder repository metadata.
+- Establish `Planned`, `In progress`, `Verified`, and `Deferred` status language.
 
-**Rough Calendar:** 3–5 weeks.
+**Checkpoint on 2026-07-25:**
 
-**Exit Criteria:** This is the point at which the author (and early testers) can switch their daily plain-text workflow to Noter with high confidence.
+- **Verified locally:** README and roadmap status, research record, license and
+  repository metadata, pinned Rust 1.97.1 toolchain, pinned CI actions, strict
+  UTF-8 rejection, formatting, strict Clippy, seven unit tests, enforced 96.43
+  percent core line coverage, documentation link checking, and the measured
+  [M0 baseline](BASELINE.md).
+- **Verified locally:** the binary-to-library boundary keeps testable product
+  logic independent of the GUI shell.
+- **Verified locally:** requirements, technical design, UX, privacy, manual
+  verification, and ADR-001 through ADR-003 are reconciled with the research and
+  roadmap. ADR-003 remains Proposed pending its named platform evidence.
+- **In progress:** review of the divergent remote commit and preparation for an
+  intentional safety-branch reconciliation.
+- **Planned:** intentional branch reconciliation, exact-commit GitHub CI on all
+  three operating systems, and final M0 evidence commit.
 
----
+**Exit evidence:**
 
-### Phase 3 — The "Ruff" of Markdown (Strict Linter & Inline Formatting)
+- Clean working tree after an intentional commit series.
+- Local quality suite green on the pinned toolchain.
+- GitHub CI green on Windows, macOS, and Linux for the reconciled branch.
+- Enforced core line coverage at or above 80 percent.
+- README makes no unsupported Phase 1 claim.
+- Baseline report records test count, coverage, binary size, dependency count,
+  and current platform verification.
 
-**Goals**
-Deliver beautiful inline Markdown formatting that acts as a strict structural linter. Instead of arbitrary rich text or clunky split panes, Noter enforces pristine Markdown syntax directly in the editor buffer.
+**Estimated effort:** 2 to 4 focused days.
 
-**Deliverables**
-- Inline styling view (styles applied directly to the text buffer).
-- Smart Indentation: Auto-aligning lists and blocks when hitting enter.
-- One-Keystroke Alignment: A formatting shortcut (like running `ruff format`) that instantly standardizes header spacing, aligns tables, and fixes broken list numbers in the raw text.
-- Graceful degradation for huge documents (only run regex/parsing on the visible viewport).
-- Keyboard shortcut reference (Help > Keyboard Shortcuts or a simple modal).
-- Format menu with explicit "Line Endings" and "Encoding" (even if encoding is always UTF-8 for v1, the UI exists for future).
-- Optional line numbers (View menu).
-- Drag-and-drop file onto the window to open (nice-to-have).
-- Refined status bar (perhaps clickable elements to change line endings or jump to line).
-- Refined find bar (previous/next buttons, close with Esc, search term history?).
-- All shortcuts verified on macOS (Cmd key) and Linux.
+## M1: Document and Durable I/O Trust Kernel
 
-**Quality Gate**
-- Preview feature has its own small test suite (parser events → expected egui draw calls, or at least "does not panic on common markdown" + snapshot of rendered structure if we adopt `insta`).
-- Adding the preview crate does not push release binary over the size budget (or we accept a documented increase and re-optimize elsewhere).
-- Manual test on all three platforms (or at least Windows + one other) including "edit while preview is open", "toggle preview on a 10k line .md file", "preview with code blocks and lists looks usable".
-- No regressions in Phase 1–2 core tests.
-- Documentation updated (README features list, user-facing "Markdown Preview" section in a small `docs/USAGE.md`).
+**Outcome:** Loading and saving are boring, strict, fault-tested, and independent
+of the GUI.
 
-**Rough Calendar:** 2–3 weeks.
+**Work:**
 
-**Exit Criteria:** The UX vision of a strict, highly-structured "Ruff for Markdown" is achieved, enforcing best practices without ever changing the plain text nature of the file.
+- Define `DocumentId`, `Revision`, `Encoding`, `Bom`, `LineEndingPolicy`,
+  `FileIdentity`, and saved-content fingerprint types.
+- Decide and document mixed-EOL editing behavior. Untouched bytes must always
+  round-trip. Edited mixed-EOL files must never normalize silently.
+- Stream strict UTF-8 loading into the authoritative buffer. Offer conversion only
+  through a separate explicit command and Save As path.
+- Replace the interim save code with an audited I/O adapter that uses a unique
+  sibling, flush, file sync, atomic replacement, and parent-directory sync where
+  supported.
+- Define and test destination metadata, symlink, read-only, ACL, cloud-folder,
+  network-filesystem, and external-writer behavior.
+- Make config and recent-file state use the same durable-write discipline.
+- Introduce injectable I/O operations for failures at create, write, flush, sync,
+  replace, metadata, and directory-sync stages.
+- Add golden fixtures for empty, BOM, LF, CRLF, CR, mixed EOL, trailing newline,
+  newline-only, emoji, CJK, combining marks, RTL, long line, and invalid UTF-8.
+- Add property tests for byte round-trip and line-ending detection.
 
----
+**Exit evidence:**
 
-### Phase 4 — Cross-Platform Hardening, Packaging & v0.1 Release
+- Safety properties S1 and S2 have executable tests and traceability entries.
+- On every injected pre-commit failure, the original is complete and unchanged.
+- On success, the destination equals the exact intended bytes.
+- At least 90 percent line coverage for document and I/O modules.
+- Mutation testing of the serialization and replace-decision paths finds no
+  surviving high-impact mutant, or each survivor is explained.
+- Windows metadata and replacement behavior is manually verified on NTFS.
 
-**Goals**
-Make the release process professional and ensure the product is supportable on all target platforms.
+**Estimated effort:** 1 to 2 weeks.
 
-**Deliverables**
-- `cargo-dist` configuration that produces:
-  - Windows: `.msi` installer + portable `.exe` zip
-  - macOS: universal (x86_64 + aarch64) `.dmg` + app bundle (notarized if we have the certs)
-  - Linux: `.tar.gz` + `.deb` (optional `.rpm`)
-- GitHub Actions release workflow that runs the full test + clippy + coverage matrix on all three OSes.
-- SBOM generation (basic `cargo auditable` or `cargo-cyclonedx`) included in releases.
-- Signed release binaries where possible (Windows code signing cert is a stretch goal; at minimum we publish SHA256SUMS).
-- Final performance & reliability numbers published in the release notes.
-- `docs/manual-test-matrix.md` completed and used for the release sign-off.
-- User-facing documentation: `docs/USAGE.md` (short), keyboard reference, recovery behavior explanation.
-- "Known issues" and "How to report bugs" section in README.
-- Version bumped to 0.1.0 (or 0.5.0 if we feel it deserves more maturity signaling).
+## M2: Edit, Selection, and Undo Model
 
-**Quality Gate**
-- Full CI matrix (Windows, macOS 13/14, Ubuntu 22.04/24.04, both X11 and Wayland where possible) is green on the release tag.
-- Coverage report for the release shows core ≥ 85%, including the safety properties.
-- At least two people (author + one external tester) have used the release candidate as daily driver for ≥ 7 days with no data loss incidents. Structured dogfooding log (including mental model surprises) is committed.
-- Binary sizes on all published artifacts meet or are documented against the NFR-PERF-05 targets.
-- `cargo clippy -- -D warnings` and fmt are clean on the exact commit tagged for release.
-- A "v0.1 Release Checklist" issue is created, all items checked, and closed with the release.
-- `STEWARDSHIP.md` (per DESIGN §12.1), updated FMEA, final dependency health table, and Markdown scope contract are part of the release tag.
-- RIGOROUS_REVIEW.md has a final response note summarizing what was achieved vs. deferred.
+**Outcome:** One authoritative buffer and a UI-independent command model define
+all text changes.
 
-**Rough Calendar:** 2–4 weeks (a lot of this is infrastructure + waiting for CI runs and tester feedback).
+**Work:**
 
-**Exit Criteria:** We have a real, shippable v0.1 that we are proud to point people at.
+- Remove the full-document `String` and `Rope` dual authority.
+- Define byte, Unicode scalar, grapheme, line, logical column, and visual column
+  boundaries explicitly.
+- Implement cursor, anchor/head selection, preferred column, viewport anchor, and
+  edit transactions.
+- Implement insert, delete, replace, paste, newline, indent, and EOL-conversion
+  commands.
+- Implement bounded undo and redo with documented coalescing rules and exact
+  cursor and selection restoration.
+- Ensure a formatter, Replace All, or EOL conversion becomes one undoable
+  transaction.
+- Add a deterministic reference model and property-test arbitrary edit sequences.
+- Test emoji sequences, combining marks, surrogate-producing clipboard input,
+  CRLF boundaries, empty last lines, and very long lines.
 
----
+**Exit evidence:**
 
-### Post-v0.1 (Future Phases — Only After Demand & Maintainer Capacity)
+- Safety property S3 and undo invariant U1 pass model-based tests.
+- Undo memory remains within its configured byte budget under stress.
+- No edit command can create invalid UTF-8 or split CRLF as two logical breaks.
+- Trust-kernel coverage remains at least 90 percent.
 
-- Optional tabs / multi-document interface (many classic Notepad users prefer multiple windows; this is controversial).
-- Better horizontal scrolling / very long line handling.
-- Simple syntax highlighting (as an opt-in, never on by default, still plain text on disk).
-- Embedded font for perfect cross-platform monospace (size cost vs benefit analysis).
-- Theming beyond light/dark (very low priority).
-- "Portable mode" that stores config next to the binary.
-- Any feature that would require a webview or heavy JS.
+**Estimated effort:** 1 to 2 weeks.
 
-These will only be considered after v0.1 has real users and the core reliability story remains flawless.
+## M3: Recovery, Dirty Lifecycle, and Conflict Safety
 
-## Metrics We Will Track
+**Outcome:** No destructive lifecycle action can silently discard work, and a
+process crash leaves a validated recovery offer.
 
-- Binary size (per platform, release profile)
-- Core line/branch coverage (per phase gate)
-- Number of "data loss" or "corrupted save" bugs found in testing (target: 0 after Phase 1)
-- Time to open 10 MiB / 50 MiB reference files
-- Frame time (p99) while scrolling a 100k line file
-- Number of days the primary author uses Noter as daily driver without switching back
+**Work:**
 
-## How to Read This Roadmap
+- Implement one state machine for New, Open, Reload, Close, Quit, Save, Save As,
+  Discard, Cancel, and failed recovery persistence.
+- Store versioned recovery records in per-user application state, not the general
+  temp directory.
+- Add random document and instance IDs, checksums, schema versioning, timestamps,
+  original file identity, revision, cursor, and selection.
+- Coalesce edits in memory and flush recovery on a background worker without
+  blocking the UI. Bound and measure the recovery point objective.
+- Sync recovery before any no-prompt close. If that fails, keep the window open
+  and show the classic dirty prompt.
+- Detect external file changes with file identity plus a content fingerprint.
+  Define reload, keep mine, and Save As behavior without a fake diff feature.
+- Handle stale records, version mismatch, corruption, two Noter instances, PID
+  reuse, clock changes, missing source files, and cleanup failure.
+- Build a child-process crash harness that kills at controlled edit and save
+  points, restarts scanning, and validates recovered content.
 
-- Do not add new user-facing features in the middle of a phase unless the quality gate for the previous work is already green.
-- When in doubt, cut scope to protect the reliability and test invariants.
-- The planning documents (REQUIREMENTS + DESIGN) are the specification. If something feels wrong during implementation, update the documents first.
+**Exit evidence:**
 
----
+- Safety property S4 and recovery liveness property L2 have executable tests.
+- At least 100 automated process-kill cycles have no missing recovery offer and
+  meet the documented recovery point objective.
+- Dirty actions cannot reach a drop state without Save, explicit Discard, or
+  validated recovery persistence under the selected close policy.
+- Recovery records are private to the user where platform permissions allow.
 
-**This is how you build software that lasts and that people actually trust.**
+**Estimated effort:** 1 to 2 weeks.
 
-Next concrete step: begin Phase 2 implementation focusing on editing trust, robust autosave, and custom widget polish.
+## M4: Complete Classic-Notepad Alpha
+
+**Outcome:** The existing egui `TextEdit` path becomes a complete, coherent alpha
+for ordinary files and validates the product workflow before renderer risk.
+
+**Work:**
+
+- Route menus and shortcuts through one `Command` dispatcher.
+- Implement New, Open, Save, Save As, recent files, and the M3 dirty state machine.
+- Connect built-in editing commands correctly. Hide or disable every command that
+  is not implemented.
+- Implement Find, next, previous, Replace, Replace All, and Go To Line.
+- Implement word wrap, zoom, line/column/selection/character status, encoding,
+  EOL, BOM, dirty state, and external-change state.
+- Implement System, Light, and Dark preferences with tested contrast.
+- Persist window bounds safely and clamp restored windows to available monitors.
+- Use platform-primary modifiers and accurate displayed shortcut labels.
+- Add recovery and error surfaces that preserve keyboard focus.
+- Add `egui_kittest` semantic tests and limited visual snapshots.
+- Test keyboard-only navigation, focus order, accessible names, high contrast,
+  scale factors, and screen-reader announcements.
+
+**Exit evidence:**
+
+- No visible placeholder command remains.
+- Whole-workspace line coverage reaches at least 80 percent through core, command,
+  state, and semantic UI tests.
+- Windows manual matrix passes, including NVDA and at least one real CJK IME.
+- Ten consecutive daily-driver sessions complete without data loss or a workflow
+  blocker.
+- Alpha limitations clearly state the file-size range supported by `TextEdit`.
+
+**Estimated effort:** 2 to 3 weeks plus dogfooding.
+
+## M5: Custom Editor Gate and Production Engine
+
+**Outcome:** Noter either proves a custom egui editor can meet the full contract or
+changes architecture before sinking months into the wrong widget.
+
+### M5A: one-week feasibility gate
+
+Prototype only the risky vertical slice:
+
+- authoritative rope-backed edits with no full copy;
+- visible-line layout and bounded galley cache;
+- caret, selection, hit testing, vertical movement, horizontal scrolling, and a
+  pathological long line;
+- IME pre-edit rendering and candidate-window placement;
+- AccessKit text runs, selection, editable actions, and screen-reader navigation;
+- find highlights and a styled source span;
+- deterministic frame-time instrumentation.
+
+**Go criteria:** The slice meets correctness tests and the 1 MiB interaction
+budgets, shows a credible route to 50 MiB, and passes a real IME plus at least one
+screen reader. Otherwise retain `TextEdit`, reduce the large-file promise, or
+evaluate another GUI/text-stack architecture explicitly.
+
+### M5B: production engine, only after Go
+
+- Complete mouse, keyboard, selection, clipboard, drag, word, paragraph, page,
+  Home/End, platform shortcut, and focus behavior.
+- Virtualize only visible logical and wrapped rows with overscan.
+- Bound all caches and undo memory. Degrade expensive highlights explicitly.
+- Keep disk I/O and indexing off the render thread with cancellation and stale
+  revision rejection.
+- Add benchmark corpora for normal prose, source text, logs, mixed Unicode,
+  newline-only files, one huge line, and adversarial search patterns.
+- Publish p50, p95, and p99 results on named reference hardware.
+
+**Exit evidence:**
+
+- Feature parity with M4, including IME and accessibility.
+- Required budgets in [RESEARCH.md](RESEARCH.md) pass in release builds.
+- No unbounded per-frame work based on total document length.
+- Windows and Linux manual matrices pass. macOS core shortcut and IME matrix also
+  passes before M6.
+
+**Estimated effort:** 1 week for M5A, then 3 to 6 weeks for M5B.
+
+## M6: Cross-Platform v0.1 Release
+
+**Outcome:** A boring, trustworthy plain-text editor is professionally packaged,
+auditable, and ready for real users.
+
+**Work:**
+
+- Generate portable archives and appropriate installers for Windows, macOS, and
+  Linux with current cargo-dist tooling.
+- Reverify and update pinned CI action SHAs and minimum workflow permissions.
+- Test the verified Rust toolchain and the advertised MSRV policy.
+- Run dependency license, advisory, duplicate, and source audits.
+- Generate SBOM, build provenance, SHA-256 checksums, and signatures where
+  credentials are available.
+- Publish binary size, RSS, startup, file-open, search, scroll, recovery, and
+  crash-harness results.
+- Complete Usage, Recovery, Privacy, Security, Troubleshooting, Contributing,
+  Stewardship, and release-checklist documents.
+- Run the complete manual matrix on Windows, macOS, X11, and Wayland.
+
+**Exit evidence:**
+
+- Exact release commit has green CI and at least 80 percent whole-workspace line
+  coverage.
+- Two people use the release candidate for at least 14 days each with no data
+  loss incident.
+- One tester is not the primary developer and one test period is on a non-Windows
+  platform.
+- All critical and high FMEA risks have tests or a clearly accepted residual risk.
+- Install, upgrade, portable use, and uninstall are verified from clean machines.
+
+**Estimated effort:** 2 to 3 weeks plus a minimum 14-day release-candidate soak.
+
+## M7: Markdown Assist v0.2
+
+**Outcome:** Noter offers an opt-in "Ruff for Markdown" without hiding source or
+silently rewriting content.
+
+**Work:**
+
+- Ratify one dialect and extension policy, initially CommonMark with a small,
+  explicit GFM subset if justified.
+- Apply inline styles while keeping Markdown punctuation visible.
+- Add non-mutating diagnostics with rule IDs, ranges, explanations, and explicit
+  fixes.
+- Add smart list continuation as a separate, toggleable edit command.
+- Implement Format as an explicit previewed diff. Verify parsed-document
+  equivalence, apply one undo transaction, and preserve EOL/BOM.
+- Treat heading normalization, ordered-list renumbering, table alignment, and
+  trailing whitespace as independent rules with fixtures.
+- Parse by revision off the UI thread, cancel stale work, and bound large-file
+  processing to visible or changed regions where correctness permits.
+- Never load remote images, fetch links, execute HTML, or make a network request.
+
+**Exit evidence:**
+
+- CommonMark conformance corpus for supported behavior is green.
+- Formatter fixtures are idempotent and AST-equivalent.
+- Every automatic-looking edit is explicit, configurable where appropriate, and
+  one-step undoable.
+- Markdown off means zero document mutation and negligible idle cost.
+- No regression in any v0.1 trust, accessibility, performance, or size gate.
+
+**Estimated effort:** 3 to 5 weeks.
+
+## Deferred until evidence demands it
+
+- 500 MB editable files or files larger than RAM.
+- Tabs, workspaces, folder trees, or projects.
+- Syntax highlighting for programming languages.
+- Plugins, LSP, Git, terminal, command palette, or collaborative editing.
+- Non-UTF-8 save encodings. Explicit import conversion may be considered first.
+- Embedded web content, remote images, accounts, cloud sync, update checks, or
+  telemetry.
+- Themes beyond System, Light, and Dark.
+
+## Next executable backlog
+
+These are the next tasks in dependency order:
+
+1. Capture the coherent M0 worktree on a safety branch and intentional commit.
+2. Integrate the divergent remote commit with a reviewed conflict resolution.
+3. Run local gates, publish the reconciled branch, and make exact-commit
+   Windows, macOS, and Linux CI green.
+4. Create the pure command and application-state reducer.
+5. Add the benchmark corpus generator and automate the M0 baseline.
+6. Close ADR-003 metadata, symlink, commit-state, and platform questions.
+7. Implement `LineEndingProfile` and the accepted mixed-EOL insertion policy.
+8. Build the complete golden-file matrix and serialization property tests.
+9. Implement the durable-write adapter behind injected I/O traits.
+10. Add pre-commit and post-commit fault injection plus mutation testing.
+11. Implement the edit transaction and selection model.
+12. Add reference-model undo and redo property tests.
+13. Implement the dirty-document lifecycle state machine.
+14. Implement versioned state-directory recovery records and crash scanning.
+15. Build the controlled child-process crash harness.
+16. Connect the proven core to the complete M4 UI.
+
+The answer to "what is next" is therefore unambiguous: finish M0, then prove M1.
+Do not begin the custom editor or Markdown engine while save, undo, close, and
+recovery semantics are still aspirational.

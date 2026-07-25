@@ -1,31 +1,28 @@
-License: Apache-2.0  
-Personal, research, and commercial use permitted.
-
 # Noter
 
 **A deliberately pure, reliable, cross-platform plain text editor written in Rust.**
 
-Noter is the notepad you actually want in 2026: fast, trustworthy, boring in the best way, with zero telemetry, zero bloat, and zero "we know better than you" decisions. It respects classic Notepad muscle memory while adding the minimum modern quality-of-life improvements (system-matched light/dark theme + an optional, non-intrusive Markdown preview).
+Noter aims to be the notepad you actually want in 2026: fast, trustworthy, boring in the best way, with zero telemetry, zero bloat, and zero "we know better than you" decisions. It respects classic Notepad muscle memory while planning only the minimum modern quality-of-life improvements: system-matched light and dark themes, followed later by opt-in Markdown assistance.
 
 > "I just want to open a file, edit text, and save it without drama, across every machine I use."
 
 ## The "Slam Dunk" Goal
 
 The choice between modern bloated spyware slop and Noter must be an absolute slam dunk.
-When you open Noter, it shouldn't just feel "okay for a hobby app"—it must feel like holding a perfectly balanced, professionally machined tool. It opens instantly. The typography is stunning. The scrolling is buttery smooth. And you instinctively know, without even thinking about it, that this app is never going to phone home, nag you for a subscription, or lose your text. It gets in, and then it gets entirely out of your way so you can just write.
+When you open Noter, it should not just feel "okay for a hobby app". It must feel like holding a perfectly balanced, professionally machined tool. It opens quickly. The typography is excellent. The scrolling is smooth. You know, without having to inspect hidden settings, that it will not phone home, nag you for a subscription, or discard your text. It gets in and then gets out of your way so you can write.
 
 ## Philosophy
 
 - **Purity first.** Core experience is always plain text. No hidden formats, no "smart" rewriting of your content.
 - **Reliability is non-negotiable.** Atomic saves, crash recovery, line-ending fidelity, and "never lose user data" are first-class.
 - **Minimal surface area.** Small binary, small RAM, small dependency tree, small attack surface. No network calls ever.
-- **System native where it matters.** Follows your OS light/dark setting. Uses real native file dialogs. Feels at home on Windows, macOS, and Linux.
+- **System-integrated where it matters.** Follows the OS theme preference, uses native file dialogs, respects platform shortcuts, and renders a deliberately consistent interface. egui does not provide native-looking widgets, and Noter does not claim otherwise.
 - **Keyboard-centric.** Every important action has a discoverable shortcut. Mouse is optional.
-- **Markdown is an inline view.** Text-only mode is the strict default. When toggled, the beautiful inline Markdown view (Phase 3) visually styles your text and enforces markdown best practices (acting like a linter, e.g., Ruff for Python) to keep your documents perfectly structured. It never changes how your `.md` file is natively saved.
+- **Markdown follows trust.** Plain text is the strict v0.1 scope. A later opt-in Markdown mode may add inline styling, non-mutating diagnostics, and an explicit, previewed, one-step-undoable format command. It will never rewrite a document in the background.
 
 Noter will never become a second VS Code, a note-taking app with accounts, or a "productivity suite."
 
-## Engineering Philosophy — How We Intend to Avoid Slopware
+## Engineering Philosophy - How We Intend to Avoid Slopware
 
 Your original pain points were very specific:
 
@@ -34,9 +31,9 @@ Your original pain points were very specific:
 - Cross-platform that actually works well on Win/mac/Linux without becoming Electron garbage.
 - A tiny bit of 2026 QOL (system theme + beautiful inline Markdown styling) but "keep it pretty pure" otherwise.
 
-**Is this a good idea in June 2026?**
+**Is this still a good idea in July 2026?**
 
-Yes — *conditionally*.
+Yes, *conditionally*.
 
 The world does not need another "I built a text editor in a weekend" project. But there is still room for a *deliberately* small, zero-compromise, reliability-obsessed plain text tool whose entire reason for existence is "I am sick of the shit the OS vendors ship and I want something I can actually trust for the next 10 years."
 
@@ -63,21 +60,26 @@ This is the bar. The planning documents exist to make it hard to lower that bar 
 
 ## Current Status
 
-This project has **completed Phase 1 (Core Notepad MVP)** and is now entering Phase 2 (Editing Trust & Polish). The application is fully functional for daily plaintext use.
+This project is in **M0: Truthful and Green Foundation**. The current branch contains an early egui editor prototype with text entry and basic Open, Save, and Save As flows. It is not yet safe or complete enough for daily use.
+
+The 2026-07-25 audit found that dirty work could be discarded, invalid UTF-8 was converted silently, most menu commands were placeholders, recovery did not exist, and the claimed Phase 1 quality gate had not been met. Initial M0 repairs restored local format, strict Clippy, and unit-test health and changed invalid UTF-8 loading to fail explicitly.
 
 A structured adversarial design review was performed on the initial planning corpus. The review and our responses are captured in [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
 
 See:
-- [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md) — external critical analysis + our action plan
-- [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — what must be true (now includes mental model protection and traceability)
-- [docs/DESIGN.md](docs/DESIGN.md) — how it will be built (deep technical + formal-ish spec + FMEA)
-- [docs/ROADMAP.md](docs/ROADMAP.md) — how we get there with quality gates that incorporate the review items
 
-Implementation will proceed in strict phases with explicit "Definition of Done" criteria that include code quality, test coverage, and cross-platform verification. The bar has been deliberately raised by the review process.
+- [docs/RESEARCH.md](docs/RESEARCH.md) - repository audit, ecosystem research, and decisions
+- [docs/BASELINE.md](docs/BASELINE.md) - measured M0 quality, coverage, size, and dependency baseline
+- [docs/ROADMAP.md](docs/ROADMAP.md) - milestone order, gates, metrics, and immediate backlog
+- [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) - current requirements, with M0 reconciliation still in progress
+- [docs/DESIGN.md](docs/DESIGN.md) - current technical design and FMEA, with M0 corrections still in progress
+- [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md) - prior internal critical analysis and response
+
+No milestone is marked complete until its tests, measurements, manual sign-off, and documentation exist on the same green commit.
 
 ## Planned Features (High Level)
 
-**MVP / Phase 1 (Pure classic notepad experience)**
+**v0.1 trust and classic-notepad release**
 - New, Open, Save, Save As, recent files (capped)
 - Cut / Copy / Paste / Delete / Undo / Redo (excellent coalescing)
 - Find + Find Next, basic Replace
@@ -85,38 +87,45 @@ Implementation will proceed in strict phases with explicit "Definition of Done" 
 - Status bar (line, column, selection, encoding, line endings, modified)
 - System light/dark + manual override that persists
 - Proper handling of line endings (preserve what was on disk)
-- Atomic safe saves + basic autosave/recovery
-- Close prompt when dirty
+- Durable atomic replacement plus private local crash recovery
+- One tested Save / Discard / Cancel lifecycle for every destructive action
+- External file-change detection
+- Keyboard-only, IME, screen-reader, high-DPI, and cross-platform verification
 
-**Phase 2–3 (Polish + 2026 QOL)**
+**v0.1 production editor and polish**
 - Go To Line
 - Improved search (case, whole word, live match highlighting)
-- File-changed-on-disk detection with reload prompt
-- Mature autosave + recovery workflow
-- Beautiful inline Markdown formatting view (pure Rust styling directly in the editor, does not affect save, enforces Markdown best practices)
+- A custom rope-backed editor only if a time-boxed IME and accessibility feasibility gate passes
 - Font size zoom (Ctrl+wheel and menu)
 - Window state persistence (position, size, maximized)
 
-**Explicit Non-Goals (at least for v0.1 / v0.2)**
+**v0.2 Markdown assist**
+
+- Inline source styling with Markdown punctuation still visible
+- Non-mutating diagnostics
+- Explicit formatting with diff preview, AST-equivalence validation, and one-step undo
+- No remote images, HTML execution, link fetching, or hidden rewrites
+
+**Explicit non-goals for v0.1 and v0.2**
 - Tabs or "workspaces" by default (you can launch multiple instances)
 - Built-in syntax highlighting in the editor
 - LSP, git integration, terminals, plugins
 - Cloud sync, accounts, or any network behavior
-- Heavy theming or "beautiful" UI beyond clean + system-appropriate
+- Themes beyond System, Light, and Dark
 - Rich text editing (the file on disk is always plain UTF-8 text)
 
 ## Building & Running
 
 ### Prerequisites
 
-- Rust 1.85+ (we target edition 2024). Install via [rustup](https://rustup.rs/).
+- Rust 1.97.1 is the verified and pinned toolchain. Install it via [rustup](https://rustup.rs/); the repository toolchain file selects it automatically.
 - On Windows: the MSVC toolchain (default via rustup on Windows).
 - For full cross-platform testing you will eventually need macOS and Linux machines (or CI).
 
 ### Development
 
 ```bash
-git clone https://github.com/yourname/noter   # (placeholder)
+git clone https://github.com/blisspixel/noter
 cd noter
 
 # Recommended: develop outside sync folders (see .gitignore)
@@ -126,17 +135,18 @@ cargo run --release
 Useful quality commands (these will be enforced in CI and before every phase gate):
 
 ```bash
-cargo fmt -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-# Coverage (once set up)
-cargo install cargo-llvm-cov
-cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+cargo install cargo-llvm-cov --locked
+cargo llvm-cov --locked --all-targets --all-features --workspace \
+  --ignore-filename-regex 'src[/\\](app|main)\.rs$' \
+  --fail-under-lines 80 --summary-only
 ```
 
 ### Release binary size (target)
 
-We aim for final stripped release binaries under ~8–12 MiB on all platforms through:
+We aim for final stripped release binaries under about 8 to 12 MiB on all platforms through:
 - `opt-level = "z"` or "3" + LTO + strip in `Cargo.toml` profiles
 - Careful dependency selection
 - `cargo bloat` and `cargo tree` audits
@@ -147,20 +157,21 @@ We aim for final stripped release binaries under ~8–12 MiB on all platforms th
 |-------------------|------------------|------------------------------------|
 | Windows           | 10 (build 19041+) / 11 | Primary dev platform for author   |
 | macOS             | 13 Ventura+      | Apple Silicon + Intel              |
-| Linux             | Ubuntu 22.04 / Fedora 39+ | X11 and Wayland (both tested)     |
+| Linux             | Ubuntu 22.04 / Fedora 39+ | X11 and Wayland are release targets |
 
 We will maintain a small manual test matrix on real hardware for each release.
 
 ## Data Safety & Privacy
 
 - Zero network activity. The binary makes no outgoing connections.
-- All state is local (small TOML config + window state).
-- Autosave/recovery files live in the OS temp directory and are cleaned on normal exit when possible.
+- All state is local. Configuration contains preferences and window state, not document content.
+- Versioned recovery records will live in a private per-user application state directory because the general OS temp directory is not a persistence contract.
+- Recovery never silently writes the original file. Save remains an explicit operation.
 - We will never read files you did not explicitly open.
 
 ## License
 
-Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
 
 ## Acknowledgments
 

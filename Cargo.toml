@@ -2,17 +2,17 @@
 name = "noter"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"   # Conservative baseline; raise only after testing. 2026 reality will likely be 1.88–1.92.
-authors = ["Nick <noter@local>"]  # Update when you have a real identity / org
+rust-version = "1.97.1" # Verified and pinned by rust-toolchain.toml and CI.
+authors = ["Nick"]
 description = "A pure, reliable, cross-platform plain text editor in Rust. The notepad you actually want."
 readme = "README.md"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourname/noter"  # Update on first publish
+license = "Apache-2.0"
+repository = "https://github.com/blisspixel/noter"
 keywords = ["notepad", "text-editor", "plain-text", "egui", "cross-platform", "rust"]
-categories = ["gui", "text-editors", "command-line-utilities"]  # "command-line-utilities" is a stretch but fine for discoverability
+categories = ["gui", "text-editors"]
 
 # =============================================================================
-# Planned dependencies (June 2026 GA versions — latest sensible stable releases)
+# Planned dependencies (July 2026 GA versions, using sensible stable releases)
 # Introduced gradually by phase. See ROADMAP.md + DESIGN.md for justification policy.
 # We are conservative on pre-release crates for a "reliability first" tool.
 # =============================================================================
@@ -37,7 +37,7 @@ categories = ["gui", "text-editors", "command-line-utilities"]  # "command-line-
 #   tempfile         = "3.27"   # Golden tests & recovery simulation (dev-dependency).
 #
 # Future / only if justified (and after GA)
-#   notify           = "9"      # 9.0.0-rc.4 in June 2026 — still pre-release. Use mtime polling first.
+#   notify           = "9"      # Re-evaluate stability before adoption. Use mtime polling first.
 #
 # Strict policy: Every added dependency requires (a) written justification in DESIGN.md,
 # (b) `cargo tree -i <name>` audit, (c) binary size impact measurement at the phase gate.
@@ -72,7 +72,7 @@ panic = "abort"        # We handle errors gracefully; abort is fine and smaller
 opt-level = 1          # Slightly faster debug builds for UI work without killing compile time
 
 # =============================================================================
-# Lints (modern 2024 style — we will tighten over time)
+# Lints (modern 2024 style, tightened over time)
 # =============================================================================
 [lints.rust]
 unsafe_code = "forbid"
@@ -91,13 +91,17 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 cast_possible_truncation = "allow"
 cast_precision_loss = "allow"
+# GUI backends necessarily pull platform-specific versions of several crates.
+# Audit duplicates explicitly with `cargo tree --duplicates` instead of turning
+# every upstream version split into a Clippy failure.
+multiple_crate_versions = "allow"
 
 # =============================================================================
 # cargo-dist metadata (Phase 4 packaging)
 # See https://github.com/axodotdev/cargo-dist
 # =============================================================================
 [workspace.metadata.dist]
-cargo-dist-version = "0.28.0"   # Update to current when we reach Phase 4
+cargo-dist-version = "0.32.0"   # Re-verify against current cargo-dist before M6
 ci = ["github"]
 installers = ["shell", "msi", "homebrew"]
 targets = [

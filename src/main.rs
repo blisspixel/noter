@@ -1,19 +1,10 @@
-//! Noter — A pure, reliable, cross-platform plain text editor.
+//! Noter, a focused cross-platform plain-text editor.
 //!
-//! This is currently a planning skeleton. See README.md, REQUIREMENTS.md,
-//! DESIGN.md, and ROADMAP.md for the full vision, architecture, and phased
-//! implementation plan with strict quality gates.
-//!
-//! Philosophy (short version):
-//! - Classic Notepad spirit: open file, edit text, save file, get out of the way.
-//! - Zero telemetry, zero bloat, zero "smart" rewriting of user content.
-//! - System light/dark theme + optional Markdown preview as the only 2026 QOL additions.
-//! - Reliability (atomic saves, recovery, line-ending fidelity) is the #1 feature.
+//! The current M0 prototype is not ready for daily use. See `README.md` and
+//! `docs/ROADMAP.md` for the verified status and execution plan.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-pub mod core;
-pub mod error;
 mod app;
 
 use app::NoterApp;
@@ -29,11 +20,10 @@ fn main() -> eframe::Result {
             .with_transparent(false), // Disable transparency to prevent DWM choppiness
         ..Default::default()
     };
-    
+
     eframe::run_native(
         "Noter",
         options,
         Box::new(|cc| Ok(Box::new(NoterApp::new(cc)))),
     )
 }
-
