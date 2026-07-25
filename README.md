@@ -81,10 +81,12 @@ commit `62dc49f` in [GitHub Actions run 30177403255](https://github.com/blisspix
 The save-protocol slice is verified at commit `0edc342` in
 [GitHub Actions run 30177953025](https://github.com/blisspixel/noter/actions/runs/30177953025),
 and conflict fingerprints now use the official BLAKE3-256 implementation with
-both in-memory and streaming APIs.
-The production platform storage adapters and their metadata and crash fixtures
-are still in progress, so the GUI remains a prototype rather than a safe daily
-editor.
+both in-memory and streaming APIs. That digest slice is verified at commit
+`613cbcd` in [GitHub Actions run 30178217482](https://github.com/blisspixel/noter/actions/runs/30178217482).
+Stable open-handle identity, hard-link counts, streamed content observations,
+and final-link refusal are implemented locally. Production replacement adapters
+and their metadata and crash fixtures are still in progress, so the GUI remains
+a prototype rather than a safe daily editor.
 
 A structured adversarial design review was performed on the initial planning corpus. The review and our responses are captured in [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
 
@@ -158,8 +160,9 @@ Useful quality commands (these will be enforced in CI and before every phase gat
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-targets --all-features
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 cargo install cargo-llvm-cov --locked
 cargo llvm-cov --locked --all-targets --all-features --workspace \
   --ignore-filename-regex 'src[/\\](app|main)\.rs$' \

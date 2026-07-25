@@ -171,5 +171,6 @@ library remains `unsafe_code = "forbid"`.
 The pure fault-injected protocol is implemented and verified across the CI
 matrix at commit `0edc342`. BLAKE3-256 slice and streaming fingerprints are
 implemented with reference-vector and read-failure tests. Production file
-identity observations, replacement adapters, and the named platform evidence
-remain required before M1 is Verified.
+identity observations now prefer 128-bit Windows IDs, label reduced fallbacks,
+detect hard links, hash an open handle, and refuse final links. Replacement
+adapters and the named platform evidence remain required before M1 is Verified.

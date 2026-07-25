@@ -27,9 +27,13 @@ The current M1 worktree has:
   commit, durability, and cleanup outcomes;
 - BLAKE3-256 content fingerprints from complete byte slices or streaming
   readers, checked against the official reference vectors;
+- a bounded stable-file observation that combines an open-handle identity,
+  content fingerprint, length, hard-link count, and modification stamp;
+- a narrow internal platform crate that preserves the main crate's unsafe-code
+  prohibition while querying preferred and reduced Windows file identities;
 - an interim same-directory write, sync, and rename save path;
-- 34 tests and 98.90 percent line coverage across the testable trust core, with
-  every core function executed.
+- 47 Windows-local tests and 96.20 percent line coverage across the expanded
+  workspace trust kernel.
 
 It does not yet have the durable replacement adapter, edit transaction model,
 dirty lifecycle, recovery, external conflict handling, complete commands,
@@ -632,6 +636,18 @@ elimination leaves the Windows binary unchanged at 4,749,312 bytes. Adapter
 integration must measure the realized delta. Removal requires another audited
 256-bit cryptographic digest, migrated fingerprint versioning, and equivalent
 streaming and reference-vector tests.
+
+Stable Rust 1.97.1 exposes Unix device, inode, and hard-link values directly,
+but its full Windows by-handle identity methods remain unstable. The internal
+`noter-platform` workspace crate therefore owns exactly two unsafe Windows API
+calls behind a safe `file_facts(&File)` boundary. Its lint policy warns on any
+unsafe code, and only the two reviewed wrappers locally permit it; CI promotes any
+unapproved warning to an error. The function keeps the borrowed handle alive,
+passes correctly sized writable structures, prefers the 128-bit `FILE_ID_INFO`
+identity, detects an all-zero unsupported ID, and labels the 64-bit fallback as
+reduced. The fallback is never silently represented as preferred. This internal
+member adds one lock entry but no new external package, bringing the graph to
+338 packages.
 
 CI uses the pinned Rust toolchain, locked Cargo graph, immutable action commits,
 minimum permissions, formatting, strict Clippy, cross-platform tests, coverage,

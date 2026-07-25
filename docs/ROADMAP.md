@@ -200,16 +200,30 @@ of the GUI.
 - **Verified locally:** `ContentFingerprint` computes BLAKE3-256 from slices or
   streams, matches the official zero-byte and one-byte vectors, and propagates
   incomplete reads instead of accepting a partial digest.
-- **Verified locally:** all 34 tests and strict Clippy pass. Trust-core line
-  coverage is 98.90 percent with every core function executed; CI enforces the
-  M1 trust-kernel floor of 90 percent.
+- **Verified in CI:** digest evidence commit `613cbcd` passed Windows, macOS,
+  Linux, strict lint, documentation, and the 90 percent coverage gate in
+  [GitHub Actions run 30178217482](https://github.com/blisspixel/noter/actions/runs/30178217482).
+- **Verified locally:** stable file observations hash an open handle, compare
+  identity, length, hard-link count, and modification time around the read, then
+  reopen the pathname to close the ordinary replacement race. Missing files,
+  directories, final links or reparse points, hard links, same-content distinct
+  files, and path-redacted failures have explicit tests.
+- **Verified locally:** the main crate still forbids unsafe code. Two Windows
+  by-handle queries are isolated behind a safe internal crate and documented
+  safety contracts. Preferred 128-bit IDs and labeled reduced fallbacks have
+  deterministic tests.
+- **Verified locally:** all 47 Windows-local tests and strict workspace Clippy
+  pass. Workspace trust-kernel line coverage is 96.20 percent; CI enforces the
+  M1 floor of 90 percent.
 - **Measured:** the property harness adds eight test-only lock entries and the
   digest adds four runtime lock entries, bringing the cross-target graph to
-  337 packages. The currently dead-stripped digest path leaves the release
+  337 packages. The internal platform workspace member brings the graph to
+  338 without adding an external package. The currently dead-stripped path leaves the release
   binary at 4.53 MiB and 4,749,312 bytes; the adapter integration will be
   measured again.
-- **Next:** implement stable platform file observations, then the accepted
-  ADR-003 production adapters, metadata fixtures, and platform matrix.
+- **Next:** implement unpredictable exclusive sibling creation, metadata
+  transfer, synchronization, cleanup, and commit operations behind the accepted
+  ADR-003 `Storage` boundary.
 
 **Work:**
 
@@ -468,28 +482,26 @@ silently rewriting content.
 
 These are the next tasks in dependency order:
 
-1. Implement cryptographic content fingerprints and platform file identity
-   observations.
-2. Implement unique sibling creation, metadata transfer, synchronization, and
+1. Implement unique sibling creation, metadata transfer, synchronization, and
    cleanup behind the accepted `Storage` boundary.
-3. Implement and reconcile Windows existing-file and new-file commit paths.
-4. Implement Linux and macOS existing-file and no-overwrite commit paths.
-5. Add platform fixtures for metadata, symlinks, hard links, read-only files,
+2. Implement and reconcile Windows existing-file and new-file commit paths.
+3. Implement Linux and macOS existing-file and no-overwrite commit paths.
+4. Add platform fixtures for metadata, symlinks, hard links, read-only files,
    external writers, and weaker filesystems.
-6. Add mutation testing for serialization, conflict, commit-state, and cleanup
+5. Add mutation testing for serialization, conflict, commit-state, and cleanup
    decisions.
-7. Integrate revision-tagged snapshots and outcomes into the document model.
-8. Add the benchmark corpus generator and automate the trust-kernel baseline.
-9. Implement the edit transaction and selection model.
-10. Add reference-model undo and redo property tests.
-11. Implement the dirty-document lifecycle state machine.
-12. Implement versioned state-directory recovery records and crash scanning.
-13. Build the controlled child-process crash harness.
-14. Create the pure command and application-state reducer, then connect the
+6. Integrate revision-tagged snapshots and outcomes into the document model.
+7. Add the benchmark corpus generator and automate the trust-kernel baseline.
+8. Implement the edit transaction and selection model.
+9. Add reference-model undo and redo property tests.
+10. Implement the dirty-document lifecycle state machine.
+11. Implement versioned state-directory recovery records and crash scanning.
+12. Build the controlled child-process crash harness.
+13. Create the pure command and application-state reducer, then connect the
     proven core to the complete M4 UI.
 
-The answer to "what is next" is therefore unambiguous: prove M1, starting with
-exact encoding and line-ending behavior, then make durable replacement survive
-injected failures.
+The answer to "what is next" is therefore unambiguous: finish M1 by making the
+ratified replacement protocol real on Windows, Linux, and macOS and prove it
+against metadata, race, durability, and crash fixtures.
 Do not begin the custom editor or Markdown engine while save, undo, close, and
 recovery semantics are still aspirational.

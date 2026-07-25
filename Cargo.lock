@@ -1367,11 +1367,20 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "eframe",
+ "noter-platform",
  "proptest",
  "rfd",
  "ropey",
  "tempfile",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "noter-platform"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

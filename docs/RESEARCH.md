@@ -282,6 +282,26 @@ while the path is dead-stripped, and passed a 2026-07-25 RustSec scan of the
 337-package lock graph. Its actual binary delta and file-hashing latency must
 be measured again when the production adapter makes the path reachable.
 
+For stable file identity, Rust 1.97.1 exposes Unix `dev`, `ino`, and `nlink`
+through [`std::os::unix::fs::MetadataExt`](https://doc.rust-lang.org/1.97.1/std/os/unix/fs/trait.MetadataExt.html).
+The analogous full Windows methods are still unstable, so the product crate
+cannot use them while keeping a stable toolchain. Microsoft specifies that a
+Windows file is identified by the volume serial number plus the 128-bit ID from
+[`FILE_ID_INFO`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info).
+The older
+[`BY_HANDLE_FILE_INFORMATION`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information)
+also supplies the hard-link count and a 64-bit ID, but Microsoft warns that the
+smaller ID is not guaranteed unique on ReFS.
+
+The resulting design keeps all ordinary observation logic in the unsafe-free
+product library and isolates two by-handle calls in the internal
+`noter-platform` crate. It prefers the 128-bit ID, treats a failed query or
+all-zero unsupported ID as a labeled reduced fallback, and combines identity
+with BLAKE3 content rather than trusting timestamps. Observation hashes one
+open handle, checks stable metadata around the read, and reopens the final path
+before accepting the result. Final links and Windows reparse points are
+classified without following them.
+
 For releases, use a current `cargo-dist` configuration, generate an SBOM and
 checksums, pin GitHub Actions by immutable commit SHA, minimize token permissions,
 and attach provenance. Current research found cargo-dist 0.32.0, so the existing

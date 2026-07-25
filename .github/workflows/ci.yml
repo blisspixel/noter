@@ -35,7 +35,11 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: rustdoc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --no-deps
 
   # ---------------------------------------------------------------------------
   # Tests (matrix across the three platforms we care about)
@@ -56,10 +60,10 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Build (debug)
-        run: cargo build --locked --verbose --all-features
+        run: cargo build --locked --verbose --workspace --all-features
 
       - name: Run tests
-        run: cargo test --locked --verbose --all-targets --all-features
+        run: cargo test --locked --verbose --workspace --all-targets --all-features
 
       # Optional: coverage on one platform (Linux is usually fastest)
       - name: Install cargo-llvm-cov

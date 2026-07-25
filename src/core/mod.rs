@@ -2,6 +2,8 @@
 
 /// Plain-text document loading, representation, and saving.
 pub mod document;
+/// Stable destination classification, identity, and content observations.
+pub mod file_observation;
 /// Exact line-ending classification and insertion policy.
 pub mod line_endings;
 /// Monotonic document revision values.

@@ -8,9 +8,19 @@ use thiserror::Error;
 
 use super::revision::Revision;
 
+/// Strength of the platform-provided file identifier.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum IdentityQuality {
+    /// The preferred native identifier for the current platform.
+    Preferred,
+    /// A reduced identifier used when the preferred query is unavailable.
+    Reduced,
+}
+
 /// A stable platform file identity represented as volume and file components.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct FileIdentity {
+    quality: IdentityQuality,
     volume: u128,
     file: u128,
 }
@@ -18,7 +28,25 @@ pub struct FileIdentity {
 impl FileIdentity {
     /// Creates a platform-neutral identity from adapter-provided components.
     pub const fn new(volume: u128, file: u128) -> Self {
-        Self { volume, file }
+        Self {
+            quality: IdentityQuality::Preferred,
+            volume,
+            file,
+        }
+    }
+
+    /// Creates a reduced-strength identity from fallback platform components.
+    pub const fn reduced(volume: u128, file: u128) -> Self {
+        Self {
+            quality: IdentityQuality::Reduced,
+            volume,
+            file,
+        }
+    }
+
+    /// Returns the platform identity strength.
+    pub const fn quality(self) -> IdentityQuality {
+        self.quality
     }
 
     /// Returns the volume or device component.
@@ -987,6 +1015,11 @@ mod tests {
 
         assert_eq!(identity.volume(), 12);
         assert_eq!(identity.file(), 34);
+        assert_eq!(identity.quality(), IdentityQuality::Preferred);
+        assert_eq!(
+            FileIdentity::reduced(12, 34).quality(),
+            IdentityQuality::Reduced
+        );
         assert_eq!(fingerprint.as_bytes(), &[5; 32]);
         assert_eq!(observation.identity(), identity);
         assert_eq!(observation.fingerprint(), fingerprint);
