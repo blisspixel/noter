@@ -168,5 +168,8 @@ library remains `unsafe_code = "forbid"`.
 - Mutation testing of commit-state, conflict, cleanup, and dirty-revision
   decisions.
 
-The pure fault-injected protocol is implemented. Production adapters and the
-named platform evidence remain required before M1 is Verified.
+The pure fault-injected protocol is implemented and verified across the CI
+matrix at commit `0edc342`. BLAKE3-256 slice and streaming fingerprints are
+implemented with reference-vector and read-failure tests. Production file
+identity observations, replacement adapters, and the named platform evidence
+remain required before M1 is Verified.

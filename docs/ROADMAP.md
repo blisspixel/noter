@@ -194,13 +194,22 @@ of the GUI.
   original-byte preservation through every modeled pre-commit failure, two
   conflict windows, partial temporary writes, and cleanup failure. A failed
   post-commit parent barrier is reported as committed with a warning.
-- **Verified locally:** all 31 tests and strict Clippy pass. Trust-core line
-  coverage is 98.87 percent with every core function executed; CI enforces the
+- **Verified in CI:** save-protocol evidence commit `0edc342` passed Windows,
+  macOS, Linux, strict lint, documentation, and the 90 percent coverage gate in
+  [GitHub Actions run 30177953025](https://github.com/blisspixel/noter/actions/runs/30177953025).
+- **Verified locally:** `ContentFingerprint` computes BLAKE3-256 from slices or
+  streams, matches the official zero-byte and one-byte vectors, and propagates
+  incomplete reads instead of accepting a partial digest.
+- **Verified locally:** all 34 tests and strict Clippy pass. Trust-core line
+  coverage is 98.90 percent with every core function executed; CI enforces the
   M1 trust-kernel floor of 90 percent.
-- **Measured:** the test harness adds eight lock-graph packages. The release
-  binary remains 4.53 MiB at 4,749,312 bytes.
-- **Next:** implement and verify the accepted ADR-003 production adapters,
-  cryptographic content fingerprinting, metadata fixtures, and platform matrix.
+- **Measured:** the property harness adds eight test-only lock entries and the
+  digest adds four runtime lock entries, bringing the cross-target graph to
+  337 packages. The currently dead-stripped digest path leaves the release
+  binary at 4.53 MiB and 4,749,312 bytes; the adapter integration will be
+  measured again.
+- **Next:** implement stable platform file observations, then the accepted
+  ADR-003 production adapters, metadata fixtures, and platform matrix.
 
 **Work:**
 

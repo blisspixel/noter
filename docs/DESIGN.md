@@ -25,8 +25,10 @@ The current M1 worktree has:
 - explicit `Encoding`, `Bom`, and checked `Revision` values;
 - an injected save protocol with exact conflict, non-commit, commit, uncertain
   commit, durability, and cleanup outcomes;
+- BLAKE3-256 content fingerprints from complete byte slices or streaming
+  readers, checked against the official reference vectors;
 - an interim same-directory write, sync, and rename save path;
-- 31 tests and 98.87 percent line coverage across the testable trust core, with
+- 34 tests and 98.90 percent line coverage across the testable trust core, with
   every core function executed.
 
 It does not yet have the durable replacement adapter, edit transaction model,
@@ -608,6 +610,28 @@ graph from 325 to 333 packages. The audited feature path is only
 `proptest/std`; it does not enter the normal dependency graph. The accompanying
 product code changes moved the measured Windows release binary from 4,748,800
 to 4,749,312 bytes, remaining 4.53 MiB.
+
+M1 uses the official `blake3` 1.8 implementation for collision-resistant saved
+content fingerprints. Noter imports only the 32-byte hash and streaming reader
+surface. Default features are disabled and only `std` is enabled; mmap, Rayon,
+serde, digest traits, and zeroization integrations remain absent. The crate is
+licensed under CC0-1.0, Apache-2.0, or Apache-2.0 with LLVM exception. Its
+published metadata does not declare an MSRV, so compatibility is established
+by the pinned 1.97.1 build and the operating-system CI matrix rather than an
+unsupported assumption.
+
+The crate includes a build script and optimized assembly or C SIMD paths on
+supported targets. That native build-time surface is accepted for bounded,
+single-threaded streaming performance; it adds no Noter runtime filesystem,
+process, or network operation. The `pure` feature is intentionally not used
+because upstream documents it as unstable and intended for testing. The
+addition resolves four lock-graph packages, moving the graph from 333 to 337.
+The 2026-07-25 RustSec audit is clean. At this checkpoint the digest is used by
+the trust-kernel tests but not yet reached from the GUI, so release dead-code
+elimination leaves the Windows binary unchanged at 4,749,312 bytes. Adapter
+integration must measure the realized delta. Removal requires another audited
+256-bit cryptographic digest, migrated fingerprint versioning, and equivalent
+streaming and reference-vector tests.
 
 CI uses the pinned Rust toolchain, locked Cargo graph, immutable action commits,
 minimum permissions, formatting, strict Clippy, cross-platform tests, coverage,

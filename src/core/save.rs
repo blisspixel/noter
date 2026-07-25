@@ -1,5 +1,6 @@
 //! Revision-tagged, fault-injectable save protocol.
 
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -31,14 +32,30 @@ impl FileIdentity {
     }
 }
 
-/// A collision-resistant digest of serialized file content.
+/// A BLAKE3-256 digest of serialized file content.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ContentFingerprint([u8; 32]);
 
 impl ContentFingerprint {
-    /// Creates a fingerprint from adapter-computed digest bytes.
+    /// Creates a fingerprint from an already validated BLAKE3-256 digest.
     pub const fn new(bytes: [u8; 32]) -> Self {
         Self(bytes)
+    }
+
+    /// Computes the fingerprint of a complete byte slice.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self(*blake3::hash(bytes).as_bytes())
+    }
+
+    /// Computes the fingerprint of all bytes read from a stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reader's error if the complete stream cannot be consumed.
+    pub fn from_reader(reader: impl Read) -> io::Result<Self> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update_reader(reader)?;
+        Ok(Self(*hasher.finalize().as_bytes()))
     }
 
     /// Returns the digest bytes.
@@ -731,19 +748,10 @@ mod tests {
         }
     }
 
-    fn fingerprint(bytes: &[u8]) -> ContentFingerprint {
-        let mut digest = [0_u8; 32];
-        for (index, byte) in bytes.iter().copied().enumerate() {
-            let slot = index % digest.len();
-            digest[slot] = digest[slot].wrapping_add(byte).wrapping_add(index as u8);
-        }
-        ContentFingerprint::new(digest)
-    }
-
     fn observation(bytes: &[u8], identity: u128) -> FileObservation {
         FileObservation::new(
             FileIdentity::new(7, identity),
-            fingerprint(bytes),
+            ContentFingerprint::from_bytes(bytes),
             bytes.len() as u64,
             1,
         )
@@ -988,5 +996,55 @@ mod tests {
         assert_eq!(snapshot.target(), Path::new("note.txt"));
         assert_eq!(snapshot.bytes(), &[1, 2, 3]);
         assert_eq!(error.message(), "safe diagnostic");
+    }
+
+    #[test]
+    fn content_fingerprints_match_official_blake3_vectors() {
+        assert_eq!(
+            ContentFingerprint::from_bytes(b"").as_bytes(),
+            &[
+                0xaf, 0x13, 0x49, 0xb9, 0xf5, 0xf9, 0xa1, 0xa6, 0xa0, 0x40, 0x4d, 0xea, 0x36, 0xdc,
+                0xc9, 0x49, 0x9b, 0xcb, 0x25, 0xc9, 0xad, 0xc1, 0x12, 0xb7, 0xcc, 0x9a, 0x93, 0xca,
+                0xe4, 0x1f, 0x32, 0x62,
+            ]
+        );
+        assert_eq!(
+            ContentFingerprint::from_bytes(&[0]).as_bytes(),
+            &[
+                0x2d, 0x3a, 0xde, 0xdf, 0xf1, 0x1b, 0x61, 0xf1, 0x4c, 0x88, 0x6e, 0x35, 0xaf, 0xa0,
+                0x36, 0x73, 0x6d, 0xcd, 0x87, 0xa7, 0x4d, 0x27, 0xb5, 0xc1, 0x51, 0x02, 0x25, 0xd0,
+                0xf5, 0x92, 0xe2, 0x13,
+            ]
+        );
+    }
+
+    #[test]
+    fn reader_fingerprint_matches_in_memory_fingerprint() -> io::Result<()> {
+        let bytes = b"content supplied through a reader";
+
+        assert_eq!(
+            ContentFingerprint::from_reader(bytes.as_slice())?,
+            ContentFingerprint::from_bytes(bytes)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reader_fingerprint_propagates_read_failure() {
+        struct FailedReader;
+
+        impl Read for FailedReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "injected read failure",
+                ))
+            }
+        }
+
+        let error = ContentFingerprint::from_reader(FailedReader)
+            .expect_err("an incomplete read must not produce a fingerprint");
+
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
     }
 }

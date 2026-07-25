@@ -42,6 +42,7 @@ categories = ["gui", "text-editors"]
 # (b) `cargo tree -i <name>` audit, (c) binary size impact measurement at the phase gate.
 
 [dependencies]
+blake3 = { version = "1.8", default-features = false, features = ["std"] }
 eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 rfd = "0.17"
 thiserror = "2.0"

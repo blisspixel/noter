@@ -78,6 +78,10 @@ byte corpus, generated round-trip properties, explicit revisions, and a
 fault-injected save protocol that does not confuse a failed call with a proven
 non-commit. The line-ending slice is verified on all three operating systems at
 commit `62dc49f` in [GitHub Actions run 30177403255](https://github.com/blisspixel/noter/actions/runs/30177403255).
+The save-protocol slice is verified at commit `0edc342` in
+[GitHub Actions run 30177953025](https://github.com/blisspixel/noter/actions/runs/30177953025),
+and conflict fingerprints now use the official BLAKE3-256 implementation with
+both in-memory and streaming APIs.
 The production platform storage adapters and their metadata and crash fixtures
 are still in progress, so the GUI remains a prototype rather than a safe daily
 editor.

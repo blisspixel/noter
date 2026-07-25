@@ -262,6 +262,26 @@ bit-set features, and its Rust requirement is below Noter's pinned 1.97.1
 toolchain. The M1 suite therefore uses it only as a narrowly configured
 development dependency; it does not enter release artifacts.
 
+For external-change detection, the official [`blake3` 1.8.5 Rust
+implementation](https://docs.rs/blake3/1.8.5/blake3/) supplies a 32-byte
+cryptographic digest and a
+[`Hasher::update_reader`](https://docs.rs/blake3/1.8.5/blake3/struct.Hasher.html#method.update_reader)
+API that consumes a file without first allocating a second full-content
+buffer. Noter enables only `std`; mmap, multithreading, serde, digest-trait, and
+zeroization features are disabled. Tests use the upstream
+[reference vectors](https://github.com/BLAKE3-team/BLAKE3/blob/master/test_vectors/test_vectors.json)
+for zero-byte and one-byte inputs and separately prove reader errors cannot
+produce a fingerprint.
+
+The source audit found a build script plus optimized assembly or C SIMD paths,
+but no runtime I/O capability is imported by Noter. The upstream `pure` flag is
+documented as an unstable testing feature, so relying on it would be a weaker
+maintenance contract than accepting and recording the optimized build path.
+The dependency adds four lock entries, produces no current release-size change
+while the path is dead-stripped, and passed a 2026-07-25 RustSec scan of the
+337-package lock graph. Its actual binary delta and file-hashing latency must
+be measured again when the production adapter makes the path reachable.
+
 For releases, use a current `cargo-dist` configuration, generate an SBOM and
 checksums, pin GitHub Actions by immutable commit SHA, minimize token permissions,
 and attach provenance. Current research found cargo-dist 0.32.0, so the existing
