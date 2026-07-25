@@ -10,9 +10,6 @@ mod app;
 use app::NoterApp;
 
 fn main() -> eframe::Result {
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
-
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([900.0, 700.0])

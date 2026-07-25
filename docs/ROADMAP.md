@@ -135,6 +135,10 @@ set, and see exactly what is implemented and what remains.
   UTF-8 rejection, formatting, strict Clippy, seven unit tests, enforced 96.43
   percent core line coverage, documentation link checking, and the measured
   [M0 baseline](BASELINE.md).
+- **Verified locally:** unused planned dependencies are deferred until their
+  milestones. The current graph is four runtime and one development direct
+  dependency, 325 resolved cross-target packages, and a 4.53 MiB Windows release
+  binary.
 - **Verified locally:** the binary-to-library boundary keeps testable product
   logic independent of the GUI shell.
 - **Verified locally:** requirements, technical design, UX, privacy, manual

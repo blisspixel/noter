@@ -1,5 +1,4 @@
 use ropey::Rope;
-use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -7,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::error::NoterError;
 
 /// The byte sequence used to terminate logical lines in a text file.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LineEnding {
     /// Unix line feed (`\n`).
     Lf,
