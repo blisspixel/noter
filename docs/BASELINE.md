@@ -2,7 +2,7 @@
 
 **Measured:** 2026-07-25
 
-**Source state:** reconciled `m0-foundation` branch after the M0 dependency
+**Source state:** `m0-foundation` at M0 evidence commit `7512534` after dependency
 cleanup. These measurements are a development baseline, not release evidence.
 
 ## Reference environment
@@ -29,7 +29,7 @@ cleanup. These measurements are a development baseline, not release evidence.
 | Release binary | 4,748,800 bytes, 4.53 MiB |
 | Resolved Cargo packages across all targets | 325 |
 | Direct dependencies | 4 runtime, 1 development |
-| GitHub Actions matrix | Pending for the dependency-cleanup commit |
+| GitHub Actions matrix | Pass on Windows, macOS, and Linux ([run 30176526028](https://github.com/blisspixel/noter/actions/runs/30176526028)) |
 
 The development coverage command temporarily excludes `src/app.rs` and
 `src/main.rs`. Those files are an untested GUI shell today. This is not a release

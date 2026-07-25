@@ -2,7 +2,7 @@
 
 **Last reviewed:** 2026-07-25
 
-**Current milestone:** M0, Truthful and Green Foundation
+**Current milestone:** M1, Document and Durable I/O Trust Kernel
 
 **Release target:** a trustworthy single-document v0.1 before Markdown v0.2
 
@@ -46,10 +46,12 @@ detection, window persistence, complete themes, cross-platform shortcuts,
 automated UI tests, custom-editor accessibility, performance evidence,
 packaging, and release sign-off.
 
-The 2026-07-25 baseline found 28.24 percent whole-program line coverage and
-85.96 percent line coverage in `core/document.rs`, with only three tests and no
-evidence for most named safety properties. Initial M0 repairs added strict
-invalid-UTF-8 rejection and restored local format, lint, and unit-test health.
+The initial 2026-07-25 baseline found 28.24 percent whole-program line coverage,
+85.96 percent line coverage in `core/document.rs`, only three tests, and no
+evidence for most named safety properties. M0 closed with seven tests, 31.11
+percent whole-workspace line coverage, 96.43 percent testable-core line
+coverage, and exact-commit CI on Windows, macOS, and Linux. Those numbers are a
+foundation, not evidence that the editor is ready for daily use.
 
 ## Product contract for v0.1
 
@@ -93,8 +95,8 @@ has earned trust in daily use.
 
 | Milestone | Outcome | Depends on | Target |
 | --- | --- | --- | --- |
-| M0 | Truthful, reproducible, green foundation | None | In progress |
-| M1 | Proven document and durable I/O trust kernel | M0 | Planned |
+| M0 | Truthful, reproducible, green foundation | None | Verified |
+| M1 | Proven document and durable I/O trust kernel | M0 | In progress |
 | M2 | Tested edit, selection, and undo model | M1 | Planned |
 | M3 | Recovery, dirty lifecycle, and conflict safety | M1, M2 | Planned |
 | M4 | Complete classic-notepad alpha on `TextEdit` | M1, M2, M3 | Planned |
@@ -107,6 +109,8 @@ external sign-off are elapsed-time gates and cannot be compressed by coding
 faster.
 
 ## M0: Truthful and Green Foundation
+
+**Status:** Verified on 2026-07-25 at commit `7512534`.
 
 **Outcome:** Anyone can check out one coherent branch, run one documented command
 set, and see exactly what is implemented and what remains.
@@ -147,9 +151,11 @@ set, and see exactly what is implemented and what remains.
 - **Verified locally:** the divergent remote honesty commit is integrated on the
   `m0-foundation` branch. The original local `master` pointer remains as a
   recovery point.
-- **In progress:** exact-commit GitHub CI on all three operating systems.
-- **Planned:** address any platform CI findings and record the final M0 evidence
-  commit.
+- **Verified:** commit `7512534` passed the complete warning-free Windows,
+  macOS, and Linux matrix in
+  [GitHub Actions run 30176526028](https://github.com/blisspixel/noter/actions/runs/30176526028).
+- **Verified:** the exact evidence commit is pushed to `m0-foundation`; the
+  original local `master` pointer remains available as a recovery point.
 
 **Exit evidence:**
 
@@ -425,22 +431,25 @@ silently rewriting content.
 
 These are the next tasks in dependency order:
 
-1. Run local gates, publish the reconciled branch, and make exact-commit
-   Windows, macOS, and Linux CI green.
-2. Create the pure command and application-state reducer.
-3. Add the benchmark corpus generator and automate the M0 baseline.
-4. Close ADR-003 metadata, symlink, commit-state, and platform questions.
-5. Implement `LineEndingProfile` and the accepted mixed-EOL insertion policy.
-6. Build the complete golden-file matrix and serialization property tests.
-7. Implement the durable-write adapter behind injected I/O traits.
-8. Add pre-commit and post-commit fault injection plus mutation testing.
-9. Implement the edit transaction and selection model.
-10. Add reference-model undo and redo property tests.
-11. Implement the dirty-document lifecycle state machine.
-12. Implement versioned state-directory recovery records and crash scanning.
-13. Build the controlled child-process crash harness.
+1. Implement `LineEndingProfile` and the accepted mixed-EOL policy, including
+   edit-point insertion decisions.
+2. Build the complete golden-file matrix and byte-round-trip property tests.
+3. Close ADR-003 metadata, symlink, commit-state, and platform questions with
+   platform evidence.
+4. Implement the durable-write adapter behind injected I/O traits.
+5. Add pre-commit and post-commit fault injection plus mutation testing.
+6. Define document identity, revision, saved snapshot, and save outcome types.
+7. Add the benchmark corpus generator and automate the trust-kernel baseline.
+8. Implement the edit transaction and selection model.
+9. Add reference-model undo and redo property tests.
+10. Implement the dirty-document lifecycle state machine.
+11. Implement versioned state-directory recovery records and crash scanning.
+12. Build the controlled child-process crash harness.
+13. Create the pure command and application-state reducer.
 14. Connect the proven core to the complete M4 UI.
 
-The answer to "what is next" is therefore unambiguous: finish M0, then prove M1.
+The answer to "what is next" is therefore unambiguous: prove M1, starting with
+exact encoding and line-ending behavior, then make durable replacement survive
+injected failures.
 Do not begin the custom editor or Markdown engine while save, undo, close, and
 recovery semantics are still aspirational.

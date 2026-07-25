@@ -60,9 +60,18 @@ This is the bar. The planning documents exist to make it hard to lower that bar 
 
 ## Current Status
 
-This project is in **M0: Truthful and Green Foundation**. The current branch contains an early egui editor prototype with text entry and basic Open, Save, and Save As flows. It is not yet safe or complete enough for daily use.
+This project has completed **M0: Truthful and Green Foundation** and is now in
+**M1: Document and Durable I/O Trust Kernel**. The current branch contains an
+early egui editor prototype with text entry and basic Open, Save, and Save As
+flows. It is not yet safe or complete enough for daily use.
 
-The 2026-07-25 audit found that dirty work could be discarded, invalid UTF-8 was converted silently, most menu commands were placeholders, recovery did not exist, and the claimed Phase 1 quality gate had not been met. Initial M0 repairs restored local format, strict Clippy, and unit-test health and changed invalid UTF-8 loading to fail explicitly.
+The 2026-07-25 audit found that dirty work could be discarded, invalid UTF-8
+was converted silently, most menu commands were placeholders, recovery did not
+exist, and the claimed Phase 1 quality gate had not been met. M0 repaired the
+truthfulness and engineering foundation, including explicit invalid-UTF-8
+rejection, a pinned toolchain, enforced coverage, dependency cleanup, and
+warning-free CI on Windows, macOS, and Linux. The exact M0 evidence commit is
+`7512534`, verified by [GitHub Actions run 30176526028](https://github.com/blisspixel/noter/actions/runs/30176526028).
 
 A structured adversarial design review was performed on the initial planning corpus. The review and our responses are captured in [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
 
