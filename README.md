@@ -1,6 +1,5 @@
-License: Apache 2.0 + Commons Clause  
-Personal/research/sharing use free.  
-Commercial/enterprise products require separate license from Nick Seal.
+License: Apache-2.0  
+Personal, research, and commercial use permitted.
 
 # Noter
 
@@ -17,7 +16,7 @@ Noter is the notepad you actually want in 2026: fast, trustworthy, boring in the
 - **Minimal surface area.** Small binary, small RAM, small dependency tree, small attack surface. No network calls ever.
 - **System native where it matters.** Follows your OS light/dark setting. Uses real native file dialogs. Feels at home on Windows, macOS, and Linux.
 - **Keyboard-centric.** Every important action has a discoverable shortcut. Mouse is optional.
-- **Markdown is inline, not a mode.** We provide beautiful inline styling for markdown (Phase 3), but it never changes how your `.md` file is saved or split your view.
+- **Markdown is an inline view.** Text-only mode is the strict default. When toggled, the beautiful inline Markdown view (Phase 3) visually styles your text and enforces markdown best practices (acting like a linter, e.g., Ruff for Python) to keep your documents perfectly structured. It never changes how your `.md` file is natively saved.
 
 Noter will never become a second VS Code, a note-taking app with accounts, or a "productivity suite."
 
@@ -61,13 +60,13 @@ This is the bar. The planning documents exist to make it hard to lower that bar 
 
 This project has **completed Phase 1 (Core Notepad MVP)** and is now entering Phase 2 (Editing Trust & Polish). The application is fully functional for daily plaintext use.
 
-A critical, professor-level review (Prof. Dr. Lena K. Voss) was performed on the initial planning corpus. The review and our responses are captured in [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
+A structured adversarial design review was performed on the initial planning corpus. The review and our responses are captured in [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
 
 See:
-- [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md) — external critical analysis + our action plan
-- [REQUIREMENTS.md](REQUIREMENTS.md) — what must be true (now includes mental model protection and traceability)
-- [DESIGN.md](DESIGN.md) — how it will be built (deep technical + formal-ish spec + FMEA)
-- [ROADMAP.md](ROADMAP.md) — how we get there with quality gates that incorporate the review items
+- [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md) — external critical analysis + our action plan
+- [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — what must be true (now includes mental model protection and traceability)
+- [docs/DESIGN.md](docs/DESIGN.md) — how it will be built (deep technical + formal-ish spec + FMEA)
+- [docs/ROADMAP.md](docs/ROADMAP.md) — how we get there with quality gates that incorporate the review items
 
 Implementation will proceed in strict phases with explicit "Definition of Done" criteria that include code quality, test coverage, and cross-platform verification. The bar has been deliberately raised by the review process.
 
@@ -89,7 +88,7 @@ Implementation will proceed in strict phases with explicit "Definition of Done" 
 - Improved search (case, whole word, live match highlighting)
 - File-changed-on-disk detection with reload prompt
 - Mature autosave + recovery workflow
-- Beautiful inline Markdown styling (pure Rust rendered styling directly in the editor, does not affect save)
+- Beautiful inline Markdown formatting view (pure Rust styling directly in the editor, does not affect save, enforces Markdown best practices)
 - Font size zoom (Ctrl+wheel and menu)
 - Window state persistence (position, size, maximized)
 
@@ -156,12 +155,7 @@ We will maintain a small manual test matrix on real hardware for each release.
 
 ## License
 
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
+Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
 
 ## Acknowledgments
 
@@ -173,4 +167,4 @@ at your option.
 
 **Noter exists because sometimes the best software is the one that gets out of your way.**
 
-See [ROADMAP.md](ROADMAP.md) for how we intend to build this exceptionally well.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for how we intend to build this exceptionally well.

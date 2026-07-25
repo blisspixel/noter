@@ -106,31 +106,11 @@ impl Document {
             bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
         }
 
-        // We use rope.chars() and normalize line endings as we emit them.
-        // For Ropey 1.x, iterating chunks or chars is fine.
-        let mut in_cr = false;
-        let le_bytes = self.line_ending.as_str().as_bytes();
-        
+        // We use rope.chunks() directly.
+        // Ropey internally preserves all line endings exactly as they were parsed.
+        // This explicitly solves the S2 fidelity issue for mixed line endings without normalizing them.
         for chunk in self.rope.chunks() {
-            for c in chunk.chars() {
-                if c == '\r' {
-                    in_cr = true;
-                } else if c == '\n' {
-                    bytes.extend_from_slice(le_bytes);
-                    in_cr = false;
-                } else {
-                    if in_cr {
-                        bytes.extend_from_slice(le_bytes);
-                        in_cr = false;
-                    }
-                    let mut b = [0; 4];
-                    bytes.extend_from_slice(c.encode_utf8(&mut b).as_bytes());
-                }
-            }
-        }
-        
-        if in_cr {
-            bytes.extend_from_slice(le_bytes);
+            bytes.extend_from_slice(chunk.as_bytes());
         }
 
         bytes
