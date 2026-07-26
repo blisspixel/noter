@@ -48,12 +48,12 @@ The current M1 worktree has:
   hard-link separation;
 - persisted System, Light, and Dark themes plus a source-backed native Markdown
   slice with formatted block editing and conservative diagnostics;
-- 170 Windows-local workspace tests, 93.53 percent line coverage across the
-  expanded workspace trust kernel, and 87.94 percent whole-workspace line
+- 172 Windows-local workspace tests, 92.26 percent line coverage across the
+  expanded workspace trust kernel, and 87.54 percent whole-workspace line
   coverage; and
 - a 418-mutant Windows core campaign classified as 270 caught and 148 unviable,
   plus a clean 58-mutant Windows native-adapter pass classified as 40 caught
-  and 18 unviable. The settled source now enumerates a 751-candidate
+  and 18 unviable. The settled source now enumerates a 741-candidate
   three-platform union and requires a fresh campaign.
 
 The historical production-adapter checkpoint passes Windows, macOS, and Linux

@@ -31,7 +31,7 @@ The CI commands are intentionally different:
 ```text
 Linux common scope:
 cargo mutants -vV --in-place --colors never --workspace \
-  --exclude-re '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|[Ww]indows|[Mm]acos)'
+  --exclude-re '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|TemporaryFile::discard|TemporaryFile::preserve_artifact|Drop for TemporaryFile|closed_temporary_matches_intended|remove_verified_backup|[Ww]indows|[Mm]acos)'
 
 Windows-applicable scope:
 cargo mutants -vV --in-place --colors never --workspace \
@@ -50,10 +50,10 @@ The [cargo-mutants CI guidance](https://mutants.rs/ci.html) recommends
 `--in-place` for a disposable CI checkout. The tool documents that
 [`--in-place` cannot be combined with `--jobs`](https://mutants.rs/in-place.html),
 so each CI gate runs serially and uploads `mutants.out` even on failure. The
-current Linux job covers 638 candidates, the Windows job covers 559, and the
+current Linux job covers 617 candidates, the Windows job covers 557, and the
 macOS adapter job covers 49 macOS-specific candidates. The scopes overlap where
 the common runner assignments require it;
-deduplicating exact mutation descriptions produces all 751 configured
+deduplicating exact mutation descriptions produces all 741 configured
 supported-platform candidates with no missing entry. The filters are runner
 assignments, not a claim that every exclusion is inactive. Linux assigns several
 active cross-platform decisions with Windows-specific branches to the Windows
@@ -97,6 +97,9 @@ snapshots, and manual accessibility verification in later milestones.
 | Checker-expanded composite result | 418 | 270 | 148 | 0 | 0 | 31.04 minutes cumulative |
 | Windows native-adapter run before descriptor Drop proof | 57 | 39 | 18 | 0 | 0 | 10.68 minutes |
 | Last completed pre-creation-hardening Windows native-adapter run | 58 | 40 | 18 | 0 | 0 | 3.25 minutes |
+| Hosted run 30213398323, Linux scope before current repair | 638 | 423 | 181 | 32 | 2 | 24.12 minutes job wall time |
+| Hosted run 30213398323, Windows scope before current repair | 559 | 381 | 176 | 0 | 2 | 44.30 minutes job wall time |
+| Hosted run 30213398323, macOS scope | 49 | 43 | 6 | 0 | 0 | 8.90 minutes job wall time |
 
 `Unviable` means the mutation did not compile. It is distinct from a survivor.
 The completed local Windows core and predecessor adapter results have no missed
@@ -231,12 +234,30 @@ target, then the entire 58-candidate campaign was repeated in one fresh target
 directory. The final single report is 40 caught and 18 genuine compiler
 rejections, and the infrastructure validator reports no recognized failure.
 
-The settled worktree now enumerates 751 candidates: 638 assigned to Linux, 559
+Exact-commit run
+[30213398323](https://github.com/blisspixel/noter/actions/runs/30213398323)
+passed format, Clippy, rustdoc, dependency policy, documentation, and all native
+product tests. Its macOS mutation job completed cleanly. The Windows job had no
+miss and only two timeouts in mutable line-scanner progress arithmetic. The
+Linux job reported the same two timeouts plus 32 survivors in repeated native
+decision expressions. Infrastructure validation passed for every runner.
+
+The repair replaces scanner index arithmetic with structurally bounded slice
+splits, extracts repeated Unix syscall and boundary decisions into named
+predicates with exact truth-table tests, and injects ownership application into
+its decision test so coverage is independent of process privilege. Focused
+local campaigns classify the corrected scanner as seven caught and two genuine
+compiler rejections, the applicable Unix platform correction as 51 caught and
+one genuine compiler rejection, and ownership application as four caught. No
+focused campaign missed or timed out a viable mutation.
+
+The settled worktree now enumerates 741 candidates: 617 assigned to Linux, 557
 to Windows, and 49 macOS-specific candidates assigned to macOS. Deduplicating
-the three scopes yields all 751
+the three scopes yields all 741
 configured candidates with no missing or outside entry. The focused Windows
-adapter scope is 66 candidates. The increase since the creation-hardening
-checkpoint includes the new UI-independent Markdown diagnostics module.
+adapter scope is 66 candidates. The ten-site reduction from the preceding 751
+total comes from removing repeated inline native decisions and mutable scanner
+progress arithmetic, not from excluding a source path or supported platform.
 
 The final focused Markdown diagnostics run enumerated 58 candidates. It caught
 54 and initially labeled four unviable, but the infrastructure validator found
@@ -245,7 +266,7 @@ two-candidate rerun caught both variants, producing a composite 55 caught and
 three genuine compile-time rejections with zero missed and zero timed out. This
 is focused local evidence, not a substitute for the full platform matrix.
 
-The complete three-platform CI gate must still rerun the full 751-mutant union
+The complete three-platform CI gate must still rerun the full 741-mutant union
 on one immutable commit before this expanded result becomes hosted exact-commit
 evidence.
 

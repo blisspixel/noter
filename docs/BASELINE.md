@@ -59,15 +59,15 @@ a milestone sign-off.
 | --- | --- |
 | `cargo fmt --all -- --check` | Pass |
 | Strict workspace Clippy, locked, all targets and features | Pass |
-| Windows-local workspace tests | 170 passed, 0 failed |
-| Testable trust-kernel line coverage | 93.53 percent, 4,410 of 4,715 lines |
-| Whole-workspace line coverage | 87.94 percent, 5,580 of 6,345 lines |
+| Windows-local workspace tests | 172 passed, 0 failed |
+| Testable trust-kernel line coverage | 92.26 percent, 4,921 of 5,334 lines |
+| Whole-workspace line coverage | 87.54 percent, 6,115 of 6,985 lines |
 | Enforced development thresholds | Pass, trust kernel at least 90 percent and whole workspace at least 80 percent |
 | Last completed Windows-applicable trust-kernel mutation testing | 418 total, 270 caught, 148 unviable, 0 missed, 0 timed out |
 | Last completed Windows native-adapter mutation testing | 58 total, 40 caught, 18 unviable, 0 missed, 0 timed out |
 | Current Windows native-adapter scope | 66 enumerated; full rerun pending |
 | Focused Markdown diagnostics mutation testing | 58 total, 55 caught, 3 unviable, 0 missed, 0 timed out; one linker-lock result caught in an isolated rerun |
-| Current supported-platform mutation union | 751 total: Linux 638, Windows 559, macOS 49, no union gap; exact-commit CI pending |
+| Current supported-platform mutation union | 741 total: Linux 617, Windows 557, macOS 49, no union gap; exact-commit CI pending |
 | Rustdoc with warnings denied | Pass |
 | Local Markdown link check | Pass |
 | Linux full-crate cross-target Clippy | Pass |
@@ -80,15 +80,15 @@ a milestone sign-off.
 | Native Windows, macOS, and Linux CI | Pass at `c76515c`, [run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267) |
 | Paired Linux and Windows mutation CI | Pass at `3830cdd`, [run 30184163737](https://github.com/blisspixel/noter/actions/runs/30184163737) |
 
-The 170 tests comprise 117 primary-library unit tests, 34 binary application and
+The 172 tests comprise 117 primary-library unit tests, 35 binary application and
 UI tests, one 19-case golden-corpus test, three generated property suites with
-512 fixed-seed cases each, and 15 platform-crate tests. The stricter trust-kernel
+512 fixed-seed cases each, and 16 platform-crate tests. The stricter trust-kernel
 report excludes the immediate-mode `src/app.rs`, `src/main.rs`, and
 `src/markdown_ui.rs` adapters. Those files remain inside the separate 80 percent
-whole-workspace gate. The filesystem adapter measures 91.44 percent line
-coverage, the Markdown UI adapter 86.72 percent, and the full workspace 87.94
-percent. Semantic UI automation and manual accessibility gates remain required
-before v0.1.
+whole-workspace gate. The filesystem adapter measures 90.56 percent line
+coverage, the Markdown UI adapter 86.79 percent, the native platform adapter
+88.63 percent, and the full workspace 87.54 percent. Semantic UI automation and
+manual accessibility gates remain required before v0.1.
 
 The binary is 2,595,328 bytes larger than the M0 baseline. That measured cost
 includes reachable BLAKE3 conflict fingerprints, native metadata transfer,

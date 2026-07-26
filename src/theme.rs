@@ -170,5 +170,21 @@ mod tests {
             assert!(style.visuals.text_options.subpixel_binning);
             assert_eq!(style.spacing.interact_size.y.to_bits(), 28.0_f32.to_bits());
         }
+        assert_eq!(
+            context
+                .style_of(egui::Theme::Light)
+                .visuals
+                .text_options
+                .color_transfer_function,
+            egui::epaint::FontColorTransferFunction::LIGHT_MODE_DEFAULT
+        );
+        assert_eq!(
+            context
+                .style_of(egui::Theme::Dark)
+                .visuals
+                .text_options
+                .color_transfer_function,
+            egui::epaint::FontColorTransferFunction::DARK_MODE_DEFAULT
+        );
     }
 }

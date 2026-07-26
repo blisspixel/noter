@@ -433,9 +433,12 @@ editor. Current primary-source research defines the remaining direction:
   gamma behavior, and display density as the relevant quality controls. Generic
   image dithering is not a sound text-editor rendering strategy.
 - [egui 0.35 FontTweak](https://docs.rs/egui/latest/egui/struct.FontTweak.html)
-  exposes hinting targets and per-font subpixel binning. Noter upgraded to the
-  matching eframe and Markdown-renderer versions and keeps both global hinting
-  and subpixel binning enabled.
+  exposes hinting targets and per-font subpixel binning. Its
+  [coverage-transfer API](https://docs.rs/epaint/0.35.0/epaint/enum.FontColorTransferFunction.html)
+  provides distinct defaults for dark text on a light background and light text
+  on a dark background. Noter upgraded to the matching eframe and Markdown
+  renderer versions, keeps global hinting and subpixel binning enabled, and
+  preserves the matching coverage transfer for each theme.
 - The current [pulldown-cmark options](https://docs.rs/pulldown-cmark/0.13.4/pulldown_cmark/struct.Options.html)
   keep CommonMark as the default and require extensions to be enabled by named
   flags. The current bounded implementation uses named options only; M6 owns the

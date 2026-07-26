@@ -225,6 +225,18 @@ impl MarkdownEditor {
         ));
     }
 
+    #[cfg(feature = "screenshot-qa")]
+    /// Opens the first source block so release screenshots show direct editing.
+    pub(crate) fn activate_first_block(&mut self, source: &str) {
+        let Some(range) = markdown_block_ranges(source).into_iter().next() else {
+            return;
+        };
+        let Some(block) = source.get(range.clone()) else {
+            return;
+        };
+        self.activate(range, block.to_owned());
+    }
+
     pub const fn is_editing(&self) -> bool {
         self.active.is_some()
     }
@@ -695,6 +707,22 @@ mod tests {
         assert_eq!(source, original);
         assert!(!editor.is_editing());
         assert!(!output.shapes.is_empty());
+    }
+
+    #[cfg(feature = "screenshot-qa")]
+    #[test]
+    fn screenshot_state_opens_the_first_source_block_for_editing() {
+        let mut editor = MarkdownEditor::default();
+        let source = "# Heading\n\nParagraph\n";
+
+        editor.activate_first_block(source);
+
+        let active = editor
+            .active
+            .as_ref()
+            .expect("first block should be active");
+        assert_eq!(active.source_range, 0..9);
+        assert_eq!(active.draft, "# Heading");
     }
 
     #[test]

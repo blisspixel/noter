@@ -149,11 +149,13 @@ jobs:
         env:
           # rust-cache disables incremental builds by default. Mutation builds
           # deliberately need them because each scenario changes one expression.
+          # Windows owns handle-bound temporary and backup cleanup. Unix keeps
+          # those artifacts when safe handle-bound deletion is unavailable.
           CARGO_INCREMENTAL: 1
         run: >
           cargo mutants -vV --in-place --colors never --workspace
           --exclude-re
-          '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|[Ww]indows|[Mm]acos)'
+          '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|TemporaryFile::discard|TemporaryFile::preserve_artifact|Drop for TemporaryFile|closed_temporary_matches_intended|remove_verified_backup|[Ww]indows|[Mm]acos)'
       - name: Run Windows trust-kernel mutation tests
         if: runner.os == 'Windows'
         env:

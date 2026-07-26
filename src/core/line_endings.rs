@@ -66,8 +66,9 @@ impl<'a> Iterator for LogicalLines<'a> {
             } else {
                 (LineEnding::Lf, 1)
             };
-        let content = &self.remaining[..ending_start];
-        self.remaining = &self.remaining[ending_start + ending_length..];
+        let (content, ending_and_rest) = self.remaining.split_at(ending_start);
+        let (_, remaining) = ending_and_rest.split_at(ending_length);
+        self.remaining = remaining;
         Some(LineSegment {
             content,
             ending: Some(ending),

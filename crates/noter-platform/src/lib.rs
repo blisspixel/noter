@@ -818,7 +818,9 @@ mod imp {
 
     #[cfg(target_os = "linux")]
     fn apply_linux_metadata(metadata: &RequiredMetadata, destination: &File) -> io::Result<()> {
-        unix_apply_ownership(metadata.stamp, destination)?;
+        unix_apply_ownership(metadata.stamp, destination, |file, owner, group| {
+            fchown(file, owner, group)
+        })?;
         unix_apply_native_xattrs(&metadata.attributes, destination)?;
         unix_apply_mode(metadata.stamp.mode, destination)?;
         unix_verify_native_xattrs(&metadata.attributes, destination)?;
@@ -827,7 +829,9 @@ mod imp {
 
     #[cfg(target_os = "macos")]
     fn apply_macos_metadata(metadata: &RequiredMetadata, destination: &File) -> io::Result<()> {
-        unix_apply_ownership(metadata.stamp, destination)?;
+        unix_apply_ownership(metadata.stamp, destination, |file, owner, group| {
+            fchown(file, owner, group)
+        })?;
         apply_macos_acl_snapshot(&metadata.acl, destination)?;
         unix_apply_native_xattrs(&metadata.attributes, destination)?;
         unix_apply_mode(metadata.stamp.mode, destination)?;
@@ -915,10 +919,13 @@ mod imp {
                 RenameFlags::NOREPLACE,
             ) {
                 Ok(()) => Ok(InstallNewOutcome::Clean),
-                Err(error) if unix_no_replace_is_unavailable(error) => {
-                    unix_install_new_with_link(parent, temporary_name, destination_name)
+                Err(error) => {
+                    if unix_no_replace_is_unavailable(error) {
+                        unix_install_new_with_link(parent, temporary_name, destination_name)
+                    } else {
+                        Err(error.into())
+                    }
                 }
-                Err(error) => Err(error.into()),
             },
         )
     }
@@ -1020,14 +1027,21 @@ mod imp {
         })
     }
 
-    fn unix_apply_ownership(metadata: MetadataStamp, destination: &File) -> io::Result<()> {
+    fn unix_apply_ownership<E>(
+        metadata: MetadataStamp,
+        destination: &File,
+        apply: impl FnOnce(&File, Option<Uid>, Option<Gid>) -> Result<(), E>,
+    ) -> io::Result<()>
+    where
+        E: Into<io::Error>,
+    {
         let destination_metadata = destination.metadata()?;
         let owner =
             (metadata.uid != destination_metadata.uid()).then(|| Uid::from_raw(metadata.uid));
         let group =
             (metadata.gid != destination_metadata.gid()).then(|| Gid::from_raw(metadata.gid));
         if owner.is_some() || group.is_some() {
-            fchown(destination, owner, group)?;
+            apply(destination, owner, group).map_err(Into::into)?;
         }
         Ok(())
     }
@@ -1208,7 +1222,7 @@ mod imp {
         #[cfg(target_os = "linux")]
         {
             for name in CRITICAL_NAMES {
-                if names.iter().any(|current| current == OsStr::new(name)) {
+                if unix_xattr_name_is_listed(&names, OsStr::new(name)) {
                     continue;
                 }
                 let name_bytes = name
@@ -1221,7 +1235,7 @@ mod imp {
                 if let Some(value) =
                     unix_read_native_xattr_bounded(file, OsStr::new(name), remaining)?
                 {
-                    if attributes.len() == MAX_SUPPORTED_XATTR_COUNT {
+                    if unix_xattr_count_reached_limit(attributes.len(), MAX_SUPPORTED_XATTR_COUNT) {
                         return Err(unix_metadata_too_large());
                     }
                     unix_reserve_metadata_bytes(&mut used_bytes, name_bytes, byte_limit)?;
@@ -1245,11 +1259,11 @@ mod imp {
     ) -> io::Result<(Vec<OsString>, usize)> {
         for _ in 0..MAX_XATTR_READ_ATTEMPTS {
             let announced = unix_flistxattr(file, None);
-            if announced < 0 {
+            if unix_xattr_call_failed(announced) {
                 return Err(io::Error::last_os_error());
             }
             let announced = usize::try_from(announced).map_err(|_| unix_metadata_too_large())?;
-            if announced > byte_limit {
+            if unix_xattr_size_exceeds_limit(announced, byte_limit) {
                 return Err(unix_metadata_too_large());
             }
 
@@ -1259,15 +1273,15 @@ mod imp {
                 .map_err(|_| unix_metadata_allocation_failed())?;
             buffer.resize(announced, 0_u8);
             let read = unix_flistxattr(file, Some(&mut buffer));
-            if read < 0 {
+            if unix_xattr_call_failed(read) {
                 let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::ERANGE) {
+                if unix_xattr_read_should_retry(&error) {
                     continue;
                 }
                 return Err(error);
             }
             let read = usize::try_from(read).map_err(|_| unix_metadata_too_large())?;
-            if read > buffer.len() {
+            if unix_xattr_size_exceeds_limit(read, buffer.len()) {
                 continue;
             }
             buffer.truncate(read);
@@ -1326,7 +1340,7 @@ mod imp {
 
         for _ in 0..MAX_XATTR_READ_ATTEMPTS {
             let announced = unix_fgetxattr(file, &name, None);
-            if announced < 0 {
+            if unix_xattr_call_failed(announced) {
                 let error = io::Error::last_os_error();
                 if unix_xattr_is_missing(&error) {
                     return Ok(None);
@@ -1334,7 +1348,7 @@ mod imp {
                 return Err(error);
             }
             let announced = usize::try_from(announced).map_err(|_| unix_metadata_too_large())?;
-            if announced > byte_limit {
+            if unix_xattr_size_exceeds_limit(announced, byte_limit) {
                 return Err(unix_metadata_too_large());
             }
 
@@ -1344,9 +1358,9 @@ mod imp {
                 .map_err(|_| unix_metadata_allocation_failed())?;
             value.resize(announced, 0_u8);
             let read = unix_fgetxattr(file, &name, Some(&mut value));
-            if read < 0 {
+            if unix_xattr_call_failed(read) {
                 let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::ERANGE) {
+                if unix_xattr_read_should_retry(&error) {
                     continue;
                 }
                 if unix_xattr_is_missing(&error) {
@@ -1392,6 +1406,31 @@ mod imp {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn unix_metadata_allocation_failed() -> io::Error {
         io::Error::other("memory allocation for required file metadata failed")
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const fn unix_xattr_call_failed(result: libc::ssize_t) -> bool {
+        result < 0
+    }
+
+    #[cfg(target_os = "linux")]
+    const fn unix_xattr_count_reached_limit(count: usize, limit: usize) -> bool {
+        count >= limit
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const fn unix_xattr_size_exceeds_limit(size: usize, limit: usize) -> bool {
+        size > limit
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unix_xattr_read_should_retry(error: &io::Error) -> bool {
+        error.raw_os_error() == Some(libc::ERANGE)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn unix_xattr_name_is_listed(names: &[OsString], expected: &OsStr) -> bool {
+        names.iter().any(|name| name == expected)
     }
 
     #[cfg(target_os = "linux")]
@@ -1602,14 +1641,22 @@ mod imp {
         use super::linux_xattr_is_missing as native_xattr_is_missing;
         #[cfg(target_os = "macos")]
         use super::macos_xattr_is_missing as native_xattr_is_missing;
+        use super::{
+            ExtendedAttribute, MetadataStamp, unix_metadata_payload_stamp_matches,
+            unix_metadata_source_matches, unix_metadata_stamp, unix_no_replace_is_unavailable,
+            unix_verify_destination_stamp, unix_verify_native_xattrs, unix_xattr_call_failed,
+            unix_xattr_read_should_retry, unix_xattr_size_exceeds_limit,
+        };
+        #[cfg(target_os = "linux")]
+        use super::{
+            Gid, Uid, unix_apply_ownership, unix_xattr_count_reached_limit,
+            unix_xattr_name_is_listed,
+        };
         #[cfg(target_os = "macos")]
         use super::{
             MacosAclSnapshot, apply_macos_acl_snapshot, macos_acl_release_failed,
             macos_finalize_private_creation, macos_private_creation, read_macos_acl_snapshot,
             verify_macos_acl,
-        };
-        use super::{
-            MetadataStamp, unix_metadata_payload_stamp_matches, unix_metadata_source_matches,
         };
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         use super::{unix_read_native_xattr_bounded, unix_reserve_metadata_bytes};
@@ -1787,6 +1834,168 @@ mod imp {
             assert!(!native_xattr_is_missing(&io::Error::from_raw_os_error(
                 libc::ENOENT
             )));
+        }
+
+        #[test]
+        fn no_replace_fallback_classifier_is_exact() {
+            assert!(unix_no_replace_is_unavailable(rustix::io::Errno::NOSYS));
+            assert!(unix_no_replace_is_unavailable(rustix::io::Errno::INVAL));
+            assert!(unix_no_replace_is_unavailable(rustix::io::Errno::NOTSUP));
+            assert!(!unix_no_replace_is_unavailable(rustix::io::Errno::EXIST));
+            assert!(!unix_no_replace_is_unavailable(rustix::io::Errno::PERM));
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[test]
+        fn native_xattr_result_boundaries_are_exact() {
+            assert!(unix_xattr_call_failed(-1));
+            assert!(!unix_xattr_call_failed(0));
+            assert!(!unix_xattr_call_failed(1));
+
+            #[cfg(target_os = "linux")]
+            {
+                assert!(!unix_xattr_count_reached_limit(4, 5));
+                assert!(unix_xattr_count_reached_limit(5, 5));
+                assert!(unix_xattr_count_reached_limit(6, 5));
+            }
+
+            assert!(!unix_xattr_size_exceeds_limit(4, 5));
+            assert!(!unix_xattr_size_exceeds_limit(5, 5));
+            assert!(unix_xattr_size_exceeds_limit(6, 5));
+
+            assert!(unix_xattr_read_should_retry(&io::Error::from_raw_os_error(
+                libc::ERANGE
+            )));
+            assert!(!unix_xattr_read_should_retry(
+                &io::Error::from_raw_os_error(libc::ENOENT)
+            ));
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn critical_xattr_name_membership_is_exact() {
+            let names = vec![std::ffi::OsString::from("security.capability")];
+
+            assert!(unix_xattr_name_is_listed(
+                &names,
+                std::ffi::OsStr::new("security.capability")
+            ));
+            assert!(!unix_xattr_name_is_listed(
+                &names,
+                std::ffi::OsStr::new("security.selinux")
+            ));
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn ownership_application_requests_and_propagates_each_change() -> io::Result<()> {
+            let file = tempfile()?;
+            let actual = unix_metadata_stamp(&file)?;
+            let replacement_owner = u32::from(actual.uid == 0);
+            let replacement_group = u32::from(actual.gid == 0);
+            let cases = [
+                (actual, None, None),
+                (
+                    MetadataStamp {
+                        uid: replacement_owner,
+                        ..actual
+                    },
+                    Some(replacement_owner),
+                    None,
+                ),
+                (
+                    MetadataStamp {
+                        gid: replacement_group,
+                        ..actual
+                    },
+                    None,
+                    Some(replacement_group),
+                ),
+                (
+                    MetadataStamp {
+                        uid: replacement_owner,
+                        gid: replacement_group,
+                        ..actual
+                    },
+                    Some(replacement_owner),
+                    Some(replacement_group),
+                ),
+            ];
+
+            for (expected, expected_owner, expected_group) in cases {
+                let mut requested = None;
+                let result = unix_apply_ownership(expected, &file, |_, owner, group| {
+                    requested = Some((owner.map(Uid::as_raw), group.map(Gid::as_raw)));
+                    Err(io::Error::other("injected ownership failure"))
+                });
+
+                if expected_owner.is_none() && expected_group.is_none() {
+                    assert!(result.is_ok());
+                    assert_eq!(requested, None);
+                } else {
+                    assert_eq!(
+                        result
+                            .expect_err("each requested ownership change must propagate failure")
+                            .kind(),
+                        io::ErrorKind::Other
+                    );
+                    assert_eq!(requested, Some((expected_owner, expected_group)));
+                }
+            }
+            Ok(())
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[test]
+        fn destination_stamp_verification_rejects_each_mismatch() -> io::Result<()> {
+            let file = tempfile()?;
+            let actual = unix_metadata_stamp(&file)?;
+            let mismatches = [
+                MetadataStamp {
+                    uid: actual.uid.wrapping_add(1),
+                    ..actual
+                },
+                MetadataStamp {
+                    gid: actual.gid.wrapping_add(1),
+                    ..actual
+                },
+                MetadataStamp {
+                    mode: actual.mode ^ 0o100,
+                    ..actual
+                },
+            ];
+
+            for mismatch in mismatches {
+                assert_eq!(
+                    unix_verify_destination_stamp(mismatch, &file)
+                        .expect_err("each destination-stamp mismatch must be rejected")
+                        .kind(),
+                    io::ErrorKind::InvalidData
+                );
+            }
+            Ok(())
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[test]
+        fn native_xattr_verification_rejects_a_missing_attribute() -> io::Result<()> {
+            let file = tempfile()?;
+            let expected = [ExtendedAttribute {
+                name: std::ffi::OsString::from(if cfg!(target_os = "linux") {
+                    "user.noter.expected"
+                } else {
+                    "com.noter.expected"
+                }),
+                value: b"required value".to_vec(),
+            }];
+
+            assert_eq!(
+                unix_verify_native_xattrs(&expected, &file)
+                    .expect_err("a missing expected xattr must be rejected")
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+            Ok(())
         }
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -2655,7 +2864,9 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use xattr::FileExt;
 
-    use super::{FileChangeToken, IdentityQuality, file_facts};
+    #[cfg(target_os = "linux")]
+    use super::sync_file;
+    use super::{FileChangeToken, FileIdentity, IdentityQuality, file_facts};
     #[cfg(unix)]
     use super::{ReplaceExistingOutcome, replace_existing};
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -2673,6 +2884,24 @@ mod tests {
 
         assert_eq!(token.primary(), 17);
         assert_eq!(token.secondary(), 29);
+    }
+
+    #[test]
+    fn file_identity_components_are_exposed_exactly() {
+        let identity = FileIdentity::new(IdentityQuality::Preferred, 17, 29);
+
+        assert_eq!(identity.quality(), IdentityQuality::Preferred);
+        assert_eq!(identity.volume(), 17);
+        assert_eq!(identity.file(), 29);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_file_sync_propagates_device_failures() -> io::Result<()> {
+        let device = File::options().write(true).open("/dev/full")?;
+
+        assert!(sync_file(&device).is_err());
+        Ok(())
     }
 
     #[test]

@@ -17,7 +17,9 @@ release, so current work remains under Unreleased.
 - Add locked source-install helpers for PowerShell and POSIX systems with check
   and custom-root modes.
 - Add deterministic native Light and Dark README screenshot generation and
-  validation using a polished non-sensitive Markdown demo document.
+  validation using a polished non-sensitive Markdown demo document. The capture
+  keeps one source-backed block active so the formatting controls and underlying
+  Markdown are visible together.
 
 ### Security
 
@@ -77,22 +79,26 @@ release, so current work remains under Unreleased.
 - Upgrade eframe and egui to 0.35 and egui_commonmark to 0.24, retaining
   restricted features while enabling current shaping, hinting, theme-aware font
   transfer, and subpixel placement behavior.
+- Lock the renderer's distinct light-background and dark-background
+  coverage-transfer behavior with a regression test.
 - Define and enforce repository-wide code-quality and evidence standards.
 - Enforce Ruff linting and formatting for repository validation scripts in CI,
   and normalize text files to LF across supported development platforms.
 - Keep local agent state and runtime logs in ignored dedicated directories.
 - Remove obsolete tracked agent metadata and commented-out build or CI plans.
 - Expand mutation enforcement through the native platform adapter with a macOS
-  job and a current 751-candidate supported-platform union with no gap. The last
-  completed 58-mutant Windows adapter pass catches all 40 viable mutations,
-  including descriptor deallocation, with 18 genuine compiler rejections and no
-  miss, timeout, or infrastructure failure; the hardened creation path expands
-  the current adapter enumeration to 66 and requires a fresh campaign.
+  job and a current 741-candidate supported-platform union with no gap. Hosted
+  run 30213398323 completed the 49-candidate macOS scope without a survivor and
+  exposed only Linux decision-coverage gaps plus two shared line-scanner
+  timeouts. The settled local correction removes mutable progress arithmetic,
+  gives repeated native decisions exact named predicates, and retains all
+  supported-platform candidates across Linux, Windows, and macOS. A new hosted
+  campaign is pending.
 - Reject linker, compiler, storage, process, and tool-lock infrastructure
   failures that cargo-mutants would otherwise classify as unviable.
 - Close a focused 58-candidate Markdown diagnostics campaign with a composite
   result of 55 caught and three genuine compiler rejections after isolating and
   rerunning one Windows linker-lock failure.
-- Raise measured fixed-seed line coverage to 93.53 percent for the trust kernel
-  and 87.94 percent for the complete workspace across 170 Windows-local tests,
-  and enforce respective 90 and 80 percent floors in CI.
+- Maintain measured fixed-seed line coverage at 92.26 percent for the trust
+  kernel and 87.54 percent for the complete workspace. The Windows-local suite
+  contains 172 tests, and CI enforces respective 90 and 80 percent floors.

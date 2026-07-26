@@ -79,13 +79,14 @@ original or staged recovery information.
 ### Current state
 
 Most automated trust-kernel behavior is implemented and covered by local tests.
-A checker found and repaired macOS ACL-absence handling and inherited-ACL staging
-risk. Exact-commit run 30211571501 then proved inheritance suppression and the
-kernel's canonical zero-entry-to-absent behavior, exposing two stale test
-expectations before mutation execution. Their correction still requires one
-green exact-commit native CI run and a fresh platform mutation campaign. The
-reproducible benchmark harness and required manual filesystem fixtures also
-remain open.
+A checker found and repaired macOS ACL-absence handling and inherited-ACL
+staging risk. Exact-commit run 30213398323 passed all native product tests and
+the 49-candidate macOS mutation scope. Its Linux and Windows mutation jobs then
+exposed repeated native decisions and mutable line-scanner progress arithmetic.
+The settled local repair has a complete 741-candidate three-platform assignment
+with no union gap and focused mutation evidence without a viable survivor. It
+still requires a green exact-commit full campaign. The reproducible benchmark
+harness and required manual filesystem fixtures also remain open.
 
 Current detailed evidence and known gaps are maintained in:
 
@@ -130,10 +131,13 @@ that a release exists when the repository has no published artifact.
 
 System, Light, and Dark themes, working About and update-status dialogs, source
 install helpers, a unified aligned editor toolbar, and deterministic native
-README screenshots are implemented locally. The early source-backed Markdown
-slice is visible for product evaluation but remains governed by M6. M2 still
-needs installed-app semantic automation, cross-platform visual and persistence
-evidence, and disposable clean-user installer tests before verification.
+README screenshots are implemented locally. Hinting, subpixel positioning, and
+theme-correct text coverage transfer are verified explicitly rather than
+assumed from toolkit defaults. The early source-backed Markdown slice is
+visible for product evaluation but remains governed by M6. M2 still needs
+installed-app semantic automation, cross-platform visual and persistence
+evidence, and disposable
+clean-user installer tests before verification.
 
 ### Exit criteria
 
@@ -203,6 +207,8 @@ large-file requirements needed by both text and native Markdown editing.
 - incremental layout, hit testing, selection, scrolling, and bounded caches;
 - IME pre-edit and candidate-window placement;
 - accessibility semantics and editable-text actions;
+- native shaping and fallback, stable font metrics, theme-correct coverage
+  transfer, hinting, and subpixel positioning validated across display scales;
 - high-DPI, high-contrast, bidirectional text, combining marks, and emoji; and
 - reproducible cold-start, typing, scrolling, search, memory, and size
   benchmarks.
@@ -289,17 +295,17 @@ contract.
 
 ## Immediate backlog
 
-1. Complete the macOS staging and ACL-absence repair with exact native CI and
-   checker approval.
-2. Re-run the settled supported-platform mutation scopes and reconcile the
-   evidence document.
-3. Build the reproducible M1 benchmark harness and execute the remaining manual
+1. Run the settled 741-candidate supported-platform mutation union on one
+   immutable commit, reconcile the evidence, and obtain checker approval.
+2. Build the reproducible M1 benchmark harness and execute the remaining manual
    filesystem fixtures.
-4. Complete M2 evidence for installed About and update actions, theme
+3. Complete M2 evidence for installed About and update actions, theme
    persistence, cross-platform visual behavior, and disposable source installs.
-5. Begin the M3 transaction and undo model. Keep the early block-focused
-   Markdown slice bounded until the transaction, lifecycle, and production-editor
-   contracts it depends on are stable.
+4. Begin the M3 transaction and undo model.
+5. Execute the M5 editor feasibility gate, including native typography, IME,
+   accessibility, display-scale, and large-file evidence. Keep the early
+   block-focused Markdown slice bounded until the transaction, lifecycle, and
+   production-editor contracts it depends on are stable.
 
 This dependency order protects source fidelity and accessibility. It does not
 reduce native Markdown to an optional side feature; Markdown is a required

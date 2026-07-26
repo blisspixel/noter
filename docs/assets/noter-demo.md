@@ -18,8 +18,8 @@ reason for a tool to exist.
 ## Privacy is not a setting
 
 Telemetry can diagnose failures when it is *limited, transparent, and knowingly
-chosen*. When collection is opaque or turns private behavior into a product, it
-is surveillance.
+chosen*. Collection becomes spyware when it is opaque, compulsory, or
+repurposed to profile people and sell access to their private behavior.
 
 > 1984 was a warning, not an instruction manual.
 

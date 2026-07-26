@@ -155,10 +155,10 @@ claim depends on inference from a filesystem name or a local-only test.
 
 ## Remediation validation checkpoint
 
-The remediated worktree passes all 170 Windows-local workspace tests, strict
+The remediated worktree passes all 172 Windows-local workspace tests, strict
 workspace Clippy, rustdoc with warnings denied, documentation-link validation,
-and RustSec audit. Fixed-seed measured line coverage is 93.53 percent for the
-trust kernel and 87.94 percent for the complete workspace. The first expanded
+and RustSec audit. Fixed-seed measured line coverage is 92.26 percent for the
+trust kernel and 87.54 percent for the complete workspace. The first expanded
 mutation run exposed nine file-limit boundary survivors. Exact inclusive-limit,
 oversized-announcement, constant-value, and overflow tests closed them; the last
 completed Windows-applicable campaign classified all 383 mutants as 254 caught
@@ -168,7 +168,11 @@ caught, 148 unviable, zero missed, and zero timed out. The expanded native
 adapter scope adds a clean local 57-mutant Windows pass with 39 caught and 18
 unviable. The descriptor-deallocation repair produced a clean 58-mutant Windows
 pass with 40 caught and 18 unviable. The current adapter scope is 66. The settled
-three-platform 751-mutant union assigns 638 candidates to Linux, 559 to Windows,
-and 49 macOS-specific candidates to macOS with no set-union gap. The new scope
-requires a fresh exact-commit hosted campaign before this checkpoint becomes
+three-platform 741-mutant union assigns 617 candidates to Linux, 557 to Windows,
+and 49 macOS-specific candidates to macOS with no set-union gap. Hosted run
+30213398323 closed the macOS scope and exposed 32 Linux survivors plus two
+shared scanner timeouts. The current local correction replaces the mutable
+scanner arithmetic, gives repeated Unix decisions exact named predicates, and
+tests ownership application through deterministic error injection. A fresh
+exact-commit hosted campaign is required before this checkpoint becomes
 complete CI evidence.

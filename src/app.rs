@@ -130,6 +130,9 @@ impl NoterApp {
 
         #[cfg(feature = "screenshot-qa")]
         if let Some(path) = options.screenshot_path {
+            if app.view == DocumentView::Markdown {
+                app.markdown_editor.activate_first_block(&app.text);
+            }
             app.screenshot = Some(ScreenshotCapture::new(path));
         }
         #[cfg(not(feature = "screenshot-qa"))]
