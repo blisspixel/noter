@@ -67,7 +67,7 @@ a milestone sign-off.
 | Last completed Windows native-adapter mutation testing | 58 total, 40 caught, 18 unviable, 0 missed, 0 timed out |
 | Current Windows native-adapter scope | 66 enumerated; full rerun pending |
 | Focused Markdown diagnostics mutation testing | 58 total, 55 caught, 3 unviable, 0 missed, 0 timed out; one linker-lock result caught in an isolated rerun |
-| Current supported-platform mutation union | 747 total: Linux 639, Windows 559, macOS 202, no union gap; exact-commit CI pending |
+| Current supported-platform mutation union | 751 total: Linux 638, Windows 559, macOS 49, no union gap; exact-commit CI pending |
 | Rustdoc with warnings denied | Pass |
 | Local Markdown link check | Pass |
 | Linux full-crate cross-target Clippy | Pass |

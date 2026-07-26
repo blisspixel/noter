@@ -168,7 +168,7 @@ caught, 148 unviable, zero missed, and zero timed out. The expanded native
 adapter scope adds a clean local 57-mutant Windows pass with 39 caught and 18
 unviable. The descriptor-deallocation repair produced a clean 58-mutant Windows
 pass with 40 caught and 18 unviable. The current adapter scope is 66. The settled
-three-platform 747-mutant union assigns 639 candidates to Linux, 559 to Windows,
-and 202 to macOS with no set-union gap. The new scope requires a fresh
-exact-commit
-hosted campaign before this checkpoint becomes complete CI evidence.
+three-platform 751-mutant union assigns 638 candidates to Linux, 559 to Windows,
+and 49 macOS-specific candidates to macOS with no set-union gap. The new scope
+requires a fresh exact-commit hosted campaign before this checkpoint becomes
+complete CI evidence.

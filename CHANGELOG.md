@@ -83,7 +83,7 @@ release, so current work remains under Unreleased.
 - Keep local agent state and runtime logs in ignored dedicated directories.
 - Remove obsolete tracked agent metadata and commented-out build or CI plans.
 - Expand mutation enforcement through the native platform adapter with a macOS
-  job and a current 747-decision supported-platform union with no gap. The last
+  job and a current 751-candidate supported-platform union with no gap. The last
   completed 58-mutant Windows adapter pass catches all 40 viable mutations,
   including descriptor deallocation, with 18 genuine compiler rejections and no
   miss, timeout, or infrastructure failure; the hardened creation path expands

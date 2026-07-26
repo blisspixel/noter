@@ -169,7 +169,7 @@ jobs:
         run: >
           cargo mutants -vV --in-place --colors never --workspace
           -p noter-platform
-          --exclude-re '([Ww]indows|linux)'
+          --re '[Mm]acos'
       - name: Reject infrastructure failures hidden as unviable mutants
         if: always()
         run: python scripts/check_mutation_infrastructure.py mutants.out

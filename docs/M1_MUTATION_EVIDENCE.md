@@ -39,7 +39,7 @@ cargo mutants -vV --in-place --colors never --workspace \
 
 macOS native-adapter scope:
 cargo mutants -vV --in-place --colors never --workspace \
-  -p noter-platform --exclude-re '([Ww]indows|linux)'
+  -p noter-platform --re '[Mm]acos'
 ```
 
 The `[Mm]acos` form is intentional because cargo-mutants matches generated
@@ -50,15 +50,19 @@ The [cargo-mutants CI guidance](https://mutants.rs/ci.html) recommends
 `--in-place` for a disposable CI checkout. The tool documents that
 [`--in-place` cannot be combined with `--jobs`](https://mutants.rs/in-place.html),
 so each CI gate runs serially and uploads `mutants.out` even on failure. The
-current Linux job covers 639 candidates, the Windows job covers 559, and the
-macOS adapter job covers 202. The scopes intentionally overlap on common code;
-deduplicating exact mutation descriptions produces all 747 configured
+current Linux job covers 638 candidates, the Windows job covers 559, and the
+macOS adapter job covers 49 macOS-specific candidates. The scopes overlap where
+the common runner assignments require it;
+deduplicating exact mutation descriptions produces all 751 configured
 supported-platform candidates with no missing entry. The filters are runner
 assignments, not a claim that every exclusion is inactive. Linux assigns several
 active cross-platform decisions with Windows-specific branches to the Windows
 runner, Windows excludes Unix snapshot APIs absent from its build, and macOS
-excludes Linux and Windows native branches. This prevents inactive `cfg` code
-from being misclassified as a survivor while retaining full set-union coverage.
+selects descriptions for its native implementation. Generic Unix candidates
+without target-specific expressions are owned by the Linux job. Platform-only
+predicates use platform-specific function names so their generated descriptions
+remain assignable to the active runner. This prevents inactive `cfg` code from
+being misclassified as a survivor while retaining full set-union coverage.
 Incremental
 compilation is enabled explicitly for the mutation steps because the cache
 action disables it by default. The installer action and cargo-mutants version
@@ -192,6 +196,22 @@ documentation expected `Present` in both cases. Those expectations are now
 aligned with the native result, and the full platform campaign must rerun on the
 corrected commit.
 
+Exact-commit run
+[30211952848](https://github.com/blisspixel/noter/actions/runs/30211952848)
+passed the macOS product tests and then exposed an overly broad macOS mutation
+assignment. Thirty-one of its 36 survivors were generic cross-platform or Unix
+decisions assigned to the Linux or Windows jobs. One was a macOS-only `ENOATTR`
+comparison hidden inside a generically named Unix helper. The platform predicates
+now have explicit Linux and macOS names plus exact truth-table tests, making each
+mutation assignable to a runner where its expression is active. The other four
+survivors exposed missing observability for creation-time mode application,
+private-creation finalization, the two ACL deallocation results, and ACL
+verification. The macOS scope now selects macOS-specific mutation descriptions.
+Native tests use a non-default creation mode, deliberately relax a protected
+file before finalization, cover the complete deallocation-result truth table,
+and require ACL verification to reject a mismatch. The revised three-runner
+union still includes every configured candidate.
+
 Mutation scope now includes the native platform adapter. The focused Windows
 adapter campaign caught all 40 compiling behavioral mutations, classified 18
 type-level mutations as unviable, and had no miss, timeout, or recognized
@@ -211,8 +231,9 @@ target, then the entire 58-candidate campaign was repeated in one fresh target
 directory. The final single report is 40 caught and 18 genuine compiler
 rejections, and the infrastructure validator reports no recognized failure.
 
-The settled worktree now enumerates 747 candidates: 639 assigned to Linux, 559
-to Windows, and 202 to macOS. Deduplicating the three scopes yields all 747
+The settled worktree now enumerates 751 candidates: 638 assigned to Linux, 559
+to Windows, and 49 macOS-specific candidates assigned to macOS. Deduplicating
+the three scopes yields all 751
 configured candidates with no missing or outside entry. The focused Windows
 adapter scope is 66 candidates. The increase since the creation-hardening
 checkpoint includes the new UI-independent Markdown diagnostics module.
@@ -224,7 +245,7 @@ two-candidate rerun caught both variants, producing a composite 55 caught and
 three genuine compile-time rejections with zero missed and zero timed out. This
 is focused local evidence, not a substitute for the full platform matrix.
 
-The complete three-platform CI gate must still rerun the full 747-mutant union
+The complete three-platform CI gate must still rerun the full 751-mutant union
 on one immutable commit before this expanded result becomes hosted exact-commit
 evidence.
 

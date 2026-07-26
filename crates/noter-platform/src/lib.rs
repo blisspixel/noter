@@ -606,6 +606,42 @@ mod imp {
             acl.release()?;
             security.create(&path)
         }
+
+        #[cfg(test)]
+        mod tests {
+            use std::ffi::CString;
+            use std::io;
+            use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+
+            use tempfile::tempdir;
+
+            use super::OwnedFileSecurity;
+
+            #[test]
+            fn configured_mode_is_applied_during_creation() -> io::Result<()> {
+                const READ_ONLY_MODE: libc::mode_t = 0o400;
+                const PERMISSION_BITS: u32 = 0o7777;
+
+                let directory = tempdir()?;
+                let path = directory.path().join("mode-fixture.txt");
+                let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "test file path contains an interior NUL byte",
+                    )
+                })?;
+                let security = OwnedFileSecurity::new()?;
+                security.set_mode(READ_ONLY_MODE)?;
+
+                let file = security.create(&path)?;
+
+                assert_eq!(
+                    file.metadata()?.mode() & PERMISSION_BITS,
+                    u32::from(READ_ONLY_MODE)
+                );
+                Ok(())
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -1358,16 +1394,19 @@ mod imp {
         io::Error::other("memory allocation for required file metadata failed")
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn unix_xattr_is_missing(error: &io::Error) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            error.raw_os_error() == Some(libc::ENODATA)
-        }
-        #[cfg(target_os = "macos")]
-        {
-            error.raw_os_error() == Some(libc::ENOATTR)
-        }
+    #[cfg(target_os = "linux")]
+    use self::linux_xattr_is_missing as unix_xattr_is_missing;
+    #[cfg(target_os = "macos")]
+    use self::macos_xattr_is_missing as unix_xattr_is_missing;
+
+    #[cfg(target_os = "linux")]
+    fn linux_xattr_is_missing(error: &io::Error) -> bool {
+        error.raw_os_error() == Some(libc::ENODATA)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_xattr_is_missing(error: &io::Error) -> bool {
+        error.raw_os_error() == Some(libc::ENOATTR)
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1474,6 +1513,14 @@ mod imp {
     }
 
     #[cfg(target_os = "macos")]
+    const fn macos_acl_release_failed(
+        text_free_result: libc::c_int,
+        acl_free_result: libc::c_int,
+    ) -> bool {
+        text_free_result != 0 || acl_free_result != 0
+    }
+
+    #[cfg(target_os = "macos")]
     #[allow(unsafe_code)]
     fn read_macos_acl_snapshot(file: &File) -> io::Result<MacosAclSnapshot> {
         use std::ffi::CStr;
@@ -1516,7 +1563,7 @@ mod imp {
         // ACL APIs and are each freed exactly once after their bytes are copied.
         let text_free = unsafe { acl_free(text.cast()) };
         let acl_free_result = unsafe { acl_free(acl.cast()) };
-        if text_free != 0 || acl_free_result != 0 {
+        if macos_acl_release_failed(text_free, acl_free_result) {
             return Err(io::Error::last_os_error());
         }
         Ok(MacosAclSnapshot::Present(result))
@@ -1540,7 +1587,7 @@ mod imp {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         use std::io;
         #[cfg(target_os = "macos")]
-        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         #[cfg(target_os = "macos")]
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1551,10 +1598,15 @@ mod imp {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         use xattr::FileExt;
 
+        #[cfg(target_os = "linux")]
+        use super::linux_xattr_is_missing as native_xattr_is_missing;
+        #[cfg(target_os = "macos")]
+        use super::macos_xattr_is_missing as native_xattr_is_missing;
         #[cfg(target_os = "macos")]
         use super::{
-            MacosAclSnapshot, apply_macos_acl_snapshot, macos_finalize_private_creation,
-            macos_private_creation, read_macos_acl_snapshot,
+            MacosAclSnapshot, apply_macos_acl_snapshot, macos_acl_release_failed,
+            macos_finalize_private_creation, macos_private_creation, read_macos_acl_snapshot,
+            verify_macos_acl,
         };
         use super::{
             MetadataStamp, unix_metadata_payload_stamp_matches, unix_metadata_source_matches,
@@ -1628,6 +1680,15 @@ mod imp {
 
         #[cfg(target_os = "macos")]
         #[test]
+        fn macos_acl_release_requires_both_deallocations_to_succeed() {
+            assert!(!macos_acl_release_failed(0, 0));
+            assert!(macos_acl_release_failed(-1, 0));
+            assert!(macos_acl_release_failed(0, -1));
+            assert!(macos_acl_release_failed(-1, -1));
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
         fn private_creation_suppresses_an_inheritable_parent_acl() -> io::Result<()> {
             const PRIVATE_MODE: u32 = 0o600;
             const PERMISSION_BITS: u32 = 0o7777;
@@ -1672,6 +1733,11 @@ mod imp {
             assert_eq!(creation_mode & !PRIVATE_MODE, 0);
             assert_eq!(protected.metadata()?.len(), 0);
 
+            let mut relaxed_permissions = protected.metadata()?.permissions();
+            relaxed_permissions.set_mode(0o644);
+            protected.set_permissions(relaxed_permissions)?;
+            assert_eq!(protected.metadata()?.mode() & PERMISSION_BITS, 0o644);
+
             macos_finalize_private_creation(&protected)?;
             assert_eq!(protected.metadata()?.mode() & PERMISSION_BITS, PRIVATE_MODE);
             assert_eq!(
@@ -1679,6 +1745,18 @@ mod imp {
                 MacosAclSnapshot::Absent
             );
             assert_eq!(protected.metadata()?.len(), 0);
+            Ok(())
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn acl_verification_rejects_a_missing_expected_acl() -> io::Result<()> {
+            let file = tempfile()?;
+            let expected = MacosAclSnapshot::Present(b"expected ACL fixture".to_vec());
+
+            let error = verify_macos_acl(&expected, &file).expect_err("ACLs should differ");
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
             Ok(())
         }
 
@@ -1693,6 +1771,22 @@ mod imp {
 
             assert_eq!(read_macos_acl_snapshot(&file)?, MacosAclSnapshot::Absent);
             Ok(())
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[test]
+        fn native_missing_xattr_classifier_is_exact() {
+            #[cfg(target_os = "linux")]
+            const MISSING_XATTR_ERROR: i32 = libc::ENODATA;
+            #[cfg(target_os = "macos")]
+            const MISSING_XATTR_ERROR: i32 = libc::ENOATTR;
+
+            assert!(native_xattr_is_missing(&io::Error::from_raw_os_error(
+                MISSING_XATTR_ERROR
+            )));
+            assert!(!native_xattr_is_missing(&io::Error::from_raw_os_error(
+                libc::ENOENT
+            )));
         }
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]

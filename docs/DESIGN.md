@@ -53,7 +53,7 @@ The current M1 worktree has:
   coverage; and
 - a 418-mutant Windows core campaign classified as 270 caught and 148 unviable,
   plus a clean 58-mutant Windows native-adapter pass classified as 40 caught
-  and 18 unviable. The settled source now enumerates a 747-candidate
+  and 18 unviable. The settled source now enumerates a 751-candidate
   three-platform union and requires a fresh campaign.
 
 The historical production-adapter checkpoint passes Windows, macOS, and Linux
