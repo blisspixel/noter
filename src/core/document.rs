@@ -29,6 +29,30 @@ pub struct Document {
     saved_target: Option<TargetExpectation>,
 }
 
+/// A Save As selection paired with the exact target state observed when the
+/// user chose it.
+///
+/// The fields are private so confirmation cannot silently replace the
+/// expectation with a later observation. Reusing a stale preparation is safe:
+/// the save protocol reports a conflict if the selected entry changed.
+#[derive(Clone, Debug)]
+pub struct PreparedSaveAs {
+    path: PathBuf,
+    expected: TargetExpectation,
+    adopt_path: bool,
+}
+
+impl PreparedSaveAs {
+    /// Returns the observed hard-link count when the selected entry existed.
+    #[must_use]
+    pub const fn hard_link_count(&self) -> Option<u64> {
+        match self.expected {
+            TargetExpectation::Existing(observation) => Some(observation.link_count()),
+            TargetExpectation::Missing => None,
+        }
+    }
+}
+
 impl Document {
     /// Creates an empty, clean, untitled document using the platform convention.
     pub fn new() -> Self {
@@ -201,28 +225,31 @@ impl Document {
     /// Returns a storage error if the selected path cannot be inspected safely or
     /// [`NoterError::UnsupportedTarget`] for a special final entry.
     pub fn save_as(&mut self, path: impl AsRef<Path>) -> Result<SaveOutcome, NoterError> {
-        self.save_as_with_hard_link_policy(path.as_ref(), false)
+        let prepared = self.prepare_save_as(path)?;
+        self.save_prepared_as(prepared)
     }
 
-    /// Saves to a selected path after explicit hard-link replacement confirmation.
+    /// Inspects and versions a user-selected Save As destination.
+    ///
+    /// Keep this value unchanged while any hard-link confirmation is visible.
+    /// The later save uses this exact expectation instead of trusting a second
+    /// inspection after the user responds.
     ///
     /// # Errors
     ///
-    /// Returns the same target-inspection errors as [`Self::save_as`].
-    pub fn save_as_confirming_hard_link_replacement(
-        &mut self,
-        path: impl AsRef<Path>,
-    ) -> Result<SaveOutcome, NoterError> {
-        self.save_as_with_hard_link_policy(path.as_ref(), true)
-    }
-
-    fn save_as_with_hard_link_policy(
-        &mut self,
-        path: &Path,
-        hard_link_confirmed: bool,
-    ) -> Result<SaveOutcome, NoterError> {
+    /// Returns a storage error if the path cannot be inspected safely,
+    /// [`NoterError::MissingFileBaseline`] when the selected path is the current
+    /// path without a trusted baseline, or [`NoterError::UnsupportedTarget`]
+    /// for a special final entry.
+    pub fn prepare_save_as(&self, path: impl AsRef<Path>) -> Result<PreparedSaveAs, NoterError> {
+        let path = path.as_ref();
         if self.path.as_deref() == Some(path) {
-            return self.save_with_hard_link_policy(hard_link_confirmed);
+            let expected = self.saved_target.ok_or(NoterError::MissingFileBaseline)?;
+            return Ok(PreparedSaveAs {
+                path: path.to_path_buf(),
+                expected,
+                adopt_path: false,
+            });
         }
         let expected = match inspect_target(path, SaveStage::InspectInitial)? {
             TargetState::Missing => TargetExpectation::Missing,
@@ -231,8 +258,50 @@ impl Document {
                 return Err(NoterError::UnsupportedTarget(format!("{kind:?}")));
             }
         };
-        require_hard_link_confirmation(expected, hard_link_confirmed)?;
-        Ok(self.save_to_expectation(path.to_path_buf(), expected, true))
+        Ok(PreparedSaveAs {
+            path: path.to_path_buf(),
+            expected,
+            adopt_path: true,
+        })
+    }
+
+    /// Saves using the exact destination version captured by
+    /// [`Self::prepare_save_as`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoterError::HardLinkedTarget`] when explicit confirmation is
+    /// required.
+    pub fn save_prepared_as(
+        &mut self,
+        prepared: PreparedSaveAs,
+    ) -> Result<SaveOutcome, NoterError> {
+        self.save_prepared_as_with_hard_link_policy(prepared, false)
+    }
+
+    /// Saves a prepared destination after explicit hard-link confirmation.
+    ///
+    /// The captured expectation is deliberately not refreshed. If the selected
+    /// entry changed while the confirmation was visible, the protocol returns a
+    /// conflict and preserves the newer external object.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same protocol errors as [`Self::save_prepared_as`].
+    pub fn save_prepared_as_confirming_hard_link_replacement(
+        &mut self,
+        prepared: PreparedSaveAs,
+    ) -> Result<SaveOutcome, NoterError> {
+        self.save_prepared_as_with_hard_link_policy(prepared, true)
+    }
+
+    fn save_prepared_as_with_hard_link_policy(
+        &mut self,
+        prepared: PreparedSaveAs,
+        hard_link_confirmed: bool,
+    ) -> Result<SaveOutcome, NoterError> {
+        require_hard_link_confirmation(prepared.expected, hard_link_confirmed)?;
+        Ok(self.save_to_expectation(prepared.path, prepared.expected, prepared.adopt_path))
     }
 
     fn save_to_expectation(

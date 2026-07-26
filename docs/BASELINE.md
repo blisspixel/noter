@@ -58,10 +58,11 @@ evidence above, and it is not yet a milestone sign-off.
 | --- | --- |
 | `cargo fmt --all -- --check` | Pass |
 | Strict workspace Clippy, locked, all targets and features | Pass |
-| Workspace tests | 96 passed, 0 failed |
-| Testable trust-kernel line coverage | 93.48 percent, 2,940 of 3,145 lines |
+| Windows-local workspace tests | 130 passed, 0 failed |
+| Testable trust-kernel line coverage | 93.06 percent, 3,860 of 4,148 lines |
+| Whole-workspace line coverage | 90.09 percent, 4,364 of 4,844 lines |
 | Enforced development threshold | Pass, at least 90 percent |
-| Trust-kernel mutation testing | 341 total, 230 caught, 111 unviable, 0 missed, 0 timed out |
+| Windows-applicable trust-kernel mutation testing | 418 total, 270 caught, 148 unviable, 0 missed, 0 timed out |
 | Rustdoc with warnings denied | Pass |
 | Local Markdown link check | Pass |
 | Linux full-crate cross-target Clippy | Pass |
@@ -71,13 +72,16 @@ evidence above, and it is not yet a milestone sign-off.
 | Resolved Cargo packages across all targets | 339 |
 | RustSec audit | Pass, no known vulnerability reported |
 | Native Windows, macOS, and Linux CI | Pass at `c76515c`, [run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267) |
+| Paired Linux and Windows mutation CI | Pass at `3830cdd`, [run 30184163737](https://github.com/blisspixel/noter/actions/runs/30184163737) |
 
-The 96 tests comprise 85 primary-library unit tests, one binary About-window
-smoke test, one 19-case golden-corpus test, three generated property suites with
-512 cases each, and six platform-crate tests. Coverage excludes the
+The 130 tests comprise 104 primary-library unit tests, 12 binary application
+tests, one 19-case golden-corpus test, three generated property suites with 512
+fixed-seed cases each, and ten platform-crate tests. Coverage excludes the
 still-prototype `src/app.rs` and `src/main.rs` under the same explicit CI rule as
-M0. The filesystem adapter itself measures 91.06 percent line coverage, and the
-total remains above the M1 90 percent gate. The UI exclusion is temporary and is
+M0 for the trust-kernel gate. The filesystem adapter itself measures 91.11
+percent line coverage, and the trust-kernel total remains above the M1 90
+percent gate. A separate unfiltered report measures the whole workspace at
+90.09 percent. The UI exclusion from the stricter gate is temporary and is
 replaced by semantic UI and manual accessibility gates before v0.1.
 
 The binary grew by 164,864 bytes from the M0 baseline. That measured cost now

@@ -209,8 +209,8 @@ of the GUI.
   reopen the pathname to close the ordinary replacement race. Missing files,
   directories, final links or reparse points, hard links, same-content distinct
   files, and path-redacted failures have explicit tests.
-- **Verified locally:** the main crate still forbids unsafe code. The six native
-  calls required for Windows observation and commit plus macOS metadata transfer
+- **Verified locally:** the main crate still forbids unsafe code. The native
+  calls required for Windows observation, private creation, and commit plus macOS metadata transfer
   are isolated behind safe internal-crate boundaries and documented safety
   contracts. Preferred 128-bit IDs and labeled reduced fallbacks have
   deterministic tests.
@@ -231,21 +231,55 @@ of the GUI.
   extended attributes, POSIX ACL, SELinux, and capability metadata, then verifies
   the result. macOS uses `fcopyfile` for ACLs and extended attributes without
   restoring the old modification time. Windows deliberately delegates the
-  documented metadata merge to `ReplaceFileW` with ignore flags disabled.
+  documented metadata merge to `ReplaceFileW` with ignore flags disabled. Unix
+  staging remains mode 0600 through atomic exchange; required metadata is
+  finalized through open handles after commit and resynchronized. A failure is
+  reported as a committed warning instead of exposing staged bytes or claiming
+  the commit did not happen.
 - **Implemented locally:** existing-file commits use `ReplaceFileW` with a random
-  backup on Windows and parent-anchored `renameat` on Unix. Absent-file commits
-  use `MoveFileExW` without replace or copy flags on Windows and no-replace rename
-  with a link-and-unlink fallback on Unix. Documented Windows partial state 1177
-  is reconciled, unknown states preserve artifacts, and resolved outcomes clean
-  only identity-verified artifacts.
+  backup on Windows and a parent-anchored atomic exchange on Unix. The displaced
+  Unix destination remains recoverable because portable Unix cleanup cannot
+  delete a verified open object without a pathname race. Absent-file commits use
+  `MoveFileExW` without replace or copy flags on Windows and no-replace rename
+  with a conservative hard-link fallback on Unix; that fallback retains the
+  temporary name with an actionable warning that names the safe random basename
+  and explains inspection and removal. Documented Windows partial state 1177 is
+  reconciled, unknown states preserve artifacts, and Windows cleanup deletes only
+  the exact verified open object while denying competing writers. Windows
+  reserves the backup before closing the staging handle and immediately
+  revalidates the closed sibling's identity, length, and BLAKE3-256 content;
+  postcommit verification prevents a raced mutation from becoming a successful
+  receipt.
 - **Implemented locally:** stable-handle loading and the production adapter are
   connected to a sealed Document API. Dirty state clears only for the exact
   committed revision, Save As adopts its path only after commit, external changes
   become conflicts, final links and read-only destinations are refused, and hard
   links require explicit confirmation.
-- **Verified locally:** all 96 workspace tests, formatting, strict workspace
-  Clippy, and rustdoc pass. Measured trust-kernel line coverage is 93.48 percent,
-  or 2,940 of 3,145 lines; CI enforces the M1 floor of 90 percent. Linux
+- **Implemented locally:** Save and Save As route multiply hard-linked targets
+  through a visible confirmation explaining that only the selected entry will
+  advance. Save As carries the exact pre-dialog target expectation through the
+  confirmation, so path rebinding produces a conflict. Post-commit file and
+  parent barrier failures remain separate,
+  complete durability warnings, and a failed file barrier reports Best Effort.
+- **Security maintenance implemented locally:** stable reads and fingerprints
+  enforce a 64 MiB ceiling even if a file grows after its handle is opened.
+  Windows staging and new files are created with a protected owner-and-system
+  DACL instead of inheriting permissive parent entries, and the live descriptor
+  is tested against the exact SDDL and competing-writer denial. Windows cleanup
+  is handle-bound, denies write sharing, and has pathname-rebinding and writer
+  exclusion fixtures; Unix cleanup retains artifacts conservatively with an
+  actionable recovery message. Indeterminate commits and failed cleanup expose
+  a typed, basename-only artifact warning with inspection, recovery, retry, and
+  removal guidance; displaced artifacts are described neutrally.
+  Destructive GUI actions run after editor synchronization and fail closed while
+  the document is dirty until M3 supplies the complete Save, Discard, and Cancel
+  reducer. The immutable review revision, two reportable findings, remediation,
+  and deferred native evidence are recorded in
+  [M1_SECURITY_REVIEW.md](M1_SECURITY_REVIEW.md).
+- **Verified locally:** all 130 Windows-local workspace tests, formatting, strict
+  workspace Clippy, and rustdoc pass. Measured trust-kernel line coverage is
+  93.06 percent, or 3,860 of 4,148 lines; whole-workspace line coverage is 90.09
+  percent, or 4,364 of 4,844 lines. CI enforces the M1 floor of 90 percent. Linux
   full-crate and macOS platform-crate cross-target Clippy also pass from the
   Windows reference environment.
 - **Verified in CI:** the complete production-adapter evidence commit `c76515c`
@@ -267,9 +301,20 @@ of the GUI.
   trust-kernel scope. The initial run exposed 38 survivors and three timeouts.
   After strengthening decision structure and exact tests, the final 341-mutant
   run caught 230 mutations, rejected 111 as unviable, and had zero missed
-  mutations or timeouts. The checked-in configuration, repair categories, and CI
-  design are recorded in
+  mutations or timeouts. A later security-maintenance campaign classified all
+  369 mutants as 252 caught and 117 unviable. After cleanup redesign, the
+  Windows-applicable gate classified all 383 mutants as 254 caught and 129
+  unviable. The current Windows-applicable scope contains 418 mutants. Its full
+  run exposed four survivors; additive focused tests and isolated reruns
+  classify the composite local result as 270 caught and 148 unviable, with none
+  missed or timed out. The 423-mutant paired union has no gap, and five
+  Unix-only mutations remain assigned to the Linux gate. The checked-in
+  configuration, repair categories, and CI design are recorded in
   [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md).
+- **Verified in CI:** paired mutation evidence commit `3830cdd` passed the
+  Linux-common and Windows-full gates with zero missed mutations and zero
+  timeouts in
+  [GitHub Actions run 30184163737](https://github.com/blisspixel/noter/actions/runs/30184163737).
 - **Next:** execute the manual NTFS, Linux, macOS, and weaker-filesystem fixtures
   and record reproducible latency and memory measurements before marking M1
   Verified.
@@ -493,7 +538,15 @@ silently rewriting content.
 
 - Ratify one dialect and extension policy, initially CommonMark with a small,
   explicit GFM subset if justified.
+- Add explicit Source, Preview, and synchronized Split Preview views. Source
+  remains authoritative, and changing views never mutates document bytes.
+- Render preview through a restricted native document model, not arbitrary HTML
+  or a webview.
 - Apply inline styles while keeping Markdown punctuation visible.
+- Add selection-aware Bold, Italic, Strikethrough, Inline Code, Link, Heading,
+  Quote, List, Task List, and Code Fence commands with accessible menu and
+  documented keyboard paths. Each command is one edit transaction and one undo
+  step.
 - Add non-mutating diagnostics with rule IDs, ranges, explanations, and explicit
   fixes.
 - Add smart list continuation as a separate, toggleable edit command.
@@ -503,12 +556,19 @@ silently rewriting content.
   trailing whitespace as independent rules with fixtures.
 - Parse by revision off the UI thread, cancel stale work, and bound large-file
   processing to visible or changed regions where correctness permits.
+- Synchronize source and preview scrolling through revision-tagged source block
+  mappings, with deterministic behavior under rapid edits and layout changes.
 - Never load remote images, fetch links, execute HTML, or make a network request.
 
 **Exit evidence:**
 
 - CommonMark conformance corpus for supported behavior is green.
 - Formatter fixtures are idempotent and AST-equivalent.
+- View-switching and preview fixtures prove byte preservation, stale-result
+  rejection, native restricted rendering, and deterministic scroll mapping.
+- Formatting command fixtures cover empty and non-empty selections, delimiter
+  boundaries, multiline blocks, repeated invocation, keyboard/menu parity, and
+  one-step undo.
 - Every automatic-looking edit is explicit, configurable where appropriate, and
   one-step undoable.
 - Markdown off means zero document mutation and negligible idle cost.

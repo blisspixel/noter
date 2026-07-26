@@ -314,11 +314,55 @@ impl StorageError {
     }
 }
 
+/// A private-sibling creation failure and any independently actionable cleanup
+/// failure that occurred after the sibling was created.
+///
+/// Creation normally fails before a temporary object exists. A native identity
+/// query can instead fail immediately after exclusive creation. In that narrow
+/// case the adapter must report both the primary failure and whether the newly
+/// created sibling could not be removed safely.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TemporaryCreationFailure {
+    error: StorageError,
+    cleanup_error: Option<StorageError>,
+}
+
+impl TemporaryCreationFailure {
+    /// Creates a failure with an optional retained-artifact warning.
+    pub const fn new(error: StorageError, cleanup_error: Option<StorageError>) -> Self {
+        Self {
+            error,
+            cleanup_error,
+        }
+    }
+
+    /// Returns the primary creation failure.
+    pub const fn error(&self) -> &StorageError {
+        &self.error
+    }
+
+    /// Returns the retained-artifact warning, when cleanup also failed.
+    pub const fn cleanup_error(&self) -> Option<&StorageError> {
+        self.cleanup_error.as_ref()
+    }
+
+    fn into_parts(self) -> (StorageError, Option<StorageError>) {
+        (self.error, self.cleanup_error)
+    }
+}
+
+impl From<StorageError> for TemporaryCreationFailure {
+    fn from(error: StorageError) -> Self {
+        Self::new(error, None)
+    }
+}
+
 /// Verified destination facts and commit cleanup status after replacement.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ReplaceReceipt {
     observation: FileObservation,
     cleanup_warnings: Vec<StorageError>,
+    durability_warnings: Vec<StorageError>,
 }
 
 impl ReplaceReceipt {
@@ -327,6 +371,7 @@ impl ReplaceReceipt {
         Self {
             observation,
             cleanup_warnings: Vec::new(),
+            durability_warnings: Vec::new(),
         }
     }
 
@@ -338,17 +383,20 @@ impl ReplaceReceipt {
         Self {
             observation,
             cleanup_warnings: vec![cleanup_warning],
+            durability_warnings: Vec::new(),
         }
     }
 
-    /// Creates a verified replacement receipt with all artifact cleanup warnings.
-    pub const fn with_cleanup_warnings(
+    /// Creates a verified replacement receipt with all post-commit warnings.
+    pub const fn with_warnings(
         observation: FileObservation,
         cleanup_warnings: Vec<StorageError>,
+        durability_warnings: Vec<StorageError>,
     ) -> Self {
         Self {
             observation,
             cleanup_warnings,
+            durability_warnings,
         }
     }
 
@@ -362,8 +410,17 @@ impl ReplaceReceipt {
         &self.cleanup_warnings
     }
 
-    fn into_parts(self) -> (FileObservation, Vec<StorageError>) {
-        (self.observation, self.cleanup_warnings)
+    /// Returns post-commit persistence-barrier warnings.
+    pub fn durability_warnings(&self) -> &[StorageError] {
+        &self.durability_warnings
+    }
+
+    fn into_parts(self) -> (FileObservation, Vec<StorageError>, Vec<StorageError>) {
+        (
+            self.observation,
+            self.cleanup_warnings,
+            self.durability_warnings,
+        )
     }
 }
 
@@ -390,6 +447,8 @@ pub enum ReplaceOutcome<T> {
     CommitStateUnknown {
         /// Failure requiring path reconciliation or user intervention.
         error: StorageError,
+        /// Actionable description of the retained or expected recovery artifact.
+        recovery_artifact: StorageError,
     },
 }
 
@@ -422,11 +481,11 @@ pub enum DurabilityOutcome {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct SaveWarnings {
     cleanup: Vec<StorageError>,
-    durability: Option<StorageError>,
+    durability: Vec<StorageError>,
 }
 
 impl SaveWarnings {
-    const fn new(cleanup: Vec<StorageError>, durability: Option<StorageError>) -> Self {
+    const fn new(cleanup: Vec<StorageError>, durability: Vec<StorageError>) -> Self {
         Self {
             cleanup,
             durability,
@@ -438,14 +497,14 @@ impl SaveWarnings {
         &self.cleanup
     }
 
-    /// Returns a post-commit persistence-barrier warning, if any.
-    pub const fn durability(&self) -> Option<&StorageError> {
-        self.durability.as_ref()
+    /// Returns all post-commit persistence-barrier warnings.
+    pub fn durability(&self) -> &[StorageError] {
+        &self.durability
     }
 
     /// Returns whether neither post-commit warning occurred.
     pub const fn is_empty(&self) -> bool {
-        self.cleanup.is_empty() && self.durability.is_none()
+        self.cleanup.is_empty() && self.durability.is_empty()
     }
 }
 
@@ -489,6 +548,8 @@ pub enum SaveOutcome {
         revision: Revision,
         /// Failure requiring reconciliation and recovery retention.
         error: StorageError,
+        /// Actionable description of the retained or expected recovery artifact.
+        recovery_artifact: StorageError,
     },
 }
 
@@ -512,7 +573,7 @@ pub trait Storage {
     fn create_unique_sibling(
         &mut self,
         destination: &Path,
-    ) -> Result<Self::Temporary, StorageError>;
+    ) -> Result<Self::Temporary, TemporaryCreationFailure>;
 
     /// Writes all serialized bytes to the private temporary file.
     ///
@@ -594,11 +655,12 @@ pub fn save_snapshot<S: Storage>(storage: &mut S, snapshot: &SaveSnapshot) -> Sa
 
     let mut temporary = match storage.create_unique_sibling(snapshot.target()) {
         Ok(temporary) => temporary,
-        Err(error) => {
+        Err(failure) => {
+            let (error, cleanup_error) = failure.into_parts();
             return SaveOutcome::NotCommitted {
                 revision: snapshot.revision(),
                 error,
-                cleanup_error: None,
+                cleanup_error,
             };
         }
     };
@@ -633,16 +695,25 @@ pub fn save_snapshot<S: Storage>(storage: &mut S, snapshot: &SaveSnapshot) -> Sa
 
     match storage.replace(temporary, snapshot.target(), revalidated) {
         ReplaceOutcome::Committed(receipt) => {
-            let (observation, cleanup_warnings) = receipt.into_parts();
-            let (durability, durability_warning) = match storage.sync_parent(snapshot.target()) {
-                DurabilityOutcome::Achieved(durability) => (durability, None),
-                DurabilityOutcome::Warning { achieved, error } => (achieved, Some(error)),
+            let (observation, cleanup_warnings, mut durability_warnings) = receipt.into_parts();
+            let file_barrier_failed = !durability_warnings.is_empty();
+            let durability = match storage.sync_parent(snapshot.target()) {
+                DurabilityOutcome::Achieved(durability) if !file_barrier_failed => durability,
+                DurabilityOutcome::Achieved(_) => Durability::BestEffort,
+                DurabilityOutcome::Warning { achieved, error } => {
+                    durability_warnings.push(error);
+                    if file_barrier_failed {
+                        Durability::BestEffort
+                    } else {
+                        achieved
+                    }
+                }
             };
             SaveOutcome::Committed {
                 revision: snapshot.revision(),
                 durability,
                 observation,
-                warnings: SaveWarnings::new(cleanup_warnings, durability_warning),
+                warnings: SaveWarnings::new(cleanup_warnings, durability_warnings),
             }
         }
         ReplaceOutcome::Conflict { temporary, actual } => {
@@ -651,9 +722,13 @@ pub fn save_snapshot<S: Storage>(storage: &mut S, snapshot: &SaveSnapshot) -> Sa
         ReplaceOutcome::NotCommitted { temporary, error } => {
             not_committed_with_cleanup(storage, snapshot.revision(), temporary, error)
         }
-        ReplaceOutcome::CommitStateUnknown { error } => SaveOutcome::CommitStateUnknown {
+        ReplaceOutcome::CommitStateUnknown {
+            error,
+            recovery_artifact,
+        } => SaveOutcome::CommitStateUnknown {
             revision: snapshot.revision(),
             error,
+            recovery_artifact,
         },
     }
 }
@@ -694,14 +769,22 @@ mod tests {
         bytes: Vec<u8>,
     }
 
+    #[derive(Clone, Copy)]
+    enum ReplacementWarning {
+        None,
+        Cleanup,
+        Durability,
+    }
+
     struct FakeStorage {
         destination: Option<(Vec<u8>, u128)>,
         fail_at: Option<SaveStage>,
         cleanup_fails: bool,
+        create_cleanup_fails: bool,
         race_on_revalidate: Option<Vec<u8>>,
         race_on_replace: Option<Vec<u8>>,
         unknown_after_replace: bool,
-        replacement_cleanup_warning: bool,
+        replacement_warning: ReplacementWarning,
         durability: DurabilityOutcome,
         calls: Vec<SaveStage>,
         next_identity: u128,
@@ -713,10 +796,11 @@ mod tests {
                 destination: Some((bytes.to_vec(), 1)),
                 fail_at: None,
                 cleanup_fails: false,
+                create_cleanup_fails: false,
                 race_on_revalidate: None,
                 race_on_replace: None,
                 unknown_after_replace: false,
-                replacement_cleanup_warning: false,
+                replacement_warning: ReplacementWarning::None,
                 durability: DurabilityOutcome::Achieved(Durability::FileAndDirectorySynced),
                 calls: Vec::new(),
                 next_identity: 2,
@@ -783,8 +867,13 @@ mod tests {
         fn create_unique_sibling(
             &mut self,
             _destination: &Path,
-        ) -> Result<Self::Temporary, StorageError> {
-            self.enter(SaveStage::CreateTemporary)?;
+        ) -> Result<Self::Temporary, TemporaryCreationFailure> {
+            if let Err(error) = self.enter(SaveStage::CreateTemporary) {
+                let cleanup_error = self.create_cleanup_fails.then(|| {
+                    StorageError::new(SaveStage::Cleanup, "injected retained creation artifact")
+                });
+                return Err(TemporaryCreationFailure::new(error, cleanup_error));
+            }
             Ok(FakeTemporary { bytes: Vec::new() })
         }
 
@@ -840,6 +929,10 @@ mod tests {
                 self.replace_destination(temporary.bytes);
                 return ReplaceOutcome::CommitStateUnknown {
                     error: StorageError::new(SaveStage::Reconcile, "injected indeterminate commit"),
+                    recovery_artifact: StorageError::new(
+                        SaveStage::Cleanup,
+                        "in-memory recovery artifact retained for reconciliation",
+                    ),
                 };
             }
 
@@ -851,13 +944,29 @@ mod tests {
             }
 
             let observation = self.replace_destination(temporary.bytes);
-            if self.replacement_cleanup_warning {
-                ReplaceOutcome::Committed(ReplaceReceipt::with_cleanup_warning(
-                    observation,
-                    StorageError::new(SaveStage::Cleanup, "injected post-commit cleanup failure"),
-                ))
-            } else {
-                ReplaceOutcome::Committed(ReplaceReceipt::new(observation))
+            match self.replacement_warning {
+                ReplacementWarning::Durability => {
+                    ReplaceOutcome::Committed(ReplaceReceipt::with_warnings(
+                        observation,
+                        Vec::new(),
+                        vec![StorageError::new(
+                            SaveStage::SyncFile,
+                            "injected post-commit file barrier failure",
+                        )],
+                    ))
+                }
+                ReplacementWarning::Cleanup => {
+                    ReplaceOutcome::Committed(ReplaceReceipt::with_cleanup_warning(
+                        observation,
+                        StorageError::new(
+                            SaveStage::Cleanup,
+                            "injected post-commit cleanup failure",
+                        ),
+                    ))
+                }
+                ReplacementWarning::None => {
+                    ReplaceOutcome::Committed(ReplaceReceipt::new(observation))
+                }
             }
         }
 
@@ -1046,8 +1155,13 @@ mod tests {
 
         assert!(matches!(
             outcome,
-            SaveOutcome::CommitStateUnknown { revision, ref error }
+            SaveOutcome::CommitStateUnknown {
+                revision,
+                ref error,
+                ref recovery_artifact,
+            }
                 if revision == Revision::new(7) && error.stage() == SaveStage::Reconcile
+                    && recovery_artifact.stage() == SaveStage::Cleanup
         ));
         assert_eq!(
             storage.destination_bytes(),
@@ -1070,7 +1184,7 @@ mod tests {
                 durability: Durability::FileSynced,
                 ref warnings,
                 ..
-            } if warnings.durability().is_some_and(|error| error.stage() == SaveStage::SyncParent)
+            } if warnings.durability().iter().any(|error| error.stage() == SaveStage::SyncParent)
                 && warnings.cleanup().is_empty()
         ));
         assert_eq!(
@@ -1085,15 +1199,15 @@ mod tests {
         let durability = StorageError::new(SaveStage::SyncParent, "durability warning");
 
         assert!(SaveWarnings::default().is_empty());
-        assert!(!SaveWarnings::new(vec![cleanup.clone()], None).is_empty());
-        assert!(!SaveWarnings::new(Vec::new(), Some(durability.clone())).is_empty());
-        assert!(!SaveWarnings::new(vec![cleanup], Some(durability)).is_empty());
+        assert!(!SaveWarnings::new(vec![cleanup.clone()], Vec::new()).is_empty());
+        assert!(!SaveWarnings::new(Vec::new(), vec![durability.clone()]).is_empty());
+        assert!(!SaveWarnings::new(vec![cleanup], vec![durability]).is_empty());
     }
 
     #[test]
     fn committed_cleanup_and_durability_warnings_are_both_preserved() {
         let mut storage = FakeStorage::existing(b"old");
-        storage.replacement_cleanup_warning = true;
+        storage.replacement_warning = ReplacementWarning::Cleanup;
         storage.fail_at = Some(SaveStage::SyncParent);
         let snapshot = snapshot(&storage, 12, b"committed with two warnings");
 
@@ -1106,11 +1220,60 @@ mod tests {
                 ref warnings,
                 ..
             } if warnings.cleanup().iter().any(|error| error.stage() == SaveStage::Cleanup)
-                && warnings.durability().is_some_and(|error| error.stage() == SaveStage::SyncParent)
+                && warnings.durability().iter().any(|error| error.stage() == SaveStage::SyncParent)
         ));
         assert_eq!(
             storage.destination_bytes(),
             Some(b"committed with two warnings".as_slice())
+        );
+    }
+
+    #[test]
+    fn file_and_parent_barrier_failures_are_both_preserved_and_downgrade_durability() {
+        let mut storage = FakeStorage::existing(b"old");
+        storage.replacement_warning = ReplacementWarning::Durability;
+        storage.fail_at = Some(SaveStage::SyncParent);
+        let snapshot = snapshot(&storage, 13, b"committed before two barrier failures");
+
+        let outcome = save_snapshot(&mut storage, &snapshot);
+
+        assert!(matches!(
+            outcome,
+            SaveOutcome::Committed {
+                durability: Durability::BestEffort,
+                ref warnings,
+                ..
+            } if warnings.durability().len() == 2
+                && warnings.durability()[0].stage() == SaveStage::SyncFile
+                && warnings.durability()[1].stage() == SaveStage::SyncParent
+        ));
+        assert_eq!(
+            storage.destination_bytes(),
+            Some(b"committed before two barrier failures".as_slice())
+        );
+    }
+
+    #[test]
+    fn file_barrier_failure_cannot_be_upgraded_by_a_successful_parent_barrier() {
+        let mut storage = FakeStorage::existing(b"old");
+        storage.replacement_warning = ReplacementWarning::Durability;
+        let snapshot = snapshot(&storage, 14, b"committed before file barrier failure");
+
+        let outcome = save_snapshot(&mut storage, &snapshot);
+
+        assert!(matches!(
+            outcome,
+            SaveOutcome::Committed {
+                durability: Durability::BestEffort,
+                ref warnings,
+                ..
+            } if warnings.cleanup().is_empty()
+                && warnings.durability().len() == 1
+                && warnings.durability()[0].stage() == SaveStage::SyncFile
+        ));
+        assert_eq!(
+            storage.destination_bytes(),
+            Some(b"committed before file barrier failure".as_slice())
         );
     }
 
@@ -1132,6 +1295,32 @@ mod tests {
             } if error.stage() == SaveStage::Write && cleanup.stage() == SaveStage::Cleanup
         ));
         assert_eq!(storage.destination_bytes(), Some(b"old".as_slice()));
+    }
+
+    #[test]
+    fn creation_cleanup_failure_is_preserved_beside_primary_failure() {
+        let mut storage = FakeStorage::existing(b"old");
+        storage.fail_at = Some(SaveStage::CreateTemporary);
+        storage.create_cleanup_fails = true;
+        let snapshot = snapshot(&storage, 10, b"new");
+
+        let outcome = save_snapshot(&mut storage, &snapshot);
+
+        assert!(matches!(
+            outcome,
+            SaveOutcome::NotCommitted {
+                ref error,
+                cleanup_error: Some(ref cleanup),
+                ..
+            } if error.stage() == SaveStage::CreateTemporary
+                && cleanup.stage() == SaveStage::Cleanup
+                && cleanup.message().contains("retained creation artifact")
+        ));
+        assert_eq!(storage.destination_bytes(), Some(b"old".as_slice()));
+        assert_eq!(
+            storage.calls,
+            [SaveStage::InspectInitial, SaveStage::CreateTemporary]
+        );
     }
 
     #[test]
@@ -1158,6 +1347,16 @@ mod tests {
             vec![1, 2, 3],
         );
         let error = StorageError::new(SaveStage::Write, "safe diagnostic");
+        let cleanup = StorageError::new(SaveStage::Cleanup, "retained candidate");
+        let creation_failure = TemporaryCreationFailure::new(error.clone(), Some(cleanup.clone()));
+        let receipt = ReplaceReceipt::with_warnings(
+            observation,
+            Vec::new(),
+            vec![StorageError::new(
+                SaveStage::SyncFile,
+                "file barrier failed",
+            )],
+        );
 
         assert_eq!(identity.volume(), 12);
         assert_eq!(identity.file(), 34);
@@ -1178,6 +1377,14 @@ mod tests {
         assert_eq!(snapshot.target(), Path::new("note.txt"));
         assert_eq!(snapshot.bytes(), &[1, 2, 3]);
         assert_eq!(error.message(), "safe diagnostic");
+        assert_eq!(creation_failure.error(), &error);
+        assert_eq!(creation_failure.cleanup_error(), Some(&cleanup));
+        assert!(receipt.cleanup_warnings().is_empty());
+        assert_eq!(receipt.durability_warnings().len(), 1);
+        assert_eq!(
+            receipt.durability_warnings()[0].stage(),
+            SaveStage::SyncFile
+        );
     }
 
     #[test]

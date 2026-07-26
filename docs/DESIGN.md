@@ -17,7 +17,8 @@ The current M1 worktree has:
 
 - a binary crate containing the egui shell;
 - a library crate containing the UI-independent document module;
-- strict UTF-8 loading with BOM and existing newline-byte preservation;
+- strict, 64 MiB-bounded UTF-8 loading with BOM and existing newline-byte
+  preservation;
 - exact newline-free, uniform, and mixed line-ending profiles with counts,
   deterministic dominant fallback, and edit-point insertion decisions;
 - a 19-case external golden corpus and three 512-case generated properties for
@@ -33,7 +34,8 @@ The current M1 worktree has:
   prohibition while wrapping the required native identity, metadata, commit,
   and synchronization operations;
 - 128-bit random, exclusive, owner-tracked sibling files with bounded collision
-  handling, strongest supported file synchronization, and identity-safe cleanup;
+  handling, owner-only Unix mode, a protected Windows DACL, strongest supported
+  file synchronization, and identity-and-content-safe cleanup;
 - a production `FilesystemStorage` adapter with metadata transfer, atomic
   existing-file replacement, exclusive new-file installation, documented
   Windows partial-state reconciliation, parent barriers, and exact destination
@@ -43,10 +45,11 @@ The current M1 worktree has:
   commit;
 - strict refusal for final links, read-only destinations, and unconfirmed
   hard-link separation;
-- 96 Windows-local workspace tests and 93.48 percent line coverage across the
-  expanded workspace trust kernel; and
-- a 341-mutant trust-kernel campaign with 230 caught, 111 unviable, zero missed,
-  and zero timed out.
+- 130 Windows-local workspace tests, 93.06 percent line coverage across the
+  expanded workspace trust kernel, and 90.09 percent whole-workspace line
+  coverage; and
+- a 418-mutant Windows-applicable trust-kernel campaign and survivor recheck
+  with 270 caught, 148 unviable, zero missed, and zero timed out.
 
 The native adapter passes Windows, macOS, and Linux CI. It still requires the
 manual metadata and weaker-filesystem evidence named by ADR-003 plus the
@@ -167,7 +170,9 @@ combining marks, emoji sequences, CJK, and bidirectional samples.
 
 v0.1 supports strict UTF-8 with optional UTF-8 BOM:
 
-1. Read bytes without conversion.
+1. Read bytes without conversion. Refuse an announced size above 64 MiB and
+   enforce the same limit plus one sentinel byte while reading so concurrent
+   growth cannot bypass the bound.
 2. Detect and remove only the exact UTF-8 BOM prefix.
 3. Validate the remaining bytes with strict UTF-8.
 4. On failure, keep the source untouched and return a typed error containing a
@@ -263,7 +268,7 @@ trait Storage {
     fn inspect(&mut self, path: &Path, stage: SaveStage)
         -> Result<TargetState, StorageError>;
     fn create_unique_sibling(&mut self, path: &Path)
-        -> Result<Self::Temporary, StorageError>;
+        -> Result<Self::Temporary, TemporaryCreationFailure>;
     fn write_all(&mut self, temp: &mut Self::Temporary, bytes: &[u8])
         -> Result<(), StorageError>;
     fn flush(&mut self, temp: &mut Self::Temporary) -> Result<(), StorageError>;
@@ -300,24 +305,42 @@ never infers commit state from a generic I/O error.
 2. Revalidate the target. If an external revision is present, return Conflict
    before creating a temporary file.
 3. Create an unpredictable sibling with create-new semantics. Never reuse or
-   truncate a guessed temporary name.
+   truncate a guessed temporary name. If native identity inspection fails after
+   creation, preserve the primary error and report a distinct cleanup warning
+   naming the random sibling when handle-bound removal is unavailable.
 4. Stream all bytes and flush user-space buffers.
-5. Copy required permissions and supported metadata from an existing target.
-6. Sync the temporary file's data and metadata.
+5. Validate the existing target's identity, metadata source, and read-only
+   policy without widening private staging access.
+6. Sync the temporary file's private data and metadata.
 7. Revalidate target identity immediately before replacement.
-8. Replace atomically without deleting the destination first.
-9. Reconcile platform results whose documented failure may have side effects.
-10. Sync the parent directory where the platform provides a meaningful operation.
-11. Report the exact outcome to application state and clean private artifacts.
+8. On Windows, reserve the recovery-backup name before closing the staging
+   handle, then immediately revalidate the closed sibling's native identity,
+   length, and BLAKE3-256 fingerprint. Postcommit verification detects a
+   same-authority change in the remaining validation-to-replacement window and
+   classifies the result as indeterminate.
+9. Replace atomically without deleting the destination first.
+10. On Unix existing-file commits, copy required metadata from the displaced
+   original to the committed file through their open handles, then sync again.
+11. Reconcile platform results whose documented failure may have side effects.
+12. Sync the parent directory where the platform provides a meaningful operation.
+13. Report the exact outcome and either clean by handle or retain the artifact
+    with an explicit warning.
 
 On Windows, the adapter uses `ReplaceFileW` with a random same-volume backup and
 no ignore-merge flags for existing destinations. It uses `MoveFileExW` with
 only `MOVEFILE_WRITE_THROUGH` for absent destinations, so it cannot replace or
 copy across volumes accidentally. On Unix, it opens the sibling parent and uses
-`renameat` for replacement, `RENAME_NOREPLACE` where available for installation,
-and a no-overwrite link-and-unlink fallback. Unix synchronizes the opened parent;
-Windows reports file-only durability because it exposes no equivalent directory
-barrier here.
+an atomic exchange for existing-file replacement. The displaced destination
+remains at the temporary path after its identity, fingerprint, and length are
+checked as the post-commit metadata source. Portable Unix APIs cannot tie
+deletion atomically to that verified open object, so the artifact is retained
+with a warning that names only the random sibling basename and gives inspection
+and removal guidance. Absent-file installation uses `RENAME_NOREPLACE` where
+available. Its no-overwrite hard-link fallback also retains the temporary name
+with the same actionable warning instead of unlinking by pathname. Windows
+cleanup opens the verified object without write sharing, then marks that exact
+handle for deletion. Unix synchronizes the opened parent; Windows reports
+file-only durability because it exposes no equivalent directory barrier here.
 
 Save outcomes are explicit:
 
@@ -331,15 +354,18 @@ enum SaveOutcome {
     },
     Conflict { /* expected, actual, cleanup */ },
     NotCommitted { /* error, cleanup */ },
-    CommitStateUnknown { /* reconciliation error */ },
+    CommitStateUnknown { /* reconciliation error, recovery artifact */ },
 }
 ```
 
-If replacement commits but directory sync fails, the result is committed with a
-durability warning. The UI must not tell the user nothing was written. A
-successful older snapshot does not clear a newer dirty revision. An uncertain
-commit keeps dirty state and recovery and blocks blind retry until paths are
-reconciled.
+If replacement commits but post-commit file or directory sync fails, the result
+is committed with every durability warning preserved. A file-barrier failure
+downgrades the receipt to Best Effort even when parent synchronization succeeds.
+The UI must not tell the user nothing was written. A successful older snapshot
+does not clear a newer dirty revision. An uncertain commit keeps dirty state and
+recovery and blocks blind retry until paths are reconciled. Its typed recovery
+warning names only the random artifact basename and states how to inspect,
+recover, retry, and remove it safely.
 
 ### 6.3 Metadata and symlinks
 
@@ -357,9 +383,22 @@ The conservative v0.1 policy refuses a final symlink or Windows reparse point
 for both Open and Save As. This remains stricter than following a link until a
 resolved-target identity model and its platform fixtures exist. A file with
 multiple hard links requires explicit confirmation that atomic replacement
-updates only the selected directory entry. Read-only files are not made writable
-implicitly. New Unix files remain owner-only at mode 0600; Windows new files use
-the parent directory's native inheritance policy.
+updates only the selected directory entry. Save and Save As surface that
+confirmation in the GUI and explain that other names keep the previous revision.
+Save As stores the pre-dialog `TargetExpectation` inside an opaque preparation;
+confirmation consumes that exact value, so a rebound selection conflicts rather
+than being silently re-inspected and adopted.
+Read-only files are not made writable implicitly. New Unix files remain
+owner-only at mode 0600. Windows temporary and new files use a protected DACL
+granting full control only to the object owner and SYSTEM and deny competing
+write handles while owned, so permissive parent entries never expose or modify
+staged document bytes. Existing
+Windows replacements still receive the destination metadata merged by
+`ReplaceFileW`. Existing Unix replacements remain mode 0600 through the exchange;
+the adapter then applies the displaced original's verified metadata to the
+committed open handle. A metadata-finalization failure is a committed warning and
+leaves the destination at the safest access state reached, never a false
+not-committed result.
 
 No implementation may claim durable atomic save while these cases are silently
 undefined.
@@ -535,13 +574,24 @@ for appearance.
 
 ## 12. Markdown v0.2
 
-Markdown operates on immutable revision snapshots after v0.1:
+Markdown is source-first and operates on immutable revision snapshots after
+v0.1. The user can choose Source, Preview, or synchronized Split Preview.
+Source is the only editable authority; view changes and preview rendering never
+change document bytes.
 
 1. Parse the ratified CommonMark dialect off the UI thread.
 2. Tag syntax spans and diagnostics with the source revision.
 3. Apply only non-mutating styling and diagnostic results that still match.
-4. Build explicit fixes as `EditTransaction` values.
-5. For Format, produce a diff, parse before and after, reject semantic
+4. Transform parser output into a restricted native document model. Do not
+   render arbitrary HTML or host the preview in a webview.
+5. Build explicit fixes and selection-aware Bold, Italic, Strikethrough, Inline
+   Code, Link, Heading, Quote, List, Task List, and Code Fence commands as
+   `EditTransaction` values. Every command has an accessible menu path, a
+   documented keyboard path where assigned, and exactly one undo step.
+6. Map stable source block ranges to preview blocks. Split Preview scroll
+   synchronization uses those mappings, ignores stale revisions, and never
+   infers an edit from preview position.
+7. For Format, produce a diff, parse before and after, reject semantic
    differences, preserve BOM and EOL policy, and apply one undo transaction only
    after confirmation.
 

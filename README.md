@@ -96,32 +96,73 @@ evidence commit `c76515c` passed all Windows, macOS, Linux, strict lint, rustdoc
 documentation, and 90 percent coverage jobs in
 [GitHub Actions run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267).
 
-The current mutation checkpoint evaluated 341 trust-kernel mutations with
-cargo-mutants 27.1.0: 230 were caught, 111 were rejected by the compiler, and
-none were missed or timed out. The checked-in configuration and CI gate are
-documented in [docs/M1_MUTATION_EVIDENCE.md](docs/M1_MUTATION_EVIDENCE.md).
-The prototype now opens a real About dialog and visibly disables unfinished
-menu commands instead of accepting no-op clicks. Markdown assistance remains
-intentionally absent until the opt-in M7 work after the trustworthy v0.1
-release.
+A scoped M1 security review of the runtime document, storage, platform, and GUI
+paths found two reportable issues in the audited revision: Windows staging files
+could inherit a readable parent ACL, and document loading had no resource
+ceiling. The remediation creates Windows staging files with an exact protected
+owner-and-system DACL and rejects files above the explicit 64 MiB v0.1 document
+limit before unbounded allocation or hashing. Windows cleanup now observes and
+deletes the same open file object while denying competing writers, so neither a
+rebound pathname nor a same-object write can invalidate the verified deletion.
+Portable Unix cleanup cannot provide that guarantee, so failed saves and atomic
+exchanges conservatively retain any private artifact and report its safe basename
+plus inspection and removal guidance instead of issuing a pathname unlink.
+Creation-time identity failures preserve the primary failure and a separate,
+typed cleanup warning naming the retained sibling when handle-bound deletion is
+unavailable. Unix existing-file metadata is finalized only after atomic
+exchange, while the new
+content is still owner-only; a failed post-commit file barrier is reported as
+reduced durability. The GUI now provides the explicit confirmation required to
+save one entry of a hard-linked file. Save As confirmation retains the exact
+target version observed before the dialog, so rebinding that path while the
+dialog is visible produces a conflict instead of replacing the newer entry.
+Unknown commit state and failed cleanup surface the safe random artifact
+basename plus inspection, recovery, retry, and removal guidance.
+New, Open, Quit, and native window close now fail closed while work is dirty;
+M3 still owns the complete Save, Discard, and Cancel experience. The review
+scope, evidence, and remaining platform gaps are recorded in
+[docs/M1_SECURITY_REVIEW.md](docs/M1_SECURITY_REVIEW.md).
 
-All 96 local workspace tests pass with 93.48 percent measured trust-kernel line
-coverage. The 339-package lockfile has a clean RustSec audit, and the stripped
-Windows release is 4.69 MiB. The manual metadata and filesystem matrix plus
-reproducible benchmarks still gate this M1 slice. Recovery, the complete
-dirty-document lifecycle, and the production UI also remain unfinished, so the
-GUI is still a prototype rather than a safe daily editor.
+The paired mutation gate is verified at commit `3830cdd` in
+[GitHub Actions run 30184163737](https://github.com/blisspixel/noter/actions/runs/30184163737):
+Linux-common and Windows-full both completed with zero missed mutations and zero
+timeouts. The current paired configuration covers 423 mutations across its
+platform union: 418 are Windows-applicable and 394 are Linux-applicable, with no
+union gap. The local Windows campaign plus focused survivor reruns classify the
+418 Windows-applicable mutations as 270 caught and 148 compiler-rejected, with
+none missed or timed out. Five Unix-only decisions remain assigned to the Linux
+gate. The configuration,
+negative evidence, and exact results are documented in
+[docs/M1_MUTATION_EVIDENCE.md](docs/M1_MUTATION_EVIDENCE.md).
+The prototype now opens a real About dialog and visibly disables unfinished
+menu commands instead of accepting no-op clicks. The dialog explains that its
+project link opens in the default browser. Markdown preview, source styling,
+diagnostics, and formatting remain intentionally absent until the opt-in M7
+work after the trustworthy v0.1 release.
+
+All 130 Windows-local workspace tests pass with 93.06 percent measured
+trust-kernel line coverage and 90.09 percent whole-workspace line coverage. The
+339-package
+lockfile has a clean RustSec audit, and the last measured stripped Windows
+checkpoint was 4.69 MiB. The manual metadata and filesystem matrix plus
+reproducible benchmarks still gate this M1 slice. The temporary dirty-work
+interlock prevents silent discard, but recovery, the complete dirty-document
+decision flow, and the production UI remain unfinished, so the GUI is still a
+prototype rather than a safe daily editor.
 
 A structured adversarial design review was performed on the initial planning corpus. The review and our responses are captured in [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
 
 See:
 
+- [CHANGELOG.md](CHANGELOG.md) - unreleased product and engineering changes
 - [docs/RESEARCH.md](docs/RESEARCH.md) - repository audit, ecosystem research, and decisions
 - [docs/BASELINE.md](docs/BASELINE.md) - measured M0 quality, coverage, size, and dependency baseline
 - [docs/M1_MUTATION_EVIDENCE.md](docs/M1_MUTATION_EVIDENCE.md) - reproducible M1 mutation-testing evidence
+- [docs/M1_SECURITY_REVIEW.md](docs/M1_SECURITY_REVIEW.md) - M1 security findings, remediation, and residual evidence gaps
 - [docs/ROADMAP.md](docs/ROADMAP.md) - milestone order, gates, metrics, and immediate backlog
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) - ratified v0.1 and v0.2 product contract
 - [docs/DESIGN.md](docs/DESIGN.md) - active architecture, trust protocols, verification strategy, and FMEA
+- [docs/CODE-QUALITY-STANDARDS.md](docs/CODE-QUALITY-STANDARDS.md) - non-negotiable implementation, evidence, and merge gates
 - [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md) - prior internal critical analysis and response
 
 No milestone is marked complete until its tests, measurements, manual sign-off, and documentation exist on the same green commit.

@@ -15,36 +15,6 @@ categories = ["gui", "text-editors"]
 members = [".", "crates/noter-platform"]
 resolver = "3"
 
-# =============================================================================
-# Planned dependencies (July 2026 GA versions, using sensible stable releases)
-# Introduced gradually by phase. See ROADMAP.md + DESIGN.md for justification policy.
-# We are conservative on pre-release crates for a "reliability first" tool.
-# =============================================================================
-# Phase 0–1 (core reliability & classic notepad experience)
-#   egui             = "0.34"   # + eframe = "0.34.3" (latest GA as of June 2026, MSRV 1.85)
-#   rfd              = "0.17"   # Native file dialogs (mandatory). 0.17.2 current.
-#   directories      = "6.0"    # Cross-platform config/cache paths. 6.0.0 current.
-#   serde            = { version = "1.0", features = ["derive"] }
-#   toml             = "1.1"    # Human-readable, git-friendly config. 1.1.2+spec current.
-#   thiserror        = "2.0"    # Typed errors with good Display. 2.0.18 current.
-#   ropey            = "1.6"    # The text buffer. Latest stable 1.x series.
-#                               # 2.0.0-beta.1 exists (June 2026) but we stay on proven 1.x
-#                               # for v0.x reliability. Re-evaluate post-stabilization.
-#   tracing          = "0.1.44"
-#   tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter", "time"] }
-#   dark-light       = "2.0"    # Clean system theme detection (Windows registry, macOS appearance,
-#                               # Linux gsettings). MSRV 1.78. Preferred over hand-rolled for v1.
-#
-# Post-v0.1 Markdown assist, only after M6 verification
-#   pulldown-cmark   = "0.13"   # Parser for visible-source styling, diagnostics, and explicit format preview.
-#   tempfile         = "3.27"   # Golden tests & recovery simulation (dev-dependency).
-#
-# Future / only if justified (and after GA)
-#   notify           = "9"      # Re-evaluate stability before adoption. Use mtime polling first.
-#
-# Strict policy: Every added dependency requires (a) written justification in DESIGN.md,
-# (b) `cargo tree -i <name>` audit, (c) binary size impact measurement at the phase gate.
-
 [dependencies]
 blake3 = { version = "1.8", default-features = false, features = ["std"] }
 eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
@@ -59,24 +29,24 @@ proptest = { version = "1.11", default-features = false, features = ["std"] }
 tempfile = "3.10"
 
 # =============================================================================
-# Profiles tuned for a small, fast, reliable GUI tool
+# Release and development profiles
 # =============================================================================
 [profile.release]
-opt-level = 3          # "z" for maximum size reduction if we are desperate; 3 usually wins on speed+size for egui
+opt-level = 3
 lto = true
 codegen-units = 1
-strip = true           # Strip symbols (huge win for size)
-panic = "abort"        # We handle errors gracefully; abort is fine and smaller
+strip = true
+panic = "abort"
 
 [profile.dev]
-opt-level = 1          # Slightly faster debug builds for UI work without killing compile time
+opt-level = 1
 
 # =============================================================================
-# Lints (modern 2024 style, tightened over time)
+# Lints
 # =============================================================================
 [lints.rust]
 unsafe_code = "forbid"
-missing_docs = "warn"   # We want good docs on core types
+missing_docs = "warn"
 
 [lints.clippy]
 # 2026-era priority syntax required because we mix group lints with specific allows.
@@ -86,7 +56,8 @@ pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
 
-# These are often too noisy for GUI apps early on; we can re-enable selectively.
+# These are noisy for GUI and low-level platform code. The remaining lint groups
+# and explicit review cover the same failure classes with less false signal.
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 cast_possible_truncation = "allow"
@@ -97,11 +68,10 @@ cast_precision_loss = "allow"
 multiple_crate_versions = "allow"
 
 # =============================================================================
-# cargo-dist metadata (Phase 4 packaging)
-# See https://github.com/axodotdev/cargo-dist
+# cargo-dist metadata reserved for the packaging milestone
 # =============================================================================
 [workspace.metadata.dist]
-cargo-dist-version = "0.32.0"   # Re-verify against current cargo-dist before M6
+cargo-dist-version = "0.32.0"
 ci = ["github"]
 installers = ["shell", "msi", "homebrew"]
 targets = [
@@ -111,11 +81,3 @@ targets = [
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
 ]
-# pr-run-mode = "plan"  # Use "upload" for real releases
-
-# =============================================================================
-# Notes for future maintainers
-# =============================================================================
-# - Keep dependencies under very tight control. Binary size and compile time are features.
-# - The core editing and I/O logic must remain completely independent of egui (see DESIGN.md).
-# - Every time you add a dependency, run `cargo tree -i <crate>` and document the justification.

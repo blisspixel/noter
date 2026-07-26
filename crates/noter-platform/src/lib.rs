@@ -125,6 +125,47 @@ pub fn file_facts(file: &File) -> io::Result<FileFacts> {
     imp::file_facts(file)
 }
 
+/// Exclusively creates a private read-write file at a new path.
+///
+/// Unix uses owner-only mode at creation. Windows supplies a protected DACL at
+/// creation so permissive parent entries are never inherited by the new file.
+///
+/// # Errors
+///
+/// Returns an operating-system error when the path already exists, the private
+/// security descriptor cannot be constructed, or the file cannot be created.
+pub fn create_private_new_file(path: &Path) -> io::Result<File> {
+    imp::create_private_new_file(path)
+}
+
+/// Opens an existing final entry for stable observation and handle-bound cleanup.
+///
+/// The final entry is opened without following a link or reparse point. Windows
+/// requests delete access while preserving ordinary sharing. Unix can observe
+/// the open file but cannot portably unlink a directory entry by handle.
+///
+/// # Errors
+///
+/// Returns an operating-system error when the path cannot be opened with the
+/// access required for verified cleanup.
+pub fn open_for_cleanup(path: &Path) -> io::Result<File> {
+    imp::open_for_cleanup(path)
+}
+
+/// Requests deletion of the exact object represented by an open file handle.
+///
+/// Windows marks the handle's file for deletion when the last handle closes.
+/// Unix returns [`io::ErrorKind::Unsupported`] because portable `unlink` remains
+/// pathname-based and cannot be tied atomically to a verified open object.
+///
+/// # Errors
+///
+/// Returns an operating-system error if handle-bound deletion is unsupported or
+/// the deletion request fails.
+pub fn delete_open_file(file: &File) -> io::Result<()> {
+    imp::delete_open_file(file)
+}
+
 /// Copies required existing-file metadata between already open regular files.
 ///
 /// Unix implementations preserve attainable ownership, mode, ACLs, and visible
@@ -134,7 +175,7 @@ pub fn file_facts(file: &File) -> io::Result<FileFacts> {
 /// # Errors
 ///
 /// Returns an operating-system error if required metadata cannot be read,
-/// applied, or verified before commit.
+/// applied, or verified.
 #[allow(clippy::missing_const_for_fn)]
 pub fn copy_required_metadata(source: &File, destination: &File) -> io::Result<()> {
     imp::copy_required_metadata(source, destination)
@@ -146,7 +187,17 @@ pub enum InstallNewOutcome {
     /// The temporary name was removed as part of the commit.
     Clean,
     /// The destination committed through a hard link, but the temporary name remains.
-    CommittedWithCleanupError(io::Error),
+    CommittedWithRetainedTemporary,
+}
+
+/// Result of atomically replacing an existing destination.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReplaceExistingOutcome {
+    /// The temporary name was consumed by the platform replacement operation.
+    Clean,
+    /// The previous destination now occupies the temporary path and must be
+    /// retained unless the caller has a pathname-independent cleanup primitive.
+    DisplacedDestination,
 }
 
 /// Result of requesting a containing-directory persistence barrier.
@@ -161,7 +212,7 @@ pub enum ParentSyncOutcome {
 /// Atomically replaces an existing destination with its private sibling.
 ///
 /// On Windows, `backup` is required so documented partial failures can be
-/// reconciled. Unix ignores `backup` and uses a same-directory rename.
+/// reconciled. Unix ignores `backup` and uses a same-directory atomic exchange.
 ///
 /// # Errors
 ///
@@ -171,7 +222,7 @@ pub fn replace_existing(
     temporary: &Path,
     destination: &Path,
     backup: Option<&Path>,
-) -> io::Result<()> {
+) -> io::Result<ReplaceExistingOutcome> {
     imp::replace_existing(temporary, destination, backup)
 }
 
@@ -208,21 +259,21 @@ mod imp {
     use std::ffi::OsStr;
     #[cfg(target_os = "linux")]
     use std::ffi::OsString;
-    use std::fs::File;
+    use std::fs::{File, OpenOptions};
     use std::io;
     use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::OpenOptionsExt;
     use std::path::Path;
 
     use rustix::fs::{
-        AtFlags, Gid, Mode, RawMode, RenameFlags, Uid, fchmod, fchown, linkat, renameat,
-        renameat_with, unlinkat,
+        AtFlags, Gid, Mode, RawMode, RenameFlags, Uid, fchmod, fchown, linkat, renameat_with,
     };
     #[cfg(target_os = "linux")]
     use xattr::FileExt;
 
     use super::{
         FileChangeToken, FileFacts, FileIdentity, IdentityQuality, InstallNewOutcome,
-        ParentSyncOutcome,
+        ParentSyncOutcome, ReplaceExistingOutcome,
     };
 
     pub fn file_facts(file: &File) -> io::Result<FileFacts> {
@@ -238,6 +289,29 @@ mod imp {
         ))
     }
 
+    pub fn create_private_new_file(path: &Path) -> io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+    }
+
+    pub fn open_for_cleanup(path: &Path) -> io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+    }
+
+    pub fn delete_open_file(_file: &File) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "portable Unix APIs cannot delete an exact open file object",
+        ))
+    }
+
     pub fn copy_required_metadata(source: &File, destination: &File) -> io::Result<()> {
         let before = metadata_stamp(source)?;
         let destination_metadata = destination.metadata()?;
@@ -249,6 +323,16 @@ mod imp {
         }
 
         copy_security_metadata(source, destination)?;
+        #[cfg(target_os = "linux")]
+        verify_linux_xattrs(source, destination)?;
+
+        if metadata_stamp(source)? != before {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "source metadata changed during transfer",
+            ));
+        }
+
         #[cfg(target_os = "macos")]
         let raw_mode: RawMode = before.mode.try_into().map_err(|_| {
             io::Error::new(
@@ -260,16 +344,6 @@ mod imp {
         let raw_mode: RawMode = before.mode;
         fchmod(destination, Mode::from_raw_mode(raw_mode))?;
 
-        #[cfg(target_os = "linux")]
-        verify_linux_xattrs(source, destination)?;
-
-        if metadata_stamp(source)? != before {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "source metadata changed during transfer",
-            ));
-        }
-
         Ok(())
     }
 
@@ -277,12 +351,20 @@ mod imp {
         temporary: &Path,
         destination: &Path,
         _backup: Option<&Path>,
-    ) -> io::Result<()> {
+    ) -> io::Result<ReplaceExistingOutcome> {
         with_sibling_parent(
             temporary,
             destination,
             |parent, temporary_name, destination_name| {
-                renameat(parent, temporary_name, parent, destination_name).map_err(Into::into)
+                renameat_with(
+                    parent,
+                    temporary_name,
+                    parent,
+                    destination_name,
+                    RenameFlags::EXCHANGE,
+                )
+                .map(|()| ReplaceExistingOutcome::DisplacedDestination)
+                .map_err(Into::into)
             },
         )
     }
@@ -321,10 +403,7 @@ mod imp {
         )
         .map_err(io::Error::from)?;
 
-        match unlinkat(parent, temporary_name, AtFlags::empty()) {
-            Ok(()) => Ok(InstallNewOutcome::Clean),
-            Err(error) => Ok(InstallNewOutcome::CommittedWithCleanupError(error.into())),
-        }
+        Ok(InstallNewOutcome::CommittedWithRetainedTemporary)
     }
 
     const fn no_replace_is_unavailable(error: rustix::io::Errno) -> bool {
@@ -520,23 +599,46 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
-    use std::fs::File;
+    use std::fs::{File, OpenOptions};
     use std::io;
     use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
     use std::path::Path;
 
+    use windows_sys::Win32::Foundation::{
+        GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree,
+    };
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
     use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FILE_ID_INFO, FileBasicInfo, FileIdInfo,
+        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL,
+        FILE_BASIC_INFO, FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FileBasicInfo, FileDispositionInfo, FileIdInfo,
         GetFileInformationByHandle, GetFileInformationByHandleEx, MOVEFILE_WRITE_THROUGH,
-        MoveFileExW, ReplaceFileW,
+        MoveFileExW, ReplaceFileW, SetFileInformationByHandle,
     };
 
     use super::{
         FileChangeToken, FileFacts, FileIdentity, IdentityQuality, InstallNewOutcome,
-        ParentSyncOutcome,
+        ParentSyncOutcome, ReplaceExistingOutcome,
     };
+
+    const PRIVATE_FILE_SDDL: &str = "D:P(A;;FA;;;SY)(A;;FA;;;OW)";
+
+    struct LocalSecurityDescriptor(PSECURITY_DESCRIPTOR);
+
+    impl Drop for LocalSecurityDescriptor {
+        #[allow(unsafe_code)]
+        fn drop(&mut self) {
+            // SAFETY: the descriptor is returned by LocalAlloc through the SDDL
+            // conversion API, remains owned by this guard, and is freed once.
+            let _ = unsafe { LocalFree(self.0.cast()) };
+        }
+    }
 
     pub fn file_facts(file: &File) -> io::Result<FileFacts> {
         let basic = basic_information(file)?;
@@ -551,6 +653,104 @@ mod imp {
         ))
     }
 
+    #[allow(unsafe_code)]
+    pub fn create_private_new_file(path: &Path) -> io::Result<File> {
+        let path = wide_path(path)?;
+        let descriptor = security_descriptor_from_sddl(PRIVATE_FILE_SDDL)?;
+        let attributes_length = u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SECURITY_ATTRIBUTES size does not fit the Windows API parameter",
+            )
+        })?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: attributes_length,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+
+        // SAFETY: the path and security descriptor remain live for the call.
+        // CREATE_NEW supplies exclusive creation. Omitting FILE_SHARE_WRITE
+        // prevents another handle from modifying staged bytes while this handle
+        // owns the file, and a null template handle is permitted.
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE | DELETE,
+                FILE_SHARE_READ | FILE_SHARE_DELETE,
+                &raw const attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: CreateFileW returned a unique, valid owned handle. `File`
+        // assumes ownership and closes it exactly once.
+        Ok(unsafe { File::from_raw_handle(handle) })
+    }
+
+    #[allow(unsafe_code)]
+    fn security_descriptor_from_sddl(sddl: &str) -> io::Result<LocalSecurityDescriptor> {
+        let mut wide: Vec<u16> = sddl.encode_utf16().collect();
+        wide.push(0);
+        let mut raw_descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+
+        // SAFETY: `wide` is a live, NUL-terminated UTF-16 string and the output
+        // pointer refers to writable storage. The returned allocation is owned
+        // immediately by `LocalSecurityDescriptor`.
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wide.as_ptr(),
+                SDDL_REVISION_1,
+                &raw mut raw_descriptor,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(LocalSecurityDescriptor(raw_descriptor))
+    }
+
+    pub fn open_for_cleanup(path: &Path) -> io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .access_mode(GENERIC_READ | DELETE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+    }
+
+    #[allow(unsafe_code)]
+    pub fn delete_open_file(file: &File) -> io::Result<()> {
+        let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        let disposition_size = u32::try_from(size_of::<FILE_DISPOSITION_INFO>()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "FILE_DISPOSITION_INFO size does not fit the Windows API parameter",
+            )
+        })?;
+        // SAFETY: the file handle is live and was opened with delete access.
+        // `disposition` is initialized for the exact structure and remains live
+        // for the call; the byte count matches that structure.
+        if unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileDispositionInfo,
+                (&raw const disposition).cast(),
+                disposition_size,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     #[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
     pub fn copy_required_metadata(_source: &File, _destination: &File) -> io::Result<()> {
         Ok(())
@@ -561,7 +761,7 @@ mod imp {
         temporary: &Path,
         destination: &Path,
         backup: Option<&Path>,
-    ) -> io::Result<()> {
+    ) -> io::Result<ReplaceExistingOutcome> {
         let temporary = wide_path(temporary)?;
         let destination = wide_path(destination)?;
         let backup = backup.map(wide_path).transpose()?;
@@ -584,7 +784,7 @@ mod imp {
             return Err(io::Error::last_os_error());
         }
 
-        Ok(())
+        Ok(ReplaceExistingOutcome::Clean)
     }
 
     #[allow(unsafe_code)]
@@ -725,11 +925,224 @@ mod imp {
 
     #[cfg(test)]
     mod tests {
+        use std::fs::{self, File, OpenOptions};
+        use std::io::{self, Write};
+        use std::os::windows::io::AsRawHandle;
+        use std::path::Path;
+
+        use tempfile::tempdir;
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+            SE_FILE_OBJECT,
+        };
+        use windows_sys::Win32::Security::{
+            DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl, PSECURITY_DESCRIPTOR,
+            SE_DACL_PROTECTED,
+        };
         use windows_sys::Win32::Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, FILE_ID_128, FILE_ID_INFO,
         };
 
-        use super::{IdentityQuality, identity_from_information};
+        use super::{
+            IdentityQuality, LocalFree, LocalSecurityDescriptor, PRIVATE_FILE_SDDL,
+            create_private_new_file, delete_open_file, identity_from_information, open_for_cleanup,
+            security_descriptor_from_sddl,
+        };
+
+        struct LocalWideString(*mut u16);
+
+        impl Drop for LocalWideString {
+            #[allow(unsafe_code)]
+            fn drop(&mut self) {
+                // SAFETY: the conversion API returned this LocalAlloc-owned
+                // string to this guard, which frees it exactly once.
+                let _ = unsafe { LocalFree(self.0.cast()) };
+            }
+        }
+
+        #[allow(unsafe_code)]
+        fn descriptor_dacl_sddl(descriptor: PSECURITY_DESCRIPTOR) -> io::Result<String> {
+            let mut raw = std::ptr::null_mut();
+            let mut length = 0_u32;
+            // SAFETY: the descriptor is live for the call and both output
+            // pointers refer to writable storage. The returned string is
+            // transferred immediately into `LocalWideString`.
+            if unsafe {
+                ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    descriptor,
+                    SDDL_REVISION_1,
+                    DACL_SECURITY_INFORMATION,
+                    &raw mut raw,
+                    &raw mut length,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let guard = LocalWideString(raw);
+            let length = usize::try_from(length).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "security descriptor string length does not fit memory",
+                )
+            })?;
+            // SAFETY: the conversion API returned `length` live UTF-16 code
+            // units, including a trailing NUL, owned by `guard`.
+            let units = unsafe { std::slice::from_raw_parts(guard.0, length) };
+            let content_length = units
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(units.len());
+            let units = &units[..content_length];
+            String::from_utf16(units).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("security descriptor returned invalid UTF-16: {error}"),
+                )
+            })
+        }
+
+        #[test]
+        #[allow(unsafe_code)]
+        fn private_file_is_exclusive_writable_and_dacl_protected() -> io::Result<()> {
+            let directory = tempdir()?;
+            let path = directory.path().join("private.txt");
+            let mut file = create_private_new_file(&path)?;
+            file.write_all(b"private")?;
+
+            let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            // SAFETY: the file handle is valid and the descriptor output points
+            // to writable storage. Unrequested SID and ACL outputs may be null.
+            let status = unsafe {
+                GetSecurityInfo(
+                    file.as_raw_handle(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &raw mut descriptor,
+                )
+            };
+            if status != ERROR_SUCCESS {
+                return Err(io::Error::from_raw_os_error(status.cast_signed()));
+            }
+            let descriptor_guard = LocalSecurityDescriptor(descriptor);
+            let mut control = 0_u16;
+            let mut revision = 0_u32;
+            // SAFETY: the descriptor guard owns a valid self-relative security
+            // descriptor and both output pointers refer to writable values.
+            if unsafe {
+                GetSecurityDescriptorControl(
+                    descriptor_guard.0,
+                    &raw mut control,
+                    &raw mut revision,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+
+            assert_ne!(control & SE_DACL_PROTECTED, 0);
+            assert_eq!(descriptor_dacl_sddl(descriptor_guard.0)?, PRIVATE_FILE_SDDL);
+            assert_eq!(fs::read(&path)?, b"private");
+            assert_eq!(
+                create_private_new_file(&path)
+                    .expect_err("exclusive creation must reject an existing path")
+                    .kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert!(
+                OpenOptions::new().write(true).open(&path).is_err(),
+                "the private staging handle must deny competing writers"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn cleanup_verification_denies_competing_writers() -> io::Result<()> {
+            let directory = tempdir()?;
+            let path = directory.path().join("cleanup.txt");
+            fs::write(&path, b"verified revision")?;
+
+            let cleanup = open_for_cleanup(&path)?;
+            assert!(
+                OpenOptions::new().write(true).open(&path).is_err(),
+                "cleanup verification must preserve an artifact when another writer is active"
+            );
+            drop(cleanup);
+
+            OpenOptions::new().write(true).open(&path)?;
+            Ok(())
+        }
+
+        #[test]
+        fn windows_metadata_noop_and_failure_boundaries_are_explicit() -> io::Result<()> {
+            let directory = tempdir()?;
+            let source_path = directory.path().join("source.txt");
+            let destination_path = directory.path().join("destination.txt");
+            let missing_path = directory.path().join("missing.txt");
+            fs::write(&source_path, b"source")?;
+            fs::write(&destination_path, b"destination")?;
+            let source = File::open(&source_path)?;
+            let destination = File::open(&destination_path)?;
+
+            crate::copy_required_metadata(&source, &destination)?;
+            assert_eq!(
+                delete_open_file(&source)
+                    .expect_err("a read-only handle lacks delete access")
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert!(
+                crate::replace_existing(&missing_path, &destination_path, None).is_err(),
+                "replacement must not invent a missing sibling"
+            );
+            assert!(
+                crate::install_new(&missing_path, &directory.path().join("new.txt")).is_err(),
+                "installation must not invent a missing sibling"
+            );
+            assert_eq!(
+                crate::replace_existing(
+                    Path::new("invalid\0replacement"),
+                    &destination_path,
+                    None,
+                )
+                .expect_err("interior NUL paths must fail before native calls")
+                .kind(),
+                io::ErrorKind::InvalidInput
+            );
+            assert!(
+                security_descriptor_from_sddl("not valid SDDL").is_err(),
+                "invalid SDDL must fail without creating a file"
+            );
+            assert_eq!(fs::read(source_path)?, b"source");
+            assert_eq!(fs::read(destination_path)?, b"destination");
+            Ok(())
+        }
+
+        #[test]
+        fn handle_bound_deletion_does_not_remove_a_rebound_path() -> io::Result<()> {
+            let directory = tempdir()?;
+            let original_path = directory.path().join("owned.txt");
+            let moved_path = directory.path().join("moved-owned.txt");
+            let external_content = b"external replacement";
+            let mut owned = create_private_new_file(&original_path)?;
+            owned.write_all(b"owned temporary")?;
+            owned.sync_all()?;
+
+            fs::rename(&original_path, &moved_path)?;
+            fs::write(&original_path, external_content)?;
+
+            delete_open_file(&owned)?;
+            drop(owned);
+
+            assert!(!moved_path.exists());
+            assert_eq!(fs::read(&original_path)?, external_content);
+            Ok(())
+        }
 
         #[test]
         fn nonzero_extended_identity_is_preferred() {
@@ -793,13 +1206,25 @@ mod imp {
     use std::io;
     use std::path::Path;
 
-    use super::{FileFacts, InstallNewOutcome, ParentSyncOutcome};
+    use super::{FileFacts, InstallNewOutcome, ParentSyncOutcome, ReplaceExistingOutcome};
 
     pub fn file_facts(_file: &File) -> io::Result<FileFacts> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "file identity is unsupported on this operating system",
         ))
+    }
+
+    pub fn create_private_new_file(_path: &Path) -> io::Result<File> {
+        unsupported("private file creation")
+    }
+
+    pub fn open_for_cleanup(_path: &Path) -> io::Result<File> {
+        unsupported("verified cleanup open")
+    }
+
+    pub fn delete_open_file(_file: &File) -> io::Result<()> {
+        unsupported("handle-bound file deletion")
     }
 
     pub fn copy_required_metadata(_source: &File, _destination: &File) -> io::Result<()> {
@@ -813,7 +1238,7 @@ mod imp {
         _temporary: &Path,
         _destination: &Path,
         _backup: Option<&Path>,
-    ) -> io::Result<()> {
+    ) -> io::Result<ReplaceExistingOutcome> {
         unsupported("file replacement")
     }
 
@@ -855,6 +1280,8 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::copy_required_metadata;
     use super::{IdentityQuality, file_facts};
+    #[cfg(unix)]
+    use super::{ReplaceExistingOutcome, replace_existing};
 
     #[test]
     fn facts_are_stable_for_one_open_file() -> io::Result<()> {
@@ -904,6 +1331,23 @@ mod tests {
         let second = file_facts(&File::open(second_path)?)?;
 
         assert_ne!(first.identity(), second.identity());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_replacement_retains_the_displaced_destination() -> io::Result<()> {
+        let directory = tempdir()?;
+        let temporary = directory.path().join("temporary.txt");
+        let destination = directory.path().join("destination.txt");
+        fs::write(&temporary, b"new bytes")?;
+        fs::write(&destination, b"old bytes")?;
+
+        let outcome = replace_existing(&temporary, &destination, None)?;
+
+        assert_eq!(outcome, ReplaceExistingOutcome::DisplacedDestination);
+        assert_eq!(fs::read(&destination)?, b"new bytes");
+        assert_eq!(fs::read(&temporary)?, b"old bytes");
         Ok(())
     }
 

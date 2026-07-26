@@ -58,22 +58,30 @@ unit tests, and coverage cannot prove.
 - [ ] IO-14 Cloud, network, removable, and weaker-filesystem limitations are
   explicit, and the reported durability never exceeds observed capability.
 - [ ] IO-15 A newly created Unix document is mode 0600; a new Windows document
-  receives the parent directory's expected inherited DACL.
+  has a protected DACL granting full control only to its owner and SYSTEM, even
+  under a parent with broader inheritable entries.
 - [ ] IO-16 A multiply hard-linked destination is refused until explicit
-  confirmation; after confirmation only the selected name receives new bytes.
+  GUI confirmation; after confirmation only the selected name receives new
+  bytes and the dialog states that other names keep the previous revision.
 - [ ] IO-17 Windows existing-file replacement preserves DACLs, named streams,
   compression, encryption, and the documented creation and identifier policy.
 - [ ] IO-18 Windows `ReplaceFileW` success and errors 1175, 1176, and 1177 leave
   only states the reconciliation model classifies correctly; uncertain states
   retain private artifacts and never invite blind retry.
 - [ ] IO-19 Linux replacement preserves exact mode, attainable ownership, ACLs,
-  visible extended attributes, SELinux context, and capabilities, or refuses
-  before commit with the original complete.
+  visible extended attributes, SELinux context, and capabilities. A post-commit
+  metadata failure retains the displaced revision and reports the safest state
+  reached without claiming the save did not commit.
 - [ ] IO-20 macOS replacement preserves mode, attainable ownership, ACLs,
   extended attributes, resource forks, and quarantine data; modification time
   advances according to policy, and BSD file-flag behavior is recorded.
-- [ ] IO-21 A cleanup failure after commit is distinguishable from a durability
-  warning, and neither is reported as a failed or uncommitted save.
+- [ ] IO-21 Cleanup and every file or parent durability warning remain distinct,
+  and none is reported as a failed or uncommitted save. A file-barrier failure
+  reports Best Effort even if the parent barrier succeeds.
+- [ ] IO-22 Every retained Unix sibling warning names the random basename,
+  describes only the artifact states established by reconciliation, uses
+  neutral wording where concurrent bytes remain possible, and gives safe
+  inspection and removal guidance.
 
 Record byte-comparison commands, fixture checksums, and observed save outcomes:
 

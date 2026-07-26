@@ -59,15 +59,23 @@ Feature presence alone is not verification.
 - **FR-012 Strict UTF-8:** Accept UTF-8 with or without a UTF-8 BOM. Reject
   invalid UTF-8 without replacement characters. A future explicit import flow
   may create a new untitled converted document, but it must never overwrite the
-  source implicitly.
+  source implicitly. v0.1 refuses documents above 64 MiB before allocating or
+  hashing beyond that bound; the 50 MiB performance corpus remains inside the
+  supported range.
 - **FR-013 Save:** Save to the current regular-file path through the durable
   replacement protocol in NFR-REL-02. A multiply hard-linked destination
-  requires explicit confirmation that only the selected directory entry will
-  advance.
+  requires an explicit GUI confirmation that only the selected directory entry
+  will advance and that other names retain the previous revision. Confirmation
+  must retain the exact pre-dialog target expectation; it must not rebaseline a
+  path that changes while the dialog is visible.
 - **FR-014 Save As:** Ask for a destination every time. The document path and
   clean revision change only after the new destination commits successfully.
   Refuse an existing final symlink or unsupported reparse point rather than
-  replacing or following it implicitly.
+  replacing or following it implicitly. A failed or indeterminate save that may
+  leave a private sibling must identify the safe random basename and give
+  explicit inspection, recovery, retry, and removal guidance. If identity
+  inspection fails immediately after exclusive creation, report the creation
+  failure and any retained-sibling cleanup failure separately.
 - **FR-015 Recent files:** Maintain at most ten deduplicated user-opened paths.
   Missing or inaccessible entries fail safely and can be removed without
   reading their parent directories.
@@ -182,6 +190,19 @@ Feature presence alone is not verification.
   or make a network request.
 - **FR-107 Conformance:** Supported syntax is ratified against CommonMark plus an
   explicitly listed subset of GitHub Flavored Markdown, if any.
+- **FR-108 Views:** Provide explicit Source, Preview, and synchronized Split
+  Preview views. Source remains the authoritative editable document in every
+  view, and switching views never changes document bytes.
+- **FR-109 Formatting controls:** Provide selection-aware Bold, Italic,
+  Strikethrough, Inline Code, Link, Heading, Quote, List, Task List, and Code
+  Fence commands through accessible menus and documented keyboard paths. Each
+  command is one explicit `EditTransaction` and one undo step.
+- **FR-110 Preview synchronization:** Preview output is revision-tagged, updates
+  without accepting stale parser results, and supports deterministic
+  source-to-preview scroll mapping in Split Preview.
+- **FR-111 Native restricted rendering:** Preview renders a restricted native
+  document model rather than arbitrary HTML or a webview. Unsupported or unsafe
+  constructs remain inert source text.
 
 ## 4. Non-functional requirements
 
@@ -194,8 +215,9 @@ Feature presence alone is not verification.
   syncs the parent directory where supported. A pre-commit failure leaves the
   original complete and unchanged. Outcomes distinguish Committed, Conflict,
   Not Committed, and Commit State Unknown. A post-commit barrier failure is
-  Committed with a durability warning; an uncertain commit retains dirty state
-  and recovery until reconciliation.
+  Committed with every durability warning preserved; a failed file barrier
+  reports Best Effort even if parent synchronization succeeds. An uncertain
+  commit retains dirty state and recovery until reconciliation.
 - **NFR-REL-03 Revision safety:** A successful save clears dirty state only when
   the committed revision is still the current revision.
 - **NFR-REL-04 Undo fidelity:** Applying edits and their inverse transactions
@@ -305,7 +327,7 @@ milestone. The minimum mapping is:
 | FR-060 to FR-069, NFR-REL-05 to 07 | M3 | state-machine, recovery, conflict, and crash tests |
 | FR-030 to FR-036, FR-080 to FR-086 | M4 and M5 | semantic UI tests and signed platform matrices |
 | Performance requirements | M5 and M6 | reproducible benchmark reports |
-| FR-100 to FR-107 | M7 | conformance, equivalence, idempotence, and UI tests |
+| FR-100 to FR-111 | M7 | conformance, equivalence, idempotence, transaction, synchronization, safety, and UI tests |
 | Security and release requirements | Every gate, final in M6 | audits, runtime inspection, SBOM, provenance, release checklist |
 
 No requirement becomes Verified without a stable evidence link on the same

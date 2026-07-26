@@ -1,7 +1,7 @@
 //! Stable destination classification, identity, and content observations.
 
 use std::fs::{self, File, Metadata};
-use std::io::{self, Read, Seek};
+use std::io::{self, Read};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -13,6 +13,8 @@ use super::save::{
 };
 
 const MAX_STABILITY_ATTEMPTS: usize = 3;
+const MAX_SUPPORTED_FILE_BYTES: u64 = 64 << 20;
+const FILE_TOO_LARGE_MESSAGE: &str = "file exceeds the supported 64 MiB document limit";
 
 /// Inspects a final path without following a final link or accepting a torn read.
 ///
@@ -30,6 +32,9 @@ pub fn inspect_target(path: &Path, boundary: SaveStage) -> Result<TargetState, S
         match inspect_once(path) {
             Ok(observed) => return Ok(observed),
             Err(AttemptError::Changed) => {}
+            Err(AttemptError::TooLarge) => {
+                return Err(StorageError::new(boundary, FILE_TOO_LARGE_MESSAGE));
+            }
             Err(AttemptError::Io { operation, error }) => {
                 return Err(redacted_error(boundary, operation, &error));
             }
@@ -60,6 +65,9 @@ pub fn read_regular_file(
         match read_once(path) {
             Ok(result) => return Ok(result),
             Err(AttemptError::Changed) => {}
+            Err(AttemptError::TooLarge) => {
+                return Err(StorageError::new(boundary, FILE_TOO_LARGE_MESSAGE));
+            }
             Err(AttemptError::Io { operation, error }) => {
                 return Err(redacted_error(boundary, operation, &error));
             }
@@ -69,6 +77,60 @@ pub fn read_regular_file(
     Err(StorageError::new(
         boundary,
         "file changed repeatedly during bounded read",
+    ))
+}
+
+/// Opens a cleanup candidate and returns the stable observation for that exact
+/// open object. A missing path is benign; special entries are rejected.
+///
+/// Keeping the handle live lets Windows delete the observed object by handle
+/// even if the pathname is rebound after observation. Unix callers receive the
+/// same stable evidence but must preserve the object because portable deletion
+/// remains pathname-based.
+pub(crate) fn open_verified_cleanup_candidate(
+    path: &Path,
+    boundary: SaveStage,
+) -> Result<Option<(File, FileObservation)>, StorageError> {
+    for _ in 0..MAX_STABILITY_ATTEMPTS {
+        let initial = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(redacted_error(
+                    boundary,
+                    "read cleanup final-entry metadata",
+                    &error,
+                ));
+            }
+        };
+        if non_regular_state(&initial).is_some() {
+            return Err(StorageError::new(
+                boundary,
+                "cleanup candidate is not a supported regular file",
+            ));
+        }
+
+        let file = match noter_platform::open_for_cleanup(path) {
+            Ok(file) => file,
+            Err(error) => {
+                return Err(redacted_error(boundary, "open cleanup candidate", &error));
+            }
+        };
+        match observe_regular_handle(path, file) {
+            Ok(observed) => return Ok(Some(observed)),
+            Err(AttemptError::Changed) => {}
+            Err(AttemptError::TooLarge) => {
+                return Err(StorageError::new(boundary, FILE_TOO_LARGE_MESSAGE));
+            }
+            Err(AttemptError::Io { operation, error }) => {
+                return Err(redacted_error(boundary, operation, &error));
+            }
+        }
+    }
+
+    Err(StorageError::new(
+        boundary,
+        "cleanup candidate changed repeatedly during bounded inspection",
     ))
 }
 
@@ -91,9 +153,7 @@ fn read_once(path: &Path) -> Result<(Vec<u8>, FileObservation), AttemptError> {
         return Err(AttemptError::Changed);
     }
 
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|error| AttemptError::io("read complete file content", error))?;
+    let bytes = read_bytes_bounded(&mut file, before.length, MAX_SUPPORTED_FILE_BYTES)?;
     let length = u64::try_from(bytes.len()).map_err(|_| {
         AttemptError::io(
             "verify content length",
@@ -146,17 +206,23 @@ fn inspect_once(path: &Path) -> Result<TargetState, AttemptError> {
         return Ok(state);
     }
 
-    let mut file = File::open(path).map_err(|error| changed_or_io("open regular file", error))?;
+    let file = File::open(path).map_err(|error| changed_or_io("open regular file", error))?;
+    let (_, observation) = observe_regular_handle(path, file)?;
+
+    Ok(TargetState::Regular(observation))
+}
+
+fn observe_regular_handle(
+    path: &Path,
+    mut file: File,
+) -> Result<(File, FileObservation), AttemptError> {
     let before = handle_stamp(&file)?;
     if !before.is_regular {
         return Err(AttemptError::Changed);
     }
 
-    let fingerprint = ContentFingerprint::from_reader(&mut file)
-        .map_err(|error| AttemptError::io("read complete file content", error))?;
-    let bytes_read = file
-        .stream_position()
-        .map_err(|error| AttemptError::io("verify content length", error))?;
+    let (fingerprint, bytes_read) =
+        fingerprint_bounded(&mut file, before.length, MAX_SUPPORTED_FILE_BYTES)?;
     let after = handle_stamp(&file)?;
 
     if read_window_changed(before, after, bytes_read) {
@@ -165,8 +231,8 @@ fn inspect_once(path: &Path) -> Result<TargetState, AttemptError> {
 
     let final_entry = fs::symlink_metadata(path)
         .map_err(|error| changed_or_io("revalidate final-entry metadata", error))?;
-    if let Some(state) = non_regular_state(&final_entry) {
-        return Ok(state);
+    if non_regular_state(&final_entry).is_some() {
+        return Err(AttemptError::Changed);
     }
 
     let reopened = File::open(path).map_err(|error| changed_or_io("reopen regular file", error))?;
@@ -182,13 +248,78 @@ fn inspect_once(path: &Path) -> Result<TargetState, AttemptError> {
         return Err(AttemptError::Changed);
     }
 
-    Ok(TargetState::Regular(FileObservation::new(
-        map_identity(after.facts),
-        fingerprint,
-        after.length,
-        after.facts.link_count(),
-        map_change_token(after.facts),
-    )))
+    Ok((
+        file,
+        FileObservation::new(
+            map_identity(after.facts),
+            fingerprint,
+            after.length,
+            after.facts.link_count(),
+            map_change_token(after.facts),
+        ),
+    ))
+}
+
+fn read_bytes_bounded(
+    file: &mut File,
+    announced_length: u64,
+    maximum: u64,
+) -> Result<Vec<u8>, AttemptError> {
+    let read_limit = bounded_read_limit(announced_length, maximum)?;
+    let capacity = usize::try_from(announced_length).map_err(|_| {
+        AttemptError::io(
+            "allocate bounded file buffer",
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "announced file length does not fit the address space",
+            ),
+        )
+    })?;
+    let mut bytes = Vec::with_capacity(capacity);
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| AttemptError::io("read bounded file content", error))?;
+    let bytes_read = u64::try_from(bytes.len()).map_err(|_| {
+        AttemptError::io(
+            "verify bounded file length",
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "read length does not fit the supported file size",
+            ),
+        )
+    })?;
+    if bytes_read > maximum {
+        return Err(AttemptError::TooLarge);
+    }
+    Ok(bytes)
+}
+
+fn fingerprint_bounded(
+    file: &mut File,
+    announced_length: u64,
+    maximum: u64,
+) -> Result<(ContentFingerprint, u64), AttemptError> {
+    let read_limit = bounded_read_limit(announced_length, maximum)?;
+    let mut bounded = file.take(read_limit);
+    let fingerprint = ContentFingerprint::from_reader(&mut bounded)
+        .map_err(|error| AttemptError::io("read bounded file content", error))?;
+    let bytes_read = read_limit - bounded.limit();
+    if bytes_read > maximum {
+        return Err(AttemptError::TooLarge);
+    }
+    Ok((fingerprint, bytes_read))
+}
+
+fn bounded_read_limit(announced_length: u64, maximum: u64) -> Result<u64, AttemptError> {
+    if announced_length > maximum {
+        return Err(AttemptError::TooLarge);
+    }
+    maximum.checked_add(1).ok_or_else(|| {
+        AttemptError::io(
+            "calculate bounded read limit",
+            io::Error::new(io::ErrorKind::InvalidInput, "file limit cannot be bounded"),
+        )
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -287,6 +418,7 @@ fn redacted_error(stage: SaveStage, operation: &str, error: &io::Error) -> Stora
 #[derive(Debug)]
 enum AttemptError {
     Changed,
+    TooLarge,
     Io {
         operation: &'static str,
         error: io::Error,
@@ -382,6 +514,31 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_candidate_distinguishes_missing_from_invalid_paths() -> io::Result<()> {
+        let directory = tempdir()?;
+        let missing = directory.path().join("missing.txt");
+        assert!(
+            open_verified_cleanup_candidate(&missing, SaveStage::Cleanup)
+                .expect("a missing cleanup candidate is already clean")
+                .is_none()
+        );
+
+        let error = open_verified_cleanup_candidate(
+            Path::new("invalid\0cleanup-candidate"),
+            SaveStage::Cleanup,
+        )
+        .expect_err("an invalid path must not be classified as missing");
+        assert_eq!(error.stage(), SaveStage::Cleanup);
+        assert!(
+            error
+                .message()
+                .contains("read cleanup final-entry metadata")
+        );
+        assert!(!error.message().contains("invalid\0cleanup-candidate"));
+        Ok(())
+    }
+
+    #[test]
     fn directory_is_refused_as_a_special_final_entry() -> io::Result<()> {
         let directory = tempdir()?;
         let state = inspect_target(directory.path(), SaveStage::InspectInitial)
@@ -430,6 +587,95 @@ mod tests {
 
         assert_eq!(bytes, expected_bytes);
         assert_eq!(loaded, inspected);
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_read_detects_growth_past_its_announced_length() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        fs::write(&path, b"12345")?;
+        let mut file = File::open(path)?;
+
+        let result = read_bytes_bounded(&mut file, 4, 4);
+
+        assert!(matches!(result, Err(AttemptError::TooLarge)));
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_read_accepts_the_exact_limit_and_rejects_a_larger_announcement() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        fs::write(&path, b"1234")?;
+
+        let exact = read_bytes_bounded(&mut File::open(&path)?, 4, 4)
+            .expect("the supported limit is inclusive");
+        let oversized = read_bytes_bounded(&mut File::open(path)?, 5, 4);
+
+        assert_eq!(exact, b"1234");
+        assert!(matches!(oversized, Err(AttemptError::TooLarge)));
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_fingerprint_detects_growth_past_its_announced_length() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        fs::write(&path, b"12345")?;
+        let mut file = File::open(path)?;
+
+        let result = fingerprint_bounded(&mut file, 4, 4);
+
+        assert!(matches!(result, Err(AttemptError::TooLarge)));
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_fingerprint_accepts_the_exact_limit_and_rejects_a_larger_announcement()
+    -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        fs::write(&path, b"1234")?;
+
+        let exact = fingerprint_bounded(&mut File::open(&path)?, 4, 4)
+            .expect("the supported limit is inclusive");
+        let oversized = fingerprint_bounded(&mut File::open(path)?, 5, 4);
+
+        assert_eq!(exact, (ContentFingerprint::from_bytes(b"1234"), 4));
+        assert!(matches!(oversized, Err(AttemptError::TooLarge)));
+        Ok(())
+    }
+
+    #[test]
+    fn maximum_size_constant_is_exact_and_limit_arithmetic_cannot_wrap() {
+        assert_eq!(MAX_SUPPORTED_FILE_BYTES, 67_108_864);
+        assert!(matches!(
+            bounded_read_limit(0, u64::MAX),
+            Err(AttemptError::Io {
+                operation: "calculate bounded read limit",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn oversized_sparse_file_is_rejected_without_reading_its_content() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("oversized.txt");
+        let file = File::create(&path)?;
+        file.set_len(MAX_SUPPORTED_FILE_BYTES + 1)?;
+        drop(file);
+
+        let load_error = read_regular_file(&path, SaveStage::InspectInitial)
+            .expect_err("oversized document loads must fail before allocation");
+        let inspect_error = inspect_target(&path, SaveStage::Revalidate)
+            .expect_err("oversized save targets must fail before hashing");
+
+        assert_eq!(load_error.stage(), SaveStage::InspectInitial);
+        assert_eq!(load_error.message(), FILE_TOO_LARGE_MESSAGE);
+        assert_eq!(inspect_error.stage(), SaveStage::Revalidate);
+        assert_eq!(inspect_error.message(), FILE_TOO_LARGE_MESSAGE);
         Ok(())
     }
 

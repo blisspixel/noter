@@ -1,19 +1,23 @@
-# Noter - High quality .gitignore (2026 best practices)
-# Generated and maintained for a pure Rust egui desktop application.
-
 # =============================================================================
 # Rust / Cargo
 # =============================================================================
 /target/
 **/*.rs.bk
-Cargo.lock  # For applications, we usually commit Cargo.lock for reproducible builds.
-            # Uncomment the next line if you prefer not to commit it for libraries.
-# Cargo.lock
 
 # =============================================================================
 # Noter specific artifacts
 # =============================================================================
-# Autosave / recovery files (critical reliability feature)
+# Agent loop state is local working memory, never a canonical project artifact.
+/.agent/
+
+# Runtime and diagnostic logs stay out of the source tree history.
+/logs/
+
+# Python bytecode produced by repository validation tests
+__pycache__/
+*.py[cod]
+
+# Autosave and recovery artifacts
 *.noter-autosave
 *.noter-recover
 noter-autosave-*
@@ -23,21 +27,12 @@ noter-recovery-*
 # Temporary files created during atomic saves
 *.txt.tmp
 *.md.tmp
-*~
 
 # =============================================================================
-# OneDrive / Sync folder warnings (IMPORTANT)
+# Synchronized-folder development artifacts
 # =============================================================================
-# Strongly recommended: Do NOT develop inside OneDrive, Dropbox, or other sync
-# folders. The target/ directory + many small files during builds causes:
-#   - Excessive CPU / bandwidth from constant syncing
-#   - Antivirus scanning delays
-#   - Occasional file locking during `cargo build`
-#   - Corrupted incremental compilation
-#
-# Best practice: Develop in C:\dev\noter or ~/dev/noter and copy the final
-# release binary (or use a symlink / junction for the binary only).
-# If you must keep the source here, at least pause OneDrive sync while working.
+# Build outputs are excluded because synchronized folders and antivirus tools can
+# contend with Cargo's large collection of short-lived files.
 
 # =============================================================================
 # IDEs and editors
@@ -89,11 +84,10 @@ tarpaulin-report.html
 /mutants.out*
 
 # =============================================================================
-# Environment & secrets (never commit)
+# Environment and secrets
 # =============================================================================
 .env
 .env.*
 *.pem
 *.key
 secrets/
-# End of .gitignore

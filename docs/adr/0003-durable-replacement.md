@@ -62,7 +62,7 @@ The commit-point adapter returns exactly one of:
 2. `Conflict`, when the destination no longer matches the snapshot expectation.
 3. `NotCommitted`, only when the adapter proves the destination did not commit.
 4. `CommitStateUnknown`, when the platform may have changed a path entry despite
-   reporting failure.
+   reporting failure, paired with a typed, actionable recovery-artifact warning.
 
 `CommitStateUnknown` keeps the document dirty, retains recovery, disables blind
 retry, and requires path reconciliation before another ordinary Save. A generic
@@ -75,16 +75,27 @@ I/O error is never interpreted as non-commit.
 2. Inspect the final path without following an unapproved final link. Refuse
    special files and detect an external version before creating a sibling.
 3. Create an unpredictable same-directory sibling with create-new semantics.
+   If native identity inspection fails after creation and handle-bound cleanup
+   is unavailable, return the primary creation error plus a distinct cleanup
+   warning naming only the retained random basename.
 4. Write all bytes and flush user-space buffers.
-5. Apply the ratified metadata policy. Failure is pre-commit and leaves the
-   destination unchanged.
+5. Validate the ratified metadata source and read-only policy without widening
+   the staging file's private access.
 6. Sync the sibling's data and metadata.
 7. Revalidate destination identity and fingerprint immediately before commit.
-8. Use the platform commit primitive for existing or absent destinations.
-9. Reconcile documented ambiguous platform results before assigning commit
+8. On Windows, reserve the backup name before closing the staging handle and
+   immediately revalidate the closed sibling's native identity, length, and
+   BLAKE3-256 fingerprint. Treat a postcommit mismatch from the remaining
+   same-authority handoff window as indeterminate.
+9. Use the platform commit primitive for existing or absent destinations.
+10. For an existing Unix destination, finalize metadata from the displaced
+   original to the committed file through open handles, then sync the committed
+   metadata. Failure is committed with a warning and retains private defaults.
+11. Reconcile documented ambiguous platform results before assigning commit
    state.
-10. Sync the containing directory or request the strongest supported equivalent.
-11. Remove temporary or backup artifacts explicitly and report cleanup failure.
+12. Sync the containing directory or request the strongest supported equivalent.
+13. Delete only through a handle-bound primitive. If the platform cannot provide
+    one, retain the private artifact and report the cleanup warning.
 
 If replacement commits but a later persistence barrier fails, the result is
 `Committed` with a weaker durability level and warning. The UI must not say that
@@ -97,11 +108,11 @@ durability policy.
 | Platform and case | Commit primitive | Metadata | Durability result |
 | --- | --- | --- | --- |
 | Windows, existing file | `ReplaceFileW` with a unique backup sibling and no ignore-merge flags; reconcile destination, replacement, and backup on documented partial failures | Native merge preserves the documented DACL, encryption, compression, creation, identifier, and named-stream properties; any merge failure is not ignored | Flush sibling before commit; because `REPLACEFILE_WRITE_THROUGH` is unsupported and no supported parent-directory barrier is documented, report at most `FileSynced` unless platform tests prove more |
-| Windows, absent file | `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`, without replace or cross-volume copy flags | New-file policy and inherited parent ACL | Refuse a newly appeared destination; report the barrier strength demonstrated by platform tests |
-| Linux, existing file | Same-directory `renameat`; destination identity revalidated immediately before commit | Preserve mode, ACLs, extended attributes, security context, and attainable ownership; abort before commit if required metadata cannot be copied | `fsync` sibling, rename, then `fsync` opened parent directory |
-| Linux, absent file | No-replace rename where supported, otherwise a no-overwrite link-and-unlink sequence | Owner-only mode 0600 | Same file and parent barriers as existing replacement |
-| macOS, existing file | Same-directory `renameat` through an opened parent | Copy POSIX metadata, ACLs, and extended attributes with the platform metadata APIs; saving intentionally advances modification time | Request `F_FULLFSYNC` for the sibling, rename, then synchronize the parent where supported |
-| macOS, absent file | No-replace rename where supported, otherwise a no-overwrite link-and-unlink sequence | Owner-only mode 0600 | Same barriers as existing replacement |
+| Windows, absent file | `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`, without replace or cross-volume copy flags | Protected DACL grants full control only to object owner and SYSTEM; no parent entries are inherited | Refuse a newly appeared destination; report the barrier strength demonstrated by platform tests |
+| Linux, existing file | Same-directory atomic exchange; retain the displaced destination because portable unlink cannot target a verified handle | Keep staging mode 0600 through exchange, then copy mode, ACLs, extended attributes, security context, and attainable ownership from the verified displaced handle; a failure is committed with a warning | `fsync` sibling, exchange, finalize and resync metadata, then `fsync` opened parent directory |
+| Linux, absent file | No-replace rename where supported, otherwise create a no-overwrite hard link and retain the temporary name | Owner-only mode 0600 | Same file and parent barriers as existing replacement; retained fallback names are explicit cleanup warnings |
+| macOS, existing file | Same-directory atomic exchange through an opened parent; retain the displaced destination because portable unlink cannot target a verified handle | Keep staging mode 0600 through exchange, then copy POSIX metadata, ACLs, and extended attributes from the verified displaced handle; saving intentionally advances modification time | Request `F_FULLFSYNC` for the sibling, exchange, finalize and resync metadata, then synchronize the parent where supported |
+| macOS, absent file | No-replace rename where supported, otherwise create a no-overwrite hard link and retain the temporary name | Owner-only mode 0600 | Same barriers as existing replacement; retained fallback names are explicit cleanup warnings |
 | Network, cloud, removable, or unknown filesystem | Use the platform path only when same-filesystem commit prerequisites hold | Never silently discard known metadata | Return `BestEffort` or `FileSynced` according to demonstrated capability; never advertise full durability from filesystem name alone |
 
 No platform may fall back to deleting the destination first. No cross-volume
@@ -117,7 +128,8 @@ copy-and-delete operation is described as atomic replacement.
   reducing rename and remount races at the commit boundary.
 - A destination with multiple hard links requires explicit confirmation that
   atomic replacement updates only the selected directory entry. Other hard
-  links continue to reference the old file.
+  links continue to reference the old file. Save and Save As expose this
+  confirmation in the GUI.
 - Read-only files are not made writable silently. Save remains not committed and
   offers Save As or a separate explicit permission-changing action.
 - Directories, devices, pipes, sockets, and unsupported reparse points are never
@@ -145,10 +157,19 @@ library remains `unsafe_code = "forbid"`.
 
 - Windows needs backup-aware reconciliation because documented replacement
   failures can have side effects.
-- Unix needs explicit metadata transfer and directory synchronization.
+- Unix needs post-exchange metadata transfer, conservative artifact retention,
+  and directory synchronization. A filesystem that cannot provide atomic
+  exchange fails closed instead of falling back to an unsafe replacement path.
+- Windows cleanup opens the final entry without following reparse points or
+  sharing writes, verifies the exact object, and marks that handle for deletion.
+  Unix preserves the object because its portable unlink APIs remain
+  pathname-based; the warning names the random sibling and explains safe review
+  and removal.
 - Saving a symlink, hard-linked file, read-only file, or weak filesystem becomes
   visible policy rather than an accidental consequence of `rename`.
-- Some successful saves legitimately carry a durability warning.
+- Some successful saves legitimately carry one or more durability warnings. A
+  failed post-commit file barrier reports Best Effort even if the parent barrier
+  succeeds.
 - The `atomic-write-file` 0.3 crate and plain `std::fs::rename` are rejected as
   complete production adapters, though their implementation techniques remain
   useful evidence.
@@ -172,10 +193,11 @@ The pure fault-injected protocol is verified across the CI matrix at commit
 BLAKE3-256 fingerprints, stable-handle loading, metadata change tokens, and the
 complete `FilesystemStorage` adapter are verified at commit `c76515c` in
 [GitHub Actions run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267).
-The adapter copies Linux and macOS metadata, uses native Windows and Unix commit
-primitives, reconciles documented partial states, verifies exact committed
-identity and bytes, reports cleanup and durability independently, and is
-integrated with the sealed revision-aware Document API. The complete local
+The adapter finalizes Linux and macOS metadata after exchange, uses native
+Windows and Unix commit primitives, reconciles documented partial states,
+verifies exact committed identity and bytes, reports cleanup and durability
+independently, and is integrated with the sealed revision-aware Document API.
+Windows cleanup is handle-bound; Unix cleanup is conservatively retained. The complete local
 mutation campaign has zero missed mutants and zero timeouts, as recorded in
 [M1 Mutation Evidence](../M1_MUTATION_EVIDENCE.md), and a pinned full-scope CI
 gate now enforces it. The manual platform and weak-filesystem matrix plus the

@@ -342,29 +342,37 @@ not treated as exclusivity: deterministic tests force a collision and prove the
 existing file is untouched before the adapter retries. Repeated collisions are
 bounded, and a random-source error creates no artifact.
 
-The temporary file records identity from its original open handle. Both
-explicit cleanup and best-effort drop cleanup revalidate that identity before
-removing the path, so an external replacement is not deleted as if Noter still
-owned it. Unix siblings begin at mode 0600, and an absent Unix destination keeps
-that owner-only mode as the intentional v0.1 new-file policy. Windows new files
-use native parent-directory inheritance. Direct `getrandom` use adds no lock
+The temporary file records identity from its original open handle. Windows
+cleanup opens final entries without following reparse points, observes identity
+and content on that handle, and marks the same object for deletion. A pathname
+rebound after observation therefore cannot redirect deletion to the replacement
+entry. Portable Unix unlink cannot express the same object-bound condition, so
+Noter retains uncommitted siblings and displaced originals with explicit cleanup
+warnings. Unix replacement uses an atomic exchange, and siblings remain mode
+0600 until their bytes have committed. An absent Unix destination keeps that
+owner-only mode as the intentional v0.1 new-file policy. Windows staging and new
+files use a protected DACL granting full control only to the owner and SYSTEM;
+broad parent entries are not inherited. Direct `getrandom` use adds no lock
 entry because the exact version was already present.
 
-For Linux metadata, the adapter uses descriptor-based `fchown` and `fchmod`,
-then copies and verifies the complete visible extended-attribute set. It also
+For Linux metadata, the adapter first commits the owner-only sibling through an
+atomic exchange. It then uses descriptor-based `fchown` and copies and verifies
+the complete visible extended-attribute set before applying `fchmod` last. It also
 probes `security.capability`, `security.selinux`, and `system.posix_acl_access`
 explicitly because Linux assigns different visibility and permission rules to
 the user, security, system, and trusted namespaces. See
-[`xattr(7)`](https://man7.org/linux/man-pages/man7/xattr.7.html). If ownership or
-required metadata cannot be reproduced, the save stops before commit. `rustix`
-1.1 supplies descriptor-relative rename, no-replace rename, link, unlink, mode,
-ownership, and synchronization operations. Linux-only `xattr` 1.6 adds the one
-new package in the 339-package lock graph.
+[`xattr(7)`](https://man7.org/linux/man-pages/man7/xattr.7.html). If post-commit
+metadata cannot be reproduced, the save remains committed, keeps the safest
+access state reached, retains the displaced source, and reports an exact warning.
+`rustix` 1.1 supplies descriptor-relative atomic exchange, no-replace rename,
+hard-link, mode, ownership, and synchronization operations. Linux-only `xattr`
+1.6 adds the one new package in the 339-package lock graph.
 
 On macOS, descriptor-based `fcopyfile` can copy ACLs and extended attributes
-independently. Noter requests `COPYFILE_ACL | COPYFILE_XATTR` and applies owner
-and mode separately, intentionally omitting `COPYFILE_STAT` so a successful save
-advances modification time. See the
+independently after the owner-only exchange commits. Noter requests
+`COPYFILE_ACL | COPYFILE_XATTR` and applies owner and mode separately,
+intentionally omitting `COPYFILE_STAT` so a successful save advances modification
+time. See the
 [Xcode `copyfile(3)` manual](https://keith.github.io/xcode-man-pages/copyfile.3.html).
 The sibling receives `F_FULLFSYNC` where supported and falls back to `sync_all`
 only when the stronger operation is reported unsupported or invalid.
@@ -389,6 +397,40 @@ For releases, use a current `cargo-dist` configuration, generate an SBOM and
 checksums, pin GitHub Actions by immutable commit SHA, minimize token permissions,
 and attach provenance. Current research found cargo-dist 0.32.0, so the existing
 0.28.0 planning comment must be refreshed when distribution work starts.
+
+## Markdown assist research update
+
+The requested Markdown view and formatting controls do not exist in the current
+prototype. They remain dependency-ordered after the trustworthy v0.1 editor,
+undo, lifecycle, recovery, and accessibility gates. Current primary-source
+research sharpens M7 without moving it ahead of those prerequisites:
+
+- [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/) supplies the base
+  conformance corpus. The [GFM specification](https://github.github.com/gfm/)
+  defines tables, task lists, strikethrough, and autolinks as explicit
+  extensions and warns that rendered HTML still requires sanitization.
+- [VS Code's Markdown documentation](https://code.visualstudio.com/docs/languages/markdown)
+  establishes source, preview, and side-by-side preview as distinct commands,
+  with live updates, scroll synchronization, and strict preview security.
+- [Zed's Markdown actions](https://zed.dev/docs/all-actions) independently expose
+  preview and preview-to-the-side commands. Its
+  [Markdown guide](https://zed.dev/docs/languages/markdown) makes Format an
+  explicit action and treats list continuation and indentation as configurable
+  behaviors rather than invisible rewrites.
+- The current [pulldown-cmark options](https://docs.rs/pulldown-cmark/0.13.4/pulldown_cmark/struct.Options.html)
+  keep CommonMark as the default and require extensions to be enabled by named
+  flags. It is a candidate for the later parser spike, not a dependency decision
+  before M7.
+
+The resulting product direction is native and source-first. Markdown Assist off
+schedules no parser work. Turning it on may open source-only or synchronized
+source-and-preview layout, but the source buffer remains authoritative. The
+preview renders a restricted native document model, not arbitrary HTML or a
+webview, and never fetches images or links. Selection-aware Bold, Italic,
+Strikethrough, Inline Code, Link, Heading, Quote, List, Task List, and Code Fence
+commands become explicit edit transactions with keyboard and accessible menu
+paths. Whole-document Format remains a separate previewed diff with semantic
+equivalence, idempotence, byte-policy preservation, and one-step undo evidence.
 
 ## Rejected shortcuts
 

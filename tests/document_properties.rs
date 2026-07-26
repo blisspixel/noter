@@ -3,7 +3,7 @@
 use noter::core::document::Document;
 use noter::core::line_endings::{LineEnding, LineEndingCounts, LineEndingProfile};
 use proptest::prelude::*;
-use proptest::test_runner::FileFailurePersistence;
+use proptest::test_runner::RngSeed;
 use ropey::Rope;
 
 fn line_ending_strategy() -> impl Strategy<Value = LineEnding> {
@@ -51,9 +51,8 @@ fn expected_profile(endings: &[LineEnding]) -> LineEndingProfile {
 fn property_config() -> ProptestConfig {
     ProptestConfig {
         cases: 512,
-        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
-            "tests/document_properties.proptest-regressions",
-        ))),
+        failure_persistence: None,
+        rng_seed: RngSeed::Fixed(0x4E4F_5445_525F_4D31),
         ..ProptestConfig::default()
     }
 }

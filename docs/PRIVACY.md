@@ -44,6 +44,11 @@ permissions, checksums, versioning, bounded retention, and explicit cleanup
 after successful Save or confirmed Discard. Recovery never silently writes the
 original document.
 
+Durable-save staging files also contain complete document bytes. Unix creates
+them at mode 0600. Windows supplies a protected DACL at creation that grants full
+control only to the object owner and SYSTEM, rather than inheriting broader
+parent-directory entries.
+
 ## 4. Diagnostics
 
 Default diagnostics do not contain:

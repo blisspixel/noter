@@ -1,7 +1,45 @@
+use std::path::PathBuf;
+
 use eframe::egui;
-use noter::core::document::Document;
+use noter::core::document::{Document, PreparedSaveAs};
 use noter::core::save::SaveOutcome;
 use noter::error::NoterError;
+
+const DIRTY_INTERLOCK_MESSAGE: &str =
+    "Unsaved changes are protected. Save the document, then retry this action.";
+const EDITOR_ID_SALT: &str = "noter-document-editor";
+const ABOUT_SUMMARY: &str = "A focused, local-only plain-text editor built around data safety.";
+const ABOUT_MARKDOWN_STATUS: &str = "Markdown assistance and explicit formatting are planned for opt-in v0.2. They are not available in the current prototype.";
+const ABOUT_PRIVACY: &str = "Noter has no telemetry, accounts, or in-process network client.";
+const ABOUT_LINK_BEHAVIOR: &str = "The project link opens in your default browser.";
+
+#[derive(Clone, Copy)]
+enum FileCommand {
+    New,
+    Open,
+    Save,
+    SaveAs,
+    Quit,
+}
+
+#[derive(Debug)]
+enum PendingHardLinkSave {
+    Current {
+        link_count: u64,
+    },
+    SaveAs {
+        prepared: PreparedSaveAs,
+        link_count: u64,
+    },
+}
+
+impl PendingHardLinkSave {
+    const fn link_count(&self) -> u64 {
+        match self {
+            Self::Current { link_count } | Self::SaveAs { link_count, .. } => *link_count,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct NoterApp {
@@ -9,29 +47,27 @@ pub struct NoterApp {
     document: Document,
     error_msg: Option<String>,
     about_open: bool,
+    pending_hard_link_save: Option<PendingHardLinkSave>,
 }
 
 impl NoterApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut style = (*cc.egui_ctx.global_style()).clone();
 
-        // Sleek charcoal/slate dark mode instead of generic #000000
         style.visuals.panel_fill = egui::Color32::from_rgb(24, 26, 31);
         style.visuals.faint_bg_color = egui::Color32::from_rgb(32, 35, 42);
-        style.visuals.extreme_bg_color = egui::Color32::from_rgb(18, 20, 24); // Text editor background
+        style.visuals.extreme_bg_color = egui::Color32::from_rgb(18, 20, 24);
 
-        // Improve typography legibility
         for (text_style, font_id) in &mut style.text_styles {
             if *text_style == egui::TextStyle::Body || *text_style == egui::TextStyle::Button {
                 font_id.size = 14.0;
             } else if *text_style == egui::TextStyle::Monospace {
-                font_id.size = 15.0; // Slightly larger for comfortable coding/writing
+                font_id.size = 15.0;
             } else if *text_style == egui::TextStyle::Heading {
                 font_id.size = 20.0;
             }
         }
 
-        // Spacing polish
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(6.0, 4.0);
 
@@ -41,6 +77,9 @@ impl NoterApp {
     }
 
     fn do_open(&mut self) {
+        if !self.may_abandon_document() {
+            return;
+        }
         if let Some(path) = rfd::FileDialog::new().pick_file() {
             match Document::from_path(&path) {
                 Ok(doc) => {
@@ -61,82 +100,174 @@ impl NoterApp {
             return;
         }
 
-        let result = self.document.save();
-        self.handle_save_result(result);
+        match self.document.save() {
+            Err(NoterError::HardLinkedTarget(link_count)) => {
+                self.pending_hard_link_save = Some(PendingHardLinkSave::Current { link_count });
+                self.error_msg = None;
+            }
+            result => self.handle_save_result(result),
+        }
     }
 
     fn do_save_as(&mut self) {
         if let Some(path) = rfd::FileDialog::new().save_file() {
-            let result = self.document.save_as(path);
-            self.handle_save_result(result);
+            self.do_save_as_to(path);
         }
+    }
+
+    fn do_save_as_to(&mut self, path: PathBuf) {
+        let prepared = match self.document.prepare_save_as(path) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.handle_save_result(Err(error));
+                return;
+            }
+        };
+        if let Some(link_count) = prepared
+            .hard_link_count()
+            .filter(|link_count| *link_count > 1)
+        {
+            self.pending_hard_link_save = Some(PendingHardLinkSave::SaveAs {
+                prepared,
+                link_count,
+            });
+            self.error_msg = None;
+            return;
+        }
+        let result = self.document.save_prepared_as(prepared);
+        self.handle_save_result(result);
+    }
+
+    fn confirm_pending_hard_link_save(&mut self) {
+        let Some(pending) = self.pending_hard_link_save.take() else {
+            return;
+        };
+        let result = match pending {
+            PendingHardLinkSave::Current { .. } => {
+                self.document.save_confirming_hard_link_replacement()
+            }
+            PendingHardLinkSave::SaveAs { prepared, .. } => self
+                .document
+                .save_prepared_as_confirming_hard_link_replacement(prepared),
+        };
+        self.handle_save_result(result);
     }
 
     fn handle_save_result(&mut self, result: Result<SaveOutcome, NoterError>) {
         self.error_msg = match result {
             Ok(SaveOutcome::Committed { ref warnings, .. }) if warnings.is_empty() => None,
-            Ok(SaveOutcome::Committed { .. }) => {
-                Some("Saved, but cleanup or persistence could not be fully verified.".to_owned())
+            Ok(SaveOutcome::Committed { warnings, .. }) => {
+                let mut details: Vec<String> =
+                    warnings.cleanup().iter().map(ToString::to_string).collect();
+                details.extend(warnings.durability().iter().map(ToString::to_string));
+                Some(format!(
+                    "Saved, but follow-up is required: {}",
+                    details.join("; ")
+                ))
             }
-            Ok(SaveOutcome::Conflict { .. }) => Some(
-                "Save stopped because the destination changed. Your edits remain unsaved."
-                    .to_owned(),
-            ),
-            Ok(SaveOutcome::NotCommitted { ref error, .. }) => {
-                Some(format!("Save did not commit: {error}"))
+            Ok(SaveOutcome::Conflict { cleanup_error, .. }) => {
+                let mut message =
+                    "Save stopped because the destination changed. Your edits remain unsaved."
+                        .to_owned();
+                append_cleanup_error(&mut message, cleanup_error.as_ref());
+                Some(message)
             }
-            Ok(SaveOutcome::CommitStateUnknown { ref error, .. }) => Some(format!(
-                "Save state is uncertain and must be reconciled before retry: {error}"
+            Ok(SaveOutcome::NotCommitted {
+                error,
+                cleanup_error,
+                ..
+            }) => {
+                let mut message = format!("Save did not commit: {error}");
+                append_cleanup_error(&mut message, cleanup_error.as_ref());
+                Some(message)
+            }
+            Ok(SaveOutcome::CommitStateUnknown {
+                ref error,
+                ref recovery_artifact,
+                ..
+            }) => Some(format!(
+                "Save state is uncertain and must be reconciled before retry: {error}. Recovery follow-up: {recovery_artifact}"
             )),
             Err(error) => Some(format!("Failed to save file: {error}")),
         };
     }
 
-    fn handle_shortcuts(&mut self, ui: &egui::Ui) {
-        let mut open = false;
-        let mut save = false;
-        let mut save_as = false;
-        let mut new_file = false;
+    fn may_abandon_document(&mut self) -> bool {
+        if self.document.is_dirty() {
+            self.error_msg = Some(DIRTY_INTERLOCK_MESSAGE.to_owned());
+            false
+        } else {
+            true
+        }
+    }
+
+    fn start_new_document(&mut self) -> bool {
+        if !self.may_abandon_document() {
+            return false;
+        }
+        self.text.clear();
+        self.document = Document::new();
+        self.error_msg = None;
+        true
+    }
+
+    fn request_close(&mut self, ctx: &egui::Context) {
+        if self.may_abandon_document() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+    }
+
+    fn protect_native_close(&mut self, ctx: &egui::Context) {
+        if ctx.input(|input| input.viewport().close_requested()) && self.document.is_dirty() {
+            self.error_msg = Some(DIRTY_INTERLOCK_MESSAGE.to_owned());
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+    }
+
+    fn collect_shortcut(ui: &egui::Ui) -> Option<FileCommand> {
+        let mut command = None;
 
         ui.input_mut(|i| {
             if i.consume_shortcut(&egui::KeyboardShortcut::new(
                 egui::Modifiers::CTRL,
                 egui::Key::N,
             )) {
-                new_file = true;
+                command.get_or_insert(FileCommand::New);
             }
             if i.consume_shortcut(&egui::KeyboardShortcut::new(
                 egui::Modifiers::CTRL,
                 egui::Key::O,
             )) {
-                open = true;
+                command.get_or_insert(FileCommand::Open);
             }
             if i.consume_shortcut(&egui::KeyboardShortcut::new(
                 egui::Modifiers::CTRL,
                 egui::Key::S,
             )) {
-                save = true;
+                command.get_or_insert(FileCommand::Save);
             }
             if i.consume_shortcut(&egui::KeyboardShortcut::new(
                 egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
                 egui::Key::S,
             )) {
-                save_as = true;
+                command.get_or_insert(FileCommand::SaveAs);
             }
         });
 
-        if new_file {
-            self.text.clear();
-            self.document = Document::new();
-        }
-        if open {
-            self.do_open();
-        }
-        if save {
-            self.do_save();
-        }
-        if save_as {
-            self.do_save_as();
+        command
+    }
+
+    fn execute_file_command(&mut self, command: FileCommand, ctx: &egui::Context) {
+        match command {
+            FileCommand::New => {
+                self.start_new_document();
+            }
+            FileCommand::Open => self.do_open(),
+            FileCommand::Save => self.do_save(),
+            FileCommand::SaveAs => self.do_save_as(),
+            FileCommand::Quit => self.request_close(ctx),
         }
     }
 
@@ -152,10 +283,10 @@ impl NoterApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
 
-    fn show_menu(&mut self, ui: &mut egui::Ui) {
+    fn show_menu(&mut self, ui: &mut egui::Ui, command: &mut Option<FileCommand>) {
         egui::Panel::top("menu_bar").show_inside(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("File", |ui| self.show_file_menu(ui));
+                ui.menu_button("File", |ui| Self::show_file_menu(ui, command));
                 ui.menu_button("Edit", Self::show_edit_menu);
                 ui.menu_button("View", Self::show_view_menu);
                 ui.menu_button("Help", |ui| self.show_help_menu(ui));
@@ -163,39 +294,38 @@ impl NoterApp {
         });
     }
 
-    fn show_file_menu(&mut self, ui: &mut egui::Ui) {
+    fn show_file_menu(ui: &mut egui::Ui, command: &mut Option<FileCommand>) {
         if ui
             .add(egui::Button::new("New").shortcut_text("Ctrl+N"))
             .clicked()
         {
-            self.text.clear();
-            self.document = Document::new();
+            command.get_or_insert(FileCommand::New);
             ui.close();
         }
         if ui
             .add(egui::Button::new("Open...").shortcut_text("Ctrl+O"))
             .clicked()
         {
-            self.do_open();
+            command.get_or_insert(FileCommand::Open);
             ui.close();
         }
         if ui
             .add(egui::Button::new("Save").shortcut_text("Ctrl+S"))
             .clicked()
         {
-            self.do_save();
+            command.get_or_insert(FileCommand::Save);
             ui.close();
         }
         if ui
             .add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S"))
             .clicked()
         {
-            self.do_save_as();
+            command.get_or_insert(FileCommand::SaveAs);
             ui.close();
         }
         ui.separator();
         if ui.button("Quit").clicked() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            command.get_or_insert(FileCommand::Quit);
         }
     }
 
@@ -269,13 +399,11 @@ impl NoterApp {
             .show(ctx, |ui| {
                 ui.heading("Noter");
                 ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-                ui.label("A focused, local-only plain-text editor built around data safety.");
+                ui.label(ABOUT_SUMMARY);
                 ui.separator();
-                ui.label(
-                    "Markdown assistance and explicit formatting are planned for opt-in v0.2. \
-                     They are not available in the current prototype.",
-                );
-                ui.label("Noter has no telemetry, accounts, or network features.");
+                ui.label(ABOUT_MARKDOWN_STATUS);
+                ui.label(ABOUT_PRIVACY);
+                ui.label(ABOUT_LINK_BEHAVIOR);
                 ui.hyperlink_to("Project repository", env!("CARGO_PKG_REPOSITORY"));
                 ui.separator();
                 if ui.button("Close").clicked() {
@@ -283,6 +411,41 @@ impl NoterApp {
                 }
             });
         self.about_open = open && !close;
+    }
+
+    fn show_hard_link_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_hard_link_save.as_ref() else {
+            return;
+        };
+        let link_count = pending.link_count();
+        let mut open = true;
+        let mut confirm = false;
+        let mut cancel = false;
+
+        egui::Window::new("Confirm hard-link replacement")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "This file has {link_count} directory entries that currently share the same bytes."
+                ));
+                ui.label(
+                    "Replacing this entry will save here only. The other hard links will keep the previous revision.",
+                );
+                ui.label("Your edits remain unsaved unless you confirm.");
+                ui.separator();
+                ui.horizontal(|ui| {
+                    cancel = ui.button("Cancel").clicked();
+                    confirm = ui.button("Replace This Entry").clicked();
+                });
+            });
+
+        if confirm {
+            self.confirm_pending_hard_link_save();
+        } else if cancel || !open {
+            self.pending_hard_link_save = None;
+        }
     }
 
     fn show_error(&mut self, ui: &mut egui::Ui) {
@@ -334,6 +497,7 @@ impl NoterApp {
                     let response = ui.add_sized(
                         ui.available_size(),
                         egui::TextEdit::multiline(&mut self.text)
+                            .id(Self::editor_id())
                             .font(egui::TextStyle::Monospace)
                             .code_editor()
                             .frame(egui::Frame::NONE)
@@ -348,23 +512,51 @@ impl NoterApp {
                 });
             });
     }
+
+    fn render_frame(&mut self, ui: &mut egui::Ui) {
+        let mut command = Self::collect_shortcut(ui);
+        self.show_menu(ui, &mut command);
+        self.show_error(ui);
+        self.show_status(ui);
+        self.show_editor(ui);
+        if let Some(command) = command
+            && self.pending_hard_link_save.is_none()
+        {
+            self.execute_file_command(command, ui.ctx());
+        }
+        self.protect_native_close(ui.ctx());
+        self.update_title(ui.ctx());
+        self.show_about(ui.ctx());
+        self.show_hard_link_confirmation(ui.ctx());
+    }
+
+    fn editor_id() -> egui::Id {
+        egui::Id::new(EDITOR_ID_SALT)
+    }
+}
+
+fn append_cleanup_error(
+    message: &mut String,
+    cleanup_error: Option<&noter::core::save::StorageError>,
+) {
+    if let Some(cleanup_error) = cleanup_error {
+        message.push_str(" Cleanup also failed and a private artifact may remain: ");
+        message.push_str(&cleanup_error.to_string());
+    }
 }
 
 impl eframe::App for NoterApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.handle_shortcuts(ui);
-        self.update_title(ui.ctx());
-        self.show_menu(ui);
-        self.show_error(ui);
-        self.show_status(ui);
-        self.show_editor(ui);
-        self.show_about(ui.ctx());
+        self.render_frame(ui);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn about_action_opens_and_renders_the_window() {
@@ -375,6 +567,302 @@ mod tests {
         let context = egui::Context::default();
         let output = context.run_ui(egui::RawInput::default(), |ui| app.show_about(ui.ctx()));
         assert!(!output.shapes.is_empty());
+        assert_eq!(
+            ABOUT_SUMMARY,
+            "A focused, local-only plain-text editor built around data safety."
+        );
+        assert_eq!(
+            ABOUT_MARKDOWN_STATUS,
+            "Markdown assistance and explicit formatting are planned for opt-in v0.2. They are not available in the current prototype."
+        );
+        assert_eq!(
+            ABOUT_PRIVACY,
+            "Noter has no telemetry, accounts, or in-process network client."
+        );
+        assert_eq!(
+            ABOUT_LINK_BEHAVIOR,
+            "The project link opens in your default browser."
+        );
+        assert_eq!(
+            env!("CARGO_PKG_REPOSITORY"),
+            "https://github.com/blisspixel/noter"
+        );
         assert!(app.about_open);
+    }
+
+    #[test]
+    fn new_document_is_blocked_while_unsaved_changes_exist() {
+        let mut app = NoterApp {
+            text: "unsaved text".to_owned(),
+            ..NoterApp::default()
+        };
+        app.document
+            .replace_text(&app.text)
+            .expect("the test edit should advance the document revision");
+
+        assert!(!app.start_new_document());
+        assert_eq!(app.text, "unsaved text");
+        assert_eq!(String::from(app.document.rope()), "unsaved text");
+        assert!(app.document.is_dirty());
+        assert_eq!(app.error_msg.as_deref(), Some(DIRTY_INTERLOCK_MESSAGE));
+    }
+
+    #[test]
+    fn new_document_replaces_a_clean_document() {
+        let mut app = NoterApp {
+            text: "stale view text".to_owned(),
+            ..NoterApp::default()
+        };
+
+        assert!(app.start_new_document());
+        assert!(app.text.is_empty());
+        assert_eq!(app.document.rope().len_bytes(), 0);
+        assert!(!app.document.is_dirty());
+        assert!(app.error_msg.is_none());
+    }
+
+    #[test]
+    fn dirty_close_is_cancelled_and_explained() {
+        let mut app = NoterApp::default();
+        app.document
+            .replace_text("unsaved text")
+            .expect("the test edit should advance the document revision");
+        let context = egui::Context::default();
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            app.request_close(ui.ctx());
+        });
+        let commands = &output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport should have output")
+            .commands;
+
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        assert_eq!(app.error_msg.as_deref(), Some(DIRTY_INTERLOCK_MESSAGE));
+    }
+
+    #[test]
+    fn native_dirty_close_event_is_cancelled() {
+        let mut app = NoterApp::default();
+        app.document
+            .replace_text("unsaved text")
+            .expect("the test edit should advance the document revision");
+        let context = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .events
+            .push(egui::ViewportEvent::Close);
+
+        let output = context.run_ui(input, |ui| app.protect_native_close(ui.ctx()));
+        let commands = &output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport should have output")
+            .commands;
+
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert_eq!(app.error_msg.as_deref(), Some(DIRTY_INTERLOCK_MESSAGE));
+    }
+
+    #[test]
+    fn same_frame_editor_input_is_recorded_before_native_close_decision() {
+        let mut app = NoterApp::default();
+        let context = egui::Context::default();
+        context.memory_mut(|memory| memory.request_focus(NoterApp::editor_id()));
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Text("unsaved".to_owned()));
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .events
+            .push(egui::ViewportEvent::Close);
+
+        let output = context.run_ui(input, |ui| app.render_frame(ui));
+        let commands = &output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport should have output")
+            .commands;
+
+        assert_eq!(app.text, "unsaved");
+        assert_eq!(String::from(app.document.rope()), "unsaved");
+        assert!(app.document.is_dirty());
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+    }
+
+    #[test]
+    fn noncommitted_cleanup_failure_is_visible() {
+        use noter::core::revision::Revision;
+        use noter::core::save::{SaveStage, StorageError};
+
+        let mut app = NoterApp::default();
+        app.handle_save_result(Ok(SaveOutcome::NotCommitted {
+            revision: Revision::INITIAL,
+            error: StorageError::new(SaveStage::Write, "primary failure"),
+            cleanup_error: Some(StorageError::new(
+                SaveStage::Cleanup,
+                "private artifact was preserved",
+            )),
+        }));
+
+        let message = app.error_msg.expect("the failure must be visible");
+        assert!(message.contains("primary failure"));
+        assert!(message.contains("Cleanup also failed"));
+        assert!(message.contains("private artifact was preserved"));
+    }
+
+    #[test]
+    fn unknown_commit_recovery_artifact_is_visible() {
+        use noter::core::revision::Revision;
+        use noter::core::save::{SaveStage, StorageError};
+
+        let mut app = NoterApp::default();
+        app.handle_save_result(Ok(SaveOutcome::CommitStateUnknown {
+            revision: Revision::INITIAL,
+            error: StorageError::new(SaveStage::Reconcile, "destination state differs"),
+            recovery_artifact: StorageError::new(
+                SaveStage::Cleanup,
+                "inspect `.noter-save-recovery.tmp` before retrying",
+            ),
+        }));
+
+        let message = app.error_msg.expect("the recovery action must be visible");
+        assert!(message.contains("destination state differs"));
+        assert!(message.contains(".noter-save-recovery.tmp"));
+        assert!(message.contains("before retrying"));
+    }
+
+    #[test]
+    fn clean_close_is_forwarded_to_the_viewport() {
+        let mut app = NoterApp::default();
+        let context = egui::Context::default();
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            app.request_close(ui.ctx());
+        });
+        let commands = &output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport should have output")
+            .commands;
+
+        assert!(commands.contains(&egui::ViewportCommand::Close));
+        assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(app.error_msg.is_none());
+    }
+
+    #[test]
+    fn hard_link_save_is_available_only_after_gui_confirmation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let selected = directory.path().join("selected.txt");
+        let other_link = directory.path().join("other.txt");
+        fs::write(&selected, b"shared original")?;
+        fs::hard_link(&selected, &other_link)?;
+
+        let mut document = Document::from_path(&selected)?;
+        document.replace_text("selected replacement")?;
+        let mut app = NoterApp {
+            text: "selected replacement".to_owned(),
+            document,
+            ..NoterApp::default()
+        };
+
+        app.do_save();
+
+        assert!(matches!(
+            app.pending_hard_link_save,
+            Some(PendingHardLinkSave::Current { link_count }) if link_count >= 2
+        ));
+        assert_eq!(fs::read(&selected)?, b"shared original");
+        assert_eq!(fs::read(&other_link)?, b"shared original");
+
+        let context = egui::Context::default();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            app.show_hard_link_confirmation(ui.ctx());
+        });
+        assert!(!output.shapes.is_empty());
+
+        app.confirm_pending_hard_link_save();
+
+        assert!(app.pending_hard_link_save.is_none());
+        assert_eq!(fs::read(&selected)?, b"selected replacement");
+        assert_eq!(fs::read(&other_link)?, b"shared original");
+        assert!(!app.document.is_dirty());
+        Ok(())
+    }
+
+    #[test]
+    fn hard_link_save_as_confirmation_adopts_only_the_selected_entry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let selected = directory.path().join("selected.txt");
+        let other_link = directory.path().join("other.txt");
+        fs::write(&selected, b"shared original")?;
+        fs::hard_link(&selected, &other_link)?;
+
+        let mut app = NoterApp {
+            text: "new document".to_owned(),
+            ..NoterApp::default()
+        };
+        app.document.replace_text(&app.text)?;
+
+        app.do_save_as_to(selected.clone());
+
+        assert!(matches!(
+            app.pending_hard_link_save,
+            Some(PendingHardLinkSave::SaveAs { link_count, .. }) if link_count >= 2
+        ));
+        assert!(app.document.path().is_none());
+
+        app.confirm_pending_hard_link_save();
+
+        assert!(app.pending_hard_link_save.is_none());
+        assert_eq!(app.document.path(), Some(selected.as_path()));
+        assert_eq!(fs::read(&selected)?, b"new document");
+        assert_eq!(fs::read(&other_link)?, b"shared original");
+        assert!(!app.document.is_dirty());
+        Ok(())
+    }
+
+    #[test]
+    fn hard_link_save_as_confirmation_rejects_a_rebound_selected_entry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let selected = directory.path().join("selected.txt");
+        let other_link = directory.path().join("other.txt");
+        fs::write(&selected, b"shared original")?;
+        fs::hard_link(&selected, &other_link)?;
+
+        let mut app = NoterApp {
+            text: "new document".to_owned(),
+            ..NoterApp::default()
+        };
+        app.document.replace_text(&app.text)?;
+        app.do_save_as_to(selected.clone());
+        assert!(app.pending_hard_link_save.is_some());
+
+        fs::remove_file(&selected)?;
+        fs::write(&selected, b"external replacement")?;
+        app.confirm_pending_hard_link_save();
+
+        assert!(app.pending_hard_link_save.is_none());
+        assert_eq!(fs::read(&selected)?, b"external replacement");
+        assert_eq!(fs::read(&other_link)?, b"shared original");
+        assert!(app.document.path().is_none());
+        assert!(app.document.is_dirty());
+        assert!(
+            app.error_msg
+                .as_deref()
+                .is_some_and(|message| message.contains("destination changed"))
+        );
+        Ok(())
     }
 }

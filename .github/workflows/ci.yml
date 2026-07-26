@@ -19,9 +19,6 @@ permissions:
   contents: read
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Formatting & Linting (fast, runs on one platform)
-  # ---------------------------------------------------------------------------
   fmt-clippy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -40,16 +37,19 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --locked --workspace --no-deps
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@e62b3bdab54265ba809383c8707cb0600da93f19
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
+      - name: Audit locked dependencies
+        run: cargo audit --deny warnings
 
-  # ---------------------------------------------------------------------------
-  # Tests (matrix across the three platforms we care about)
-  # ---------------------------------------------------------------------------
   test:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        # Future: add aarch64 macos runner or specific ubuntu version when needed
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -65,10 +65,12 @@ jobs:
       - name: Run tests
         run: cargo test --locked --verbose --workspace --all-targets --all-features
 
-      # Optional: coverage on one platform (Linux is usually fastest)
       - name: Install cargo-llvm-cov
         if: matrix.os == 'ubuntu-latest'
         uses: taiki-e/install-action@e62b3bdab54265ba809383c8707cb0600da93f19 # cargo-llvm-cov
+        with:
+          tool: cargo-llvm-cov@0.8.7
+          fallback: none
       - name: Generate coverage (Linux only)
         if: matrix.os == 'ubuntu-latest'
         run: >
@@ -83,9 +85,6 @@ jobs:
           name: coverage-linux
           path: lcov.info
 
-  # ---------------------------------------------------------------------------
-  # Mutation testing (trust-kernel decision paths, not GUI coverage padding)
-  # ---------------------------------------------------------------------------
   mutation:
     strategy:
       fail-fast: false
@@ -96,7 +95,7 @@ jobs:
           - os: windows-latest
             scope: windows-full
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
@@ -117,12 +116,18 @@ jobs:
         run: >
           cargo mutants -vV --in-place --colors never
           --exclude-re
-          '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement)'
+          '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination)'
       - name: Run full Windows trust-kernel mutation tests
         if: runner.os == 'Windows'
         env:
           CARGO_INCREMENTAL: 1
-        run: cargo mutants -vV --in-place --colors never
+        run: >
+          cargo mutants -vV --in-place --colors never
+          --exclude-re
+          '(metadata_source_status|finalize_unix_displaced_destination)'
+      - name: Reject infrastructure failures hidden as unviable mutants
+        if: always()
+        run: python scripts/check_mutation_infrastructure.py mutants.out
       - name: Upload mutation results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -130,9 +135,6 @@ jobs:
           name: mutation-results-${{ matrix.scope }}
           path: mutants.out
 
-  # ---------------------------------------------------------------------------
-  # Documentation & planning doc sanity (we treat the MD files as code)
-  # ---------------------------------------------------------------------------
   docs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -141,10 +143,12 @@ jobs:
       - name: Check that key planning documents exist and are not empty
         run: |
           test -s README.md
+          test -s CHANGELOG.md
           test -s LICENSE
           test -s docs/RESEARCH.md
           test -s docs/BASELINE.md
           test -s docs/M1_MUTATION_EVIDENCE.md
+          test -s docs/M1_SECURITY_REVIEW.md
           test -s docs/REQUIREMENTS.md
           test -s docs/DESIGN.md
           test -s docs/ROADMAP.md
@@ -152,22 +156,9 @@ jobs:
           test -s docs/adr/0001-egui-and-editor-gate.md
           test -s docs/adr/0002-encoding-and-line-endings.md
           test -s docs/adr/0003-durable-replacement.md
+          test -s docs/CODE-QUALITY-STANDARDS.md
           echo "All core planning documents present and non-empty."
       - name: Check local documentation links
         run: python3 scripts/check_doc_links.py
-
-  # ---------------------------------------------------------------------------
-  # (Future Phase 4) cargo-dist dry-run or plan on tags
-  # We keep a placeholder job so the intent is visible in the workflow from day one.
-  # ---------------------------------------------------------------------------
-  # dist-plan:
-  #   if: startsWith(github.ref, 'refs/tags/')
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-  #     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
-  #       with:
-  #         toolchain: 1.97.1
-  #     - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-  #     - name: cargo dist plan (dry run)
-  #       run: cargo dist plan --output-format=json | cat
+      - name: Test repository validation scripts
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'

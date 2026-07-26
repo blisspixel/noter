@@ -1,13 +1,15 @@
 //! Production filesystem storage primitives.
 
-use std::fs::{self, File, OpenOptions};
+use std::fmt;
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use super::file_observation::{inspect_target, is_final_link};
+use super::file_observation::{inspect_target, is_final_link, open_verified_cleanup_candidate};
 use super::save::{
     ContentFingerprint, Durability, DurabilityOutcome, FileIdentity, FileObservation,
     IdentityQuality, ReplaceOutcome, ReplaceReceipt, SaveStage, Storage, StorageError, TargetState,
+    TemporaryCreationFailure,
 };
 
 const RANDOM_NAME_BYTES: usize = 16;
@@ -19,11 +21,37 @@ const BACKUP_PREFIX: &str = ".noter-backup-";
 #[cfg(windows)]
 const BACKUP_SUFFIX: &str = ".bak";
 
+#[derive(Debug)]
+struct RetainedCreationArtifact {
+    basename: String,
+    inspection_kind: io::ErrorKind,
+    cleanup_kind: io::ErrorKind,
+}
+
+impl RetainedCreationArtifact {
+    fn cleanup_error(&self) -> StorageError {
+        StorageError::new(SaveStage::Cleanup, self.to_string())
+    }
+}
+
+impl fmt::Display for RetainedCreationArtifact {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "creation-time identity inspection failed with {:?}, then handle-bound cleanup failed with {:?}. The newly created private sibling `{}` may remain beside the destination. Noter had not written application bytes, but a same-authority process could have changed it. Inspect it before retrying or removing it.",
+            self.inspection_kind, self.cleanup_kind, self.basename
+        )
+    }
+}
+
+impl std::error::Error for RetainedCreationArtifact {}
+
 /// An exclusively created sibling owned by one save attempt.
 ///
-/// Dropping this value makes a best-effort cleanup attempt. The storage
-/// protocol uses [`TemporaryFile::discard`] when it must observe cleanup
-/// failures explicitly.
+/// Dropping this value requests handle-bound cleanup where the platform
+/// supports it. Unix preserves the sibling because portable unlink remains
+/// pathname-based. The storage protocol uses [`TemporaryFile::discard`] when
+/// it must report that conservative retention explicitly.
 #[derive(Debug)]
 pub struct TemporaryFile {
     file: Option<File>,
@@ -126,7 +154,7 @@ impl TemporaryFile {
         Ok(noter_platform::file_facts(&reopened)?.identity() == self.identity)
     }
 
-    /// Closes the handle and removes the private sibling explicitly.
+    /// Removes the private sibling through its original open handle.
     ///
     /// A missing path already satisfies cleanup and is treated as success.
     ///
@@ -153,12 +181,23 @@ impl TemporaryFile {
             },
         }
 
-        self.file.take();
-        let result = missing_cleanup_is_success(fs::remove_file(&self.path));
-        if result.is_ok() {
-            self.cleanup_armed = false;
+        if let Some(file) = self.file.as_ref() {
+            noter_platform::delete_open_file(file)?;
+            self.file.take();
+        } else {
+            let file = noter_platform::open_for_cleanup(&self.path)?;
+            if noter_platform::file_facts(&file)?.identity() != self.identity {
+                self.cleanup_armed = false;
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "temporary path no longer identifies the owned file",
+                ));
+            }
+            noter_platform::delete_open_file(&file)?;
+            drop(file);
         }
-        result
+        self.cleanup_armed = false;
+        Ok(())
     }
 
     fn file(&self) -> io::Result<&File> {
@@ -187,6 +226,7 @@ impl TemporaryFile {
             && platform_identity_matches(self.identity, observation.identity()))
     }
 
+    #[cfg(any(windows, test))]
     fn close_handle(&mut self) {
         self.file.take();
     }
@@ -196,21 +236,13 @@ impl TemporaryFile {
     }
 }
 
-fn missing_cleanup_is_success(result: io::Result<()>) -> io::Result<()> {
-    match result {
-        Ok(()) => Ok(()),
-        Err(error) => match error.kind() {
-            io::ErrorKind::NotFound => Ok(()),
-            _ => Err(error),
-        },
-    }
-}
-
 impl Drop for TemporaryFile {
     fn drop(&mut self) {
-        if self.cleanup_armed && matches!(self.path_still_identifies_file(), Ok(true)) {
-            self.file.take();
-            let _ = fs::remove_file(&self.path);
+        if self.cleanup_armed
+            && matches!(self.path_still_identifies_file(), Ok(true))
+            && let Some(file) = self.file.as_ref()
+        {
+            let _ = noter_platform::delete_open_file(file);
         }
     }
 }
@@ -218,8 +250,9 @@ impl Drop for TemporaryFile {
 /// Creates an unpredictable, exclusive sibling in the destination directory.
 ///
 /// The sibling starts owner-only on Unix and is opened for both reading and
-/// writing. Later metadata policy may widen its final mode immediately before
-/// commit. Its name contains 128 bits from the operating-system random source.
+/// writing. Existing-file metadata is finalized only after atomic exchange, so
+/// staged bytes are never exposed through a widened precommit mode. Its name
+/// contains 128 bits from the operating-system random source.
 ///
 /// # Errors
 ///
@@ -234,6 +267,16 @@ fn create_unique_sibling_with(
     destination: &Path,
     random: &mut impl RandomSource,
 ) -> io::Result<TemporaryFile> {
+    create_unique_sibling_with_identity(destination, random, |file| {
+        noter_platform::file_facts(file).map(noter_platform::FileFacts::identity)
+    })
+}
+
+fn create_unique_sibling_with_identity(
+    destination: &Path,
+    random: &mut impl RandomSource,
+    mut identity_for: impl FnMut(&File) -> io::Result<noter_platform::FileIdentity>,
+) -> io::Result<TemporaryFile> {
     if destination.file_name().is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -246,16 +289,28 @@ fn create_unique_sibling_with(
     for _ in 0..MAX_CREATE_ATTEMPTS {
         let mut random_bytes = [0_u8; RANDOM_NAME_BYTES];
         random.fill(&mut random_bytes)?;
-        let path = parent.join(candidate_name(&random_bytes));
+        let basename = candidate_name(&random_bytes);
+        let path = parent.join(&basename);
 
         match open_exclusive(&path) {
             Ok(file) => {
-                let identity = match noter_platform::file_facts(&file) {
-                    Ok(facts) => facts.identity(),
+                let identity = match identity_for(&file) {
+                    Ok(identity) => identity,
                     Err(error) => {
+                        let cleanup_error = noter_platform::delete_open_file(&file).err();
                         drop(file);
-                        let _ = fs::remove_file(&path);
-                        return Err(error);
+                        let Some(cleanup_error) = cleanup_error else {
+                            return Err(error);
+                        };
+                        let error_kind = error.kind();
+                        return Err(io::Error::new(
+                            error_kind,
+                            RetainedCreationArtifact {
+                                basename,
+                                inspection_kind: error_kind,
+                                cleanup_kind: cleanup_error.kind(),
+                            },
+                        ));
                     }
                 };
                 return Ok(TemporaryFile {
@@ -280,16 +335,7 @@ fn create_unique_sibling_with(
 }
 
 fn open_exclusive(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create_new(true);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-
-    options.open(path)
+    noter_platform::create_private_new_file(path)
 }
 
 fn candidate_name(random: &[u8; RANDOM_NAME_BYTES]) -> String {
@@ -337,10 +383,8 @@ impl Storage for FilesystemStorage {
     fn create_unique_sibling(
         &mut self,
         destination: &Path,
-    ) -> Result<Self::Temporary, StorageError> {
-        create_unique_sibling(destination).map_err(|error| {
-            redacted_io_error(SaveStage::CreateTemporary, "create private sibling", &error)
-        })
+    ) -> Result<Self::Temporary, TemporaryCreationFailure> {
+        create_unique_sibling(destination).map_err(|error| temporary_creation_failure(&error))
     }
 
     fn write_all(
@@ -361,7 +405,7 @@ impl Storage for FilesystemStorage {
 
     fn apply_metadata(
         &mut self,
-        temporary: &mut Self::Temporary,
+        _temporary: &mut Self::Temporary,
         destination: &Path,
         source: Option<&FileObservation>,
     ) -> Result<(), StorageError> {
@@ -411,21 +455,6 @@ impl Storage for FilesystemStorage {
             ));
         }
 
-        let temporary_file = temporary.file().map_err(|error| {
-            redacted_io_error(
-                SaveStage::ApplyMetadata,
-                "access private sibling handle",
-                &error,
-            )
-        })?;
-        noter_platform::copy_required_metadata(&source_file, temporary_file).map_err(|error| {
-            redacted_io_error(
-                SaveStage::ApplyMetadata,
-                "preserve required destination metadata",
-                &error,
-            )
-        })?;
-
         if inspect_target(destination, SaveStage::ApplyMetadata)? != TargetState::Regular(expected)
         {
             return Err(StorageError::new(
@@ -444,7 +473,7 @@ impl Storage for FilesystemStorage {
 
     fn replace(
         &mut self,
-        mut temporary: Self::Temporary,
+        temporary: Self::Temporary,
         destination: &Path,
         expected: TargetState,
     ) -> ReplaceOutcome<Self::Temporary> {
@@ -481,7 +510,6 @@ impl Storage for FilesystemStorage {
             };
         }
 
-        temporary.close_handle();
         match expected {
             TargetState::Regular(expected) => {
                 replace_existing_file(temporary, destination, expected)
@@ -517,8 +545,16 @@ impl Storage for FilesystemStorage {
     }
 
     fn discard(&mut self, temporary: Self::Temporary) -> Result<(), StorageError> {
+        let artifact = artifact_label(&temporary);
         temporary.discard().map_err(|error| {
-            redacted_io_error(SaveStage::Cleanup, "remove private sibling", &error)
+            let failure = redacted_io_error(SaveStage::Cleanup, "remove private sibling", &error);
+            StorageError::new(
+                SaveStage::Cleanup,
+                format!(
+                    "{}. The uncommitted private sibling may remain as {artifact} beside the destination. Inspect it before retrying, recovering, or removing it.",
+                    failure.message()
+                ),
+            )
         })
     }
 }
@@ -527,6 +563,24 @@ fn replace_existing_file(
     temporary: TemporaryFile,
     destination: &Path,
     expected: FileObservation,
+) -> ReplaceOutcome<TemporaryFile> {
+    replace_existing_file_with(
+        temporary,
+        destination,
+        expected,
+        noter_platform::replace_existing,
+    )
+}
+
+fn replace_existing_file_with(
+    temporary: TemporaryFile,
+    destination: &Path,
+    expected: FileObservation,
+    replace: impl FnOnce(
+        &Path,
+        &Path,
+        Option<&Path>,
+    ) -> io::Result<noter_platform::ReplaceExistingOutcome>,
 ) -> ReplaceOutcome<TemporaryFile> {
     let backup = match replacement_backup_path(destination) {
         Ok(backup) => backup,
@@ -542,21 +596,201 @@ fn replace_existing_file(
         }
     };
 
-    match noter_platform::replace_existing(temporary.path(), destination, backup.as_deref()) {
-        Ok(()) => finalize_commit(
+    #[cfg(windows)]
+    let mut temporary = temporary;
+    #[cfg(not(windows))]
+    let temporary = temporary;
+
+    #[cfg(windows)]
+    {
+        temporary.close_handle();
+        match closed_temporary_matches_intended(&temporary) {
+            Ok(true) => {}
+            Ok(false) => {
+                return ReplaceOutcome::NotCommitted {
+                    temporary,
+                    error: StorageError::new(
+                        SaveStage::Replace,
+                        "private sibling content or identity changed during the Windows replacement handoff",
+                    ),
+                };
+            }
+            Err(error) => {
+                return ReplaceOutcome::NotCommitted { temporary, error };
+            }
+        }
+    }
+
+    match replace(temporary.path(), destination, backup.as_deref()) {
+        Ok(noter_platform::ReplaceExistingOutcome::Clean) => finalize_commit(
             temporary,
             destination,
             backup.map(|path| (path, expected)),
             Vec::new(),
         ),
+        Ok(noter_platform::ReplaceExistingOutcome::DisplacedDestination) => {
+            #[cfg(unix)]
+            {
+                finalize_unix_displaced_destination(temporary, destination, expected, backup)
+            }
+            #[cfg(not(unix))]
+            {
+                finalize_unexpected_displaced_destination(temporary, destination, expected, backup)
+            }
+        }
         Err(error) => reconcile_existing_failure(temporary, destination, expected, backup, &error),
     }
 }
 
+#[cfg(windows)]
+fn closed_temporary_matches_intended(temporary: &TemporaryFile) -> Result<bool, StorageError> {
+    let TargetState::Regular(observation) = inspect_target(temporary.path(), SaveStage::Replace)?
+    else {
+        return Ok(false);
+    };
+    temporary
+        .committed_observation_matches(observation)
+        .map_err(|error| {
+            redacted_io_error(
+                SaveStage::Replace,
+                "validate private sibling after closing its staging handle",
+                &error,
+            )
+        })
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MetadataSourceStatus {
+    Matches,
+    ObservationChanged,
+    FactsChanged,
+}
+
+#[cfg(unix)]
+const fn metadata_source_status(
+    observation_matches: bool,
+    facts_match: bool,
+) -> MetadataSourceStatus {
+    match (observation_matches, facts_match) {
+        (false, _) => MetadataSourceStatus::ObservationChanged,
+        (true, false) => MetadataSourceStatus::FactsChanged,
+        (true, true) => MetadataSourceStatus::Matches,
+    }
+}
+
+#[cfg(unix)]
+fn finalize_unix_displaced_destination(
+    temporary: TemporaryFile,
+    destination: &Path,
+    expected: FileObservation,
+    backup: Option<PathBuf>,
+) -> ReplaceOutcome<TemporaryFile> {
+    let mut cleanup_warnings = Vec::new();
+    let mut durability_warnings = Vec::new();
+    match open_verified_cleanup_candidate(temporary.path(), SaveStage::ApplyMetadata) {
+        Ok(Some((source, observation))) => match noter_platform::file_facts(&source) {
+            Ok(facts) => match metadata_source_status(
+                replacement_backup_matches(observation, expected),
+                platform_facts_match(facts, expected),
+            ) {
+                MetadataSourceStatus::Matches => {
+                    if let Err(error) = temporary.file().and_then(|destination_file| {
+                        noter_platform::copy_required_metadata(&source, destination_file)
+                    }) {
+                        cleanup_warnings.push(redacted_io_error(
+                            SaveStage::ApplyMetadata,
+                            "finalize committed destination metadata",
+                            &error,
+                        ));
+                    }
+                }
+                MetadataSourceStatus::ObservationChanged => {
+                    cleanup_warnings.push(StorageError::new(
+                        SaveStage::ApplyMetadata,
+                        "previous destination identity or content changed before committed metadata finalization",
+                    ));
+                }
+                MetadataSourceStatus::FactsChanged => cleanup_warnings.push(StorageError::new(
+                    SaveStage::ApplyMetadata,
+                    "previous destination changed before committed metadata finalization",
+                )),
+            },
+            Err(error) => cleanup_warnings.push(redacted_io_error(
+                SaveStage::ApplyMetadata,
+                "revalidate committed metadata source",
+                &error,
+            )),
+        },
+        Ok(None) => cleanup_warnings.push(StorageError::new(
+            SaveStage::ApplyMetadata,
+            "previous destination was unavailable during committed metadata finalization",
+        )),
+        Err(error) => cleanup_warnings.push(error),
+    }
+
+    if let Err(error) = temporary.sync_all() {
+        durability_warnings.push(redacted_io_error(
+            SaveStage::SyncFile,
+            "synchronize committed metadata",
+            &error,
+        ));
+    }
+
+    finalize_commit_with_cleanup(
+        temporary,
+        destination,
+        TemporaryCleanup::PreservedDisplacedDestination,
+        backup.map(|path| (path, expected)),
+        cleanup_warnings,
+        durability_warnings,
+    )
+}
+
+#[cfg(not(unix))]
+fn finalize_unexpected_displaced_destination(
+    temporary: TemporaryFile,
+    destination: &Path,
+    expected: FileObservation,
+    backup: Option<PathBuf>,
+) -> ReplaceOutcome<TemporaryFile> {
+    finalize_commit_with_cleanup(
+        temporary,
+        destination,
+        TemporaryCleanup::PreservedDisplacedDestination,
+        backup.map(|path| (path, expected)),
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
 fn install_new_file(temporary: TemporaryFile, destination: &Path) -> ReplaceOutcome<TemporaryFile> {
     match noter_platform::install_new(temporary.path(), destination) {
-        Ok(_outcome) => finalize_commit(temporary, destination, None, Vec::new()),
+        Ok(outcome) => finalize_installed_file(temporary, destination, &outcome, None),
         Err(error) => reconcile_new_failure(temporary, destination, &error),
+    }
+}
+
+fn finalize_installed_file(
+    temporary: TemporaryFile,
+    destination: &Path,
+    outcome: &noter_platform::InstallNewOutcome,
+    backup: Option<(PathBuf, FileObservation)>,
+) -> ReplaceOutcome<TemporaryFile> {
+    match outcome {
+        noter_platform::InstallNewOutcome::Clean => {
+            finalize_commit(temporary, destination, backup, Vec::new())
+        }
+        noter_platform::InstallNewOutcome::CommittedWithRetainedTemporary => {
+            finalize_commit_with_cleanup(
+                temporary,
+                destination,
+                TemporaryCleanup::PreservedTemporaryName,
+                backup,
+                Vec::new(),
+                Vec::new(),
+            )
+        }
     }
 }
 
@@ -567,7 +801,7 @@ fn reconcile_new_failure(
 ) -> ReplaceOutcome<TemporaryFile> {
     let actual = match inspect_target(destination, SaveStage::Reconcile) {
         Ok(actual) => actual,
-        Err(error) => return unknown_with_preserved_temporary(temporary, error),
+        Err(error) => return unknown_with_preserved_temporary(temporary, error, None),
     };
     if let TargetState::Regular(observation) = actual
         && matches!(
@@ -594,6 +828,7 @@ fn reconcile_new_failure(
                 SaveStage::Reconcile,
                 "new-file commit failed and private sibling identity changed",
             ),
+            None,
         ),
         Err(error) => unknown_with_preserved_temporary(
             temporary,
@@ -602,6 +837,7 @@ fn reconcile_new_failure(
                 "reconcile private sibling after new-file failure",
                 &error,
             ),
+            None,
         ),
     }
 }
@@ -615,7 +851,9 @@ fn reconcile_existing_failure(
 ) -> ReplaceOutcome<TemporaryFile> {
     let actual = match inspect_target(destination, SaveStage::Reconcile) {
         Ok(actual) => actual,
-        Err(error) => return unknown_with_preserved_temporary(temporary, error),
+        Err(error) => {
+            return unknown_with_preserved_temporary(temporary, error, backup.as_deref());
+        }
     };
     if let TargetState::Regular(observation) = actual
         && matches!(
@@ -642,12 +880,12 @@ fn reconcile_existing_failure(
         );
         if state_is_completable {
             match noter_platform::install_new(temporary.path(), destination) {
-                Ok(_outcome) => {
-                    return finalize_commit(
+                Ok(outcome) => {
+                    return finalize_installed_file(
                         temporary,
                         destination,
+                        &outcome,
                         backup.map(|path| (path, expected)),
-                        Vec::new(),
                     );
                 }
                 Err(_finish_error) => {
@@ -657,6 +895,7 @@ fn reconcile_existing_failure(
                             SaveStage::Reconcile,
                             "documented partial replacement could not be completed safely",
                         ),
+                        backup.as_deref(),
                     );
                 }
             }
@@ -681,6 +920,7 @@ fn reconcile_existing_failure(
                 SaveStage::Reconcile,
                 "replacement failure left a documented partial or unexplained path state",
             ),
+            backup.as_deref(),
         ),
         Err(error) => unknown_with_preserved_temporary(
             temporary,
@@ -689,6 +929,7 @@ fn reconcile_existing_failure(
                 "reconcile private sibling after replacement failure",
                 &error,
             ),
+            backup.as_deref(),
         ),
     }
 }
@@ -705,7 +946,32 @@ fn finalize_commit(
     temporary: TemporaryFile,
     destination: &Path,
     backup: Option<(PathBuf, FileObservation)>,
+    cleanup_warnings: Vec<StorageError>,
+) -> ReplaceOutcome<TemporaryFile> {
+    finalize_commit_with_cleanup(
+        temporary,
+        destination,
+        TemporaryCleanup::Owned,
+        backup,
+        cleanup_warnings,
+        Vec::new(),
+    )
+}
+
+#[derive(Clone, Copy)]
+enum TemporaryCleanup {
+    Owned,
+    PreservedTemporaryName,
+    PreservedDisplacedDestination,
+}
+
+fn finalize_commit_with_cleanup(
+    mut temporary: TemporaryFile,
+    destination: &Path,
+    temporary_cleanup: TemporaryCleanup,
+    backup: Option<(PathBuf, FileObservation)>,
     mut cleanup_warnings: Vec<StorageError>,
+    durability_warnings: Vec<StorageError>,
 ) -> ReplaceOutcome<TemporaryFile> {
     let observation = match inspect_target(destination, SaveStage::Reconcile) {
         Ok(TargetState::Regular(observation)) => {
@@ -718,6 +984,7 @@ fn finalize_commit(
                             SaveStage::Reconcile,
                             "commit operation returned success but destination verification differed",
                         ),
+                        backup.as_ref().map(|(path, _)| path.as_path()),
                     );
                 }
             }
@@ -729,17 +996,56 @@ fn finalize_commit(
                     SaveStage::Reconcile,
                     "commit operation returned success but destination verification differed",
                 ),
+                backup.as_ref().map(|(path, _)| path.as_path()),
             );
         }
-        Err(error) => return unknown_with_preserved_temporary(temporary, error),
+        Err(error) => {
+            return unknown_with_preserved_temporary(
+                temporary,
+                error,
+                backup.as_ref().map(|(path, _)| path.as_path()),
+            );
+        }
     };
 
-    if let Err(error) = temporary.discard() {
-        cleanup_warnings.push(redacted_io_error(
-            SaveStage::Cleanup,
-            "remove committed temporary name",
-            &error,
-        ));
+    match temporary_cleanup {
+        TemporaryCleanup::Owned => {
+            let artifact = artifact_label(&temporary);
+            if let Err(error) = temporary.discard() {
+                let failure = redacted_io_error(
+                    SaveStage::Cleanup,
+                    "remove committed temporary name",
+                    &error,
+                );
+                cleanup_warnings.push(StorageError::new(
+                    SaveStage::Cleanup,
+                    format!(
+                        "{}. A sibling entry may remain as {artifact} beside the destination. Inspect it before removing it.",
+                        failure.message()
+                    ),
+                ));
+            }
+        }
+        TemporaryCleanup::PreservedTemporaryName => {
+            cleanup_warnings.push(preserved_artifact_warning(
+                &temporary,
+                "A hard-link sibling containing the committed bytes",
+                "portable Unix cleanup cannot delete a verified object by handle",
+                "It names the same saved file; remove this sibling when it is no longer needed to restore ordinary single-link saves.",
+            ));
+            temporary.preserve_artifact();
+            drop(temporary);
+        }
+        TemporaryCleanup::PreservedDisplacedDestination => {
+            cleanup_warnings.push(preserved_artifact_warning(
+                &temporary,
+                "A displaced recovery artifact",
+                "portable Unix cleanup cannot delete a verified object by handle",
+                "It may contain the prior destination or bytes written by a concurrent actor. Inspect its contents before recovery or removal.",
+            ));
+            temporary.preserve_artifact();
+            drop(temporary);
+        }
     }
     if let Some((backup, expected)) = backup
         && let Err(error) = remove_verified_backup(&backup, expected)
@@ -747,69 +1053,111 @@ fn finalize_commit(
         cleanup_warnings.push(error);
     }
 
-    ReplaceOutcome::Committed(ReplaceReceipt::with_cleanup_warnings(
+    ReplaceOutcome::Committed(ReplaceReceipt::with_warnings(
         observation,
         cleanup_warnings,
+        durability_warnings,
     ))
+}
+
+fn preserved_artifact_warning(
+    temporary: &TemporaryFile,
+    description: &str,
+    reason: &str,
+    guidance: &str,
+) -> StorageError {
+    let artifact = artifact_label(temporary);
+    StorageError::new(
+        SaveStage::Cleanup,
+        format!(
+            "{description} was preserved as {artifact} beside the destination because {reason}. {guidance}"
+        ),
+    )
+}
+
+fn artifact_label(temporary: &TemporaryFile) -> String {
+    path_artifact_label(temporary.path(), "a private Noter sibling")
+}
+
+fn path_artifact_label(path: &Path, fallback: &str) -> String {
+    path.file_name().map_or_else(
+        || fallback.to_owned(),
+        |name| format!("`{}`", name.to_string_lossy()),
+    )
 }
 
 fn unknown_with_preserved_temporary(
     mut temporary: TemporaryFile,
     error: StorageError,
+    backup: Option<&Path>,
 ) -> ReplaceOutcome<TemporaryFile> {
+    let temporary_label = artifact_label(&temporary);
+    let backup_label = backup.map(|path| path_artifact_label(path, "a replacement backup"));
+    let candidates = backup_label.map_or_else(
+        || format!("the private sibling candidate {temporary_label}"),
+        |backup_label| {
+            format!(
+                "the private sibling candidate {temporary_label} and replacement backup candidate {backup_label}"
+            )
+        },
+    );
+    let recovery_artifact = StorageError::new(
+        SaveStage::Cleanup,
+        format!(
+            "Commit recovery requires inspecting {candidates} beside the destination. Either candidate may be absent or may contain prior, intended, or concurrently changed bytes. Inspect the destination and every existing candidate before retrying; remove a candidate only after its recovery value is understood."
+        ),
+    );
     temporary.preserve_artifact();
-    ReplaceOutcome::CommitStateUnknown { error }
+    ReplaceOutcome::CommitStateUnknown {
+        error,
+        recovery_artifact,
+    }
 }
 
 fn remove_verified_backup(path: &Path, expected: FileObservation) -> Result<(), StorageError> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) => match error.kind() {
-            io::ErrorKind::NotFound => return Ok(()),
-            _ => {
-                return Err(redacted_io_error(
-                    SaveStage::Cleanup,
-                    "inspect replacement backup",
-                    &error,
-                ));
-            }
-        },
+    let candidate = open_verified_cleanup_candidate(path, SaveStage::Cleanup)
+        .map_err(|error| backup_cleanup_warning(path, error.message()))?;
+    let Some((file, actual)) = candidate else {
+        return Ok(());
     };
-    if !is_supported_regular_entry(metadata.is_file(), is_final_link(&metadata)) {
-        return Err(StorageError::new(
-            SaveStage::Cleanup,
-            "replacement backup path no longer names the expected regular file",
+    if !replacement_backup_matches(actual, expected) {
+        return Err(backup_cleanup_warning(
+            path,
+            "replacement backup content or identity changed during cleanup",
         ));
     }
-    let file = File::open(path).map_err(|error| {
-        redacted_io_error(SaveStage::Cleanup, "open replacement backup", &error)
-    })?;
-    let facts = noter_platform::file_facts(&file).map_err(|error| {
-        redacted_io_error(
+    noter_platform::delete_open_file(&file).map_err(|error| {
+        let failure = redacted_io_error(
             SaveStage::Cleanup,
-            "read replacement backup identity",
+            "delete verified replacement backup by handle",
             &error,
-        )
-    })?;
-    if !platform_identity_matches(facts.identity(), expected.identity()) {
-        return Err(StorageError::new(
-            SaveStage::Cleanup,
-            "replacement backup identity differs from the replaced file",
-        ));
-    }
-    drop(file);
-    fs::remove_file(path)
-        .map_err(|error| redacted_io_error(SaveStage::Cleanup, "remove replacement backup", &error))
+        );
+        backup_cleanup_warning(path, failure.message())
+    })
+}
+
+fn backup_cleanup_warning(path: &Path, detail: &str) -> StorageError {
+    let artifact = path_artifact_label(path, "a replacement backup");
+    StorageError::new(
+        SaveStage::Cleanup,
+        format!(
+            "{detail}. The replacement backup may remain as {artifact} beside the destination. Inspect it before recovery or removal; remove it only after its recovery value is understood."
+        ),
+    )
 }
 
 fn backup_matches_expected(path: &Path, expected: FileObservation) -> bool {
     matches!(
         inspect_target(path, SaveStage::Reconcile),
         Ok(TargetState::Regular(actual))
-            if actual.identity() == expected.identity()
-                && actual.fingerprint() == expected.fingerprint()
-                && actual.length() == expected.length()
+            if replacement_backup_matches(actual, expected)
     )
+}
+
+fn replacement_backup_matches(actual: FileObservation, expected: FileObservation) -> bool {
+    actual.identity() == expected.identity()
+        && actual.fingerprint() == expected.fingerprint()
+        && actual.length() == expected.length()
 }
 
 const fn platform_facts_match(facts: noter_platform::FileFacts, expected: FileObservation) -> bool {
@@ -894,6 +1242,17 @@ fn redacted_io_error(stage: SaveStage, operation: &str, error: &io::Error) -> St
     StorageError::new(
         stage,
         format!("{operation} failed with {:?}{os_code}", error.kind()),
+    )
+}
+
+fn temporary_creation_failure(error: &io::Error) -> TemporaryCreationFailure {
+    let cleanup_error = error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<RetainedCreationArtifact>())
+        .map(RetainedCreationArtifact::cleanup_error);
+    TemporaryCreationFailure::new(
+        redacted_io_error(SaveStage::CreateTemporary, "create private sibling", error),
+        cleanup_error,
     )
 }
 
@@ -1061,6 +1420,50 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn creation_identity_failure_reports_the_retained_sibling() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        let random_bytes = [8; RANDOM_NAME_BYTES];
+        let retained = directory.path().join(candidate_name(&random_bytes));
+        let mut random = SequenceRandom::new([random_bytes]);
+
+        let error = create_unique_sibling_with_identity(&destination, &mut random, |_file| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "injected identity failure",
+            ))
+        })
+        .expect_err("identity failure must abort creation");
+        let failure = temporary_creation_failure(&error);
+        let cleanup = failure
+            .cleanup_error()
+            .expect("unsupported handle deletion must report the retained sibling");
+
+        assert_eq!(failure.error().stage(), SaveStage::CreateTemporary);
+        assert_eq!(cleanup.stage(), SaveStage::Cleanup);
+        assert!(
+            cleanup
+                .message()
+                .contains(retained.file_name().unwrap().to_string_lossy().as_ref())
+        );
+        assert!(
+            cleanup
+                .message()
+                .contains("had not written application bytes")
+        );
+        assert!(
+            cleanup
+                .message()
+                .contains("Inspect it before retrying or removing it")
+        );
+        assert!(retained.exists());
+        assert_eq!(fs::metadata(&retained)?.len(), 0);
+        fs::remove_file(retained)?;
+        Ok(())
+    }
+
     #[test]
     fn invalid_destination_is_rejected_before_randomness() {
         let mut random = SequenceRandom::new([]);
@@ -1089,8 +1492,23 @@ mod tests {
         assert_eq!(actual, b"complete bytes");
         assert!(temporary.path_still_identifies_file()?);
 
-        temporary.discard()?;
-        assert!(!path.exists());
+        let discard_result = temporary.discard();
+        #[cfg(windows)]
+        {
+            discard_result?;
+            assert!(!path.exists());
+        }
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                discard_result
+                    .expect_err("portable Unix cleanup must preserve the sibling")
+                    .kind(),
+                io::ErrorKind::Unsupported
+            );
+            assert_eq!(fs::read(&path)?, b"complete bytes");
+            fs::remove_file(path)?;
+        }
         Ok(())
     }
 
@@ -1115,7 +1533,7 @@ mod tests {
         assert!(temporary.committed_observation_matches(matching)?);
         assert!(!temporary.committed_observation_matches(other_identity)?);
         assert!(!temporary.committed_observation_matches(wrong_content)?);
-        temporary.discard()?;
+        cleanup_fixture(temporary)?;
         Ok(())
     }
 
@@ -1129,7 +1547,13 @@ mod tests {
 
         drop(temporary);
 
+        #[cfg(windows)]
         assert!(!path.exists());
+        #[cfg(unix)]
+        {
+            assert!(path.exists());
+            fs::remove_file(path)?;
+        }
         Ok(())
     }
 
@@ -1180,16 +1604,19 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(windows)]
     #[test]
-    fn cleanup_result_accepts_only_success_or_an_already_missing_path() {
-        assert!(missing_cleanup_is_success(Ok(())).is_ok());
-        assert!(missing_cleanup_is_success(Err(io::Error::from(io::ErrorKind::NotFound))).is_ok());
-        assert_eq!(
-            missing_cleanup_is_success(Err(io::Error::from(io::ErrorKind::PermissionDenied)))
-                .expect_err("a real cleanup failure must remain visible")
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
+    fn explicit_discard_reopens_a_closed_owned_sibling_for_handle_deletion() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        let mut temporary = prepared_temporary(&destination, b"complete bytes")?;
+        let path = temporary.path().to_path_buf();
+        temporary.close_handle();
+
+        temporary.discard()?;
+
+        assert!(!path.exists());
+        Ok(())
     }
 
     #[test]
@@ -1208,19 +1635,37 @@ mod tests {
 
         let outcome = save_snapshot(&mut storage, &snapshot);
 
+        #[cfg(windows)]
+        assert!(
+            matches!(
+                &outcome,
+                SaveOutcome::Committed {
+                    revision,
+                    warnings,
+                    ..
+                } if *revision == Revision::new(41) && warnings.is_empty()
+            ),
+            "unexpected existing-file save outcome: {outcome:?}"
+        );
+        #[cfg(unix)]
         assert!(matches!(
-            outcome,
+            &outcome,
             SaveOutcome::Committed {
                 revision,
-                ref warnings,
+                warnings,
                 ..
-            } if revision == Revision::new(41) && warnings.is_empty()
+            } if *revision == Revision::new(41)
+                && warnings.cleanup().len() == 1
+                && warnings.cleanup()[0].message().contains("preserved")
         ));
         assert_eq!(
             fs::read(&destination)?,
             b"complete replacement\r\nwith exact bytes\n"
         );
+        #[cfg(windows)]
         assert_no_private_artifacts(directory.path())?;
+        #[cfg(unix)]
+        remove_private_artifacts(directory.path(), b"irreplaceable original")?;
         Ok(())
     }
 
@@ -1273,16 +1718,30 @@ mod tests {
         let outcome = save_snapshot(&mut storage, &snapshot);
 
         make_writable(&destination)?;
+        #[cfg(windows)]
         assert!(matches!(
-            outcome,
+            &outcome,
             SaveOutcome::NotCommitted {
-                ref error,
+                error,
                 cleanup_error: None,
                 ..
             } if error.stage() == SaveStage::ApplyMetadata
         ));
+        #[cfg(unix)]
+        assert!(matches!(
+            &outcome,
+            SaveOutcome::NotCommitted {
+                error,
+                cleanup_error: Some(cleanup_error),
+                ..
+            } if error.stage() == SaveStage::ApplyMetadata
+                && cleanup_error.stage() == SaveStage::Cleanup
+        ));
         assert_eq!(fs::read(&destination)?, b"protected original");
+        #[cfg(windows)]
         assert_no_private_artifacts(directory.path())?;
+        #[cfg(unix)]
+        remove_private_artifacts(directory.path(), b"must not replace")?;
         Ok(())
     }
 
@@ -1302,7 +1761,7 @@ mod tests {
 
         assert_eq!(error.stage(), SaveStage::ApplyMetadata);
         assert_eq!(fs::read(&destination)?, b"new external version");
-        temporary.discard()?;
+        cleanup_fixture(temporary)?;
         Ok(())
     }
 
@@ -1318,7 +1777,7 @@ mod tests {
             .expect_err("a private sibling must contain exactly one snapshot");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        temporary.discard()?;
+        cleanup_fixture(temporary)?;
         Ok(())
     }
 
@@ -1333,7 +1792,7 @@ mod tests {
         let create_error = storage
             .create_unique_sibling(Path::new("/"))
             .expect_err("a destination without a filename must fail");
-        assert_eq!(create_error.stage(), SaveStage::CreateTemporary);
+        assert_eq!(create_error.error().stage(), SaveStage::CreateTemporary);
 
         let mut written = create_unique_sibling(&destination)?;
         storage
@@ -1343,7 +1802,7 @@ mod tests {
             .write_all(&mut written, b"second snapshot")
             .expect_err("a second storage write must fail");
         assert_eq!(write_error.stage(), SaveStage::Write);
-        written.discard()?;
+        cleanup_fixture(written)?;
 
         let mut closed = create_unique_sibling(&destination)?;
         closed.write_all(b"complete")?;
@@ -1362,14 +1821,12 @@ mod tests {
                 .stage(),
             SaveStage::SyncFile
         );
-        assert_eq!(
-            storage
-                .apply_metadata(&mut closed, &destination, Some(&expected))
-                .expect_err("a closed handle cannot receive metadata")
-                .stage(),
-            SaveStage::ApplyMetadata
-        );
-        closed.discard()?;
+        storage
+            .apply_metadata(&mut closed, &destination, Some(&expected))
+            .expect("precommit metadata validation must not widen the sibling");
+        let closed_path = closed.path().to_path_buf();
+        drop(closed);
+        fs::remove_file(closed_path)?;
 
         let stolen = create_unique_sibling(&destination)?;
         let stolen_path = stolen.path().to_path_buf();
@@ -1553,10 +2010,128 @@ mod tests {
 
         let outcome = finalize_commit(temporary, &destination, None, Vec::new());
 
-        assert!(matches!(outcome, ReplaceOutcome::CommitStateUnknown { .. }));
+        let ReplaceOutcome::CommitStateUnknown {
+            recovery_artifact, ..
+        } = outcome
+        else {
+            panic!("a mismatched destination must remain indeterminate");
+        };
+        assert!(
+            recovery_artifact.message().contains(
+                temporary_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(recovery_artifact.message().contains("before retrying"));
         assert_eq!(fs::read(&destination)?, b"someone else's complete file");
         assert_eq!(fs::read(&temporary_path)?, b"mine");
         fs::remove_file(temporary_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_commit_names_every_known_recovery_candidate_neutrally() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        let backup = directory.path().join(".noter-backup-recovery.bak");
+        fs::write(&destination, b"concurrent destination")?;
+        fs::write(&backup, b"previous destination")?;
+        let expected = regular_observation(&backup);
+        let mut temporary = prepared_temporary(&destination, b"intended bytes")?;
+        temporary.close_handle();
+        let temporary_path = temporary.path().to_path_buf();
+        fs::remove_file(&temporary_path)?;
+
+        let outcome = finalize_commit(
+            temporary,
+            &destination,
+            Some((backup.clone(), expected)),
+            Vec::new(),
+        );
+        let ReplaceOutcome::CommitStateUnknown {
+            recovery_artifact, ..
+        } = outcome
+        else {
+            panic!("a mismatched postcommit destination must remain indeterminate");
+        };
+        let warning = recovery_artifact.message();
+        assert!(
+            warning.contains(
+                temporary_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(warning.contains(backup.file_name().unwrap().to_string_lossy().as_ref()));
+        assert!(warning.contains("Either candidate may be absent"));
+        assert!(warning.contains("before retrying"));
+        assert_eq!(fs::read(&backup)?, b"previous destination");
+        fs::remove_file(backup)?;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_handoff_rejects_changed_staging_bytes_before_replace() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        fs::write(&destination, b"previous revision")?;
+        let expected = regular_observation(&destination);
+        let mut temporary = prepared_temporary(&destination, b"intended revision")?;
+        temporary.close_handle();
+        fs::write(temporary.path(), b"changed during handoff")?;
+
+        let outcome = replace_existing_file(temporary, &destination, expected);
+        let ReplaceOutcome::NotCommitted { temporary, error } = outcome else {
+            panic!("changed staging bytes must not reach ReplaceFileW");
+        };
+        assert!(error.message().contains("Windows replacement handoff"));
+        assert_eq!(fs::read(&destination)?, b"previous revision");
+        FilesystemStorage
+            .discard(temporary)
+            .expect("the changed owned sibling should remain removable");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_handoff_mutation_after_validation_is_detected_postcommit() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        fs::write(&destination, b"previous revision")?;
+        let expected = regular_observation(&destination);
+        let temporary = prepared_temporary(&destination, b"intended revision")?;
+
+        let outcome = replace_existing_file_with(
+            temporary,
+            &destination,
+            expected,
+            |temporary_path, destination_path, backup_path| {
+                fs::write(temporary_path, b"same-authority handoff mutation")?;
+                noter_platform::replace_existing(temporary_path, destination_path, backup_path)
+            },
+        );
+        let ReplaceOutcome::CommitStateUnknown {
+            error,
+            recovery_artifact,
+        } = outcome
+        else {
+            panic!("postvalidation handoff mutation must remain indeterminate");
+        };
+
+        assert_eq!(error.stage(), SaveStage::Reconcile);
+        assert!(
+            error
+                .message()
+                .contains("destination verification differed")
+        );
+        assert!(recovery_artifact.message().contains("replacement backup"));
+        assert_eq!(fs::read(&destination)?, b"same-authority handoff mutation");
         Ok(())
     }
 
@@ -1627,7 +2202,179 @@ mod tests {
             panic!("matching committed destination must reconcile as committed");
         };
         assert_eq!(receipt.cleanup_warnings().len(), 1);
+        let warning = receipt.cleanup_warnings()[0].message();
+        assert!(
+            warning.contains(
+                temporary_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(warning.contains("Inspect it before removing it"));
         assert_eq!(fs::read(&temporary_path)?, b"replacement to preserve");
+        fs::remove_file(temporary_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn failed_precommit_cleanup_names_the_artifact_and_safe_actions() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        let temporary = prepared_temporary(&destination, b"uncommitted bytes")?;
+        let temporary_path = temporary.path().to_path_buf();
+        fs::remove_file(&temporary_path)?;
+        fs::write(&temporary_path, b"external bytes")?;
+
+        let error = FilesystemStorage
+            .discard(temporary)
+            .expect_err("a rebound private-sibling path must be preserved");
+
+        assert!(
+            error.message().contains(
+                temporary_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(error.message().contains("Inspect it before retrying"));
+        assert_eq!(fs::read(&temporary_path)?, b"external bytes");
+        fs::remove_file(temporary_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn retained_hard_link_warning_names_the_artifact_and_recovery_action() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        let temporary = prepared_temporary(&destination, b"committed bytes")?;
+        let temporary_path = temporary.path().to_path_buf();
+        fs::hard_link(&temporary_path, &destination)?;
+
+        let outcome = finalize_installed_file(
+            temporary,
+            &destination,
+            &noter_platform::InstallNewOutcome::CommittedWithRetainedTemporary,
+            None,
+        );
+        let ReplaceOutcome::Committed(receipt) = outcome else {
+            panic!("the retained hard-link destination must remain committed");
+        };
+
+        assert_eq!(receipt.cleanup_warnings().len(), 1);
+        let warning = receipt.cleanup_warnings()[0].message();
+        assert!(
+            warning.contains(
+                temporary_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(warning.contains("restore ordinary single-link saves"));
+        assert_eq!(fs::read(&destination)?, b"committed bytes");
+        assert_eq!(fs::read(&temporary_path)?, b"committed bytes");
+        Ok(())
+    }
+
+    #[test]
+    fn displaced_destination_is_preserved_after_exact_commit() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        fs::write(&destination, b"old bytes")?;
+        let mut temporary = prepared_temporary(&destination, b"new bytes")?;
+        temporary.close_handle();
+        let temporary_path = temporary.path().to_path_buf();
+        let swap_path = directory.path().join("swap.txt");
+        fs::rename(&destination, &swap_path)?;
+        fs::rename(&temporary_path, &destination)?;
+        fs::rename(&swap_path, &temporary_path)?;
+
+        let outcome = finalize_commit_with_cleanup(
+            temporary,
+            &destination,
+            TemporaryCleanup::PreservedDisplacedDestination,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let ReplaceOutcome::Committed(receipt) = outcome else {
+            panic!("a verified exchange should reconcile as committed");
+        };
+        assert_eq!(receipt.cleanup_warnings().len(), 1);
+        assert!(
+            receipt.cleanup_warnings()[0].message().contains(
+                temporary_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(
+            receipt.cleanup_warnings()[0]
+                .message()
+                .contains("Inspect its contents")
+        );
+        assert_eq!(fs::read(&destination)?, b"new bytes");
+        assert_eq!(fs::read(&temporary_path)?, b"old bytes");
+        fs::remove_file(temporary_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn changed_displaced_destination_is_preserved_with_a_warning() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        fs::write(&destination, b"old bytes")?;
+        let mut temporary = prepared_temporary(&destination, b"new bytes")?;
+        temporary.close_handle();
+        let temporary_path = temporary.path().to_path_buf();
+        let swap_path = directory.path().join("swap.txt");
+        fs::rename(&destination, &swap_path)?;
+        fs::rename(&temporary_path, &destination)?;
+        fs::rename(&swap_path, &temporary_path)?;
+        fs::write(&temporary_path, b"external bytes")?;
+
+        let outcome = finalize_commit_with_cleanup(
+            temporary,
+            &destination,
+            TemporaryCleanup::PreservedDisplacedDestination,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let ReplaceOutcome::Committed(receipt) = outcome else {
+            panic!("the new destination should remain a verified commit");
+        };
+        assert_eq!(receipt.cleanup_warnings().len(), 1);
+        assert!(
+            receipt.cleanup_warnings()[0].message().contains(
+                temporary_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(
+            receipt.cleanup_warnings()[0]
+                .message()
+                .contains("prior destination or bytes written by a concurrent actor")
+        );
+        assert!(
+            !receipt.cleanup_warnings()[0]
+                .message()
+                .contains("previous destination revision")
+        );
+        assert_eq!(fs::read(&destination)?, b"new bytes");
+        assert_eq!(fs::read(&temporary_path)?, b"external bytes");
         fs::remove_file(temporary_path)?;
         Ok(())
     }
@@ -1647,8 +2394,22 @@ mod tests {
 
         remove_verified_backup(&directory.path().join("missing.txt"), expected)
             .expect("an absent backup is already clean");
-        assert!(remove_verified_backup(&directory_path, expected).is_err());
-        assert!(remove_verified_backup(&other_path, expected).is_err());
+        let directory_error = remove_verified_backup(&directory_path, expected)
+            .expect_err("a directory cannot be a replacement backup");
+        assert!(directory_error.message().contains("not-a-file"));
+        assert!(
+            directory_error
+                .message()
+                .contains("before recovery or removal")
+        );
+        let mismatch_error = remove_verified_backup(&other_path, expected)
+            .expect_err("a different file must be retained");
+        assert!(mismatch_error.message().contains("other.txt"));
+        assert!(
+            mismatch_error
+                .message()
+                .contains("before recovery or removal")
+        );
         assert!(backup_matches_expected(&matching_path, expected));
         assert!(!backup_matches_expected(&other_path, expected));
         remove_verified_backup(&matching_path, expected)
@@ -1658,10 +2419,46 @@ mod tests {
     }
 
     #[test]
+    fn backup_cleanup_preserves_changed_content_with_the_same_identity() -> io::Result<()> {
+        let directory = tempdir()?;
+        let source_path = directory.path().join("source.txt");
+        let backup_path = directory.path().join("backup.txt");
+        fs::write(&source_path, b"expected")?;
+        fs::hard_link(&source_path, &backup_path)?;
+        let expected = regular_observation(&source_path);
+        fs::write(&backup_path, b"changed after revalidation")?;
+
+        let error = remove_verified_backup(&backup_path, expected)
+            .expect_err("changed backup content must be preserved for recovery");
+
+        assert_eq!(error.stage(), SaveStage::Cleanup);
+        assert!(error.message().contains("backup.txt"));
+        assert!(error.message().contains("may remain"));
+        assert!(error.message().contains("before recovery or removal"));
+        assert_eq!(fs::read(&backup_path)?, b"changed after revalidation");
+        Ok(())
+    }
+
+    #[test]
     fn error_redaction_is_exact() {
         let raw = io::Error::from_raw_os_error(5);
         let redacted = redacted_io_error(SaveStage::Replace, "replace", &raw);
         assert!(redacted.message().contains("OS code 5"));
+    }
+
+    #[test]
+    fn retained_creation_artifact_message_is_exact_and_actionable() {
+        let artifact = RetainedCreationArtifact {
+            basename: ".noter-save-00112233445566778899aabbccddeeff.tmp".to_owned(),
+            inspection_kind: io::ErrorKind::PermissionDenied,
+            cleanup_kind: io::ErrorKind::Unsupported,
+        };
+
+        assert_eq!(
+            artifact.to_string(),
+            "creation-time identity inspection failed with PermissionDenied, then handle-bound cleanup failed with Unsupported. The newly created private sibling `.noter-save-00112233445566778899aabbccddeeff.tmp` may remain beside the destination. Noter had not written application bytes, but a same-authority process could have changed it. Inspect it before retrying or removing it."
+        );
+        assert_eq!(artifact.cleanup_error().stage(), SaveStage::Cleanup);
     }
 
     #[test]
@@ -1790,14 +2587,25 @@ mod tests {
         let ReplaceOutcome::NotCommitted { temporary, .. } = outcome else {
             panic!("expected a proven not-committed outcome");
         };
-        temporary.discard()
+        cleanup_fixture(temporary)
     }
 
     fn discard_conflict(outcome: ReplaceOutcome<TemporaryFile>) -> io::Result<()> {
         let ReplaceOutcome::Conflict { temporary, .. } = outcome else {
             panic!("expected a conflict outcome");
         };
-        temporary.discard()
+        cleanup_fixture(temporary)
+    }
+
+    fn cleanup_fixture(temporary: TemporaryFile) -> io::Result<()> {
+        #[cfg(unix)]
+        let path = temporary.path().to_path_buf();
+        match temporary.discard() {
+            Ok(()) => Ok(()),
+            #[cfg(unix)]
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => fs::remove_file(path),
+            Err(error) => Err(error),
+        }
     }
 
     fn expectation_for(path: &Path) -> TargetExpectation {
@@ -1817,6 +2625,27 @@ mod tests {
                 "private save artifact remained after a resolved outcome"
             );
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn remove_private_artifacts(directory: &Path, expected: &[u8]) -> io::Result<()> {
+        let mut count = 0;
+        for entry in fs::read_dir(directory)? {
+            let path = entry?.path();
+            let is_private = path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".noter-"));
+            if is_private {
+                assert_eq!(fs::read(&path)?, expected);
+                fs::remove_file(path)?;
+                count += 1;
+            }
+        }
+        assert_eq!(
+            count, 1,
+            "exactly one conservative recovery artifact expected"
+        );
         Ok(())
     }
 
@@ -1865,6 +2694,98 @@ mod tests {
         let mode = fs::metadata(temporary.path())?.permissions().mode() & 0o777;
 
         assert_eq!(mode, 0o600);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn metadata_source_status_has_an_exact_truth_table() {
+        assert_eq!(
+            metadata_source_status(false, false),
+            MetadataSourceStatus::ObservationChanged
+        );
+        assert_eq!(
+            metadata_source_status(false, true),
+            MetadataSourceStatus::ObservationChanged
+        );
+        assert_eq!(
+            metadata_source_status(true, false),
+            MetadataSourceStatus::FactsChanged
+        );
+        assert_eq!(
+            metadata_source_status(true, true),
+            MetadataSourceStatus::Matches
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_metadata_is_finalized_only_after_private_content_commits() -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        fs::write(&destination, b"previous revision")?;
+        let mut permissions = fs::metadata(&destination)?.permissions();
+        permissions.set_mode(0o640);
+        fs::set_permissions(&destination, permissions)?;
+        let expected = regular_observation(&destination);
+        let mut temporary = prepared_temporary(&destination, b"committed revision")?;
+        let mut storage = FilesystemStorage;
+
+        storage
+            .apply_metadata(&mut temporary, &destination, Some(&expected))
+            .expect("precommit metadata validation should succeed");
+        assert_eq!(
+            fs::metadata(temporary.path())?.permissions().mode() & 0o777,
+            0o600
+        );
+        storage
+            .sync_file(&mut temporary)
+            .map_err(|error| io::Error::other(error.message().to_owned()))?;
+
+        let outcome = storage.replace(temporary, &destination, TargetState::Regular(expected));
+        let ReplaceOutcome::Committed(receipt) = outcome else {
+            panic!("Unix exchange should commit after metadata validation");
+        };
+
+        assert_eq!(fs::read(&destination)?, b"committed revision");
+        assert_eq!(
+            fs::metadata(&destination)?.permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(receipt.cleanup_warnings().len(), 1);
+        remove_private_artifacts(directory.path(), b"previous revision")?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_postcommit_file_sync_failure_is_a_durability_warning() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        fs::write(&destination, b"previous revision")?;
+        let expected = regular_observation(&destination);
+        let mut temporary = prepared_temporary(&destination, b"committed revision")?;
+
+        assert_eq!(
+            noter_platform::replace_existing(temporary.path(), &destination, None)?,
+            noter_platform::ReplaceExistingOutcome::DisplacedDestination
+        );
+        temporary.close_handle();
+
+        let outcome = finalize_unix_displaced_destination(temporary, &destination, expected, None);
+        let ReplaceOutcome::Committed(receipt) = outcome else {
+            panic!("the exchanged destination remains committed after a barrier failure");
+        };
+
+        assert_eq!(fs::read(&destination)?, b"committed revision");
+        assert_eq!(receipt.durability_warnings().len(), 1);
+        assert_eq!(
+            receipt.durability_warnings()[0].stage(),
+            SaveStage::SyncFile
+        );
+        remove_private_artifacts(directory.path(), b"previous revision")?;
         Ok(())
     }
 }
