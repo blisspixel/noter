@@ -60,11 +60,28 @@ bypass the ceiling. Errors are typed, stage-specific, and path-redacted.
   rebound path remains untouched and a same-object writer cannot enter the
   verification-to-deletion window.
 - Unix existing-file replacement uses an atomic exchange while staging remains
-  mode 0600. Required metadata is finalized through open handles after commit.
+  mode 0600. Required metadata is captured into an immutable snapshot and
+  revalidated through the open source handle before commit. Because exchange can
+  legitimately change the displaced inode's `ctime`, the post-exchange check
+  ratifies the new token with stable native identity, link count, content
+  fingerprint, and length, but it never treats live post-commit metadata as the
+  transfer source. The displaced file's ownership, mode, ACL, and visible
+  extended attributes must also equal the pre-commit snapshot before that
+  snapshot is applied to the committed open handle. A final-window metadata
+  change leaves the committed file private and adds a warning instead of
+  restoring stale metadata. Unix-only tests isolate the distinction; the hosted
+  Linux and macOS matrix must exercise the complete protocol.
   Portable Unix deletion cannot bind unlink to the verified object, so the
   displaced original and failed-save siblings are retained with explicit
   warnings instead of risking a pathname cleanup race. Each warning names only
   the random sibling basename and gives inspection and removal guidance.
+- Unix metadata capture now queries each xattr size before allocating its value,
+  limits the snapshot to 4,096 entries and 64 MiB of aggregate names and values,
+  and retries size races only three times. This closes a later checker finding
+  where a small macOS data fork with a file-sized resource fork could bypass the
+  document ceiling, exhaust memory or temporary storage, or stall Save. The
+  macOS private carrier now stores only the ACL; resource forks and other xattrs
+  are applied from the already-bounded immutable snapshot.
 - A failed Unix post-commit file barrier now downgrades the result to Best Effort
   and remains distinct from parent-sync and cleanup warnings.
 - Save warnings retain every cleanup and durability detail in the GUI. Save and
@@ -111,14 +128,19 @@ claim depends on inference from a filesystem name or a local-only test.
 
 ## Remediation validation checkpoint
 
-The remediated worktree passes all 130 Windows-local workspace tests, strict
+The remediated worktree passes all 134 Windows-local workspace tests, strict
 workspace Clippy, rustdoc with warnings denied, documentation-link validation,
-and RustSec audit. Fixed-seed measured line coverage is 93.06 percent for the
-trust kernel and 90.09 percent for the complete workspace. The first expanded
+and RustSec audit. Fixed-seed measured line coverage is 93.13 percent for the
+trust kernel and 90.18 percent for the complete workspace. The first expanded
 mutation run exposed nine file-limit boundary survivors. Exact inclusive-limit,
 oversized-announcement, constant-value, and overflow tests closed them; the last
 completed Windows-applicable campaign classified all 383 mutants as 254 caught
 and 129 unviable. The checker-expanded 418-mutant run found four survivors;
 focused tests and isolated reruns produce a composite classification of 270
-caught, 148 unviable, zero missed, and zero timed out. A fresh full paired
-campaign remains required before this checkpoint becomes exact-commit evidence.
+caught, 148 unviable, zero missed, and zero timed out. The expanded native
+adapter scope adds a clean local 57-mutant Windows pass with 39 caught and 18
+unviable. The descriptor-deallocation repair expands this to a clean 58-mutant
+Windows pass with 40 caught and 18 unviable. Its three-platform 640-mutant union
+assigns 556 candidates to Linux, 476 to Windows, and 170 to macOS with no set
+union gap. It requires a fresh exact-commit
+hosted campaign before this checkpoint becomes complete CI evidence.

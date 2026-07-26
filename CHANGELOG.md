@@ -9,6 +9,9 @@ release, so current work remains under Unreleased.
 
 - Bound document loading and save-target hashing to the explicit 64 MiB v0.1
   limit, including protection against concurrent file growth.
+- Bound Unix extended-attribute snapshots to 4,096 entries and 64 MiB of
+  aggregate names and values before value allocation, including macOS resource
+  forks.
 - Create Windows staging and new files with a protected owner-and-system DACL so
   permissive parent ACLs cannot expose staged document bytes.
 - Add a pinned RustSec audit gate to CI.
@@ -23,6 +26,12 @@ release, so current work remains under Unreleased.
   rebound pathname cannot redirect deletion.
 - Keep Unix staging owner-only through atomic exchange, finalize metadata after
   commit, and retain artifacts when safe handle-bound cleanup is unavailable.
+- Preserve Unix destination metadata from an immutable pre-commit snapshot,
+  verify the displaced original after atomic exchange, require its stable
+  metadata payload to still match the snapshot, and never apply unratified or
+  stale metadata to the committed file.
+- Keep macOS resource-fork values out of the ACL carrier and apply only the
+  already-bounded immutable xattr snapshot.
 - Surface exact save cleanup and durability warnings instead of a generic
   success warning.
 - Process same-frame editor input before file commands and native close checks.
@@ -40,10 +49,12 @@ release, so current work remains under Unreleased.
 - Define and enforce repository-wide code-quality and evidence standards.
 - Keep local agent state and runtime logs in ignored dedicated directories.
 - Remove obsolete tracked agent metadata and commented-out build or CI plans.
-- Expand the paired mutation union to 423 trust-kernel decisions with no
-  platform gap; the local 418-mutant Windows classification has zero missed
-  mutations and zero timeouts.
+- Expand mutation enforcement through the native platform adapter with a macOS
+  job and a 640-decision supported-platform union with no gap. The new local
+  58-mutant Windows adapter pass catches all 40 viable mutations, including
+  descriptor deallocation, with 18 genuine compiler rejections and no miss,
+  timeout, or infrastructure failure.
 - Reject linker, compiler, storage, process, and tool-lock infrastructure
   failures that cargo-mutants would otherwise classify as unviable.
-- Raise measured fixed-seed coverage to 93.06 percent for the trust kernel and
-  90.09 percent for the complete workspace across 130 Windows-local tests.
+- Raise measured fixed-seed coverage to 93.13 percent for the trust kernel and
+  90.18 percent for the complete workspace across 134 Windows-local tests.

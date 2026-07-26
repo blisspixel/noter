@@ -1,8 +1,9 @@
 # M1 Mutation Evidence
 
-**Executed:** 2026-07-25
+**Executed:** 2026-07-26
 
-**Scope:** `src/core/*.rs`, the document and durable I/O trust kernel
+**Scope:** `src/core/*.rs` and `crates/noter-platform/src/*.rs`, the document,
+durable I/O, and native adapter trust kernel
 
 **Reference environment:** Windows 11 Pro build 26200, Rust 1.97.1
 (`8bab26f4f`), cargo-mutants 27.1.0
@@ -15,33 +16,46 @@ test suite to reject each compiling behavioral change.
 
 The checked-in [`.cargo/mutants.toml`](../.cargo/mutants.toml) limits mutation
 to the trust kernel, enables all features and the workspace test suite, and
-passes `--locked` to Cargo. The local reference command is:
+passes `--locked` to Cargo. An unfiltered single-platform run is useful only for
+candidate discovery because it also lists inactive target-specific code. The
+authoritative local Windows native-adapter command is target-filtered:
 
 ```text
-cargo mutants --jobs 4 --colors never
+$env:CARGO_INCREMENTAL='1'
+$env:CARGO_TARGET_DIR='.agent/target-mutants-platform-windows'
+cargo +1.97.1 mutants -vV --in-place --colors never --workspace -p noter-platform --exclude-re '(required_metadata|unix|linux|macos)' -o .agent/mutants-platform-windows
 ```
 
 The CI commands are intentionally different:
 
 ```text
 Linux common scope:
-cargo mutants -vV --in-place --colors never \
-  --exclude-re '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination)'
+cargo mutants -vV --in-place --colors never --workspace \
+  --exclude-re '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|[Ww]indows|macos)'
 
 Windows-applicable scope:
-cargo mutants -vV --in-place --colors never \
-  --exclude-re '(metadata_source_status|finalize_unix_displaced_destination)'
+cargo mutants -vV --in-place --colors never --workspace \
+  --exclude-re '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|macos)'
+
+macOS native-adapter scope:
+cargo mutants -vV --in-place --colors never --workspace \
+  -p noter-platform --exclude-re '([Ww]indows|linux)'
 ```
 
 The [cargo-mutants CI guidance](https://mutants.rs/ci.html) recommends
 `--in-place` for a disposable CI checkout. The tool documents that
 [`--in-place` cannot be combined with `--jobs`](https://mutants.rs/in-place.html),
 so each CI gate runs serially and uploads `mutants.out` even on failure. The
-current Linux job covers 394 applicable mutants, and the Windows job covers
-418 applicable mutants. Their union covers all 423 configured mutants with no
-missing entry. Each
-command excludes only decisions compiled exclusively for the other platform,
-so inactive `cfg` branches are not misclassified as survivors. Incremental
+current Linux job covers 556 candidates, the Windows job covers 476, and the
+macOS adapter job covers 170. The scopes intentionally overlap on common code;
+deduplicating exact mutation descriptions produces all 640 configured
+supported-platform candidates with no missing entry. The filters are runner
+assignments, not a claim that every exclusion is inactive. Linux assigns several
+active cross-platform decisions with Windows-specific branches to the Windows
+runner, Windows excludes Unix snapshot APIs absent from its build, and macOS
+excludes Linux and Windows native branches. This prevents inactive `cfg` code
+from being misclassified as a survivor while retaining full set-union coverage.
+Incremental
 compilation is enabled explicitly for the mutation steps because the cache
 action disables it by default. The installer action and cargo-mutants version
 are both pinned, checksums stay enabled, and fallback installation is disabled.
@@ -73,9 +87,12 @@ snapshots, and manual accessibility verification in later milestones.
 | Cleanup-redesign Windows-applicable run | 383 | 254 | 129 | 0 | 0 | 24 minutes |
 | Checker-expanded Windows-applicable run | 418 | 265 | 149 | 4 | 0 | 28.48 minutes |
 | Checker-expanded composite result | 418 | 270 | 148 | 0 | 0 | 31.04 minutes cumulative |
+| Windows native-adapter run before descriptor Drop proof | 57 | 39 | 18 | 0 | 0 | 10.68 minutes |
+| Final current-tree Windows native-adapter run | 58 | 40 | 18 | 0 | 0 | 3.25 minutes |
 
 `Unviable` means the mutation did not compile. It is distinct from a survivor.
-The current composite result has no missed mutation and no timeout. Earlier
+The current local Windows core and adapter results have no missed mutation and
+no timeout. Earlier
 lower mutant counts reflect removal of redundant branches and mutation-prone
 loop bookkeeping, not an excluded source path.
 
@@ -132,8 +149,44 @@ other generated variant at the creation cleanup accessor remained a genuine
 type-level compiler rejection. Product source did not change between the full
 run and focused reruns, so the combined local classification is 270 caught and
 148 unviable.
-The complete paired CI gate must still rerun the full 423-mutant union on one
-immutable commit before this composite result becomes hosted exact-commit
+The Unix metadata repair captures an immutable, handle-ratified snapshot before
+commit. Atomic exchange can legitimately change Unix `ctime`, so a stable
+post-exchange observation ratifies the new token with native identity, link
+count, content, and length. The displaced file's stable ownership, mode, ACL,
+and visible extended attributes must then match the snapshot exactly before it
+can be applied. A final-window metadata change leaves the committed file private
+and adds a warning. This removes both the prior possibility of applying
+unratified metadata read after commit and the later stale-snapshot overwrite
+window.
+
+A later safety checker found that macOS resource forks can be file-sized xattrs.
+The snapshot reader now queries every native xattr size before allocation,
+enforces a 4,096-entry and 64 MiB aggregate names-and-values budget, and retries
+size races only within a fixed bound. The macOS carrier stores only the ACL;
+resource forks and other xattrs are applied from the bounded snapshot rather
+than copied live.
+
+Mutation scope now includes the native platform adapter. The focused Windows
+adapter campaign caught all 40 compiling behavioral mutations, classified 18
+type-level mutations as unviable, and had no miss, timeout, or recognized
+infrastructure failure. Exact `FileChangeToken` accessors, native `FileIdInfo`,
+failed persistence barriers, and descriptor deallocation are observable through
+native fixtures. The descriptor owns an injected `LocalFree`-compatible
+deallocator, so removing its `Drop` body is now caught without dereferencing a
+freed allocation. The configuration excludes unsupported-platform shims and
+OR-to-XOR changes over disjoint Windows API flag bits that cargo-mutants cannot
+distinguish semantically. AND substitutions for the same flags remain in scope
+and are caught.
+
+A preliminary 58-candidate run contained one transient `LNK1104` executable-lock
+failure that cargo-mutants labeled unviable. The infrastructure validator
+rejected that classification. The exact candidate was caught in an isolated
+target, then the entire 58-candidate campaign was repeated in one fresh target
+directory. The final single report is 40 caught and 18 genuine compiler
+rejections, and the infrastructure validator reports no recognized failure.
+
+The complete three-platform CI gate must still rerun the full 640-mutant union
+on one immutable commit before this expanded result becomes hosted exact-commit
 evidence.
 
 ## Defects in the proof found by mutation
@@ -161,9 +214,10 @@ filesystem tests for independent file identity and content, OS randomness,
 replaced temporary paths, mismatched committed destinations, Windows change
 tokens, and documented Windows partial-replacement classification.
 
-These changes strengthened the implementation as well as the tests. The final
-campaign was rerun across the complete configured scope after the last cleanup
-race survivor was fixed.
+These changes strengthened the implementation as well as the tests. They were
+rerun across the then-configured scope after the last cleanup-race survivor was
+fixed. The later Unix snapshot and native-adapter additions are subject to the
+current three-platform exact-commit rerun requirement above.
 
 ## Interpretation and remaining limits
 
@@ -173,6 +227,6 @@ metadata preservation, crash durability, weak-filesystem behavior, GUI
 semantics, or performance. Those remain separate M1 and later milestone gates in
 [ROADMAP.md](ROADMAP.md) and [manual-test-matrix.md](manual-test-matrix.md).
 
-The checker-expanded counts are composite local evidence until both current
-paired jobs pass on one exact commit. The immutable `3830cdd` paired result
-remains the verified CI baseline in the meantime.
+The expanded counts are local evidence until all three current mutation jobs
+pass on one exact commit. The immutable `3830cdd` paired result remains the
+verified CI baseline in the meantime.

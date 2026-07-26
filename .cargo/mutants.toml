@@ -1,6 +1,13 @@
 # Mutation testing is intentionally scoped to Noter's trust kernel. GUI code is
 # covered by semantic UI tests in later milestones, not padded into this gate.
-examine_globs = ["src/core/*.rs"]
+examine_globs = ["src/core/*.rs", "crates/noter-platform/src/*.rs"]
+# Unsupported-platform shims cannot execute in the supported-platform matrix.
+# The Windows OR-to-XOR changes are algebraically identical because each API
+# flag occupies a disjoint bit.
+exclude_re = [
+    "imp::.*unsupported",
+    "replace \\| with \\^ in imp::windows_(create_private_new_file|open_for_cleanup|reduced_identity)",
+]
 all_features = true
 test_workspace = true
 additional_cargo_args = ["--locked"]

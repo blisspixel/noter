@@ -45,18 +45,21 @@ The current M1 worktree has:
   commit;
 - strict refusal for final links, read-only destinations, and unconfirmed
   hard-link separation;
-- 130 Windows-local workspace tests, 93.06 percent line coverage across the
-  expanded workspace trust kernel, and 90.09 percent whole-workspace line
+- 134 Windows-local workspace tests, 93.13 percent line coverage across the
+  expanded workspace trust kernel, and 90.18 percent whole-workspace line
   coverage; and
-- a 418-mutant Windows-applicable trust-kernel campaign and survivor recheck
-  with 270 caught, 148 unviable, zero missed, and zero timed out.
+- a 418-mutant Windows core campaign classified as 270 caught and 148 unviable,
+  plus a clean 58-mutant Windows native-adapter pass classified as 40 caught
+  and 18 unviable.
 
-The native adapter passes Windows, macOS, and Linux CI. It still requires the
-manual metadata and weaker-filesystem evidence named by ADR-003 plus the
-reproducible benchmark baseline. Noter does not yet have the edit transaction
-model, complete dirty lifecycle, recovery, complete commands, configuration,
-accessibility evidence, or release performance evidence. M1 therefore remains
-In Progress.
+The historical production-adapter checkpoint passes Windows, macOS, and Linux
+CI. The subsequent immutable Unix snapshot repair passes local Windows and
+native Linux tests plus cross-target macOS lint, but still needs one
+exact-commit hosted platform run. It also requires the manual metadata and
+weaker-filesystem evidence named by ADR-003 plus the reproducible benchmark
+baseline. Noter does not yet have the edit transaction model, complete dirty
+lifecycle, recovery, complete commands, configuration, accessibility evidence,
+or release performance evidence. M1 therefore remains In Progress.
 
 ## 2. Architectural principles
 
@@ -310,7 +313,9 @@ never infers commit state from a generic I/O error.
    naming the random sibling when handle-bound removal is unavailable.
 4. Stream all bytes and flush user-space buffers.
 5. Validate the existing target's identity, metadata source, and read-only
-   policy without widening private staging access.
+   policy without widening private staging access. Refuse a Unix snapshot above
+   4,096 extended attributes or 64 MiB of aggregate xattr names and values
+   before allocating a value buffer.
 6. Sync the temporary file's private data and metadata.
 7. Revalidate target identity immediately before replacement.
 8. On Windows, reserve the recovery-backup name before closing the staging
@@ -319,8 +324,10 @@ never infers commit state from a generic I/O error.
    same-authority change in the remaining validation-to-replacement window and
    classifies the result as indeterminate.
 9. Replace atomically without deleting the destination first.
-10. On Unix existing-file commits, copy required metadata from the displaced
-   original to the committed file through their open handles, then sync again.
+10. On Unix existing-file commits, verify the displaced original after exchange,
+    compare its stable ownership, mode, ACL, and extended attributes with the
+    immutable metadata snapshot ratified before commit, apply the snapshot only
+    on an exact match, then sync again.
 11. Reconcile platform results whose documented failure may have side effects.
 12. Sync the parent directory where the platform provides a meaningful operation.
 13. Report the exact outcome and either clean by handle or retain the artifact
@@ -331,8 +338,13 @@ no ignore-merge flags for existing destinations. It uses `MoveFileExW` with
 only `MOVEFILE_WRITE_THROUGH` for absent destinations, so it cannot replace or
 copy across volumes accidentally. On Unix, it opens the sibling parent and uses
 an atomic exchange for existing-file replacement. The displaced destination
-remains at the temporary path after its identity, fingerprint, and length are
-checked as the post-commit metadata source. Portable Unix APIs cannot tie
+remains at the temporary path after its identity, fingerprint, length, and link
+count are checked. The exchange can legitimately change that inode's `ctime`,
+so the post-exchange observation ratifies the new token without treating it as
+the source of metadata to apply. The displaced file's stable metadata payload
+must still equal the immutable snapshot captured and revalidated before commit.
+A mismatch leaves the committed file private and reports a warning instead of
+restoring stale permissions. Portable Unix APIs cannot tie
 deletion atomically to that verified open object, so the artifact is retained
 with a warning that names only the random sibling basename and gives inspection
 and removal guidance. Absent-file installation uses `RENAME_NOREPLACE` where
@@ -395,10 +407,18 @@ write handles while owned, so permissive parent entries never expose or modify
 staged document bytes. Existing
 Windows replacements still receive the destination metadata merged by
 `ReplaceFileW`. Existing Unix replacements remain mode 0600 through the exchange;
-the adapter then applies the displaced original's verified metadata to the
-committed open handle. A metadata-finalization failure is a committed warning and
-leaves the destination at the safest access state reached, never a false
-not-committed result.
+the adapter captures required metadata into an immutable snapshot before commit,
+verifies the displaced original after exchange, compares its stable metadata
+payload with that snapshot, then applies the snapshot to the committed open
+handle only on an exact match. A metadata-finalization failure or final-window
+metadata change is a committed warning and leaves the destination at the safest
+access state reached, never a false not-committed result.
+Extended-attribute capture is limited to 4,096 entries and 64 MiB of aggregate
+names and values. Native size queries enforce the limit before value allocation
+and retry only within a fixed bound when metadata changes. macOS resource forks
+are covered by the same xattr budget. Its private carrier stores only the ACL;
+resource-fork and other xattr values are applied from the bounded immutable
+snapshot rather than copied live.
 
 No implementation may claim durable atomic save while these cases are silently
 undefined.
@@ -715,11 +735,13 @@ fingerprint versioning, and equivalent streaming and reference-vector tests.
 
 Stable Rust 1.97.1 exposes Unix device, inode, and hard-link values directly,
 but its full Windows by-handle identity methods remain unstable. The internal
-`noter-platform` workspace crate therefore owns six narrowly scoped unsafe calls:
-five Windows calls for basic identity, preferred identity, change time,
-replacement, and exclusive movement, plus one macOS `fcopyfile` call. Each call
-has a local safety contract, the main crate still forbids unsafe code, and the
-platform crate denies unsafe code outside those explicit allowances. Windows
+`noter-platform` workspace crate therefore owns narrowly scoped unsafe FFI
+boundaries for Windows private creation and descriptor lifecycle, file identity
+and change observation, cleanup, replacement, and exclusive movement; Unix
+descriptor-based extended-attribute reads; and macOS ACL copy and serialization.
+Each boundary has a local safety contract, the main crate still forbids unsafe
+code, and the platform crate denies unsafe code outside those explicit
+allowances. Windows
 prefers the 128-bit `FILE_ID_INFO` identity, detects an all-zero unsupported ID,
 and labels the 64-bit fallback as reduced. The fallback is never silently
 represented as preferred. This internal member adds one lock entry but no external package,
@@ -737,18 +759,19 @@ and injected-failure tests.
 
 The production Unix adapter uses `rustix` 1.1 with only `fs` and `std` for
 descriptor-relative rename, no-replace rename, link, unlink, ownership, mode,
-and full-sync operations. Linux alone uses `xattr` 1.6 with default features
-disabled to enumerate, copy, remove, and verify visible extended attributes,
-with explicit probes for POSIX ACL, SELinux, and capability names. macOS uses
-the already-resolved `libc` 0.2 package for descriptor-based ACL and
-extended-attribute transfer. `rustix` and `libc` were already in the lockfile;
-`xattr` adds one package, bringing the cross-target graph to 339. All three are
+and full-sync operations. Linux and macOS use `xattr` 1.6 with default features
+disabled to apply, remove, and verify visible extended attributes. Bounded
+descriptor-based enumeration and value reads use the already-resolved `libc`
+0.2 package. Linux also probes POSIX ACL, SELinux, and capability names
+explicitly; macOS uses `libc` for ACL copy and serialization. `rustix` and
+`libc` were already in the lockfile; `xattr` adds one package, bringing the
+cross-target graph to 339. All three are
 MIT or Apache-family licensed, have no application network capability, and build
 under the pinned toolchain. `xattr` does not publish an MSRV, so CI establishes
 compatibility.
 
 With the adapter reachable from the GUI, the stripped Windows release is
-4,913,664 bytes, or 4.69 MiB, compared with the 4,748,800-byte M0 baseline. The
+4,953,088 bytes, or 4.72 MiB, compared with the 4,748,800-byte M0 baseline. The
 2026-07-25 RustSec audit of all 339 locked packages is clean. This measured delta
 is accepted for native metadata preservation, cryptographic conflict detection,
 and reconciled commit semantics. Later release gates still enforce the 12 MiB
@@ -781,6 +804,7 @@ credentials exist, and cargo-dist artifacts verified on clean systems.
 | F15 | Platform reports failure after changing replacement state | 10 | explicit unknown-commit outcome, backup-aware reconciliation, recovery retention | M1 |
 | F16 | Atomic replacement silently drops permissions or extended metadata | 9 | platform metadata fixtures and pre-commit refusal on preservation failure | M1 |
 | F17 | Save replaces a symlink entry or surprises other hard links | 9 | link identity revalidation, Save As refusal, hard-link confirmation | M1/M3 |
+| F18 | Resource-fork or extended-attribute metadata exhausts memory or temporary storage | 7 | preallocation byte and count limits, bounded retries, ACL-only macOS carrier | M1 |
 
 The FMEA is updated whenever a test, incident, dependency, or platform behavior
 reveals a new path. Critical and high rows require executable evidence or a

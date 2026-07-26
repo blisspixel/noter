@@ -109,13 +109,22 @@ exchanges conservatively retain any private artifact and report its safe basenam
 plus inspection and removal guidance instead of issuing a pathname unlink.
 Creation-time identity failures preserve the primary failure and a separate,
 typed cleanup warning naming the retained sibling when handle-bound deletion is
-unavailable. Unix existing-file metadata is finalized only after atomic
-exchange, while the new
-content is still owner-only; a failed post-commit file barrier is reported as
-reduced durability. The GUI now provides the explicit confirmation required to
-save one entry of a hard-linked file. Save As confirmation retains the exact
-target version observed before the dialog, so rebinding that path while the
-dialog is visible produces a conflict instead of replacing the newer entry.
+unavailable. Unix existing-file metadata is captured into an immutable,
+handle-ratified snapshot before commit while staging remains owner-only. After
+atomic exchange, Noter verifies the displaced original's identity, bytes, and
+link facts, compares its ownership, mode, ACL, and visible extended attributes
+with the snapshot, and applies only an exact match to the committed handle. A
+final-window metadata change leaves the committed file private and produces a
+warning instead of restoring stale metadata. Noter never copies unratified
+post-commit metadata. Unix extended-attribute capture, including macOS resource
+forks, is separately bounded to 4,096 entries and 64 MiB of aggregate names and
+values before any value allocation. macOS copies only the bounded snapshot
+values and uses its private carrier solely for the ACL. A failed post-commit
+file barrier is reported as reduced
+durability. The GUI now provides the explicit confirmation required to save one
+entry of a hard-linked file. Save As confirmation retains the exact target
+version observed before the dialog, so rebinding that path while the dialog is
+visible produces a conflict instead of replacing the newer entry.
 Unknown commit state and failed cleanup surface the safe random artifact
 basename plus inspection, recovery, retry, and removal guidance.
 New, Open, Quit, and native window close now fail closed while work is dirty;
@@ -123,16 +132,19 @@ M3 still owns the complete Save, Discard, and Cancel experience. The review
 scope, evidence, and remaining platform gaps are recorded in
 [docs/M1_SECURITY_REVIEW.md](docs/M1_SECURITY_REVIEW.md).
 
-The paired mutation gate is verified at commit `3830cdd` in
+The original paired mutation gate is verified at commit `3830cdd` in
 [GitHub Actions run 30184163737](https://github.com/blisspixel/noter/actions/runs/30184163737):
 Linux-common and Windows-full both completed with zero missed mutations and zero
-timeouts. The current paired configuration covers 423 mutations across its
-platform union: 418 are Windows-applicable and 394 are Linux-applicable, with no
-union gap. The local Windows campaign plus focused survivor reruns classify the
-418 Windows-applicable mutations as 270 caught and 148 compiler-rejected, with
-none missed or timed out. Five Unix-only decisions remain assigned to the Linux
-gate. The configuration,
-negative evidence, and exact results are documented in
+timeouts. The expanded gate now includes the native platform adapter and a
+macOS-specific job. Its current 640-mutation supported-platform union assigns
+556 to Linux, 476 to Windows, and 170 to macOS with no gap. Runner scopes
+intentionally overlap on common code, and the union deduplicates exact mutation
+descriptions. The historical 418-mutation
+Windows core is classified as 270 caught and 148 compiler-rejected. A new local
+58-mutation Windows native-adapter pass is independently clean at 40 caught and
+18 compiler-rejected, with no miss, timeout, or infrastructure failure. The
+expanded three-platform gate still requires one exact-commit hosted run. The
+configuration, negative evidence, and exact results are documented in
 [docs/M1_MUTATION_EVIDENCE.md](docs/M1_MUTATION_EVIDENCE.md).
 The prototype now opens a real About dialog and visibly disables unfinished
 menu commands instead of accepting no-op clicks. The dialog explains that its
@@ -140,11 +152,11 @@ project link opens in the default browser. Markdown preview, source styling,
 diagnostics, and formatting remain intentionally absent until the opt-in M7
 work after the trustworthy v0.1 release.
 
-All 130 Windows-local workspace tests pass with 93.06 percent measured
-trust-kernel line coverage and 90.09 percent whole-workspace line coverage. The
+All 134 Windows-local workspace tests pass with 93.13 percent measured
+trust-kernel line coverage and 90.18 percent whole-workspace line coverage. The
 339-package
-lockfile has a clean RustSec audit, and the last measured stripped Windows
-checkpoint was 4.69 MiB. The manual metadata and filesystem matrix plus
+lockfile has a clean RustSec audit, and the current measured stripped Windows
+checkpoint is 4.72 MiB. The manual metadata and filesystem matrix plus
 reproducible benchmarks still gate this M1 slice. The temporary dirty-work
 interlock prevents silent discard, but recovery, the complete dirty-document
 decision flow, and the production UI remain unfinished, so the GUI is still a
@@ -233,8 +245,12 @@ cargo install cargo-llvm-cov --locked
 cargo llvm-cov --locked --all-targets --all-features --workspace \
   --ignore-filename-regex 'src[/\\](app|main)\.rs$' \
   --fail-under-lines 90 --summary-only
-cargo mutants --jobs 4 --colors never
 ```
+
+Mutation evidence is platform-partitioned because an unfiltered single-platform
+run can misclassify inactive target code. Use the exact runner command in
+[docs/M1_MUTATION_EVIDENCE.md](docs/M1_MUTATION_EVIDENCE.md) for the platform
+and scope being verified.
 
 ### Release binary size (target)
 

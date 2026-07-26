@@ -7,6 +7,36 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
+#[cfg(unix)]
+use imp::{
+    unix_apply_required_metadata as platform_apply_required_metadata,
+    unix_capture_required_metadata as platform_capture_required_metadata,
+    unix_create_private_new_file as platform_create_private_new_file,
+    unix_delete_open_file as platform_delete_open_file, unix_file_facts as platform_file_facts,
+    unix_install_new as platform_install_new, unix_open_for_cleanup as platform_open_for_cleanup,
+    unix_replace_existing as platform_replace_existing,
+    unix_required_metadata_matches_source as platform_required_metadata_matches_source,
+    unix_sync_file as platform_sync_file, unix_sync_parent as platform_sync_parent,
+};
+#[cfg(not(any(unix, windows)))]
+use imp::{
+    unsupported_create_private_new_file as platform_create_private_new_file,
+    unsupported_delete_open_file as platform_delete_open_file,
+    unsupported_file_facts as platform_file_facts, unsupported_install_new as platform_install_new,
+    unsupported_open_for_cleanup as platform_open_for_cleanup,
+    unsupported_replace_existing as platform_replace_existing,
+    unsupported_sync_file as platform_sync_file, unsupported_sync_parent as platform_sync_parent,
+};
+#[cfg(windows)]
+use imp::{
+    windows_create_private_new_file as platform_create_private_new_file,
+    windows_delete_open_file as platform_delete_open_file,
+    windows_file_facts as platform_file_facts, windows_install_new as platform_install_new,
+    windows_open_for_cleanup as platform_open_for_cleanup,
+    windows_replace_existing as platform_replace_existing, windows_sync_file as platform_sync_file,
+    windows_sync_parent as platform_sync_parent,
+};
+
 /// Strength of the platform-provided file identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum IdentityQuality {
@@ -85,6 +115,16 @@ pub struct FileFacts {
     change_token: FileChangeToken,
 }
 
+/// Immutable platform metadata ratified from one stable source file.
+///
+/// The representation is private so callers can apply only a snapshot captured
+/// by this crate rather than constructing incomplete security metadata.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct RequiredMetadata {
+    inner: imp::RequiredMetadata,
+}
+
 impl FileFacts {
     const fn new(identity: FileIdentity, link_count: u64, change_token: FileChangeToken) -> Self {
         Self {
@@ -122,7 +162,7 @@ impl FileFacts {
 ///
 /// Returns an operating-system error if the handle metadata cannot be queried.
 pub fn file_facts(file: &File) -> io::Result<FileFacts> {
-    imp::file_facts(file)
+    platform_file_facts(file)
 }
 
 /// Exclusively creates a private read-write file at a new path.
@@ -135,7 +175,7 @@ pub fn file_facts(file: &File) -> io::Result<FileFacts> {
 /// Returns an operating-system error when the path already exists, the private
 /// security descriptor cannot be constructed, or the file cannot be created.
 pub fn create_private_new_file(path: &Path) -> io::Result<File> {
-    imp::create_private_new_file(path)
+    platform_create_private_new_file(path)
 }
 
 /// Opens an existing final entry for stable observation and handle-bound cleanup.
@@ -149,7 +189,7 @@ pub fn create_private_new_file(path: &Path) -> io::Result<File> {
 /// Returns an operating-system error when the path cannot be opened with the
 /// access required for verified cleanup.
 pub fn open_for_cleanup(path: &Path) -> io::Result<File> {
-    imp::open_for_cleanup(path)
+    platform_open_for_cleanup(path)
 }
 
 /// Requests deletion of the exact object represented by an open file handle.
@@ -163,22 +203,63 @@ pub fn open_for_cleanup(path: &Path) -> io::Result<File> {
 /// Returns an operating-system error if handle-bound deletion is unsupported or
 /// the deletion request fails.
 pub fn delete_open_file(file: &File) -> io::Result<()> {
-    imp::delete_open_file(file)
+    platform_delete_open_file(file)
 }
 
-/// Copies required existing-file metadata between already open regular files.
+/// Captures required existing-file metadata from an open regular file.
 ///
-/// Unix implementations preserve attainable ownership, mode, ACLs, and visible
-/// extended attributes without copying the source modification time. Windows
-/// defers its native metadata merge to the replacement operation.
+/// Unix snapshots attainable ownership, mode, ACLs, and visible extended
+/// attributes without copying content or modification time. `expected_source`
+/// must be the facts ratified from the same handle. Windows has no version of
+/// this API because its native replacement primitive owns metadata merging.
+/// Unix capture refuses more than 4,096 extended attributes or more than 64 MiB
+/// of aggregate attribute names and values before allocating any value buffer.
 ///
 /// # Errors
 ///
-/// Returns an operating-system error if required metadata cannot be read,
-/// applied, or verified.
-#[allow(clippy::missing_const_for_fn)]
-pub fn copy_required_metadata(source: &File, destination: &File) -> io::Result<()> {
-    imp::copy_required_metadata(source, destination)
+/// Returns an operating-system error if the source changes while required
+/// metadata is captured or that metadata cannot be read exactly.
+#[cfg(unix)]
+pub fn capture_required_metadata(
+    source: &File,
+    expected_source: FileFacts,
+) -> io::Result<RequiredMetadata> {
+    platform_capture_required_metadata(source, expected_source)
+        .map(|inner| RequiredMetadata { inner })
+}
+
+/// Compares a stable source file with a previously ratified metadata snapshot.
+///
+/// The source's change facts must equal `expected_source` before and after the
+/// comparison. The platform-induced post-exchange change time is intentionally
+/// not compared with the pre-commit snapshot, but ownership, mode, ACLs, and
+/// visible extended attributes are.
+///
+/// # Errors
+///
+/// Returns an operating-system error if required metadata cannot be read or if
+/// the source changes during comparison.
+#[cfg(unix)]
+pub fn required_metadata_matches_source(
+    metadata: &RequiredMetadata,
+    source: &File,
+    expected_source: FileFacts,
+) -> io::Result<bool> {
+    platform_required_metadata_matches_source(&metadata.inner, source, expected_source)
+}
+
+/// Applies a previously ratified metadata snapshot to an open regular file.
+///
+/// Applies ownership, security metadata, and mode from the immutable Unix
+/// snapshot.
+///
+/// # Errors
+///
+/// Returns an operating-system error if required metadata cannot be applied or
+/// verified.
+#[cfg(unix)]
+pub fn apply_required_metadata(metadata: &RequiredMetadata, destination: &File) -> io::Result<()> {
+    platform_apply_required_metadata(&metadata.inner, destination)
 }
 
 /// Result of an exclusive new-file commit operation.
@@ -223,7 +304,7 @@ pub fn replace_existing(
     destination: &Path,
     backup: Option<&Path>,
 ) -> io::Result<ReplaceExistingOutcome> {
-    imp::replace_existing(temporary, destination, backup)
+    platform_replace_existing(temporary, destination, backup)
 }
 
 /// Installs a private sibling only if the destination remains absent.
@@ -233,7 +314,7 @@ pub fn replace_existing(
 /// Returns the raw operating-system failure. An `AlreadyExists` error is an
 /// exclusive-create conflict, while other failures require reconciliation.
 pub fn install_new(temporary: &Path, destination: &Path) -> io::Result<InstallNewOutcome> {
-    imp::install_new(temporary, destination)
+    platform_install_new(temporary, destination)
 }
 
 /// Requests the strongest supported temporary-file persistence barrier.
@@ -242,7 +323,7 @@ pub fn install_new(temporary: &Path, destination: &Path) -> io::Result<InstallNe
 ///
 /// Returns an operating-system error when no supported file barrier succeeds.
 pub fn sync_file(file: &File) -> io::Result<()> {
-    imp::sync_file(file)
+    platform_sync_file(file)
 }
 
 /// Synchronizes the destination's containing directory when supported.
@@ -251,16 +332,20 @@ pub fn sync_file(file: &File) -> io::Result<()> {
 ///
 /// Returns an operating-system error when a supported directory barrier fails.
 pub fn sync_parent(destination: &Path) -> io::Result<ParentSyncOutcome> {
-    imp::sync_parent(destination)
+    platform_sync_parent(destination)
 }
 
 #[cfg(unix)]
 mod imp {
     use std::ffi::OsStr;
-    #[cfg(target_os = "linux")]
-    use std::ffi::OsString;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use std::ffi::{CString, OsString};
     use std::fs::{File, OpenOptions};
     use std::io;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use std::os::fd::AsRawFd;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::Path;
@@ -268,7 +353,7 @@ mod imp {
     use rustix::fs::{
         AtFlags, Gid, Mode, RawMode, RenameFlags, Uid, fchmod, fchown, linkat, renameat_with,
     };
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use xattr::FileExt;
 
     use super::{
@@ -276,7 +361,33 @@ mod imp {
         ParentSyncOutcome, ReplaceExistingOutcome,
     };
 
-    pub fn file_facts(file: &File) -> io::Result<FileFacts> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const MAX_SUPPORTED_METADATA_BYTES: usize = 67_108_864;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const MAX_SUPPORTED_XATTR_COUNT: usize = 4096;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const MAX_XATTR_READ_ATTEMPTS: usize = 3;
+
+    #[cfg(target_os = "linux")]
+    use self::{
+        apply_linux_metadata as apply_native_metadata,
+        capture_linux_metadata as capture_native_metadata,
+        linux_metadata_payload_matches as native_metadata_payload_matches,
+    };
+    #[cfg(target_os = "macos")]
+    use self::{
+        apply_macos_metadata as apply_native_metadata,
+        capture_macos_metadata as capture_native_metadata,
+        macos_metadata_payload_matches as native_metadata_payload_matches,
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    use self::{
+        apply_unsupported_unix_metadata as apply_native_metadata,
+        capture_unsupported_unix_metadata as capture_native_metadata,
+        unsupported_unix_metadata_payload_matches as native_metadata_payload_matches,
+    };
+
+    pub fn unix_file_facts(file: &File) -> io::Result<FileFacts> {
         let metadata = file.metadata()?;
         Ok(FileFacts::new(
             FileIdentity::new(
@@ -289,7 +400,7 @@ mod imp {
         ))
     }
 
-    pub fn create_private_new_file(path: &Path) -> io::Result<File> {
+    pub fn unix_create_private_new_file(path: &Path) -> io::Result<File> {
         OpenOptions::new()
             .read(true)
             .write(true)
@@ -298,61 +409,175 @@ mod imp {
             .open(path)
     }
 
-    pub fn open_for_cleanup(path: &Path) -> io::Result<File> {
+    pub fn unix_open_for_cleanup(path: &Path) -> io::Result<File> {
         OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)
     }
 
-    pub fn delete_open_file(_file: &File) -> io::Result<()> {
+    pub fn unix_delete_open_file(_file: &File) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "portable Unix APIs cannot delete an exact open file object",
         ))
     }
 
-    pub fn copy_required_metadata(source: &File, destination: &File) -> io::Result<()> {
-        let before = metadata_stamp(source)?;
-        let destination_metadata = destination.metadata()?;
-        let owner = (before.uid != destination_metadata.uid()).then(|| Uid::from_raw(before.uid));
-        let group = (before.gid != destination_metadata.gid()).then(|| Gid::from_raw(before.gid));
-
-        if owner.is_some() || group.is_some() {
-            fchown(destination, owner, group)?;
-        }
-
-        copy_security_metadata(source, destination)?;
-        #[cfg(target_os = "linux")]
-        verify_linux_xattrs(source, destination)?;
-
-        if metadata_stamp(source)? != before {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "source metadata changed during transfer",
-            ));
-        }
-
+    #[derive(Debug)]
+    pub struct RequiredMetadata {
+        stamp: MetadataStamp,
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        attributes: Vec<ExtendedAttribute>,
         #[cfg(target_os = "macos")]
-        let raw_mode: RawMode = before.mode.try_into().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "source mode does not fit the platform mode type",
-            )
-        })?;
-        #[cfg(not(target_os = "macos"))]
-        let raw_mode: RawMode = before.mode;
-        fchmod(destination, Mode::from_raw_mode(raw_mode))?;
-
-        Ok(())
+        acl_carrier: File,
+        #[cfg(target_os = "macos")]
+        acl_text: Vec<u8>,
     }
 
-    pub fn replace_existing(
+    pub fn unix_capture_required_metadata(
+        source: &File,
+        expected_source: FileFacts,
+    ) -> io::Result<RequiredMetadata> {
+        capture_native_metadata(source, expected_source)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn capture_linux_metadata(
+        source: &File,
+        expected_source: FileFacts,
+    ) -> io::Result<RequiredMetadata> {
+        let stamp = unix_metadata_stamp(source)?;
+        unix_ensure_metadata_source_matches(source, stamp, expected_source, "before capture")?;
+        let attributes = unix_read_native_xattrs(source)?;
+        unix_ensure_metadata_source_matches(source, stamp, expected_source, "during capture")?;
+        Ok(RequiredMetadata { stamp, attributes })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn capture_macos_metadata(
+        source: &File,
+        expected_source: FileFacts,
+    ) -> io::Result<RequiredMetadata> {
+        let stamp = unix_metadata_stamp(source)?;
+        unix_ensure_metadata_source_matches(source, stamp, expected_source, "before capture")?;
+        let attributes = unix_read_native_xattrs(source)?;
+        let acl_text = read_macos_acl_text(source)?;
+        let acl_carrier = tempfile::tempfile()?;
+        copy_macos_acl(source, &acl_carrier)?;
+        verify_macos_acl(&acl_text, &acl_carrier)?;
+        unix_ensure_metadata_source_matches(source, stamp, expected_source, "during capture")?;
+        Ok(RequiredMetadata {
+            stamp,
+            attributes,
+            acl_carrier,
+            acl_text,
+        })
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn capture_unsupported_unix_metadata(
+        _source: &File,
+        _expected_source: FileFacts,
+    ) -> io::Result<RequiredMetadata> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "metadata snapshots are unsupported on this Unix platform",
+        ))
+    }
+
+    pub fn unix_apply_required_metadata(
+        metadata: &RequiredMetadata,
+        destination: &File,
+    ) -> io::Result<()> {
+        apply_native_metadata(metadata, destination)
+    }
+
+    pub fn unix_required_metadata_matches_source(
+        metadata: &RequiredMetadata,
+        source: &File,
+        expected_source: FileFacts,
+    ) -> io::Result<bool> {
+        if unix_file_facts(source)? != expected_source {
+            return Err(unix_metadata_comparison_race());
+        }
+        let matches = native_metadata_payload_matches(metadata, source)?;
+        if unix_file_facts(source)? != expected_source {
+            return Err(unix_metadata_comparison_race());
+        }
+        Ok(matches)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_linux_metadata(metadata: &RequiredMetadata, destination: &File) -> io::Result<()> {
+        unix_apply_ownership(metadata.stamp, destination)?;
+        unix_apply_native_xattrs(&metadata.attributes, destination)?;
+        unix_apply_mode(metadata.stamp.mode, destination)?;
+        unix_verify_native_xattrs(&metadata.attributes, destination)?;
+        unix_verify_destination_stamp(metadata.stamp, destination)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn apply_macos_metadata(metadata: &RequiredMetadata, destination: &File) -> io::Result<()> {
+        unix_apply_ownership(metadata.stamp, destination)?;
+        copy_macos_acl(&metadata.acl_carrier, destination)?;
+        unix_apply_native_xattrs(&metadata.attributes, destination)?;
+        unix_apply_mode(metadata.stamp.mode, destination)?;
+        unix_verify_native_xattrs(&metadata.attributes, destination)?;
+        verify_macos_acl(&metadata.acl_text, destination)?;
+        unix_verify_destination_stamp(metadata.stamp, destination)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn apply_unsupported_unix_metadata(
+        _metadata: &RequiredMetadata,
+        _destination: &File,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "metadata snapshots are unsupported on this Unix platform",
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_metadata_payload_matches(
+        metadata: &RequiredMetadata,
+        source: &File,
+    ) -> io::Result<bool> {
+        Ok(
+            unix_metadata_payload_stamp_matches(metadata.stamp, unix_metadata_stamp(source)?)
+                && metadata.attributes == unix_read_native_xattrs(source)?,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_metadata_payload_matches(
+        metadata: &RequiredMetadata,
+        source: &File,
+    ) -> io::Result<bool> {
+        Ok(
+            unix_metadata_payload_stamp_matches(metadata.stamp, unix_metadata_stamp(source)?)
+                && metadata.attributes == unix_read_native_xattrs(source)?
+                && metadata.acl_text == read_macos_acl_text(source)?,
+        )
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn unsupported_unix_metadata_payload_matches(
+        _metadata: &RequiredMetadata,
+        _source: &File,
+    ) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "metadata snapshot comparison is unsupported on this Unix platform",
+        ))
+    }
+
+    pub fn unix_replace_existing(
         temporary: &Path,
         destination: &Path,
         _backup: Option<&Path>,
     ) -> io::Result<ReplaceExistingOutcome> {
-        with_sibling_parent(
+        unix_with_sibling_parent(
             temporary,
             destination,
             |parent, temporary_name, destination_name| {
@@ -369,8 +594,8 @@ mod imp {
         )
     }
 
-    pub fn install_new(temporary: &Path, destination: &Path) -> io::Result<InstallNewOutcome> {
-        with_sibling_parent(
+    pub fn unix_install_new(temporary: &Path, destination: &Path) -> io::Result<InstallNewOutcome> {
+        unix_with_sibling_parent(
             temporary,
             destination,
             |parent, temporary_name, destination_name| match renameat_with(
@@ -381,15 +606,15 @@ mod imp {
                 RenameFlags::NOREPLACE,
             ) {
                 Ok(()) => Ok(InstallNewOutcome::Clean),
-                Err(error) if no_replace_is_unavailable(error) => {
-                    install_new_with_link(parent, temporary_name, destination_name)
+                Err(error) if unix_no_replace_is_unavailable(error) => {
+                    unix_install_new_with_link(parent, temporary_name, destination_name)
                 }
                 Err(error) => Err(error.into()),
             },
         )
     }
 
-    fn install_new_with_link(
+    fn unix_install_new_with_link(
         parent: &File,
         temporary_name: &OsStr,
         destination_name: &OsStr,
@@ -406,20 +631,20 @@ mod imp {
         Ok(InstallNewOutcome::CommittedWithRetainedTemporary)
     }
 
-    const fn no_replace_is_unavailable(error: rustix::io::Errno) -> bool {
+    const fn unix_no_replace_is_unavailable(error: rustix::io::Errno) -> bool {
         matches!(
             error,
             rustix::io::Errno::NOSYS | rustix::io::Errno::INVAL | rustix::io::Errno::NOTSUP
         )
     }
 
-    fn with_sibling_parent<T>(
+    fn unix_with_sibling_parent<T>(
         temporary: &Path,
         destination: &Path,
         operation: impl FnOnce(&File, &OsStr, &OsStr) -> io::Result<T>,
     ) -> io::Result<T> {
-        let temporary_parent = normalized_parent(temporary);
-        let destination_parent = normalized_parent(destination);
+        let temporary_parent = unix_normalized_parent(temporary);
+        let destination_parent = unix_normalized_parent(destination);
         if temporary_parent != destination_parent {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -442,13 +667,13 @@ mod imp {
         operation(&parent, temporary_name, destination_name)
     }
 
-    fn normalized_parent(path: &Path) -> &Path {
+    fn unix_normalized_parent(path: &Path) -> &Path {
         path.parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."))
     }
 
-    pub fn sync_file(file: &File) -> io::Result<()> {
+    pub fn unix_sync_file(file: &File) -> io::Result<()> {
         #[cfg(target_os = "macos")]
         {
             match rustix::fs::fcntl_fullfsync(file) {
@@ -461,8 +686,8 @@ mod imp {
         file.sync_all()
     }
 
-    pub fn sync_parent(destination: &Path) -> io::Result<ParentSyncOutcome> {
-        File::open(normalized_parent(destination))?.sync_all()?;
+    pub fn unix_sync_parent(destination: &Path) -> io::Result<ParentSyncOutcome> {
+        File::open(unix_normalized_parent(destination))?.sync_all()?;
         Ok(ParentSyncOutcome::Synced)
     }
 
@@ -475,7 +700,7 @@ mod imp {
         ctime_nsec: i64,
     }
 
-    fn metadata_stamp(file: &File) -> io::Result<MetadataStamp> {
+    fn unix_metadata_stamp(file: &File) -> io::Result<MetadataStamp> {
         let metadata = file.metadata()?;
         Ok(MetadataStamp {
             uid: metadata.uid(),
@@ -486,21 +711,121 @@ mod imp {
         })
     }
 
-    #[cfg(target_os = "linux")]
-    fn copy_security_metadata(source: &File, destination: &File) -> io::Result<()> {
-        let source_attributes = read_linux_xattrs(source)?;
-        let destination_attributes = read_linux_xattrs(destination)?;
+    fn unix_apply_ownership(metadata: MetadataStamp, destination: &File) -> io::Result<()> {
+        let destination_metadata = destination.metadata()?;
+        let owner =
+            (metadata.uid != destination_metadata.uid()).then(|| Uid::from_raw(metadata.uid));
+        let group =
+            (metadata.gid != destination_metadata.gid()).then(|| Gid::from_raw(metadata.gid));
+        if owner.is_some() || group.is_some() {
+            fchown(destination, owner, group)?;
+        }
+        Ok(())
+    }
+
+    fn unix_apply_mode(mode: u32, destination: &File) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        let raw_mode: RawMode = mode.try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "snapshot mode does not fit the platform mode type",
+            )
+        })?;
+        #[cfg(not(target_os = "macos"))]
+        let raw_mode: RawMode = mode;
+        fchmod(destination, Mode::from_raw_mode(raw_mode)).map_err(Into::into)
+    }
+
+    fn unix_verify_destination_stamp(
+        expected: MetadataStamp,
+        destination: &File,
+    ) -> io::Result<()> {
+        const MODE_BITS: u32 = 0o7777;
+        let actual = unix_metadata_stamp(destination)?;
+        if actual.uid == expected.uid
+            && actual.gid == expected.gid
+            && actual.mode & MODE_BITS == expected.mode & MODE_BITS
+        {
+            return Ok(());
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "destination ownership or mode differs after metadata application",
+        ))
+    }
+
+    const fn unix_metadata_payload_stamp_matches(
+        expected: MetadataStamp,
+        actual: MetadataStamp,
+    ) -> bool {
+        const MODE_BITS: u32 = 0o7777;
+        expected.uid == actual.uid
+            && expected.gid == actual.gid
+            && expected.mode & MODE_BITS == actual.mode & MODE_BITS
+    }
+
+    fn unix_metadata_comparison_race() -> io::Error {
+        io::Error::new(
+            io::ErrorKind::Interrupted,
+            "source metadata changed during snapshot comparison",
+        )
+    }
+
+    fn unix_ensure_metadata_source_matches(
+        source: &File,
+        expected_metadata: MetadataStamp,
+        expected_facts: FileFacts,
+        boundary: &str,
+    ) -> io::Result<()> {
+        let actual_metadata = unix_metadata_stamp(source)?;
+        let actual_facts = unix_file_facts(source)?;
+        if unix_metadata_source_matches(
+            expected_metadata,
+            actual_metadata,
+            expected_facts,
+            actual_facts,
+        ) {
+            return Ok(());
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            format!("source metadata changed {boundary} transfer"),
+        ))
+    }
+
+    fn unix_metadata_source_matches(
+        expected_metadata: MetadataStamp,
+        actual_metadata: MetadataStamp,
+        expected_facts: FileFacts,
+        actual_facts: FileFacts,
+    ) -> bool {
+        let token = expected_facts.change_token();
+        let expected_token_matches = expected_metadata.ctime == token.primary()
+            && expected_metadata.ctime_nsec == token.secondary();
+        expected_token_matches
+            && actual_metadata == expected_metadata
+            && actual_facts == expected_facts
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unix_apply_native_xattrs(
+        expected_attributes: &[ExtendedAttribute],
+        destination: &File,
+    ) -> io::Result<()> {
+        let destination_attributes = unix_read_native_xattrs(destination)?;
 
         for attribute in &destination_attributes {
-            if !source_attributes
+            if !expected_attributes
                 .iter()
-                .any(|source| source.name == attribute.name)
+                .any(|expected| expected.name == attribute.name)
             {
                 destination.remove_xattr(&attribute.name)?;
             }
         }
 
-        for attribute in &source_attributes {
+        for attribute in expected_attributes {
             let already_matches = destination_attributes
                 .iter()
                 .any(|current| current == attribute);
@@ -512,9 +837,12 @@ mod imp {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
-    fn verify_linux_xattrs(source: &File, destination: &File) -> io::Result<()> {
-        if read_linux_xattrs(source)? != read_linux_xattrs(destination)? {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unix_verify_native_xattrs(
+        expected_attributes: &[ExtendedAttribute],
+        destination: &File,
+    ) -> io::Result<()> {
+        if expected_attributes != unix_read_native_xattrs(destination)? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "extended attributes differ after metadata transfer",
@@ -523,57 +851,299 @@ mod imp {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[derive(PartialEq, Eq, Debug)]
     struct ExtendedAttribute {
         name: OsString,
         value: Vec<u8>,
     }
 
-    #[cfg(target_os = "linux")]
-    fn read_linux_xattrs(file: &File) -> io::Result<Vec<ExtendedAttribute>> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unix_read_native_xattrs(file: &File) -> io::Result<Vec<ExtendedAttribute>> {
+        unix_read_native_xattrs_bounded(file, MAX_SUPPORTED_METADATA_BYTES)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unix_read_native_xattrs_bounded(
+        file: &File,
+        byte_limit: usize,
+    ) -> io::Result<Vec<ExtendedAttribute>> {
+        #[cfg(target_os = "linux")]
         const CRITICAL_NAMES: [&str; 3] = [
             "security.capability",
             "security.selinux",
             "system.posix_acl_access",
         ];
 
-        let mut names: Vec<OsString> = file.list_xattr()?.collect();
-        for name in CRITICAL_NAMES {
-            if names.iter().any(|current| current == OsStr::new(name)) {
-                continue;
-            }
-            if file.get_xattr(name)?.is_some() {
-                names.push(OsString::from(name));
-            }
-        }
+        let (mut names, mut used_bytes) = unix_list_native_xattrs_bounded(file, byte_limit)?;
+        let mut attributes = Vec::with_capacity(names.len());
+
         names.sort_unstable();
         names.dedup();
+        for name in &names {
+            let remaining = byte_limit.saturating_sub(used_bytes);
+            let value =
+                unix_read_native_xattr_bounded(file, name, remaining)?.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "extended attribute changed while it was read",
+                    )
+                })?;
+            unix_reserve_metadata_bytes(&mut used_bytes, value.len(), byte_limit)?;
+            attributes.push(ExtendedAttribute {
+                name: name.clone(),
+                value,
+            });
+        }
 
-        names
-            .into_iter()
-            .map(|name| {
-                file.get_xattr(&name)?
-                    .map(|value| ExtendedAttribute { name, value })
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "extended attribute changed while it was read",
-                        )
-                    })
-            })
-            .collect()
+        #[cfg(target_os = "linux")]
+        {
+            for name in CRITICAL_NAMES {
+                if names.iter().any(|current| current == OsStr::new(name)) {
+                    continue;
+                }
+                let name_bytes = name
+                    .len()
+                    .checked_add(1)
+                    .ok_or_else(unix_metadata_too_large)?;
+                let remaining = byte_limit
+                    .saturating_sub(used_bytes)
+                    .saturating_sub(name_bytes);
+                if let Some(value) =
+                    unix_read_native_xattr_bounded(file, OsStr::new(name), remaining)?
+                {
+                    if attributes.len() == MAX_SUPPORTED_XATTR_COUNT {
+                        return Err(unix_metadata_too_large());
+                    }
+                    unix_reserve_metadata_bytes(&mut used_bytes, name_bytes, byte_limit)?;
+                    unix_reserve_metadata_bytes(&mut used_bytes, value.len(), byte_limit)?;
+                    attributes.push(ExtendedAttribute {
+                        name: OsString::from(name),
+                        value,
+                    });
+                }
+            }
+        }
+
+        attributes.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        Ok(attributes)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unix_list_native_xattrs_bounded(
+        file: &File,
+        byte_limit: usize,
+    ) -> io::Result<(Vec<OsString>, usize)> {
+        for _ in 0..MAX_XATTR_READ_ATTEMPTS {
+            let announced = unix_flistxattr(file, None);
+            if announced < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let announced = usize::try_from(announced).map_err(|_| unix_metadata_too_large())?;
+            if announced > byte_limit {
+                return Err(unix_metadata_too_large());
+            }
+
+            let mut buffer = Vec::new();
+            buffer
+                .try_reserve_exact(announced)
+                .map_err(|_| unix_metadata_allocation_failed())?;
+            buffer.resize(announced, 0_u8);
+            let read = unix_flistxattr(file, Some(&mut buffer));
+            if read < 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ERANGE) {
+                    continue;
+                }
+                return Err(error);
+            }
+            let read = usize::try_from(read).map_err(|_| unix_metadata_too_large())?;
+            if read > buffer.len() {
+                continue;
+            }
+            buffer.truncate(read);
+            return unix_parse_native_xattr_names(&buffer).map(|names| (names, read));
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "extended attribute names did not become stable",
+        ))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unix_parse_native_xattr_names(buffer: &[u8]) -> io::Result<Vec<OsString>> {
+        if buffer.is_empty() {
+            return Ok(Vec::new());
+        }
+        if buffer.last() != Some(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "extended attribute name list is not NUL-terminated",
+            ));
+        }
+
+        let mut names = Vec::new();
+        for name in buffer[..buffer.len() - 1].split(|byte| *byte == 0) {
+            if name.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "extended attribute name list contains an empty name",
+                ));
+            }
+            if names.len() == MAX_SUPPORTED_XATTR_COUNT {
+                return Err(unix_metadata_too_large());
+            }
+            names
+                .try_reserve(1)
+                .map_err(|_| unix_metadata_allocation_failed())?;
+            names.push(OsString::from_vec(name.to_vec()));
+        }
+        Ok(names)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unix_read_native_xattr_bounded(
+        file: &File,
+        name: &OsStr,
+        byte_limit: usize,
+    ) -> io::Result<Option<Vec<u8>>> {
+        let name = CString::new(name.as_bytes()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "extended attribute name contains an interior NUL",
+            )
+        })?;
+
+        for _ in 0..MAX_XATTR_READ_ATTEMPTS {
+            let announced = unix_fgetxattr(file, &name, None);
+            if announced < 0 {
+                let error = io::Error::last_os_error();
+                if unix_xattr_is_missing(&error) {
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+            let announced = usize::try_from(announced).map_err(|_| unix_metadata_too_large())?;
+            if announced > byte_limit {
+                return Err(unix_metadata_too_large());
+            }
+
+            let mut value = Vec::new();
+            value
+                .try_reserve_exact(announced)
+                .map_err(|_| unix_metadata_allocation_failed())?;
+            value.resize(announced, 0_u8);
+            let read = unix_fgetxattr(file, &name, Some(&mut value));
+            if read < 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ERANGE) {
+                    continue;
+                }
+                if unix_xattr_is_missing(&error) {
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+            let read = usize::try_from(read).map_err(|_| unix_metadata_too_large())?;
+            if read != value.len() {
+                continue;
+            }
+            return Ok(Some(value));
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "extended attribute value did not become stable",
+        ))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unix_reserve_metadata_bytes(
+        used_bytes: &mut usize,
+        additional_bytes: usize,
+        byte_limit: usize,
+    ) -> io::Result<()> {
+        let total = used_bytes
+            .checked_add(additional_bytes)
+            .filter(|total| *total <= byte_limit)
+            .ok_or_else(unix_metadata_too_large)?;
+        *used_bytes = total;
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unix_metadata_too_large() -> io::Error {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "required file metadata exceeds the supported safety limits",
+        )
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unix_metadata_allocation_failed() -> io::Error {
+        io::Error::other("memory allocation for required file metadata failed")
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn unix_xattr_is_missing(error: &io::Error) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            error.raw_os_error() == Some(libc::ENODATA)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            error.raw_os_error() == Some(libc::ENOATTR)
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[allow(unsafe_code)]
+    fn unix_flistxattr(file: &File, buffer: Option<&mut [u8]>) -> libc::ssize_t {
+        let (pointer, size) = buffer.map_or((std::ptr::null_mut(), 0), |buffer| {
+            (buffer.as_mut_ptr().cast(), buffer.len())
+        });
+        #[cfg(target_os = "linux")]
+        // SAFETY: `file` owns a live descriptor. `pointer` is either null with
+        // size zero or comes from the exclusive slice borrowed for this call.
+        unsafe {
+            libc::flistxattr(file.as_raw_fd(), pointer, size)
+        }
+        #[cfg(target_os = "macos")]
+        // SAFETY: the same descriptor and buffer contract applies on macOS; the
+        // zero options argument requests the ordinary attribute namespace.
+        unsafe {
+            libc::flistxattr(file.as_raw_fd(), pointer, size, 0)
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[allow(unsafe_code)]
+    fn unix_fgetxattr(file: &File, name: &CString, buffer: Option<&mut [u8]>) -> libc::ssize_t {
+        let (pointer, size) = buffer.map_or((std::ptr::null_mut(), 0), |buffer| {
+            (buffer.as_mut_ptr().cast(), buffer.len())
+        });
+        #[cfg(target_os = "linux")]
+        // SAFETY: `file` and `name` remain live for the call. The buffer follows
+        // the same null-or-writable-storage contract described above.
+        unsafe {
+            libc::fgetxattr(file.as_raw_fd(), name.as_ptr(), pointer, size)
+        }
+        #[cfg(target_os = "macos")]
+        // SAFETY: the descriptor, C string, and output buffer are live. Position
+        // zero reads the complete value and options zero uses ordinary semantics.
+        unsafe {
+            libc::fgetxattr(file.as_raw_fd(), name.as_ptr(), pointer, size, 0, 0)
+        }
     }
 
     #[cfg(target_os = "macos")]
     #[allow(unsafe_code)]
-    fn copy_security_metadata(source: &File, destination: &File) -> io::Result<()> {
-        use std::os::fd::AsRawFd;
-
-        let flags = libc::COPYFILE_ACL | libc::COPYFILE_XATTR;
+    fn copy_macos_acl(source: &File, destination: &File) -> io::Result<()> {
+        let flags = libc::COPYFILE_ACL;
         // SAFETY: both descriptors come from live borrowed `File` values, the
-        // state pointer is explicitly allowed to be null, and the flags request
-        // metadata only, so file offsets and content are not modified.
+        // state pointer is explicitly allowed to be null, and the flag requests
+        // ACL metadata only, so file offsets, content, and xattrs are not copied.
         if unsafe {
             libc::fcopyfile(
                 source.as_raw_fd(),
@@ -588,12 +1158,196 @@ mod imp {
         Ok(())
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    fn copy_security_metadata(_source: &File, _destination: &File) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "security metadata transfer is unsupported on this Unix platform",
-        ))
+    #[cfg(target_os = "macos")]
+    #[allow(unsafe_code)]
+    fn read_macos_acl_text(file: &File) -> io::Result<Vec<u8>> {
+        use std::ffi::CStr;
+        use std::os::fd::AsRawFd;
+
+        type Acl = *mut libc::c_void;
+
+        unsafe extern "C" {
+            fn acl_get_fd(fd: libc::c_int) -> Acl;
+            fn acl_to_text(acl: Acl, length: *mut libc::ssize_t) -> *mut libc::c_char;
+            fn acl_free(object: *mut libc::c_void) -> libc::c_int;
+        }
+
+        // SAFETY: the descriptor belongs to a live borrowed file. The returned
+        // ACL is either null with an OS error or an allocation owned by the
+        // caller and released below with `acl_free`.
+        let acl = unsafe { acl_get_fd(file.as_raw_fd()) };
+        if acl.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: `acl` is live and owned until the explicit frees below. A null
+        // length pointer is permitted and the returned text is NUL-terminated.
+        let text = unsafe { acl_to_text(acl, std::ptr::null_mut()) };
+        if text.is_null() {
+            let error = io::Error::last_os_error();
+            // SAFETY: `acl` is the live allocation returned above and is freed
+            // exactly once on this error path.
+            let _ = unsafe { acl_free(acl.cast()) };
+            return Err(error);
+        }
+
+        // SAFETY: `acl_to_text` returned a live NUL-terminated byte string.
+        let result = unsafe { CStr::from_ptr(text) }.to_bytes().to_vec();
+        // SAFETY: both pointers are distinct live allocations returned by the
+        // ACL APIs and are each freed exactly once after their bytes are copied.
+        let text_free = unsafe { acl_free(text.cast()) };
+        let acl_free_result = unsafe { acl_free(acl.cast()) };
+        if text_free != 0 || acl_free_result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(result)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn verify_macos_acl(expected: &[u8], destination: &File) -> io::Result<()> {
+        if expected != read_macos_acl_text(destination)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "access control list differs after metadata transfer",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        use std::io;
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        use tempfile::tempfile;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        use xattr::FileExt;
+
+        use super::{
+            MetadataStamp, unix_metadata_payload_stamp_matches, unix_metadata_source_matches,
+        };
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        use super::{unix_read_native_xattr_bounded, unix_reserve_metadata_bytes};
+        use crate::{FileChangeToken, FileFacts, FileIdentity, IdentityQuality};
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[test]
+        fn native_xattr_value_read_honors_the_preallocation_limit() -> io::Result<()> {
+            #[cfg(target_os = "linux")]
+            const NAME: &str = "user.noter.metadata-budget";
+            #[cfg(target_os = "macos")]
+            const NAME: &str = "com.noter.metadata-budget";
+            const VALUE: &[u8] = b"bounded metadata";
+
+            let file = tempfile()?;
+            file.set_xattr(NAME, VALUE)?;
+
+            let error =
+                unix_read_native_xattr_bounded(&file, std::ffi::OsStr::new(NAME), VALUE.len() - 1)
+                    .expect_err("an oversized xattr must be refused before allocation");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(
+                unix_read_native_xattr_bounded(&file, std::ffi::OsStr::new(NAME), VALUE.len())?,
+                Some(VALUE.to_vec())
+            );
+            Ok(())
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[test]
+        fn metadata_budget_accepts_the_boundary_without_advancing_on_failure() {
+            let mut used = 7;
+            unix_reserve_metadata_bytes(&mut used, 5, 12).expect("the exact limit should be valid");
+            assert_eq!(used, 12);
+
+            let error = unix_reserve_metadata_bytes(&mut used, 1, 12)
+                .expect_err("one byte past the limit must be rejected");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(used, 12);
+        }
+
+        #[test]
+        fn metadata_source_match_requires_every_ratified_fact() {
+            let identity = FileIdentity::new(IdentityQuality::Preferred, 7, 11);
+            let metadata = MetadataStamp {
+                uid: 13,
+                gid: 17,
+                mode: 0o640,
+                ctime: 19,
+                ctime_nsec: 23,
+            };
+            let facts = FileFacts::new(identity, 1, FileChangeToken::new(19, 23));
+            let changed_metadata = MetadataStamp {
+                mode: 0o600,
+                ..metadata
+            };
+            let changed_facts = FileFacts::new(identity, 2, FileChangeToken::new(29, 31));
+            let inconsistent_facts = FileFacts::new(identity, 1, FileChangeToken::new(19, 29));
+
+            assert!(unix_metadata_source_matches(
+                metadata, metadata, facts, facts
+            ));
+            assert!(!unix_metadata_source_matches(
+                metadata,
+                changed_metadata,
+                facts,
+                facts
+            ));
+            assert!(!unix_metadata_source_matches(
+                metadata,
+                metadata,
+                facts,
+                changed_facts
+            ));
+            assert!(!unix_metadata_source_matches(
+                metadata,
+                metadata,
+                inconsistent_facts,
+                inconsistent_facts
+            ));
+        }
+
+        #[test]
+        fn metadata_payload_comparison_ignores_only_change_time() {
+            let expected = MetadataStamp {
+                uid: 7,
+                gid: 11,
+                mode: 0o100_640,
+                ctime: 13,
+                ctime_nsec: 17,
+            };
+
+            assert!(unix_metadata_payload_stamp_matches(
+                expected,
+                MetadataStamp {
+                    ctime: 19,
+                    ctime_nsec: 23,
+                    ..expected
+                }
+            ));
+            assert!(!unix_metadata_payload_stamp_matches(
+                expected,
+                MetadataStamp {
+                    mode: 0o100_600,
+                    ..expected
+                }
+            ));
+            assert!(!unix_metadata_payload_stamp_matches(
+                expected,
+                MetadataStamp {
+                    uid: 29,
+                    ..expected
+                }
+            ));
+            assert!(!unix_metadata_payload_stamp_matches(
+                expected,
+                MetadataStamp {
+                    gid: 31,
+                    ..expected
+                }
+            ));
+        }
     }
 }
 
@@ -629,22 +1383,30 @@ mod imp {
 
     const PRIVATE_FILE_SDDL: &str = "D:P(A;;FA;;;SY)(A;;FA;;;OW)";
 
-    struct LocalSecurityDescriptor(PSECURITY_DESCRIPTOR);
+    type LocalDeallocator = unsafe extern "system" fn(
+        windows_sys::Win32::Foundation::HLOCAL,
+    )
+        -> windows_sys::Win32::Foundation::HLOCAL;
 
-    impl Drop for LocalSecurityDescriptor {
+    struct WindowsSecurityDescriptor {
+        raw: PSECURITY_DESCRIPTOR,
+        deallocate: LocalDeallocator,
+    }
+
+    impl Drop for WindowsSecurityDescriptor {
         #[allow(unsafe_code)]
         fn drop(&mut self) {
             // SAFETY: the descriptor is returned by LocalAlloc through the SDDL
             // conversion API, remains owned by this guard, and is freed once.
-            let _ = unsafe { LocalFree(self.0.cast()) };
+            let _ = unsafe { (self.deallocate)(self.raw.cast()) };
         }
     }
 
-    pub fn file_facts(file: &File) -> io::Result<FileFacts> {
-        let basic = basic_information(file)?;
-        let timestamps = timestamp_information(file)?;
-        let extended = extended_information(file)?;
-        let identity = identity_from_information(&basic, extended.as_ref());
+    pub fn windows_file_facts(file: &File) -> io::Result<FileFacts> {
+        let basic = windows_basic_information(file)?;
+        let timestamps = windows_timestamp_information(file)?;
+        let extended = windows_extended_information(file)?;
+        let identity = windows_identity_from_information(&basic, extended.as_ref());
 
         Ok(FileFacts::new(
             identity,
@@ -654,9 +1416,9 @@ mod imp {
     }
 
     #[allow(unsafe_code)]
-    pub fn create_private_new_file(path: &Path) -> io::Result<File> {
-        let path = wide_path(path)?;
-        let descriptor = security_descriptor_from_sddl(PRIVATE_FILE_SDDL)?;
+    pub fn windows_create_private_new_file(path: &Path) -> io::Result<File> {
+        let path = windows_wide_path(path)?;
+        let descriptor = windows_security_descriptor_from_sddl(PRIVATE_FILE_SDDL)?;
         let attributes_length = u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -665,7 +1427,7 @@ mod imp {
         })?;
         let attributes = SECURITY_ATTRIBUTES {
             nLength: attributes_length,
-            lpSecurityDescriptor: descriptor.0,
+            lpSecurityDescriptor: descriptor.raw,
             bInheritHandle: 0,
         };
 
@@ -694,14 +1456,14 @@ mod imp {
     }
 
     #[allow(unsafe_code)]
-    fn security_descriptor_from_sddl(sddl: &str) -> io::Result<LocalSecurityDescriptor> {
+    fn windows_security_descriptor_from_sddl(sddl: &str) -> io::Result<WindowsSecurityDescriptor> {
         let mut wide: Vec<u16> = sddl.encode_utf16().collect();
         wide.push(0);
         let mut raw_descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
 
         // SAFETY: `wide` is a live, NUL-terminated UTF-16 string and the output
         // pointer refers to writable storage. The returned allocation is owned
-        // immediately by `LocalSecurityDescriptor`.
+        // immediately by `WindowsSecurityDescriptor`.
         if unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 wide.as_ptr(),
@@ -713,10 +1475,13 @@ mod imp {
         {
             return Err(io::Error::last_os_error());
         }
-        Ok(LocalSecurityDescriptor(raw_descriptor))
+        Ok(WindowsSecurityDescriptor {
+            raw: raw_descriptor,
+            deallocate: LocalFree,
+        })
     }
 
-    pub fn open_for_cleanup(path: &Path) -> io::Result<File> {
+    pub fn windows_open_for_cleanup(path: &Path) -> io::Result<File> {
         OpenOptions::new()
             .read(true)
             .access_mode(GENERIC_READ | DELETE)
@@ -726,7 +1491,7 @@ mod imp {
     }
 
     #[allow(unsafe_code)]
-    pub fn delete_open_file(file: &File) -> io::Result<()> {
+    pub fn windows_delete_open_file(file: &File) -> io::Result<()> {
         let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
         let disposition_size = u32::try_from(size_of::<FILE_DISPOSITION_INFO>()).map_err(|_| {
             io::Error::new(
@@ -751,20 +1516,15 @@ mod imp {
         Ok(())
     }
 
-    #[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
-    pub fn copy_required_metadata(_source: &File, _destination: &File) -> io::Result<()> {
-        Ok(())
-    }
-
     #[allow(unsafe_code)]
-    pub fn replace_existing(
+    pub fn windows_replace_existing(
         temporary: &Path,
         destination: &Path,
         backup: Option<&Path>,
     ) -> io::Result<ReplaceExistingOutcome> {
-        let temporary = wide_path(temporary)?;
-        let destination = wide_path(destination)?;
-        let backup = backup.map(wide_path).transpose()?;
+        let temporary = windows_wide_path(temporary)?;
+        let destination = windows_wide_path(destination)?;
+        let backup = backup.map(windows_wide_path).transpose()?;
         let backup_pointer = backup.as_ref().map_or(std::ptr::null(), Vec::as_ptr);
 
         // SAFETY: all path buffers are NUL-terminated and remain live for the
@@ -788,9 +1548,12 @@ mod imp {
     }
 
     #[allow(unsafe_code)]
-    pub fn install_new(temporary: &Path, destination: &Path) -> io::Result<InstallNewOutcome> {
-        let temporary = wide_path(temporary)?;
-        let destination = wide_path(destination)?;
+    pub fn windows_install_new(
+        temporary: &Path,
+        destination: &Path,
+    ) -> io::Result<InstallNewOutcome> {
+        let temporary = windows_wide_path(temporary)?;
+        let destination = windows_wide_path(destination)?;
 
         // SAFETY: both path buffers are NUL-terminated and live for the call.
         // The only flag requests write-through; replacement and cross-volume
@@ -809,16 +1572,16 @@ mod imp {
         Ok(InstallNewOutcome::Clean)
     }
 
-    pub fn sync_file(file: &File) -> io::Result<()> {
+    pub fn windows_sync_file(file: &File) -> io::Result<()> {
         file.sync_all()
     }
 
     #[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
-    pub fn sync_parent(_destination: &Path) -> io::Result<ParentSyncOutcome> {
+    pub fn windows_sync_parent(_destination: &Path) -> io::Result<ParentSyncOutcome> {
         Ok(ParentSyncOutcome::Unsupported)
     }
 
-    fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
+    fn windows_wide_path(path: &Path) -> io::Result<Vec<u16>> {
         let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
         if wide.contains(&0) {
             return Err(io::Error::new(
@@ -831,7 +1594,7 @@ mod imp {
     }
 
     #[allow(unsafe_code)]
-    fn basic_information(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
+    fn windows_basic_information(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
         let mut basic = BY_HANDLE_FILE_INFORMATION::default();
 
         // SAFETY: the raw handle remains valid for the duration of the borrowed
@@ -845,7 +1608,7 @@ mod imp {
     }
 
     #[allow(unsafe_code)]
-    fn timestamp_information(file: &File) -> io::Result<FILE_BASIC_INFO> {
+    fn windows_timestamp_information(file: &File) -> io::Result<FILE_BASIC_INFO> {
         let mut timestamps = FILE_BASIC_INFO::default();
         let timestamps_size = u32::try_from(size_of::<FILE_BASIC_INFO>()).map_err(|_| {
             io::Error::new(
@@ -872,7 +1635,7 @@ mod imp {
     }
 
     #[allow(unsafe_code)]
-    fn extended_information(file: &File) -> io::Result<Option<FILE_ID_INFO>> {
+    fn windows_extended_information(file: &File) -> io::Result<Option<FILE_ID_INFO>> {
         let mut extended = FILE_ID_INFO::default();
         let extended_size = u32::try_from(size_of::<FILE_ID_INFO>()).map_err(|_| {
             io::Error::new(
@@ -894,14 +1657,14 @@ mod imp {
         Ok(has_extended.then_some(extended))
     }
 
-    fn identity_from_information(
+    fn windows_identity_from_information(
         basic: &BY_HANDLE_FILE_INFORMATION,
         extended: Option<&FILE_ID_INFO>,
     ) -> FileIdentity {
         extended
             .filter(|value| value.FileId.Identifier != [0; 16])
             .map_or_else(
-                || reduced_identity(basic),
+                || windows_reduced_identity(basic),
                 |extended| {
                     FileIdentity::new(
                         IdentityQuality::Preferred,
@@ -914,7 +1677,7 @@ mod imp {
 
     // `u128::from` is not const on the pinned toolchain.
     #[allow(clippy::missing_const_for_fn)]
-    fn reduced_identity(basic: &BY_HANDLE_FILE_INFORMATION) -> FileIdentity {
+    fn windows_reduced_identity(basic: &BY_HANDLE_FILE_INFORMATION) -> FileIdentity {
         let file_index = (u128::from(basic.nFileIndexHigh) << 32) | u128::from(basic.nFileIndexLow);
         FileIdentity::new(
             IdentityQuality::Reduced,
@@ -945,9 +1708,10 @@ mod imp {
         };
 
         use super::{
-            IdentityQuality, LocalFree, LocalSecurityDescriptor, PRIVATE_FILE_SDDL,
-            create_private_new_file, delete_open_file, identity_from_information, open_for_cleanup,
-            security_descriptor_from_sddl,
+            IdentityQuality, LocalFree, PRIVATE_FILE_SDDL, WindowsSecurityDescriptor,
+            windows_create_private_new_file, windows_delete_open_file,
+            windows_extended_information, windows_identity_from_information,
+            windows_open_for_cleanup, windows_security_descriptor_from_sddl,
         };
 
         struct LocalWideString(*mut u16);
@@ -1008,7 +1772,7 @@ mod imp {
         fn private_file_is_exclusive_writable_and_dacl_protected() -> io::Result<()> {
             let directory = tempdir()?;
             let path = directory.path().join("private.txt");
-            let mut file = create_private_new_file(&path)?;
+            let mut file = windows_create_private_new_file(&path)?;
             file.write_all(b"private")?;
 
             let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
@@ -1029,14 +1793,17 @@ mod imp {
             if status != ERROR_SUCCESS {
                 return Err(io::Error::from_raw_os_error(status.cast_signed()));
             }
-            let descriptor_guard = LocalSecurityDescriptor(descriptor);
+            let descriptor_guard = WindowsSecurityDescriptor {
+                raw: descriptor,
+                deallocate: LocalFree,
+            };
             let mut control = 0_u16;
             let mut revision = 0_u32;
             // SAFETY: the descriptor guard owns a valid self-relative security
             // descriptor and both output pointers refer to writable values.
             if unsafe {
                 GetSecurityDescriptorControl(
-                    descriptor_guard.0,
+                    descriptor_guard.raw,
                     &raw mut control,
                     &raw mut revision,
                 )
@@ -1046,10 +1813,13 @@ mod imp {
             }
 
             assert_ne!(control & SE_DACL_PROTECTED, 0);
-            assert_eq!(descriptor_dacl_sddl(descriptor_guard.0)?, PRIVATE_FILE_SDDL);
+            assert_eq!(
+                descriptor_dacl_sddl(descriptor_guard.raw)?,
+                PRIVATE_FILE_SDDL
+            );
             assert_eq!(fs::read(&path)?, b"private");
             assert_eq!(
-                create_private_new_file(&path)
+                windows_create_private_new_file(&path)
                     .expect_err("exclusive creation must reject an existing path")
                     .kind(),
                 io::ErrorKind::AlreadyExists
@@ -1062,12 +1832,40 @@ mod imp {
         }
 
         #[test]
+        #[allow(unsafe_code)]
+        fn security_descriptor_guard_dispatches_its_deallocator() {
+            use std::sync::atomic::{AtomicPtr, Ordering};
+
+            static RELEASED: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+            unsafe extern "system" fn record_release(
+                allocation: windows_sys::Win32::Foundation::HLOCAL,
+            ) -> windows_sys::Win32::Foundation::HLOCAL {
+                RELEASED.store(allocation, Ordering::SeqCst);
+                std::ptr::null_mut()
+            }
+
+            let allocation = std::ptr::dangling_mut::<std::ffi::c_void>();
+            let descriptor = WindowsSecurityDescriptor {
+                raw: allocation,
+                deallocate: record_release,
+            };
+
+            drop(descriptor);
+
+            assert_eq!(
+                RELEASED.swap(std::ptr::null_mut(), Ordering::SeqCst),
+                allocation
+            );
+        }
+
+        #[test]
         fn cleanup_verification_denies_competing_writers() -> io::Result<()> {
             let directory = tempdir()?;
             let path = directory.path().join("cleanup.txt");
             fs::write(&path, b"verified revision")?;
 
-            let cleanup = open_for_cleanup(&path)?;
+            let cleanup = windows_open_for_cleanup(&path)?;
             assert!(
                 OpenOptions::new().write(true).open(&path).is_err(),
                 "cleanup verification must preserve an artifact when another writer is active"
@@ -1079,7 +1877,7 @@ mod imp {
         }
 
         #[test]
-        fn windows_metadata_noop_and_failure_boundaries_are_explicit() -> io::Result<()> {
+        fn windows_failure_boundaries_are_explicit() -> io::Result<()> {
             let directory = tempdir()?;
             let source_path = directory.path().join("source.txt");
             let destination_path = directory.path().join("destination.txt");
@@ -1087,11 +1885,8 @@ mod imp {
             fs::write(&source_path, b"source")?;
             fs::write(&destination_path, b"destination")?;
             let source = File::open(&source_path)?;
-            let destination = File::open(&destination_path)?;
-
-            crate::copy_required_metadata(&source, &destination)?;
             assert_eq!(
-                delete_open_file(&source)
+                windows_delete_open_file(&source)
                     .expect_err("a read-only handle lacks delete access")
                     .kind(),
                 io::ErrorKind::PermissionDenied
@@ -1115,11 +1910,40 @@ mod imp {
                 io::ErrorKind::InvalidInput
             );
             assert!(
-                security_descriptor_from_sddl("not valid SDDL").is_err(),
+                windows_security_descriptor_from_sddl("not valid SDDL").is_err(),
                 "invalid SDDL must fail without creating a file"
             );
             assert_eq!(fs::read(source_path)?, b"source");
             assert_eq!(fs::read(destination_path)?, b"destination");
+            Ok(())
+        }
+
+        #[test]
+        fn native_file_sync_propagates_device_failures() -> io::Result<()> {
+            let device = File::open("NUL")?;
+
+            assert!(
+                crate::sync_file(&device).is_err(),
+                "a failed native persistence barrier must not be reported as durable"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn native_regular_file_exposes_a_nonzero_extended_identity() -> io::Result<()> {
+            let directory = tempdir()?;
+            let path = directory.path().join("identity.txt");
+            fs::write(&path, b"identity")?;
+            let file = File::open(path)?;
+
+            let extended = windows_extended_information(&file)?
+                .expect("the supported Windows test volume must expose FileIdInfo");
+
+            assert_ne!(extended.FileId.Identifier, [0; 16]);
+            assert_eq!(
+                crate::file_facts(&file)?.identity().quality(),
+                IdentityQuality::Preferred
+            );
             Ok(())
         }
 
@@ -1129,14 +1953,14 @@ mod imp {
             let original_path = directory.path().join("owned.txt");
             let moved_path = directory.path().join("moved-owned.txt");
             let external_content = b"external replacement";
-            let mut owned = create_private_new_file(&original_path)?;
+            let mut owned = windows_create_private_new_file(&original_path)?;
             owned.write_all(b"owned temporary")?;
             owned.sync_all()?;
 
             fs::rename(&original_path, &moved_path)?;
             fs::write(&original_path, external_content)?;
 
-            delete_open_file(&owned)?;
+            windows_delete_open_file(&owned)?;
             drop(owned);
 
             assert!(!moved_path.exists());
@@ -1159,7 +1983,7 @@ mod imp {
                 },
             };
 
-            let identity = identity_from_information(&basic, Some(&extended));
+            let identity = windows_identity_from_information(&basic, Some(&extended));
 
             assert_eq!(identity.quality(), IdentityQuality::Preferred);
             assert_eq!(identity.volume(), 10);
@@ -1175,7 +1999,7 @@ mod imp {
                 ..BY_HANDLE_FILE_INFORMATION::default()
             };
 
-            let identity = identity_from_information(&basic, None);
+            let identity = windows_identity_from_information(&basic, None);
 
             assert_eq!(identity.quality(), IdentityQuality::Reduced);
             assert_eq!(identity.volume(), 12);
@@ -1191,7 +2015,7 @@ mod imp {
             };
             let extended = FILE_ID_INFO::default();
 
-            let identity = identity_from_information(&basic, Some(&extended));
+            let identity = windows_identity_from_information(&basic, Some(&extended));
 
             assert_eq!(identity.quality(), IdentityQuality::Reduced);
             assert_eq!(identity.volume(), 13);
@@ -1208,53 +2032,49 @@ mod imp {
 
     use super::{FileFacts, InstallNewOutcome, ParentSyncOutcome, ReplaceExistingOutcome};
 
-    pub fn file_facts(_file: &File) -> io::Result<FileFacts> {
+    pub fn unsupported_file_facts(_file: &File) -> io::Result<FileFacts> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "file identity is unsupported on this operating system",
         ))
     }
 
-    pub fn create_private_new_file(_path: &Path) -> io::Result<File> {
-        unsupported("private file creation")
+    pub fn unsupported_create_private_new_file(_path: &Path) -> io::Result<File> {
+        unsupported_error("private file creation")
     }
 
-    pub fn open_for_cleanup(_path: &Path) -> io::Result<File> {
-        unsupported("verified cleanup open")
+    pub fn unsupported_open_for_cleanup(_path: &Path) -> io::Result<File> {
+        unsupported_error("verified cleanup open")
     }
 
-    pub fn delete_open_file(_file: &File) -> io::Result<()> {
-        unsupported("handle-bound file deletion")
+    pub fn unsupported_delete_open_file(_file: &File) -> io::Result<()> {
+        unsupported_error("handle-bound file deletion")
     }
 
-    pub fn copy_required_metadata(_source: &File, _destination: &File) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "metadata transfer is unsupported on this operating system",
-        ))
-    }
-
-    pub fn replace_existing(
+    pub fn unsupported_replace_existing(
         _temporary: &Path,
         _destination: &Path,
         _backup: Option<&Path>,
     ) -> io::Result<ReplaceExistingOutcome> {
-        unsupported("file replacement")
+        unsupported_error("file replacement")
     }
 
-    pub fn install_new(_temporary: &Path, _destination: &Path) -> io::Result<InstallNewOutcome> {
-        unsupported("exclusive file installation")
+    pub fn unsupported_install_new(
+        _temporary: &Path,
+        _destination: &Path,
+    ) -> io::Result<InstallNewOutcome> {
+        unsupported_error("exclusive file installation")
     }
 
-    pub fn sync_file(_file: &File) -> io::Result<()> {
-        unsupported("file synchronization")
+    pub fn unsupported_sync_file(_file: &File) -> io::Result<()> {
+        unsupported_error("file synchronization")
     }
 
-    pub fn sync_parent(_destination: &Path) -> io::Result<ParentSyncOutcome> {
-        unsupported("parent synchronization")
+    pub fn unsupported_sync_parent(_destination: &Path) -> io::Result<ParentSyncOutcome> {
+        unsupported_error("parent synchronization")
     }
 
-    fn unsupported<T>(operation: &str) -> io::Result<T> {
+    fn unsupported_error<T>(operation: &str) -> io::Result<T> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!("{operation} is unsupported on this operating system"),
@@ -1277,11 +2097,21 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use xattr::FileExt;
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    use super::copy_required_metadata;
-    use super::{IdentityQuality, file_facts};
+    use super::{FileChangeToken, IdentityQuality, file_facts};
     #[cfg(unix)]
     use super::{ReplaceExistingOutcome, replace_existing};
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use super::{
+        apply_required_metadata, capture_required_metadata, required_metadata_matches_source,
+    };
+
+    #[test]
+    fn change_token_components_are_exposed_exactly() {
+        let token = FileChangeToken::new(17, 29);
+
+        assert_eq!(token.primary(), 17);
+        assert_eq!(token.secondary(), 29);
+    }
 
     #[test]
     fn facts_are_stable_for_one_open_file() -> io::Result<()> {
@@ -1353,7 +2183,7 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn metadata_copy_preserves_mode_and_exact_visible_xattrs() -> io::Result<()> {
+    fn metadata_snapshot_preserves_ratified_mode_and_visible_xattrs() -> io::Result<()> {
         let directory = tempdir()?;
         let source_path = directory.path().join("source.txt");
         let destination_path = directory.path().join("destination.txt");
@@ -1372,14 +2202,115 @@ mod tests {
         source.set_xattr(source_attribute_name(), b"source attribute")?;
         destination.set_xattr(extra_attribute_name(), b"remove me")?;
 
-        copy_required_metadata(&source, &destination)?;
+        let expected_source = file_facts(&source)?;
+        let metadata = capture_required_metadata(&source, expected_source)?;
+        assert!(required_metadata_matches_source(
+            &metadata,
+            &source,
+            expected_source
+        )?);
+        source.set_xattr(source_attribute_name(), b"changed after capture")?;
+        let mut changed_permissions = source.metadata()?.permissions();
+        changed_permissions.set_mode(0o600);
+        source.set_permissions(changed_permissions)?;
+        assert!(!required_metadata_matches_source(
+            &metadata,
+            &source,
+            file_facts(&source)?
+        )?);
+        apply_required_metadata(&metadata, &destination)?;
 
         assert_eq!(
             destination.get_xattr(source_attribute_name())?,
             Some(b"source attribute".to_vec())
         );
+        assert_eq!(
+            source.get_xattr(source_attribute_name())?,
+            Some(b"changed after capture".to_vec())
+        );
         assert_eq!(destination.get_xattr(extra_attribute_name())?, None);
         assert_eq!(destination.metadata()?.permissions().mode() & 0o7777, 0o640);
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn metadata_capture_rejects_a_source_changed_after_ratification() -> io::Result<()> {
+        let directory = tempdir()?;
+        let source_path = directory.path().join("source.txt");
+        let alias_path = directory.path().join("source-alias.txt");
+        let destination_path = directory.path().join("destination.txt");
+        File::create(&source_path)?.write_all(b"source")?;
+        File::create(&destination_path)?.write_all(b"destination")?;
+
+        let source = File::open(&source_path)?;
+        let expected_source = file_facts(&source)?;
+        fs::hard_link(&source_path, &alias_path)?;
+
+        let error = capture_required_metadata(&source, expected_source)
+            .expect_err("changed source facts must fail before metadata capture");
+
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(error.to_string().contains("before capture"));
+        assert_eq!(fs::read(&destination_path)?, b"destination");
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_acl_snapshot_detects_change_and_restores_only_captured_acl() -> io::Result<()> {
+        use std::process::Command;
+
+        let directory = tempdir()?;
+        let source_path = directory.path().join("source.txt");
+        let destination_path = directory.path().join("destination.txt");
+        fs::write(&source_path, b"source")?;
+        fs::write(&destination_path, b"destination")?;
+
+        let add_status = Command::new("/bin/chmod")
+            .args(["+a", "everyone deny write"])
+            .arg(&source_path)
+            .status()?;
+        if !add_status.success() {
+            return Err(io::Error::other(format!(
+                "chmod failed to create the macOS ACL fixture: {add_status}"
+            )));
+        }
+
+        let source = File::open(&source_path)?;
+        let destination = File::options()
+            .read(true)
+            .write(true)
+            .open(&destination_path)?;
+        let source_facts = file_facts(&source)?;
+        let metadata = capture_required_metadata(&source, source_facts)?;
+        assert!(required_metadata_matches_source(
+            &metadata,
+            &source,
+            source_facts
+        )?);
+
+        let remove_status = Command::new("/bin/chmod")
+            .args(["-a#", "0"])
+            .arg(&source_path)
+            .status()?;
+        if !remove_status.success() {
+            return Err(io::Error::other(format!(
+                "chmod failed to mutate the macOS ACL fixture: {remove_status}"
+            )));
+        }
+        assert!(!required_metadata_matches_source(
+            &metadata,
+            &source,
+            file_facts(&source)?
+        )?);
+
+        apply_required_metadata(&metadata, &destination)?;
+        assert!(required_metadata_matches_source(
+            &metadata,
+            &destination,
+            file_facts(&destination)?
+        )?);
         Ok(())
     }
 

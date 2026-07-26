@@ -94,8 +94,10 @@ jobs:
             scope: linux-common
           - os: windows-latest
             scope: windows-full
+          - os: macos-latest
+            scope: macos-platform
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
@@ -107,24 +109,32 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
           fallback: none
-      - name: Run common trust-kernel mutation tests
+      - name: Run Linux trust-kernel mutation tests
         if: runner.os == 'Linux'
         env:
           # rust-cache disables incremental builds by default. Mutation builds
           # deliberately need them because each scenario changes one expression.
           CARGO_INCREMENTAL: 1
         run: >
-          cargo mutants -vV --in-place --colors never
+          cargo mutants -vV --in-place --colors never --workspace
           --exclude-re
-          '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination)'
-      - name: Run full Windows trust-kernel mutation tests
+          '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|[Ww]indows|macos)'
+      - name: Run Windows trust-kernel mutation tests
         if: runner.os == 'Windows'
         env:
           CARGO_INCREMENTAL: 1
         run: >
-          cargo mutants -vV --in-place --colors never
+          cargo mutants -vV --in-place --colors never --workspace
           --exclude-re
-          '(metadata_source_status|finalize_unix_displaced_destination)'
+          '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|macos)'
+      - name: Run macOS platform mutation tests
+        if: runner.os == 'macOS'
+        env:
+          CARGO_INCREMENTAL: 1
+        run: >
+          cargo mutants -vV --in-place --colors never --workspace
+          -p noter-platform
+          --exclude-re '([Ww]indows|linux)'
       - name: Reject infrastructure failures hidden as unviable mutants
         if: always()
         run: python scripts/check_mutation_infrastructure.py mutants.out

@@ -133,7 +133,7 @@ set, and see exactly what is implemented and what remains.
 - Add documentation link checking and reject placeholder repository metadata.
 - Establish `Planned`, `In progress`, `Verified`, and `Deferred` status language.
 
-**Checkpoint on 2026-07-25:**
+**Checkpoint on 2026-07-26:**
 
 - **Verified locally:** README and roadmap status, research record, license and
   repository metadata, pinned Rust 1.97.1 toolchain, pinned CI actions, strict
@@ -229,13 +229,20 @@ of the GUI.
   [GitHub Actions run 30179090177](https://github.com/blisspixel/noter/actions/runs/30179090177).
 - **Implemented locally:** Linux copies attainable ownership, exact mode, visible
   extended attributes, POSIX ACL, SELinux, and capability metadata, then verifies
-  the result. macOS uses `fcopyfile` for ACLs and extended attributes without
-  restoring the old modification time. Windows deliberately delegates the
+  the result. macOS uses `fcopyfile` only for ACLs and applies extended attributes
+  from the bounded immutable snapshot without restoring the old modification
+  time. Windows deliberately delegates the
   documented metadata merge to `ReplaceFileW` with ignore flags disabled. Unix
-  staging remains mode 0600 through atomic exchange; required metadata is
-  finalized through open handles after commit and resynchronized. A failure is
+  staging remains mode 0600 through atomic exchange. Required metadata is
+  captured into an immutable pre-commit snapshot. After exchange, the displaced
+  original's stable ownership, mode, ACL, and visible extended attributes must
+  still equal that snapshot before it can be applied through the committed open
+  handle. A mismatch or finalization failure retains private access and is
   reported as a committed warning instead of exposing staged bytes or claiming
-  the commit did not happen.
+  the commit did not happen. Xattr capture refuses more than 4,096 entries or 64
+  MiB of aggregate names and values before allocation. The macOS carrier stores
+  only the ACL, while bounded snapshot values preserve resource forks and other
+  xattrs.
 - **Implemented locally:** existing-file commits use `ReplaceFileW` with a random
   backup on Windows and a parent-anchored atomic exchange on Unix. The displaced
   Unix destination remains recoverable because portable Unix cleanup cannot
@@ -276,27 +283,28 @@ of the GUI.
   reducer. The immutable review revision, two reportable findings, remediation,
   and deferred native evidence are recorded in
   [M1_SECURITY_REVIEW.md](M1_SECURITY_REVIEW.md).
-- **Verified locally:** all 130 Windows-local workspace tests, formatting, strict
+- **Verified locally:** all 134 Windows-local workspace tests, formatting, strict
   workspace Clippy, and rustdoc pass. Measured trust-kernel line coverage is
-  93.06 percent, or 3,860 of 4,148 lines; whole-workspace line coverage is 90.09
-  percent, or 4,364 of 4,844 lines. CI enforces the M1 floor of 90 percent. Linux
+  93.13 percent, or 3,904 of 4,192 lines; whole-workspace line coverage is 90.18
+  percent, or 4,408 of 4,888 lines. CI enforces the M1 floor of 90 percent. Linux
   full-crate and macOS platform-crate cross-target Clippy also pass from the
   Windows reference environment.
 - **Verified in CI:** the complete production-adapter evidence commit `c76515c`
-  passed Windows, macOS, Linux, strict workspace lint, rustdoc, documentation,
-  and the 90 percent coverage gate in
+  passed its then-current Windows, macOS, Linux, strict workspace lint, rustdoc,
+  documentation, and 90 percent coverage gates in
   [GitHub Actions run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267).
   The hosted Windows run also verifies that native file-attribute changes
   invalidate an observation on volumes that do not advance `ChangeTime` for the
-  update.
+  update. The later immutable Unix snapshot repair is locally verified but still
+  requires its own exact-commit hosted run.
 - **Measured:** the property harness adds eight test-only lock entries and the
   digest adds four runtime lock entries, bringing the cross-target graph to
   337 packages. The internal platform workspace member brings the graph to
   338 without adding an external package. Direct use of the already-resolved
-  `getrandom`, `rustix`, and `libc` packages adds no lock entry. Linux-only
-  `xattr` adds one package, for 339 total. The reachable adapter produces a
-  stripped Windows release of 4,913,664 bytes, or 4.69 MiB. RustSec reports no
-  known vulnerability in the lockfile.
+  `getrandom`, `rustix`, and `libc` packages adds no lock entry. The `xattr`
+  package used on Linux and macOS adds one package, for 339 total. The reachable
+  adapter produces a stripped Windows release of 4,953,088 bytes, or 4.72 MiB.
+  RustSec reports no known vulnerability in the lockfile.
 - **Verified locally:** cargo-mutants 27.1.0 evaluated the complete configured
   trust-kernel scope. The initial run exposed 38 survivors and three timeouts.
   After strengthening decision structure and exact tests, the final 341-mutant
@@ -304,11 +312,15 @@ of the GUI.
   mutations or timeouts. A later security-maintenance campaign classified all
   369 mutants as 252 caught and 117 unviable. After cleanup redesign, the
   Windows-applicable gate classified all 383 mutants as 254 caught and 129
-  unviable. The current Windows-applicable scope contains 418 mutants. Its full
+  unviable. The historical Windows core scope contains 418 mutants. Its full
   run exposed four survivors; additive focused tests and isolated reruns
   classify the composite local result as 270 caught and 148 unviable, with none
-  missed or timed out. The 423-mutant paired union has no gap, and five
-  Unix-only mutations remain assigned to the Linux gate. The checked-in
+  missed or timed out. Mutation enforcement now includes the native platform
+  adapter and a macOS job. The 640-mutant supported-platform union assigns 556
+  to Linux, 476 to Windows, and 170 to macOS with no set-union gap. Runner scopes
+  overlap intentionally on common code. A focused local pass classifies all 58
+  Windows native-adapter mutants as 40 caught and 18 unviable, with no miss,
+  timeout, or infrastructure failure. The checked-in
   configuration, repair categories, and CI design are recorded in
   [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md).
 - **Verified in CI:** paired mutation evidence commit `3830cdd` passed the

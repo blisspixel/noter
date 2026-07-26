@@ -58,6 +58,8 @@ pub struct TemporaryFile {
     path: PathBuf,
     identity: noter_platform::FileIdentity,
     intended: Option<IntendedContent>,
+    #[cfg(unix)]
+    required_metadata: Option<noter_platform::RequiredMetadata>,
     cleanup_armed: bool,
 }
 
@@ -318,6 +320,8 @@ fn create_unique_sibling_with_identity(
                     path,
                     identity,
                     intended: None,
+                    #[cfg(unix)]
+                    required_metadata: None,
                     cleanup_armed: true,
                 });
             }
@@ -405,10 +409,12 @@ impl Storage for FilesystemStorage {
 
     fn apply_metadata(
         &mut self,
-        _temporary: &mut Self::Temporary,
+        temporary: &mut Self::Temporary,
         destination: &Path,
         source: Option<&FileObservation>,
     ) -> Result<(), StorageError> {
+        #[cfg(not(unix))]
+        let _ = temporary;
         let Some(expected) = source.copied() else {
             return Ok(());
         };
@@ -455,12 +461,28 @@ impl Storage for FilesystemStorage {
             ));
         }
 
+        #[cfg(unix)]
+        let required_metadata =
+            noter_platform::capture_required_metadata(&source_file, source_facts).map_err(
+                |error| {
+                    redacted_io_error(
+                        SaveStage::ApplyMetadata,
+                        "capture required destination metadata",
+                        &error,
+                    )
+                },
+            )?;
+
         if inspect_target(destination, SaveStage::ApplyMetadata)? != TargetState::Regular(expected)
         {
             return Err(StorageError::new(
                 SaveStage::ApplyMetadata,
-                "destination changed during metadata transfer",
+                "destination changed during metadata capture",
             ));
+        }
+        #[cfg(unix)]
+        {
+            temporary.required_metadata = Some(required_metadata);
         }
         Ok(())
     }
@@ -692,19 +714,38 @@ fn finalize_unix_displaced_destination(
         Ok(Some((source, observation))) => match noter_platform::file_facts(&source) {
             Ok(facts) => match metadata_source_status(
                 replacement_backup_matches(observation, expected),
-                platform_facts_match(facts, expected),
+                post_exchange_source_facts_match(facts, observation, expected),
             ) {
-                MetadataSourceStatus::Matches => {
-                    if let Err(error) = temporary.file().and_then(|destination_file| {
-                        noter_platform::copy_required_metadata(&source, destination_file)
-                    }) {
-                        cleanup_warnings.push(redacted_io_error(
+                MetadataSourceStatus::Matches => match temporary.required_metadata.as_ref() {
+                    Some(metadata) => match noter_platform::required_metadata_matches_source(
+                        metadata, &source, facts,
+                    ) {
+                        Ok(true) => {
+                            if let Err(error) = temporary.file().and_then(|destination_file| {
+                                noter_platform::apply_required_metadata(metadata, destination_file)
+                            }) {
+                                cleanup_warnings.push(redacted_io_error(
+                                    SaveStage::ApplyMetadata,
+                                    "apply ratified committed destination metadata",
+                                    &error,
+                                ));
+                            }
+                        }
+                        Ok(false) => cleanup_warnings.push(StorageError::new(
                             SaveStage::ApplyMetadata,
-                            "finalize committed destination metadata",
+                            "previous destination metadata changed before committed metadata finalization",
+                        )),
+                        Err(error) => cleanup_warnings.push(redacted_io_error(
+                            SaveStage::ApplyMetadata,
+                            "compare displaced destination with ratified metadata snapshot",
                             &error,
-                        ));
-                    }
-                }
+                        )),
+                    },
+                    None => cleanup_warnings.push(StorageError::new(
+                        SaveStage::ApplyMetadata,
+                        "required destination metadata snapshot was unavailable after commit",
+                    )),
+                },
                 MetadataSourceStatus::ObservationChanged => {
                     cleanup_warnings.push(StorageError::new(
                         SaveStage::ApplyMetadata,
@@ -1165,6 +1206,17 @@ const fn platform_facts_match(facts: noter_platform::FileFacts, expected: FileOb
     platform_identity_matches(facts.identity(), expected.identity())
         && change.primary() == expected.change_token().primary()
         && change.secondary() == expected.change_token().secondary()
+}
+
+#[cfg(unix)]
+const fn post_exchange_source_facts_match(
+    facts: noter_platform::FileFacts,
+    observed: FileObservation,
+    expected: FileObservation,
+) -> bool {
+    platform_facts_match(facts, observed)
+        && facts.link_count() == observed.link_count()
+        && observed.link_count() == expected.link_count()
 }
 
 const fn platform_identity_matches(
@@ -2412,9 +2464,21 @@ mod tests {
         );
         assert!(backup_matches_expected(&matching_path, expected));
         assert!(!backup_matches_expected(&other_path, expected));
-        remove_verified_backup(&matching_path, expected)
-            .expect("the matching backup should be removed");
-        assert!(!matching_path.exists());
+        #[cfg(windows)]
+        {
+            remove_verified_backup(&matching_path, expected)
+                .expect("Windows should remove the verified backup by handle");
+            assert!(!matching_path.exists());
+        }
+        #[cfg(unix)]
+        {
+            let cleanup_error = remove_verified_backup(&matching_path, expected)
+                .expect_err("Unix must retain a backup it cannot delete by handle");
+            assert!(cleanup_error.message().contains("matching.txt"));
+            assert!(cleanup_error.message().contains("may remain"));
+            assert_eq!(fs::read(&matching_path)?, b"old");
+            fs::remove_file(&matching_path)?;
+        }
         Ok(())
     }
 
@@ -2535,6 +2599,82 @@ mod tests {
             with_identity(
                 identity,
                 FileChangeToken::new(token.primary(), token.secondary().wrapping_add(1))
+            )
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn post_exchange_source_facts_rebase_ctime_without_weakening_stable_facts() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("facts.txt");
+        fs::write(&path, b"facts")?;
+        let facts = noter_platform::file_facts(&File::open(&path)?)?;
+        let observed = regular_observation(&path);
+        let identity = observed.identity();
+        let wrong_identity = match identity.quality() {
+            IdentityQuality::Preferred => {
+                FileIdentity::new(identity.volume(), identity.file().wrapping_add(1))
+            }
+            IdentityQuality::Reduced => {
+                FileIdentity::reduced(identity.volume(), identity.file().wrapping_add(1))
+            }
+        };
+        let with_facts = |identity, link_count, change_token| {
+            FileObservation::new(
+                identity,
+                observed.fingerprint(),
+                observed.length(),
+                link_count,
+                change_token,
+            )
+        };
+        let pre_exchange = with_facts(
+            identity,
+            observed.link_count(),
+            FileChangeToken::new(i64::MAX, i64::MIN),
+        );
+
+        assert!(post_exchange_source_facts_match(
+            facts,
+            observed,
+            pre_exchange
+        ));
+        assert!(!post_exchange_source_facts_match(
+            facts,
+            with_facts(
+                identity,
+                observed.link_count(),
+                FileChangeToken::new(i64::MIN, i64::MAX)
+            ),
+            pre_exchange
+        ));
+        assert!(!post_exchange_source_facts_match(
+            facts,
+            with_facts(
+                wrong_identity,
+                observed.link_count(),
+                observed.change_token()
+            ),
+            pre_exchange
+        ));
+        assert!(!post_exchange_source_facts_match(
+            facts,
+            with_facts(
+                identity,
+                observed.link_count().wrapping_add(1),
+                observed.change_token()
+            ),
+            pre_exchange
+        ));
+        assert!(!post_exchange_source_facts_match(
+            facts,
+            observed,
+            with_facts(
+                identity,
+                observed.link_count().wrapping_add(1),
+                pre_exchange.change_token()
             )
         ));
         Ok(())
@@ -2761,12 +2901,64 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn unix_final_window_metadata_change_is_warned_and_not_restored() -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        fs::write(&destination, b"previous revision")?;
+        let mut original_permissions = fs::metadata(&destination)?.permissions();
+        original_permissions.set_mode(0o640);
+        fs::set_permissions(&destination, original_permissions)?;
+        let expected = regular_observation(&destination);
+        let mut temporary = prepared_temporary(&destination, b"committed revision")?;
+        let mut storage = FilesystemStorage;
+        storage
+            .apply_metadata(&mut temporary, &destination, Some(&expected))
+            .expect("precommit metadata capture should succeed");
+        storage
+            .sync_file(&mut temporary)
+            .map_err(|error| io::Error::other(error.message().to_owned()))?;
+
+        let mut changed_permissions = fs::metadata(&destination)?.permissions();
+        changed_permissions.set_mode(0o600);
+        fs::set_permissions(&destination, changed_permissions)?;
+        assert_eq!(
+            noter_platform::replace_existing(temporary.path(), &destination, None)?,
+            noter_platform::ReplaceExistingOutcome::DisplacedDestination
+        );
+
+        let outcome = finalize_unix_displaced_destination(temporary, &destination, expected, None);
+        let ReplaceOutcome::Committed(receipt) = outcome else {
+            panic!("the content exchange remains committed after a metadata race");
+        };
+
+        assert_eq!(fs::read(&destination)?, b"committed revision");
+        assert_eq!(
+            fs::metadata(&destination)?.permissions().mode() & 0o777,
+            0o600,
+            "stale permissive metadata must not be restored after a final-window change"
+        );
+        assert!(receipt.cleanup_warnings().iter().any(|warning| {
+            warning.stage() == SaveStage::ApplyMetadata
+                && warning.message().contains("metadata changed")
+        }));
+        remove_private_artifacts(directory.path(), b"previous revision")?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn unix_postcommit_file_sync_failure_is_a_durability_warning() -> io::Result<()> {
         let directory = tempdir()?;
         let destination = directory.path().join("note.txt");
         fs::write(&destination, b"previous revision")?;
         let expected = regular_observation(&destination);
         let mut temporary = prepared_temporary(&destination, b"committed revision")?;
+        let mut storage = FilesystemStorage;
+        storage
+            .apply_metadata(&mut temporary, &destination, Some(&expected))
+            .expect("precommit metadata capture should succeed");
 
         assert_eq!(
             noter_platform::replace_existing(temporary.path(), &destination, None)?,

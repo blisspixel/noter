@@ -58,38 +58,41 @@ evidence above, and it is not yet a milestone sign-off.
 | --- | --- |
 | `cargo fmt --all -- --check` | Pass |
 | Strict workspace Clippy, locked, all targets and features | Pass |
-| Windows-local workspace tests | 130 passed, 0 failed |
-| Testable trust-kernel line coverage | 93.06 percent, 3,860 of 4,148 lines |
-| Whole-workspace line coverage | 90.09 percent, 4,364 of 4,844 lines |
+| Windows-local workspace tests | 134 passed, 0 failed |
+| Testable trust-kernel line coverage | 93.13 percent, 3,904 of 4,192 lines |
+| Whole-workspace line coverage | 90.18 percent, 4,408 of 4,888 lines |
 | Enforced development threshold | Pass, at least 90 percent |
 | Windows-applicable trust-kernel mutation testing | 418 total, 270 caught, 148 unviable, 0 missed, 0 timed out |
+| Windows native-adapter mutation testing | 58 total, 40 caught, 18 unviable, 0 missed, 0 timed out |
+| Expanded supported-platform mutation union | 640 total: Linux 556, Windows 476, macOS 170, no union gap; exact-commit CI pending |
 | Rustdoc with warnings denied | Pass |
 | Local Markdown link check | Pass |
 | Linux full-crate cross-target Clippy | Pass |
 | macOS platform-crate cross-target Clippy | Pass |
-| Release binary | 4,913,664 bytes, 4.69 MiB |
-| Release SHA-256 | `7a729009c80a5326e45a6b3c7396a89e5f97be4db2a58ed69a6dad572996f198` |
+| Release binary | 4,953,088 bytes, 4.72 MiB |
+| Release SHA-256 | `69e23950373fe9833327a1d09072c65043c45103e3b27c558a5ffb72880d7a2f` |
 | Resolved Cargo packages across all targets | 339 |
 | RustSec audit | Pass, no known vulnerability reported |
 | Native Windows, macOS, and Linux CI | Pass at `c76515c`, [run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267) |
 | Paired Linux and Windows mutation CI | Pass at `3830cdd`, [run 30184163737](https://github.com/blisspixel/noter/actions/runs/30184163737) |
 
-The 130 tests comprise 104 primary-library unit tests, 12 binary application
+The 134 tests comprise 104 primary-library unit tests, 12 binary application
 tests, one 19-case golden-corpus test, three generated property suites with 512
-fixed-seed cases each, and ten platform-crate tests. Coverage excludes the
+fixed-seed cases each, and 14 platform-crate tests. Coverage excludes the
 still-prototype `src/app.rs` and `src/main.rs` under the same explicit CI rule as
-M0 for the trust-kernel gate. The filesystem adapter itself measures 91.11
+M0 for the trust-kernel gate. The filesystem adapter itself measures 91.13
 percent line coverage, and the trust-kernel total remains above the M1 90
 percent gate. A separate unfiltered report measures the whole workspace at
-90.09 percent. The UI exclusion from the stricter gate is temporary and is
+90.18 percent. The UI exclusion from the stricter gate is temporary and is
 replaced by semantic UI and manual accessibility gates before v0.1.
 
-The binary grew by 164,864 bytes from the M0 baseline. That measured cost now
+The binary grew by 204,288 bytes from the M0 baseline. That measured cost now
 includes reachable BLAKE3 conflict fingerprints, native metadata transfer, commit
 reconciliation, stable-handle loading, revision-aware saves, and the truthful
 About dialog. The lock graph
 grew by 14 packages from M0: eight test-only property packages, four BLAKE3
-packages, one internal workspace member, and one Linux-only `xattr` package.
+packages, one internal workspace member, and one `xattr` package used on Linux
+and macOS.
 
 The complete mutation campaign is recorded in
 [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md). The next evidence update must

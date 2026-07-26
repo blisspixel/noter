@@ -365,14 +365,15 @@ the user, security, system, and trusted namespaces. See
 metadata cannot be reproduced, the save remains committed, keeps the safest
 access state reached, retains the displaced source, and reports an exact warning.
 `rustix` 1.1 supplies descriptor-relative atomic exchange, no-replace rename,
-hard-link, mode, ownership, and synchronization operations. Linux-only `xattr`
-1.6 adds the one new package in the 339-package lock graph.
+hard-link, mode, ownership, and synchronization operations. The Linux and macOS
+metadata adapters use `xattr` 1.6, the one new package in the 339-package lock
+graph.
 
-On macOS, descriptor-based `fcopyfile` can copy ACLs and extended attributes
-independently after the owner-only exchange commits. Noter requests
-`COPYFILE_ACL | COPYFILE_XATTR` and applies owner and mode separately,
-intentionally omitting `COPYFILE_STAT` so a successful save advances modification
-time. See the
+On macOS, descriptor-based `fcopyfile` copies only the captured ACL from an
+ACL-only carrier after the owner-only exchange commits. Noter requests
+`COPYFILE_ACL`, applies owner and mode separately, and replays bounded extended
+attribute values from the immutable pre-commit snapshot. It intentionally omits
+`COPYFILE_STAT` so a successful save advances modification time. See the
 [Xcode `copyfile(3)` manual](https://keith.github.io/xcode-man-pages/copyfile.3.html).
 The sibling receives `F_FULLFSYNC` where supported and falls back to `sync_all`
 only when the stronger operation is reported unsupported or invalid.

@@ -747,11 +747,10 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn unix_metadata_change_invalidates_the_observation() -> io::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-
+    fn unix_link_count_change_invalidates_the_observation() -> io::Result<()> {
         let directory = tempdir()?;
         let path = directory.path().join("note.txt");
+        let linked_path = directory.path().join("linked-note.txt");
         File::create(&path)?.write_all(b"unchanged content")?;
         let TargetState::Regular(before) = inspect_target(&path, SaveStage::InspectInitial)
             .expect("initial file should be observable")
@@ -759,9 +758,7 @@ mod tests {
             panic!("initial file was not regular");
         };
 
-        let mut permissions = fs::metadata(&path)?.permissions();
-        permissions.set_mode(permissions.mode() ^ 0o100);
-        fs::set_permissions(&path, permissions)?;
+        hard_link(&path, linked_path)?;
 
         let TargetState::Regular(after) = inspect_target(&path, SaveStage::Revalidate)
             .expect("changed file should remain observable")
@@ -771,7 +768,7 @@ mod tests {
 
         assert_eq!(before.identity(), after.identity());
         assert_eq!(before.fingerprint(), after.fingerprint());
-        assert_ne!(before.change_token(), after.change_token());
+        assert!(after.link_count() > before.link_count());
         assert_ne!(before, after);
         Ok(())
     }
