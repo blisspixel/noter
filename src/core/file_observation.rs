@@ -1,15 +1,15 @@
 //! Stable destination classification, identity, and content observations.
 
 use std::fs::{self, File, Metadata};
-use std::io::{self, Seek};
+use std::io::{self, Read, Seek};
 use std::path::Path;
 use std::time::SystemTime;
 
 use noter_platform::{FileFacts, IdentityQuality as PlatformIdentityQuality};
 
 use super::save::{
-    ContentFingerprint, FileIdentity, FileObservation, SaveStage, SpecialFileKind, StorageError,
-    TargetState,
+    ContentFingerprint, FileChangeToken, FileIdentity, FileObservation, SaveStage, SpecialFileKind,
+    StorageError, TargetState,
 };
 
 const MAX_STABILITY_ATTEMPTS: usize = 3;
@@ -40,6 +40,95 @@ pub fn inspect_target(path: &Path, boundary: SaveStage) -> Result<TargetState, S
         boundary,
         "destination changed repeatedly during bounded inspection",
     ))
+}
+
+/// Reads a regular file and captures the exact observation tied to those bytes.
+///
+/// The bytes, identity, length, change token, hard-link count, and final path
+/// entry are checked as one bounded stable-handle operation. Missing files,
+/// links, directories, and other special entries are rejected.
+///
+/// # Errors
+///
+/// Returns a stage-tagged, path-redacted error if the file cannot be read as a
+/// stable regular file after three attempts.
+pub fn read_regular_file(
+    path: &Path,
+    boundary: SaveStage,
+) -> Result<(Vec<u8>, FileObservation), StorageError> {
+    for _ in 0..MAX_STABILITY_ATTEMPTS {
+        match read_once(path) {
+            Ok(result) => return Ok(result),
+            Err(AttemptError::Changed) => {}
+            Err(AttemptError::Io { operation, error }) => {
+                return Err(redacted_error(boundary, operation, &error));
+            }
+        }
+    }
+
+    Err(StorageError::new(
+        boundary,
+        "file changed repeatedly during bounded read",
+    ))
+}
+
+fn read_once(path: &Path) -> Result<(Vec<u8>, FileObservation), AttemptError> {
+    let initial = fs::symlink_metadata(path)
+        .map_err(|error| changed_or_io("read final-entry metadata", error))?;
+    if non_regular_state(&initial).is_some() {
+        return Err(AttemptError::io(
+            "validate regular file",
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "final path entry is not a supported regular file",
+            ),
+        ));
+    }
+
+    let mut file = File::open(path).map_err(|error| changed_or_io("open regular file", error))?;
+    let before = handle_stamp(&file)?;
+    if !before.is_regular {
+        return Err(AttemptError::Changed);
+    }
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| AttemptError::io("read complete file content", error))?;
+    let length = u64::try_from(bytes.len()).map_err(|_| {
+        AttemptError::io(
+            "verify content length",
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "file length exceeds the supported in-memory size",
+            ),
+        )
+    })?;
+    let after = handle_stamp(&file)?;
+    if before != after || length != after.length {
+        return Err(AttemptError::Changed);
+    }
+
+    let final_entry = fs::symlink_metadata(path)
+        .map_err(|error| changed_or_io("revalidate final-entry metadata", error))?;
+    if non_regular_state(&final_entry).is_some() {
+        return Err(AttemptError::Changed);
+    }
+    let reopened = File::open(path).map_err(|error| changed_or_io("reopen regular file", error))?;
+    let reopened_stamp = handle_stamp(&reopened)?;
+    let closing_entry = fs::symlink_metadata(path)
+        .map_err(|error| changed_or_io("close final-entry race window", error))?;
+    if non_regular_state(&closing_entry).is_some() || reopened_stamp != after {
+        return Err(AttemptError::Changed);
+    }
+
+    let observation = FileObservation::new(
+        map_identity(after.facts),
+        ContentFingerprint::from_bytes(&bytes),
+        after.length,
+        after.facts.link_count(),
+        map_change_token(after.facts),
+    );
+    Ok((bytes, observation))
 }
 
 fn inspect_once(path: &Path) -> Result<TargetState, AttemptError> {
@@ -95,6 +184,7 @@ fn inspect_once(path: &Path) -> Result<TargetState, AttemptError> {
         fingerprint,
         after.length,
         after.facts.link_count(),
+        map_change_token(after.facts),
     )))
 }
 
@@ -129,6 +219,11 @@ const fn map_identity(facts: FileFacts) -> FileIdentity {
             FileIdentity::reduced(identity.volume(), identity.file())
         }
     }
+}
+
+const fn map_change_token(facts: FileFacts) -> FileChangeToken {
+    let token = facts.change_token();
+    FileChangeToken::new(token.primary(), token.secondary())
 }
 
 fn non_regular_state(metadata: &Metadata) -> Option<TargetState> {
@@ -240,6 +335,43 @@ mod tests {
     }
 
     #[test]
+    fn stable_read_returns_exact_bytes_and_matching_observation() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        let expected_bytes = b"exact bytes\r\nincluding unicode: \xF0\x9F\xA6\x80\n";
+        File::create(&path)?.write_all(expected_bytes)?;
+
+        let (bytes, loaded) = read_regular_file(&path, SaveStage::InspectInitial)
+            .expect("a stable regular file should load");
+        let TargetState::Regular(inspected) =
+            inspect_target(&path, SaveStage::InspectInitial).expect("the same file should inspect")
+        else {
+            panic!("loaded file was no longer regular");
+        };
+
+        assert_eq!(bytes, expected_bytes);
+        assert_eq!(loaded, inspected);
+        Ok(())
+    }
+
+    #[test]
+    fn stable_read_rejects_missing_and_special_entries_with_exact_stages() -> io::Result<()> {
+        let directory = tempdir()?;
+        let missing = directory.path().join("missing.txt");
+
+        let missing_error = read_regular_file(&missing, SaveStage::InspectInitial)
+            .expect_err("a missing path cannot be loaded as a regular file");
+        let directory_error = read_regular_file(directory.path(), SaveStage::Revalidate)
+            .expect_err("a directory cannot be loaded as a regular file");
+
+        assert_eq!(missing_error.stage(), SaveStage::InspectInitial);
+        assert!(missing_error.message().contains("changed repeatedly"));
+        assert_eq!(directory_error.stage(), SaveStage::Revalidate);
+        assert!(directory_error.message().contains("InvalidInput"));
+        Ok(())
+    }
+
+    #[test]
     fn hard_links_share_identity_and_report_multiple_names() -> io::Result<()> {
         let directory = tempdir()?;
         let first_path = directory.path().join("first.txt");
@@ -285,6 +417,66 @@ mod tests {
 
         assert_eq!(first.fingerprint(), second.fingerprint());
         assert_ne!(first.identity(), second.identity());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_metadata_change_invalidates_the_observation() -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        File::create(&path)?.write_all(b"unchanged content")?;
+        let TargetState::Regular(before) = inspect_target(&path, SaveStage::InspectInitial)
+            .expect("initial file should be observable")
+        else {
+            panic!("initial file was not regular");
+        };
+
+        let mut permissions = fs::metadata(&path)?.permissions();
+        permissions.set_mode(permissions.mode() ^ 0o100);
+        fs::set_permissions(&path, permissions)?;
+
+        let TargetState::Regular(after) = inspect_target(&path, SaveStage::Revalidate)
+            .expect("changed file should remain observable")
+        else {
+            panic!("changed file was not regular");
+        };
+
+        assert_eq!(before.identity(), after.identity());
+        assert_eq!(before.fingerprint(), after.fingerprint());
+        assert_ne!(before.change_token(), after.change_token());
+        assert_ne!(before, after);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_attribute_change_invalidates_the_observation() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        File::create(&path)?.write_all(b"unchanged content")?;
+        let TargetState::Regular(before) = inspect_target(&path, SaveStage::InspectInitial)
+            .expect("initial file should be observable")
+        else {
+            panic!("initial file was not regular");
+        };
+
+        let mut permissions = fs::metadata(&path)?.permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions)?;
+
+        let TargetState::Regular(after) = inspect_target(&path, SaveStage::Revalidate)
+            .expect("changed file should remain observable")
+        else {
+            panic!("changed file was not regular");
+        };
+
+        assert_eq!(before.identity(), after.identity());
+        assert_eq!(before.fingerprint(), after.fingerprint());
+        assert_ne!(before.change_token(), after.change_token());
+        assert_ne!(before, after);
         Ok(())
     }
 

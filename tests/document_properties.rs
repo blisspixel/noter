@@ -69,7 +69,7 @@ proptest! {
         }
         bytes.extend_from_slice(text.as_bytes());
 
-        let document = Document::from_bytes(&bytes, None).expect("generated strings are valid UTF-8");
+        let document = Document::from_bytes(&bytes).expect("generated strings are valid UTF-8");
 
         prop_assert_eq!(document.to_bytes(), bytes);
     }

@@ -1,6 +1,6 @@
 # Noter Technical Design
 
-**Version:** 0.2
+**Version:** 0.3
 
 **Reviewed:** 2026-07-25
 
@@ -28,19 +28,29 @@ The current M1 worktree has:
 - BLAKE3-256 content fingerprints from complete byte slices or streaming
   readers, checked against the official reference vectors;
 - a bounded stable-file observation that combines an open-handle identity,
-  content fingerprint, length, hard-link count, and modification stamp;
+  content fingerprint, length, hard-link count, and metadata change token;
 - a narrow internal platform crate that preserves the main crate's unsafe-code
-  prohibition while querying preferred and reduced Windows file identities;
+  prohibition while wrapping the required native identity, metadata, commit,
+  and synchronization operations;
 - 128-bit random, exclusive, owner-tracked sibling files with bounded collision
-  handling, standard file synchronization, and identity-safe cleanup;
-- an interim same-directory write, sync, and rename save path;
-- 57 Windows-local tests and 95.16 percent line coverage across the expanded
-  workspace trust kernel.
+  handling, strongest supported file synchronization, and identity-safe cleanup;
+- a production `FilesystemStorage` adapter with metadata transfer, atomic
+  existing-file replacement, exclusive new-file installation, documented
+  Windows partial-state reconciliation, parent barriers, and exact destination
+  verification;
+- a stable-handle load path and revision-aware Document Save and Save As that
+  preserve dirty state on conflict or failure and adopt a new path only after
+  commit;
+- strict refusal for final links, read-only destinations, and unconfirmed
+  hard-link separation; and
+- 81 Windows-local workspace tests and 92.76 percent line coverage across the
+  expanded workspace trust kernel.
 
-It does not yet have the durable replacement adapter, edit transaction model,
-dirty lifecycle, recovery, external conflict handling, complete commands,
-configuration, accessibility evidence, or release performance evidence.
-The interim save path is not the final implementation of NFR-REL-02.
+The native adapter still requires green Windows, macOS, and Linux CI plus the
+manual metadata and weaker-filesystem evidence named by ADR-003. Noter does not
+yet have the edit transaction model, complete dirty lifecycle, recovery,
+complete commands, configuration, accessibility evidence, or release
+performance evidence. M1 therefore remains In Progress.
 
 ## 2. Architectural principles
 
@@ -245,22 +255,31 @@ Filesystem operations are injected:
 
 ```rust
 trait Storage {
-    type Temp;
+    type Temporary;
 
     fn inspect(&mut self, path: &Path, stage: SaveStage)
         -> Result<TargetState, StorageError>;
     fn create_unique_sibling(&mut self, path: &Path)
-        -> Result<Self::Temp, StorageError>;
-    fn write_all(&mut self, temp: &mut Self::Temp, bytes: &[u8])
+        -> Result<Self::Temporary, StorageError>;
+    fn write_all(&mut self, temp: &mut Self::Temporary, bytes: &[u8])
         -> Result<(), StorageError>;
-    fn flush(&mut self, temp: &mut Self::Temp) -> Result<(), StorageError>;
-    fn apply_metadata(&mut self, temp: &mut Self::Temp, source: Option<&FileObservation>)
+    fn flush(&mut self, temp: &mut Self::Temporary) -> Result<(), StorageError>;
+    fn apply_metadata(
+        &mut self,
+        temp: &mut Self::Temporary,
+        destination: &Path,
+        source: Option<&FileObservation>,
+    )
         -> Result<(), StorageError>;
-    fn sync_file(&mut self, temp: &mut Self::Temp) -> Result<(), StorageError>;
-    fn replace(&mut self, temp: Self::Temp, destination: &Path, expected: TargetState)
-        -> ReplaceOutcome<Self::Temp>;
+    fn sync_file(&mut self, temp: &mut Self::Temporary) -> Result<(), StorageError>;
+    fn replace(
+        &mut self,
+        temp: Self::Temporary,
+        destination: &Path,
+        expected: TargetState,
+    ) -> ReplaceOutcome<Self::Temporary>;
     fn sync_parent(&mut self, destination: &Path) -> DurabilityOutcome;
-    fn discard(&mut self, temp: Self::Temp) -> Result<(), StorageError>;
+    fn discard(&mut self, temp: Self::Temporary) -> Result<(), StorageError>;
 }
 ```
 
@@ -288,11 +307,14 @@ never infers commit state from a generic I/O error.
 10. Sync the parent directory where the platform provides a meaningful operation.
 11. Report the exact outcome to application state and clean private artifacts.
 
-On Windows, the adapter evaluates `ReplaceFileW` for existing destinations and
-an atomic move for new destinations. On Unix, it uses same-filesystem rename
-after metadata application and parent-directory sync. An audited crate may
-replace custom platform code only if its documented behavior and tests satisfy
-this contract.
+On Windows, the adapter uses `ReplaceFileW` with a random same-volume backup and
+no ignore-merge flags for existing destinations. It uses `MoveFileExW` with
+only `MOVEFILE_WRITE_THROUGH` for absent destinations, so it cannot replace or
+copy across volumes accidentally. On Unix, it opens the sibling parent and uses
+`renameat` for replacement, `RENAME_NOREPLACE` where available for installation,
+and a no-overwrite link-and-unlink fallback. Unix synchronizes the opened parent;
+Windows reports file-only durability because it exposes no equivalent directory
+barrier here.
 
 Save outcomes are explicit:
 
@@ -302,10 +324,11 @@ enum SaveOutcome {
         revision: Revision,
         durability: Durability,
         observation: FileObservation,
+        warnings: SaveWarnings,
     },
-    Conflict(Conflict),
-    NotCommitted(StorageError),
-    CommitStateUnknown(StorageError),
+    Conflict { /* expected, actual, cleanup */ },
+    NotCommitted { /* error, cleanup */ },
+    CommitStateUnknown { /* reconciliation error */ },
 }
 ```
 
@@ -327,11 +350,13 @@ ADR-003 resolves these policies, and M1 verifies them through platform tests:
 - document weaker durability on network, cloud, removable, and unusual
   filesystems.
 
-An opened final symlink records and revalidates both the link and resolved
-target; Save commits to the resolved target without replacing the link entry.
-Save As refuses an existing final link. A file with multiple hard links requires
-explicit confirmation that atomic replacement updates only the selected
-directory entry. Read-only files are not made writable implicitly.
+The conservative v0.1 policy refuses a final symlink or Windows reparse point
+for both Open and Save As. This remains stricter than following a link until a
+resolved-target identity model and its platform fixtures exist. A file with
+multiple hard links requires explicit confirmation that atomic replacement
+updates only the selected directory entry. Read-only files are not made writable
+implicitly. New Unix files remain owner-only at mode 0600; Windows new files use
+the parent directory's native inheritance policy.
 
 No implementation may claim durable atomic save while these cases are silently
 undefined.
@@ -632,24 +657,20 @@ single-threaded streaming performance; it adds no Noter runtime filesystem,
 process, or network operation. The `pure` feature is intentionally not used
 because upstream documents it as unstable and intended for testing. The
 addition resolves four lock-graph packages, moving the graph from 333 to 337.
-The 2026-07-25 RustSec audit is clean. At this checkpoint the digest is used by
-the trust-kernel tests but not yet reached from the GUI, so release dead-code
-elimination leaves the Windows binary unchanged at 4,749,312 bytes. Adapter
-integration must measure the realized delta. Removal requires another audited
-256-bit cryptographic digest, migrated fingerprint versioning, and equivalent
-streaming and reference-vector tests.
+Removal requires another audited 256-bit cryptographic digest, migrated
+fingerprint versioning, and equivalent streaming and reference-vector tests.
 
 Stable Rust 1.97.1 exposes Unix device, inode, and hard-link values directly,
 but its full Windows by-handle identity methods remain unstable. The internal
-`noter-platform` workspace crate therefore owns exactly two unsafe Windows API
-calls behind a safe `file_facts(&File)` boundary. Its lint policy warns on any
-unsafe code, and only the two reviewed wrappers locally permit it; CI promotes any
-unapproved warning to an error. The function keeps the borrowed handle alive,
-passes correctly sized writable structures, prefers the 128-bit `FILE_ID_INFO`
-identity, detects an all-zero unsupported ID, and labels the 64-bit fallback as
-reduced. The fallback is never silently represented as preferred. This internal
-member adds one lock entry but no new external package, bringing the graph to
-338 packages.
+`noter-platform` workspace crate therefore owns six narrowly scoped unsafe calls:
+five Windows calls for basic identity, preferred identity, change time,
+replacement, and exclusive movement, plus one macOS `fcopyfile` call. Each call
+has a local safety contract, the main crate still forbids unsafe code, and the
+platform crate denies unsafe code outside those explicit allowances. Windows
+prefers the 128-bit `FILE_ID_INFO` identity, detects an all-zero unsupported ID,
+and labels the 64-bit fallback as reduced. The fallback is never silently
+represented as preferred. This internal member adds one lock entry but no external package,
+bringing the graph to 338 packages.
 
 M1 directly uses `getrandom` 0.4 only to fill the 16-byte private sibling-name
 nonce from the operating system's preferred random source. No optional features
@@ -657,11 +678,28 @@ are enabled. The crate is MIT or Apache-2.0, declares Rust 1.85, and was already
 present at version 0.4.3 through the development graph, so direct use adds no
 lock entry or duplicate. It has no network capability; its intended capability
 is narrowly the operating-system entropy interface. Random-source errors and
-partial fills are terminal before file creation. The 2026-07-25 RustSec audit
-of the 338-package graph is clean. With the new path still unreachable from the
-GUI, the stripped Windows release remains 4,749,312 bytes. The dependency can
-be removed only if an equivalent operating-system random API preserves the
-128-bit naming and injected-failure tests.
+partial fills are terminal before file creation. The dependency can be removed
+only if an equivalent operating-system random API preserves the 128-bit naming
+and injected-failure tests.
+
+The production Unix adapter uses `rustix` 1.1 with only `fs` and `std` for
+descriptor-relative rename, no-replace rename, link, unlink, ownership, mode,
+and full-sync operations. Linux alone uses `xattr` 1.6 with default features
+disabled to enumerate, copy, remove, and verify visible extended attributes,
+with explicit probes for POSIX ACL, SELinux, and capability names. macOS uses
+the already-resolved `libc` 0.2 package for descriptor-based ACL and
+extended-attribute transfer. `rustix` and `libc` were already in the lockfile;
+`xattr` adds one package, bringing the cross-target graph to 339. All three are
+MIT or Apache-family licensed, have no application network capability, and build
+under the pinned toolchain. `xattr` does not publish an MSRV, so CI establishes
+compatibility.
+
+With the adapter reachable from the GUI, the stripped Windows release is
+4,871,680 bytes, or 4.65 MiB, compared with the 4,748,800-byte M0 baseline. The
+2026-07-25 RustSec audit of all 339 locked packages is clean. This measured delta
+is accepted for native metadata preservation, cryptographic conflict detection,
+and reconciled commit semantics. Later release gates still enforce the 12 MiB
+ceiling and require duplicate, license, source, and capability audits.
 
 CI uses the pinned Rust toolchain, locked Cargo graph, immutable action commits,
 minimum permissions, formatting, strict Clippy, cross-platform tests, coverage,

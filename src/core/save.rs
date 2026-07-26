@@ -92,6 +92,30 @@ impl ContentFingerprint {
     }
 }
 
+/// Opaque platform timestamp components for the last content or metadata change.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct FileChangeToken {
+    primary: i64,
+    secondary: i64,
+}
+
+impl FileChangeToken {
+    /// Creates a token from platform-provided timestamp components.
+    pub const fn new(primary: i64, secondary: i64) -> Self {
+        Self { primary, secondary }
+    }
+
+    /// Returns the primary platform timestamp component.
+    pub const fn primary(self) -> i64 {
+        self.primary
+    }
+
+    /// Returns the subsecond or reserved platform timestamp component.
+    pub const fn secondary(self) -> i64 {
+        self.secondary
+    }
+}
+
 /// Identity and content facts captured for an existing regular file.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FileObservation {
@@ -99,6 +123,7 @@ pub struct FileObservation {
     fingerprint: ContentFingerprint,
     length: u64,
     link_count: u64,
+    change_token: FileChangeToken,
 }
 
 impl FileObservation {
@@ -108,12 +133,14 @@ impl FileObservation {
         fingerprint: ContentFingerprint,
         length: u64,
         link_count: u64,
+        change_token: FileChangeToken,
     ) -> Self {
         Self {
             identity,
             fingerprint,
             length,
             link_count,
+            change_token,
         }
     }
 
@@ -135,6 +162,11 @@ impl FileObservation {
     /// Returns the observed hard-link count.
     pub const fn link_count(self) -> u64 {
         self.link_count
+    }
+
+    /// Returns the platform content-or-metadata change timestamp.
+    pub const fn change_token(self) -> FileChangeToken {
+        self.change_token
     }
 }
 
@@ -282,21 +314,56 @@ impl StorageError {
     }
 }
 
-/// Verified destination facts after a successful replacement.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Verified destination facts and commit cleanup status after replacement.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ReplaceReceipt {
     observation: FileObservation,
+    cleanup_warnings: Vec<StorageError>,
 }
 
 impl ReplaceReceipt {
-    /// Creates a verified replacement receipt.
+    /// Creates a verified replacement receipt without a cleanup warning.
     pub const fn new(observation: FileObservation) -> Self {
-        Self { observation }
+        Self {
+            observation,
+            cleanup_warnings: Vec::new(),
+        }
+    }
+
+    /// Creates a verified replacement receipt with a post-commit cleanup warning.
+    pub fn with_cleanup_warning(
+        observation: FileObservation,
+        cleanup_warning: StorageError,
+    ) -> Self {
+        Self {
+            observation,
+            cleanup_warnings: vec![cleanup_warning],
+        }
+    }
+
+    /// Creates a verified replacement receipt with all artifact cleanup warnings.
+    pub const fn with_cleanup_warnings(
+        observation: FileObservation,
+        cleanup_warnings: Vec<StorageError>,
+    ) -> Self {
+        Self {
+            observation,
+            cleanup_warnings,
+        }
     }
 
     /// Returns the committed destination observation.
-    pub const fn observation(self) -> FileObservation {
+    pub const fn observation(&self) -> FileObservation {
         self.observation
+    }
+
+    /// Returns a post-commit backup or temporary cleanup warning, if any.
+    pub fn cleanup_warnings(&self) -> &[StorageError] {
+        &self.cleanup_warnings
+    }
+
+    fn into_parts(self) -> (FileObservation, Vec<StorageError>) {
+        (self.observation, self.cleanup_warnings)
     }
 }
 
@@ -351,6 +418,37 @@ pub enum DurabilityOutcome {
     },
 }
 
+/// Independent warnings that can occur after the destination has committed.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct SaveWarnings {
+    cleanup: Vec<StorageError>,
+    durability: Option<StorageError>,
+}
+
+impl SaveWarnings {
+    const fn new(cleanup: Vec<StorageError>, durability: Option<StorageError>) -> Self {
+        Self {
+            cleanup,
+            durability,
+        }
+    }
+
+    /// Returns a backup or temporary cleanup warning, if any.
+    pub fn cleanup(&self) -> &[StorageError] {
+        &self.cleanup
+    }
+
+    /// Returns a post-commit persistence-barrier warning, if any.
+    pub const fn durability(&self) -> Option<&StorageError> {
+        self.durability.as_ref()
+    }
+
+    /// Returns whether neither post-commit warning occurred.
+    pub const fn is_empty(&self) -> bool {
+        self.cleanup.is_empty() && self.durability.is_none()
+    }
+}
+
 /// Exact result of attempting to save one immutable revision.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SaveOutcome {
@@ -362,8 +460,8 @@ pub enum SaveOutcome {
         durability: Durability,
         /// Verified destination facts after commit.
         observation: FileObservation,
-        /// Post-commit warning, if a stronger barrier failed.
-        warning: Option<StorageError>,
+        /// Independent cleanup and persistence warnings after commit.
+        warnings: SaveWarnings,
     },
     /// A different destination version was observed before commit.
     Conflict {
@@ -535,15 +633,16 @@ pub fn save_snapshot<S: Storage>(storage: &mut S, snapshot: &SaveSnapshot) -> Sa
 
     match storage.replace(temporary, snapshot.target(), revalidated) {
         ReplaceOutcome::Committed(receipt) => {
-            let (durability, warning) = match storage.sync_parent(snapshot.target()) {
+            let (observation, cleanup_warnings) = receipt.into_parts();
+            let (durability, durability_warning) = match storage.sync_parent(snapshot.target()) {
                 DurabilityOutcome::Achieved(durability) => (durability, None),
                 DurabilityOutcome::Warning { achieved, error } => (achieved, Some(error)),
             };
             SaveOutcome::Committed {
                 revision: snapshot.revision(),
                 durability,
-                observation: receipt.observation(),
-                warning,
+                observation,
+                warnings: SaveWarnings::new(cleanup_warnings, durability_warning),
             }
         }
         ReplaceOutcome::Conflict { temporary, actual } => {
@@ -602,6 +701,7 @@ mod tests {
         race_on_revalidate: Option<Vec<u8>>,
         race_on_replace: Option<Vec<u8>>,
         unknown_after_replace: bool,
+        replacement_cleanup_warning: bool,
         durability: DurabilityOutcome,
         calls: Vec<SaveStage>,
         next_identity: u128,
@@ -616,6 +716,7 @@ mod tests {
                 race_on_revalidate: None,
                 race_on_replace: None,
                 unknown_after_replace: false,
+                replacement_cleanup_warning: false,
                 durability: DurabilityOutcome::Achieved(Durability::FileAndDirectorySynced),
                 calls: Vec::new(),
                 next_identity: 2,
@@ -750,7 +851,14 @@ mod tests {
             }
 
             let observation = self.replace_destination(temporary.bytes);
-            ReplaceOutcome::Committed(ReplaceReceipt::new(observation))
+            if self.replacement_cleanup_warning {
+                ReplaceOutcome::Committed(ReplaceReceipt::with_cleanup_warning(
+                    observation,
+                    StorageError::new(SaveStage::Cleanup, "injected post-commit cleanup failure"),
+                ))
+            } else {
+                ReplaceOutcome::Committed(ReplaceReceipt::new(observation))
+            }
         }
 
         fn sync_parent(&mut self, _destination: &Path) -> DurabilityOutcome {
@@ -782,6 +890,7 @@ mod tests {
             ContentFingerprint::from_bytes(bytes),
             bytes.len() as u64,
             1,
+            FileChangeToken::new(identity as i64, 0),
         )
     }
 
@@ -806,9 +915,9 @@ mod tests {
             SaveOutcome::Committed {
                 revision,
                 durability: Durability::FileAndDirectorySynced,
-                warning: None,
+                ref warnings,
                 ..
-            } if revision == Revision::new(9)
+            } if revision == Revision::new(9) && warnings.is_empty()
         ));
         assert_eq!(
             storage.destination_bytes(),
@@ -959,13 +1068,38 @@ mod tests {
             outcome,
             SaveOutcome::Committed {
                 durability: Durability::FileSynced,
-                warning: Some(ref error),
+                ref warnings,
                 ..
-            } if error.stage() == SaveStage::SyncParent
+            } if warnings.durability().is_some_and(|error| error.stage() == SaveStage::SyncParent)
+                && warnings.cleanup().is_empty()
         ));
         assert_eq!(
             storage.destination_bytes(),
             Some(b"committed before warning".as_slice())
+        );
+    }
+
+    #[test]
+    fn committed_cleanup_and_durability_warnings_are_both_preserved() {
+        let mut storage = FakeStorage::existing(b"old");
+        storage.replacement_cleanup_warning = true;
+        storage.fail_at = Some(SaveStage::SyncParent);
+        let snapshot = snapshot(&storage, 12, b"committed with two warnings");
+
+        let outcome = save_snapshot(&mut storage, &snapshot);
+
+        assert!(matches!(
+            outcome,
+            SaveOutcome::Committed {
+                durability: Durability::FileSynced,
+                ref warnings,
+                ..
+            } if warnings.cleanup().iter().any(|error| error.stage() == SaveStage::Cleanup)
+                && warnings.durability().is_some_and(|error| error.stage() == SaveStage::SyncParent)
+        ));
+        assert_eq!(
+            storage.destination_bytes(),
+            Some(b"committed with two warnings".as_slice())
         );
     }
 
@@ -1004,7 +1138,8 @@ mod tests {
     fn domain_values_retain_exact_adapter_data() {
         let identity = FileIdentity::new(12, 34);
         let fingerprint = ContentFingerprint::new([5; 32]);
-        let observation = FileObservation::new(identity, fingerprint, 56, 2);
+        let change_token = FileChangeToken::new(67, 89);
+        let observation = FileObservation::new(identity, fingerprint, 56, 2, change_token);
         let snapshot = SaveSnapshot::new(
             Revision::new(78),
             PathBuf::from("note.txt"),
@@ -1025,6 +1160,9 @@ mod tests {
         assert_eq!(observation.fingerprint(), fingerprint);
         assert_eq!(observation.length(), 56);
         assert_eq!(observation.link_count(), 2);
+        assert_eq!(observation.change_token(), change_token);
+        assert_eq!(change_token.primary(), 67);
+        assert_eq!(change_token.secondary(), 89);
         assert_eq!(snapshot.revision(), Revision::new(78));
         assert_eq!(snapshot.target(), Path::new("note.txt"));
         assert_eq!(snapshot.bytes(), &[1, 2, 3]);

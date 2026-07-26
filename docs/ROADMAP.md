@@ -208,9 +208,10 @@ of the GUI.
   reopen the pathname to close the ordinary replacement race. Missing files,
   directories, final links or reparse points, hard links, same-content distinct
   files, and path-redacted failures have explicit tests.
-- **Verified locally:** the main crate still forbids unsafe code. Two Windows
-  by-handle queries are isolated behind a safe internal crate and documented
-  safety contracts. Preferred 128-bit IDs and labeled reduced fallbacks have
+- **Verified locally:** the main crate still forbids unsafe code. The six native
+  calls required for Windows observation and commit plus macOS metadata transfer
+  are isolated behind safe internal-crate boundaries and documented safety
+  contracts. Preferred 128-bit IDs and labeled reduced fallbacks have
   deterministic tests.
 - **Verified in CI:** file-observation evidence commit `73413a8` passed Windows,
   macOS, Linux, strict workspace lint, rustdoc, documentation, and the 90 percent
@@ -221,18 +222,41 @@ of the GUI.
   collisions, random failure, owner-only Unix staging, exact writes and sync,
   drop and explicit cleanup, missing artifacts, and path replacement. Cleanup
   refuses to delete a different file that acquired the random path.
-- **Verified locally:** all 57 Windows-local tests and strict workspace Clippy
-  pass. Workspace trust-kernel line coverage is 95.16 percent; CI enforces the
-  M1 floor of 90 percent.
+- **Verified in CI:** the private-sibling evidence commit `d44b1ec` passed the
+  Windows, macOS, and Linux matrix, strict lint, rustdoc, documentation, and the
+  coverage gate in
+  [GitHub Actions run 30179090177](https://github.com/blisspixel/noter/actions/runs/30179090177).
+- **Implemented locally:** Linux copies attainable ownership, exact mode, visible
+  extended attributes, POSIX ACL, SELinux, and capability metadata, then verifies
+  the result. macOS uses `fcopyfile` for ACLs and extended attributes without
+  restoring the old modification time. Windows deliberately delegates the
+  documented metadata merge to `ReplaceFileW` with ignore flags disabled.
+- **Implemented locally:** existing-file commits use `ReplaceFileW` with a random
+  backup on Windows and parent-anchored `renameat` on Unix. Absent-file commits
+  use `MoveFileExW` without replace or copy flags on Windows and no-replace rename
+  with a link-and-unlink fallback on Unix. Documented Windows partial state 1177
+  is reconciled, unknown states preserve artifacts, and resolved outcomes clean
+  only identity-verified artifacts.
+- **Implemented locally:** stable-handle loading and the production adapter are
+  connected to a sealed Document API. Dirty state clears only for the exact
+  committed revision, Save As adopts its path only after commit, external changes
+  become conflicts, final links and read-only destinations are refused, and hard
+  links require explicit confirmation.
+- **Verified locally:** all 81 workspace tests, formatting, strict workspace
+  Clippy, and rustdoc pass. Measured trust-kernel line coverage is 92.76 percent;
+  CI enforces the M1 floor of 90 percent. Linux full-crate and macOS platform-crate
+  cross-target Clippy also pass from the Windows reference environment.
 - **Measured:** the property harness adds eight test-only lock entries and the
   digest adds four runtime lock entries, bringing the cross-target graph to
   337 packages. The internal platform workspace member brings the graph to
   338 without adding an external package. Direct use of the already-resolved
-  `getrandom` package adds no lock entry. The currently dead-stripped path
-  leaves the release binary at 4.53 MiB and 4,749,312 bytes; the adapter
-  integration will be measured again.
-- **Next:** implement metadata transfer and platform commit operations, then
-  connect these proven primitives to the accepted ADR-003 `Storage` boundary.
+  `getrandom`, `rustix`, and `libc` packages adds no lock entry. Linux-only
+  `xattr` adds one package, for 339 total. The reachable adapter produces a
+  stripped Windows release of 4,871,680 bytes, or 4.65 MiB. RustSec reports no
+  known vulnerability in the lockfile.
+- **Next:** obtain green native CI for this complete adapter slice, execute the
+  manual NTFS, Linux, macOS, and weaker-filesystem fixtures, then run mutation
+  testing before marking M1 Verified.
 
 **Work:**
 
@@ -491,26 +515,29 @@ silently rewriting content.
 
 These are the next tasks in dependency order:
 
-1. Implement unique sibling creation, metadata transfer, synchronization, and
-   cleanup behind the accepted `Storage` boundary.
-2. Implement and reconcile Windows existing-file and new-file commit paths.
-3. Implement Linux and macOS existing-file and no-overwrite commit paths.
-4. Add platform fixtures for metadata, symlinks, hard links, read-only files,
-   external writers, and weaker filesystems.
-5. Add mutation testing for serialization, conflict, commit-state, and cleanup
-   decisions.
-6. Integrate revision-tagged snapshots and outcomes into the document model.
-7. Add the benchmark corpus generator and automate the trust-kernel baseline.
-8. Implement the edit transaction and selection model.
-9. Add reference-model undo and redo property tests.
-10. Implement the dirty-document lifecycle state machine.
-11. Implement versioned state-directory recovery records and crash scanning.
-12. Build the controlled child-process crash harness.
-13. Create the pure command and application-state reducer, then connect the
-    proven core to the complete M4 UI.
+1. Run the complete native adapter on Windows, macOS, and Linux CI and fix every
+   platform-specific failure before accepting the slice.
+2. Add and execute platform fixtures for NTFS DACLs, named streams, compression,
+   encryption, and documented partial errors; Linux mode, ACL, extended
+   attributes, ownership limits, SELinux, and capabilities; and macOS ACLs,
+   extended attributes, resource forks, quarantine, flags, and timestamp policy.
+3. Exercise final links, hard links, read-only files, external writers, local
+   filesystems, SMB, cloud-synced folders, removable media, and at least one
+   weaker filesystem. Record the exact durability result rather than inferring
+   it from the filesystem name.
+4. Add mutation testing for serialization, conflict, commit-state, dirty-revision,
+   and cleanup decisions, resolving or documenting every high-impact survivor.
+5. Add the benchmark corpus generator and automate the trust-kernel baseline.
+6. Close the M1 evidence gate, then implement the M2 edit transaction, selection,
+   and reference-model undo and redo properties.
+7. Implement the M3 dirty-document lifecycle state machine, versioned
+   state-directory recovery records, crash scanning, and controlled child-process
+   crash harness.
+8. Create the pure command and application-state reducer, then connect the proven
+   core to the complete M4 UI.
 
-The answer to "what is next" is therefore unambiguous: finish M1 by making the
-ratified replacement protocol real on Windows, Linux, and macOS and prove it
-against metadata, race, durability, and crash fixtures.
+The answer to "what is next" is therefore unambiguous: finish M1 by proving the
+implemented replacement protocol on native Windows, Linux, and macOS against
+metadata, race, durability, and filesystem fixtures, then move directly into M2.
 Do not begin the custom editor or Markdown engine while save, undo, close, and
 recovery semantics are still aspirational.

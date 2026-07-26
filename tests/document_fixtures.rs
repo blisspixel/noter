@@ -62,7 +62,7 @@ fn golden_document_matrix_is_exact() {
         let bytes = decode_hex(fields[1]);
 
         if fields[2] == "invalid" {
-            let error = Document::from_bytes(&bytes, None)
+            let error = Document::from_bytes(&bytes)
                 .err()
                 .unwrap_or_else(|| panic!("{name}: invalid UTF-8 was accepted"));
             assert!(
@@ -72,17 +72,17 @@ fn golden_document_matrix_is_exact() {
             continue;
         }
 
-        let document = Document::from_bytes(&bytes, None)
+        let document = Document::from_bytes(&bytes)
             .unwrap_or_else(|error| panic!("{name}: valid fixture failed: {error}"));
         let expected_bom = if fields[3] == "true" {
             Bom::Utf8
         } else {
             Bom::Absent
         };
-        assert_eq!(document.bom, expected_bom, "{name}: BOM");
+        assert_eq!(document.bom(), expected_bom, "{name}: BOM");
         assert_eq!(
-            document.line_endings,
-            expected_profile(&fields),
+            document.line_endings(),
+            &expected_profile(&fields),
             "{name}: profile"
         );
         assert_eq!(document.to_bytes(), bytes, "{name}: byte round-trip");

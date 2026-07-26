@@ -1,6 +1,6 @@
 # Noter Product Requirements
 
-**Version:** 0.2
+**Version:** 0.3
 
 **Reviewed:** 2026-07-25
 
@@ -53,16 +53,17 @@ Feature presence alone is not verification.
 ### 2.1 Document and file operations
 
 - **FR-010 New:** Create one clean, untitled document per window.
-- **FR-011 Open:** Open a user-selected file through a system file dialog.
+- **FR-011 Open:** Open a user-selected regular file through a system file
+  dialog. Refuse a final symlink or Windows reparse point in v0.1; following a
+  link requires a future resolved-target identity contract.
 - **FR-012 Strict UTF-8:** Accept UTF-8 with or without a UTF-8 BOM. Reject
   invalid UTF-8 without replacement characters. A future explicit import flow
   may create a new untitled converted document, but it must never overwrite the
   source implicitly.
-- **FR-013 Save:** Save to the current path through the durable replacement
-  protocol in NFR-REL-02. An opened final symlink is revalidated and Save writes
-  its recorded regular-file target without replacing the link entry. A
-  multiply hard-linked destination requires explicit confirmation that only the
-  selected directory entry will advance.
+- **FR-013 Save:** Save to the current regular-file path through the durable
+  replacement protocol in NFR-REL-02. A multiply hard-linked destination
+  requires explicit confirmation that only the selected directory entry will
+  advance.
 - **FR-014 Save As:** Ask for a destination every time. The document path and
   clean revision change only after the new destination commits successfully.
   Refuse an existing final symlink or unsupported reparse point rather than

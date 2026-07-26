@@ -1,5 +1,7 @@
 use eframe::egui;
 use noter::core::document::Document;
+use noter::core::save::SaveOutcome;
+use noter::error::NoterError;
 
 #[derive(Default)]
 pub struct NoterApp {
@@ -41,7 +43,7 @@ impl NoterApp {
         if let Some(path) = rfd::FileDialog::new().pick_file() {
             match Document::from_path(&path) {
                 Ok(doc) => {
-                    self.text = String::from(&doc.rope);
+                    self.text = String::from(doc.rope());
                     self.document = doc;
                     self.error_msg = None;
                 }
@@ -53,24 +55,40 @@ impl NoterApp {
     }
 
     fn do_save(&mut self) {
-        if self.document.path.is_none() {
+        if self.document.path().is_none() {
             self.do_save_as();
             return;
         }
 
-        self.document.rope = ropey::Rope::from_str(&self.text);
-        if let Err(e) = self.document.save_atomic() {
-            self.error_msg = Some(format!("Failed to save file: {e}"));
-        } else {
-            self.error_msg = None;
-        }
+        let result = self.document.save();
+        self.handle_save_result(result);
     }
 
     fn do_save_as(&mut self) {
         if let Some(path) = rfd::FileDialog::new().save_file() {
-            self.document.path = Some(path);
-            self.do_save();
+            let result = self.document.save_as(path);
+            self.handle_save_result(result);
         }
+    }
+
+    fn handle_save_result(&mut self, result: Result<SaveOutcome, NoterError>) {
+        self.error_msg = match result {
+            Ok(SaveOutcome::Committed { ref warnings, .. }) if warnings.is_empty() => None,
+            Ok(SaveOutcome::Committed { .. }) => {
+                Some("Saved, but cleanup or persistence could not be fully verified.".to_owned())
+            }
+            Ok(SaveOutcome::Conflict { .. }) => Some(
+                "Save stopped because the destination changed. Your edits remain unsaved."
+                    .to_owned(),
+            ),
+            Ok(SaveOutcome::NotCommitted { ref error, .. }) => {
+                Some(format!("Save did not commit: {error}"))
+            }
+            Ok(SaveOutcome::CommitStateUnknown { ref error, .. }) => Some(format!(
+                "Save state is uncertain and must be reconciled before retry: {error}"
+            )),
+            Err(error) => Some(format!("Failed to save file: {error}")),
+        };
     }
 
     fn handle_shortcuts(&mut self, ui: &egui::Ui) {
@@ -122,8 +140,8 @@ impl NoterApp {
     }
 
     fn update_title(&self, ctx: &egui::Context) {
-        let dirty = if self.document.is_dirty { "*" } else { "" };
-        let title = self.document.path.as_ref().map_or_else(
+        let dirty = if self.document.is_dirty() { "*" } else { "" };
+        let title = self.document.path().map_or_else(
             || format!("Untitled{dirty} - Noter"),
             |path| {
                 let file_name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -258,16 +276,15 @@ impl NoterApp {
             ui.horizontal(|ui| {
                 let document_label = self
                     .document
-                    .path
-                    .as_ref()
+                    .path()
                     .map_or_else(|| "Untitled".to_owned(), |path| path.display().to_string());
                 ui.label(document_label);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(self.document.line_endings.status_label());
+                    ui.label(self.document.line_endings().status_label());
                     ui.separator();
-                    ui.label(self.document.encoding.status_label());
-                    if self.document.bom.is_present() {
+                    ui.label(self.document.encoding().status_label());
+                    if self.document.bom().is_present() {
                         ui.separator();
                         ui.label("BOM");
                     }
@@ -294,8 +311,10 @@ impl NoterApp {
                             .lock_focus(true),
                     );
 
-                    if response.changed() {
-                        self.document.is_dirty = true;
+                    if response.changed()
+                        && let Err(error) = self.document.replace_text(&self.text)
+                    {
+                        self.error_msg = Some(format!("Failed to record edit: {error}"));
                     }
                 });
             });

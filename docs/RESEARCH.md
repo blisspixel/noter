@@ -163,9 +163,9 @@ Product decision:
   boundaries.
 - Model `Committed`, `Conflict`, `NotCommitted`, and `CommitStateUnknown`.
   Indeterminate commit keeps recovery and cannot be retried blindly.
-- Save through an opened final symlink only after recording and revalidating the
-  link and resolved regular-file target. Save As refuses an existing final
-  symlink or reparse point.
+- Refuse final symlinks and Windows reparse points for both Open and Save As in
+  v0.1. Following a link remains deferred until the product has a resolved-target
+  identity model and complete platform race fixtures.
 - Require explicit confirmation before atomic replacement separates one name
   from other hard links to the same file.
 - Preserve required permissions, ACLs, extended attributes, security context,
@@ -277,10 +277,10 @@ The source audit found a build script plus optimized assembly or C SIMD paths,
 but no runtime I/O capability is imported by Noter. The upstream `pure` flag is
 documented as an unstable testing feature, so relying on it would be a weaker
 maintenance contract than accepting and recording the optimized build path.
-The dependency adds four lock entries, produces no current release-size change
-while the path is dead-stripped, and passed a 2026-07-25 RustSec scan of the
-337-package lock graph. Its actual binary delta and file-hashing latency must
-be measured again when the production adapter makes the path reachable.
+The dependency adds four lock entries and passed a 2026-07-25 RustSec scan. Once
+the production adapter made hashing reachable from the GUI, the complete native
+I/O slice measured 4,871,680 bytes, or 4.65 MiB, in the stripped Windows release.
+Hashing latency still requires the reproducible M1 benchmark corpus.
 
 For stable file identity, Rust 1.97.1 exposes Unix `dev`, `ino`, and `nlink`
 through [`std::os::unix::fs::MetadataExt`](https://doc.rust-lang.org/1.97.1/std/os/unix/fs/trait.MetadataExt.html).
@@ -294,13 +294,17 @@ also supplies the hard-link count and a 64-bit ID, but Microsoft warns that the
 smaller ID is not guaranteed unique on ReFS.
 
 The resulting design keeps all ordinary observation logic in the unsafe-free
-product library and isolates two by-handle calls in the internal
+product library and isolates three by-handle observation calls in the internal
 `noter-platform` crate. It prefers the 128-bit ID, treats a failed query or
 all-zero unsupported ID as a labeled reduced fallback, and combines identity
-with BLAKE3 content rather than trusting timestamps. Observation hashes one
-open handle, checks stable metadata around the read, and reopens the final path
-before accepting the result. Final links and Windows reparse points are
-classified without following them.
+with BLAKE3 content rather than trusting timestamps. The third query reads
+Windows `ChangeTime` from
+[`FILE_BASIC_INFORMATION`](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ns-wdm-_file_basic_information),
+so metadata-only changes invalidate a saved observation. Unix uses inode change
+time with nanosecond precision. Observation hashes one open handle, checks stable
+metadata around the read, and reopens the final path before accepting the
+result. Final links and Windows reparse points are classified without following
+them.
 
 For private sibling names, [`getrandom::fill`](https://docs.rs/getrandom/0.4.3/getrandom/fn.fill.html)
 uses the operating system's preferred random source and reports every failure,
@@ -313,10 +317,43 @@ bounded, and a random-source error creates no artifact.
 The temporary file records identity from its original open handle. Both
 explicit cleanup and best-effort drop cleanup revalidate that identity before
 removing the path, so an external replacement is not deleted as if Noter still
-owned it. Unix siblings begin at mode 0600; final new-file mode and inherited
-metadata remain a separate pre-commit policy step. Direct `getrandom` use adds
-no lock entry because the exact version was already present, and dead-code
-elimination leaves the current release binary unchanged.
+owned it. Unix siblings begin at mode 0600, and an absent Unix destination keeps
+that owner-only mode as the intentional v0.1 new-file policy. Windows new files
+use native parent-directory inheritance. Direct `getrandom` use adds no lock
+entry because the exact version was already present.
+
+For Linux metadata, the adapter uses descriptor-based `fchown` and `fchmod`,
+then copies and verifies the complete visible extended-attribute set. It also
+probes `security.capability`, `security.selinux`, and `system.posix_acl_access`
+explicitly because Linux assigns different visibility and permission rules to
+the user, security, system, and trusted namespaces. See
+[`xattr(7)`](https://man7.org/linux/man-pages/man7/xattr.7.html). If ownership or
+required metadata cannot be reproduced, the save stops before commit. `rustix`
+1.1 supplies descriptor-relative rename, no-replace rename, link, unlink, mode,
+ownership, and synchronization operations. Linux-only `xattr` 1.6 adds the one
+new package in the 339-package lock graph.
+
+On macOS, descriptor-based `fcopyfile` can copy ACLs and extended attributes
+independently. Noter requests `COPYFILE_ACL | COPYFILE_XATTR` and applies owner
+and mode separately, intentionally omitting `COPYFILE_STAT` so a successful save
+advances modification time. See the
+[Xcode `copyfile(3)` manual](https://keith.github.io/xcode-man-pages/copyfile.3.html).
+The sibling receives `F_FULLFSYNC` where supported and falls back to `sync_all`
+only when the stronger operation is reported unsupported or invalid.
+
+On Windows, `ReplaceFileW` is called with a random backup and zero ignore flags.
+Microsoft documents that it merges DACLs, encryption, compression, and named
+streams, and that error 1177 can move the old destination to the backup while
+leaving the metadata-merged replacement under its temporary name. The adapter
+recognizes only that documented partial state, verifies all identities and bytes,
+then completes the intended move or returns Commit State Unknown while retaining
+artifacts. New-file installation uses `MoveFileExW` with only
+`MOVEFILE_WRITE_THROUGH`; replacement and cross-volume copy flags are absent.
+
+The native adapter adds one lock package overall, bringing the cross-target graph
+to 339. The 2026-07-25 RustSec audit is clean. The remaining evidence is native
+CI plus manual NTFS, Linux, macOS, cloud, network, removable, and weaker-filesystem
+testing; the implementation does not infer durability from a filesystem label.
 
 For releases, use a current `cargo-dist` configuration, generate an SBOM and
 checksums, pin GitHub Actions by immutable commit SHA, minimize token permissions,

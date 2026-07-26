@@ -53,9 +53,27 @@ unit tests, and coverage cannot prove.
 - [ ] IO-11 Read-only, permission-denied, disk-full, and locked-target failures
   leave the original complete.
 - [ ] IO-12 Existing destination metadata follows the ratified platform policy.
-- [ ] IO-13 Symlink behavior follows ADR-003 and never replaces a link
-  accidentally.
-- [ ] IO-14 Cloud, network, and removable filesystem limitations are clear.
+- [ ] IO-13 Open and Save As refuse final symlinks and Windows reparse points
+  without changing the link or its target.
+- [ ] IO-14 Cloud, network, removable, and weaker-filesystem limitations are
+  explicit, and the reported durability never exceeds observed capability.
+- [ ] IO-15 A newly created Unix document is mode 0600; a new Windows document
+  receives the parent directory's expected inherited DACL.
+- [ ] IO-16 A multiply hard-linked destination is refused until explicit
+  confirmation; after confirmation only the selected name receives new bytes.
+- [ ] IO-17 Windows existing-file replacement preserves DACLs, named streams,
+  compression, encryption, and the documented creation and identifier policy.
+- [ ] IO-18 Windows `ReplaceFileW` success and errors 1175, 1176, and 1177 leave
+  only states the reconciliation model classifies correctly; uncertain states
+  retain private artifacts and never invite blind retry.
+- [ ] IO-19 Linux replacement preserves exact mode, attainable ownership, ACLs,
+  visible extended attributes, SELinux context, and capabilities, or refuses
+  before commit with the original complete.
+- [ ] IO-20 macOS replacement preserves mode, attainable ownership, ACLs,
+  extended attributes, resource forks, and quarantine data; modification time
+  advances according to policy, and BSD file-flag behavior is recorded.
+- [ ] IO-21 A cleanup failure after commit is distinguishable from a durability
+  warning, and neither is reported as a failed or uncommitted save.
 
 Record byte-comparison commands, fixture checksums, and observed save outcomes:
 

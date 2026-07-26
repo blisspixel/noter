@@ -75,21 +75,29 @@ warning-free CI on Windows, macOS, and Linux. The exact M0 evidence commit is
 
 M1 now has exact UTF-8 BOM and mixed-line-ending profiles, an external golden
 byte corpus, generated round-trip properties, explicit revisions, and a
-fault-injected save protocol that does not confuse a failed call with a proven
-non-commit. The line-ending slice is verified on all three operating systems at
-commit `62dc49f` in [GitHub Actions run 30177403255](https://github.com/blisspixel/noter/actions/runs/30177403255).
-The save-protocol slice is verified at commit `0edc342` in
-[GitHub Actions run 30177953025](https://github.com/blisspixel/noter/actions/runs/30177953025),
-and conflict fingerprints now use the official BLAKE3-256 implementation with
-both in-memory and streaming APIs. That digest slice is verified at commit
-`613cbcd` in [GitHub Actions run 30178217482](https://github.com/blisspixel/noter/actions/runs/30178217482).
-Stable open-handle identity, hard-link counts, streamed content observations,
-and final-link refusal are verified at commit `73413a8` in
-[GitHub Actions run 30178728784](https://github.com/blisspixel/noter/actions/runs/30178728784).
-The next local slice creates 128-bit random, exclusive, same-directory siblings
-and verifies ownership before cleanup. Production metadata and replacement
-operations and their crash fixtures are still in progress, so the GUI remains a
-prototype rather than a safe daily editor.
+fault-injected save protocol that never confuses a failed call with a proven
+non-commit. The line-ending, protocol, digest, and stable-observation slices are
+verified on Windows, macOS, and Linux in GitHub Actions runs
+[30177403255](https://github.com/blisspixel/noter/actions/runs/30177403255),
+[30177953025](https://github.com/blisspixel/noter/actions/runs/30177953025),
+[30178217482](https://github.com/blisspixel/noter/actions/runs/30178217482), and
+[30178728784](https://github.com/blisspixel/noter/actions/runs/30178728784).
+Private exclusive sibling creation and identity-safe cleanup are verified at
+commit `d44b1ec` in
+[GitHub Actions run 30179090177](https://github.com/blisspixel/noter/actions/runs/30179090177).
+
+The current local checkpoint adds the production storage adapter: stable-handle
+loading, metadata-only conflict tokens, Linux mode and extended-attribute
+preservation, macOS ACL and extended-attribute transfer, native Windows and
+Unix commit operations, exact post-commit reconciliation, and revision-aware
+Document Save and Save As. Final links are refused, read-only destinations are
+not changed implicitly, and hard-linked destinations require explicit
+confirmation. All 81 local workspace tests pass with 92.76 percent measured
+trust-kernel line coverage. The 339-package lockfile has a clean RustSec audit,
+and the stripped Windows release is 4.65 MiB. Cross-platform CI and the manual
+metadata and filesystem matrix still gate this M1 slice. Recovery, the complete
+dirty-document lifecycle, and the production UI also remain unfinished, so the
+GUI is still a prototype rather than a safe daily editor.
 
 A structured adversarial design review was performed on the initial planning corpus. The review and our responses are captured in [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
 
