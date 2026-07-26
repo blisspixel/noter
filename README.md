@@ -118,10 +118,10 @@ final-window metadata change leaves the committed file private and produces a
 warning instead of restoring stale metadata. Noter never copies unratified
 post-commit metadata. Unix extended-attribute capture, including macOS resource
 forks, is separately bounded to 4,096 entries and 64 MiB of aggregate names and
-values before any value allocation. macOS copies only the bounded snapshot
-values and uses its private carrier solely for the ACL. A failed post-commit
-file barrier is reported as reduced
-durability. The GUI now provides the explicit confirmation required to save one
+values before any value allocation. macOS replays only the bounded xattr values
+and a serialized immutable ACL snapshot through the destination descriptor.
+A failed post-commit file barrier is reported as reduced durability. The GUI
+now provides the explicit confirmation required to save one
 entry of a hard-linked file. Save As confirmation retains the exact target
 version observed before the dialog, so rebinding that path while the dialog is
 visible produces a conflict instead of replacing the newer entry.
@@ -136,8 +136,8 @@ The original paired mutation gate is verified at commit `3830cdd` in
 [GitHub Actions run 30184163737](https://github.com/blisspixel/noter/actions/runs/30184163737):
 Linux-common and Windows-full both completed with zero missed mutations and zero
 timeouts. The expanded gate now includes the native platform adapter and a
-macOS-specific job. Its current 640-mutation supported-platform union assigns
-556 to Linux, 476 to Windows, and 170 to macOS with no gap. Runner scopes
+macOS-specific job. Its current 639-mutation supported-platform union assigns
+556 to Linux, 476 to Windows, and 169 to macOS with no gap. Runner scopes
 intentionally overlap on common code, and the union deduplicates exact mutation
 descriptions. The historical 418-mutation
 Windows core is classified as 270 caught and 148 compiler-rejected. A new local

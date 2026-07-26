@@ -23,7 +23,7 @@ authoritative local Windows native-adapter command is target-filtered:
 ```text
 $env:CARGO_INCREMENTAL='1'
 $env:CARGO_TARGET_DIR='.agent/target-mutants-platform-windows'
-cargo +1.97.1 mutants -vV --in-place --colors never --workspace -p noter-platform --exclude-re '(required_metadata|unix|linux|macos)' -o .agent/mutants-platform-windows
+cargo +1.97.1 mutants -vV --in-place --colors never --workspace -p noter-platform --exclude-re '(required_metadata|unix|linux|[Mm]acos)' -o .agent/mutants-platform-windows
 ```
 
 The CI commands are intentionally different:
@@ -31,24 +31,28 @@ The CI commands are intentionally different:
 ```text
 Linux common scope:
 cargo mutants -vV --in-place --colors never --workspace \
-  --exclude-re '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|[Ww]indows|macos)'
+  --exclude-re '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|[Ww]indows|[Mm]acos)'
 
 Windows-applicable scope:
 cargo mutants -vV --in-place --colors never --workspace \
-  --exclude-re '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|macos)'
+  --exclude-re '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|[Mm]acos)'
 
 macOS native-adapter scope:
 cargo mutants -vV --in-place --colors never --workspace \
   -p noter-platform --exclude-re '([Ww]indows|linux)'
 ```
 
+The `[Mm]acos` form is intentional because cargo-mutants matches generated
+descriptions that can contain both lower-case function names and PascalCase type
+names.
+
 The [cargo-mutants CI guidance](https://mutants.rs/ci.html) recommends
 `--in-place` for a disposable CI checkout. The tool documents that
 [`--in-place` cannot be combined with `--jobs`](https://mutants.rs/in-place.html),
 so each CI gate runs serially and uploads `mutants.out` even on failure. The
 current Linux job covers 556 candidates, the Windows job covers 476, and the
-macOS adapter job covers 170. The scopes intentionally overlap on common code;
-deduplicating exact mutation descriptions produces all 640 configured
+macOS adapter job covers 169. The scopes intentionally overlap on common code;
+deduplicating exact mutation descriptions produces all 639 configured
 supported-platform candidates with no missing entry. The filters are runner
 assignments, not a claim that every exclusion is inactive. Linux assigns several
 active cross-platform decisions with Windows-specific branches to the Windows
@@ -162,9 +166,9 @@ window.
 A later safety checker found that macOS resource forks can be file-sized xattrs.
 The snapshot reader now queries every native xattr size before allocation,
 enforces a 4,096-entry and 64 MiB aggregate names-and-values budget, and retries
-size races only within a fixed bound. The macOS carrier stores only the ACL;
-resource forks and other xattrs are applied from the bounded snapshot rather
-than copied live.
+size races only within a fixed bound. macOS serializes the ACL before commit and
+replays it through the destination descriptor; resource forks and other xattrs
+are applied from the bounded snapshot rather than copied live.
 
 Mutation scope now includes the native platform adapter. The focused Windows
 adapter campaign caught all 40 compiling behavioral mutations, classified 18
@@ -185,7 +189,7 @@ target, then the entire 58-candidate campaign was repeated in one fresh target
 directory. The final single report is 40 caught and 18 genuine compiler
 rejections, and the infrastructure validator reports no recognized failure.
 
-The complete three-platform CI gate must still rerun the full 640-mutant union
+The complete three-platform CI gate must still rerun the full 639-mutant union
 on one immutable commit before this expanded result becomes hosted exact-commit
 evidence.
 

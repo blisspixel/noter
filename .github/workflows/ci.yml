@@ -118,7 +118,7 @@ jobs:
         run: >
           cargo mutants -vV --in-place --colors never --workspace
           --exclude-re
-          '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|[Ww]indows|macos)'
+          '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|[Ww]indows|[Mm]acos)'
       - name: Run Windows trust-kernel mutation tests
         if: runner.os == 'Windows'
         env:
@@ -126,7 +126,7 @@ jobs:
         run: >
           cargo mutants -vV --in-place --colors never --workspace
           --exclude-re
-          '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|macos)'
+          '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|[Mm]acos)'
       - name: Run macOS platform mutation tests
         if: runner.os == 'macOS'
         env:

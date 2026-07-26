@@ -229,10 +229,11 @@ of the GUI.
   [GitHub Actions run 30179090177](https://github.com/blisspixel/noter/actions/runs/30179090177).
 - **Implemented locally:** Linux copies attainable ownership, exact mode, visible
   extended attributes, POSIX ACL, SELinux, and capability metadata, then verifies
-  the result. macOS uses `fcopyfile` only for ACLs and applies extended attributes
-  from the bounded immutable snapshot without restoring the old modification
-  time. Windows deliberately delegates the
-  documented metadata merge to `ReplaceFileW` with ignore flags disabled. Unix
+  the result. macOS serializes the ACL before commit, replays it through the
+  destination descriptor, and applies extended attributes from the bounded
+  immutable snapshot without restoring the old modification time. Windows
+  deliberately delegates the documented metadata merge to `ReplaceFileW` with
+  ignore flags disabled. Unix
   staging remains mode 0600 through atomic exchange. Required metadata is
   captured into an immutable pre-commit snapshot. After exchange, the displaced
   original's stable ownership, mode, ACL, and visible extended attributes must
@@ -240,9 +241,9 @@ of the GUI.
   handle. A mismatch or finalization failure retains private access and is
   reported as a committed warning instead of exposing staged bytes or claiming
   the commit did not happen. Xattr capture refuses more than 4,096 entries or 64
-  MiB of aggregate names and values before allocation. The macOS carrier stores
-  only the ACL, while bounded snapshot values preserve resource forks and other
-  xattrs.
+  MiB of aggregate names and values before allocation. The macOS ACL snapshot
+  uses no temporary pathname, while bounded snapshot values preserve resource
+  forks and other xattrs.
 - **Implemented locally:** existing-file commits use `ReplaceFileW` with a random
   backup on Windows and a parent-anchored atomic exchange on Unix. The displaced
   Unix destination remains recoverable because portable Unix cleanup cannot
@@ -316,8 +317,8 @@ of the GUI.
   run exposed four survivors; additive focused tests and isolated reruns
   classify the composite local result as 270 caught and 148 unviable, with none
   missed or timed out. Mutation enforcement now includes the native platform
-  adapter and a macOS job. The 640-mutant supported-platform union assigns 556
-  to Linux, 476 to Windows, and 170 to macOS with no set-union gap. Runner scopes
+  adapter and a macOS job. The 639-mutant supported-platform union assigns 556
+  to Linux, 476 to Windows, and 169 to macOS with no set-union gap. Runner scopes
   overlap intentionally on common code. A focused local pass classifies all 58
   Windows native-adapter mutants as 40 caught and 18 unviable, with no miss,
   timeout, or infrastructure failure. The checked-in

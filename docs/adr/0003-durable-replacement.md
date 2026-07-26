@@ -119,7 +119,7 @@ durability policy.
 | Windows, absent file | `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`, without replace or cross-volume copy flags | Protected DACL grants full control only to object owner and SYSTEM; no parent entries are inherited | Refuse a newly appeared destination; report the barrier strength demonstrated by platform tests |
 | Linux, existing file | Same-directory atomic exchange; retain the displaced destination because portable unlink cannot target a verified handle | Capture and revalidate an immutable ownership, mode, ACL, extended-attribute, security-context, and capability snapshot before commit; bound xattrs by count and aggregate bytes before allocation; keep staging mode 0600 through exchange; verify the displaced original and apply the snapshot only if its stable metadata payload still matches; a failure is committed with a warning | `fsync` sibling, exchange, finalize and resync metadata, then `fsync` opened parent directory |
 | Linux, absent file | No-replace rename where supported, otherwise create a no-overwrite hard link and retain the temporary name | Owner-only mode 0600 | Same file and parent barriers as existing replacement; retained fallback names are explicit cleanup warnings |
-| macOS, existing file | Same-directory atomic exchange through an opened parent; retain the displaced destination because portable unlink cannot target a verified handle | Capture and verify a private ACL carrier plus ownership, mode, and a count-and-byte-bounded immutable xattr snapshot; resource forks use the same budget and are never copied live into the carrier; keep staging mode 0600 through exchange; verify the displaced original and apply the snapshot only if its stable metadata payload still matches; saving intentionally advances modification time | Request `F_FULLFSYNC` for the sibling, exchange, finalize and resync metadata, then synchronize the parent where supported |
+| macOS, existing file | Same-directory atomic exchange through an opened parent; retain the displaced destination because portable unlink cannot target a verified handle | Serialize the ACL plus ownership, mode, and a count-and-byte-bounded immutable xattr snapshot before commit; replay the ACL through the destination descriptor with no temporary pathname; resource forks use the same xattr budget; keep staging mode 0600 through exchange; verify the displaced original and apply the snapshot only if its stable metadata payload still matches; saving intentionally advances modification time | Request `F_FULLFSYNC` for the sibling, exchange, finalize and resync metadata, then synchronize the parent where supported |
 | macOS, absent file | No-replace rename where supported, otherwise create a no-overwrite hard link and retain the temporary name | Owner-only mode 0600 | Same barriers as existing replacement; retained fallback names are explicit cleanup warnings |
 | Network, cloud, removable, or unknown filesystem | Use the platform path only when same-filesystem commit prerequisites hold | Never silently discard known metadata | Return `BestEffort` or `FileSynced` according to demonstrated capability; never advertise full durability from filesystem name alone |
 
@@ -175,8 +175,8 @@ library remains `unsafe_code = "forbid"`.
   compares stable ownership, mode, ACL, and extended attributes with the
   pre-commit snapshot. The snapshot is applied only on an exact match.
   Xattr capture refuses more than 4,096 entries or 64 MiB of aggregate names and
-  values before value allocation. macOS keeps only the ACL in its private
-  carrier and applies resource forks from the bounded snapshot.
+  values before value allocation. macOS keeps the serialized ACL in memory and
+  applies resource forks from the bounded snapshot.
 - Windows cleanup opens the final entry without following reparse points or
   sharing writes, verifies the exact object, and marks that handle for deletion.
   Unix preserves the object because its portable unlink APIs remain
@@ -211,8 +211,8 @@ BLAKE3-256 fingerprints, stable-handle loading, metadata change tokens, and the
 then-current `FilesystemStorage` adapter are verified at commit `c76515c` in
 [GitHub Actions run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267).
 That historical checkpoint used live post-commit Unix metadata transfer. The
-current unhosted repair replaces it with an immutable pre-commit Linux snapshot
-and macOS metadata carrier, verifies the displaced payload against that
+current unhosted repair replaces it with immutable pre-commit Linux and macOS
+metadata snapshots, verifies the displaced payload against that
 snapshot after exchange, refuses stale restoration, and bounds xattr and
 resource-fork capture before allocation. Local Windows and
 native Linux tests plus macOS cross-target lint pass; an exact-commit hosted

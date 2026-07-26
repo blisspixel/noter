@@ -64,13 +64,13 @@ evidence above, and it is not yet a milestone sign-off.
 | Enforced development threshold | Pass, at least 90 percent |
 | Windows-applicable trust-kernel mutation testing | 418 total, 270 caught, 148 unviable, 0 missed, 0 timed out |
 | Windows native-adapter mutation testing | 58 total, 40 caught, 18 unviable, 0 missed, 0 timed out |
-| Expanded supported-platform mutation union | 640 total: Linux 556, Windows 476, macOS 170, no union gap; exact-commit CI pending |
+| Expanded supported-platform mutation union | 639 total: Linux 556, Windows 476, macOS 169, no union gap; exact-commit CI pending |
 | Rustdoc with warnings denied | Pass |
 | Local Markdown link check | Pass |
 | Linux full-crate cross-target Clippy | Pass |
 | macOS platform-crate cross-target Clippy | Pass |
 | Release binary | 4,953,088 bytes, 4.72 MiB |
-| Release SHA-256 | `69e23950373fe9833327a1d09072c65043c45103e3b27c558a5ffb72880d7a2f` |
+| Release SHA-256 | `78e2b19a274ab3b3c306fc9fa9e7de40c3ed6dfc64db029d20db739af7b63be3` |
 | Resolved Cargo packages across all targets | 339 |
 | RustSec audit | Pass, no known vulnerability reported |
 | Native Windows, macOS, and Linux CI | Pass at `c76515c`, [run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267) |

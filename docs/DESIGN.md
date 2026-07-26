@@ -416,9 +416,11 @@ access state reached, never a false not-committed result.
 Extended-attribute capture is limited to 4,096 entries and 64 MiB of aggregate
 names and values. Native size queries enforce the limit before value allocation
 and retry only within a fixed bound when metadata changes. macOS resource forks
-are covered by the same xattr budget. Its private carrier stores only the ACL;
-resource-fork and other xattr values are applied from the bounded immutable
-snapshot rather than copied live.
+are covered by the same xattr budget. The ACL is serialized into the immutable
+snapshot before commit, reconstructed after the exchange, applied through the
+destination descriptor, and re-serialized for exact verification. No temporary
+ACL pathname is exposed. Resource-fork and other xattr values are applied from
+the bounded immutable snapshot rather than copied live.
 
 No implementation may claim durable atomic save while these cases are silently
 undefined.
@@ -804,7 +806,7 @@ credentials exist, and cargo-dist artifacts verified on clean systems.
 | F15 | Platform reports failure after changing replacement state | 10 | explicit unknown-commit outcome, backup-aware reconciliation, recovery retention | M1 |
 | F16 | Atomic replacement silently drops permissions or extended metadata | 9 | platform metadata fixtures and pre-commit refusal on preservation failure | M1 |
 | F17 | Save replaces a symlink entry or surprises other hard links | 9 | link identity revalidation, Save As refusal, hard-link confirmation | M1/M3 |
-| F18 | Resource-fork or extended-attribute metadata exhausts memory or temporary storage | 7 | preallocation byte and count limits, bounded retries, ACL-only macOS carrier | M1 |
+| F18 | Resource-fork or extended-attribute metadata exhausts memory or temporary storage | 7 | preallocation byte and count limits, bounded retries, pathless serialized macOS ACL snapshot | M1 |
 
 The FMEA is updated whenever a test, incident, dependency, or platform behavior
 reveals a new path. Critical and high rows require executable evidence or a

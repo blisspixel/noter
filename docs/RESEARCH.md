@@ -369,12 +369,12 @@ hard-link, mode, ownership, and synchronization operations. The Linux and macOS
 metadata adapters use `xattr` 1.6, the one new package in the 339-package lock
 graph.
 
-On macOS, descriptor-based `fcopyfile` copies only the captured ACL from an
-ACL-only carrier after the owner-only exchange commits. Noter requests
-`COPYFILE_ACL`, applies owner and mode separately, and replays bounded extended
-attribute values from the immutable pre-commit snapshot. It intentionally omits
-`COPYFILE_STAT` so a successful save advances modification time. See the
-[Xcode `copyfile(3)` manual](https://keith.github.io/xcode-man-pages/copyfile.3.html).
+On macOS, `acl_to_text` serializes the source ACL into the immutable pre-commit
+snapshot. After the owner-only exchange commits, `acl_from_text` reconstructs
+that ACL and `acl_set_fd` applies it through the destination descriptor. Noter
+applies owner and mode separately and replays bounded extended-attribute values
+from the same snapshot, so a successful save advances modification time. See
+the [Xcode `acl(3)` manual](https://keith.github.io/xcode-man-pages/acl.3.html).
 The sibling receives `F_FULLFSYNC` where supported and falls back to `sync_all`
 only when the stronger operation is reported unsupported or invalid.
 

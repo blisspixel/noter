@@ -429,8 +429,6 @@ mod imp {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         attributes: Vec<ExtendedAttribute>,
         #[cfg(target_os = "macos")]
-        acl_carrier: File,
-        #[cfg(target_os = "macos")]
         acl_text: Vec<u8>,
     }
 
@@ -462,14 +460,10 @@ mod imp {
         unix_ensure_metadata_source_matches(source, stamp, expected_source, "before capture")?;
         let attributes = unix_read_native_xattrs(source)?;
         let acl_text = read_macos_acl_text(source)?;
-        let acl_carrier = tempfile::tempfile()?;
-        copy_macos_acl(source, &acl_carrier)?;
-        verify_macos_acl(&acl_text, &acl_carrier)?;
         unix_ensure_metadata_source_matches(source, stamp, expected_source, "during capture")?;
         Ok(RequiredMetadata {
             stamp,
             attributes,
-            acl_carrier,
             acl_text,
         })
     }
@@ -519,7 +513,7 @@ mod imp {
     #[cfg(target_os = "macos")]
     fn apply_macos_metadata(metadata: &RequiredMetadata, destination: &File) -> io::Result<()> {
         unix_apply_ownership(metadata.stamp, destination)?;
-        copy_macos_acl(&metadata.acl_carrier, destination)?;
+        apply_macos_acl_text(&metadata.acl_text, destination)?;
         unix_apply_native_xattrs(&metadata.attributes, destination)?;
         unix_apply_mode(metadata.stamp.mode, destination)?;
         unix_verify_native_xattrs(&metadata.attributes, destination)?;
@@ -1139,20 +1133,38 @@ mod imp {
 
     #[cfg(target_os = "macos")]
     #[allow(unsafe_code)]
-    fn copy_macos_acl(source: &File, destination: &File) -> io::Result<()> {
-        let flags = libc::COPYFILE_ACL;
-        // SAFETY: both descriptors come from live borrowed `File` values, the
-        // state pointer is explicitly allowed to be null, and the flag requests
-        // ACL metadata only, so file offsets, content, and xattrs are not copied.
-        if unsafe {
-            libc::fcopyfile(
-                source.as_raw_fd(),
-                destination.as_raw_fd(),
-                std::ptr::null_mut(),
-                flags,
+    fn apply_macos_acl_text(text: &[u8], destination: &File) -> io::Result<()> {
+        type Acl = *mut libc::c_void;
+
+        unsafe extern "C" {
+            fn acl_from_text(buffer: *const libc::c_char) -> Acl;
+            fn acl_set_fd(fd: libc::c_int, acl: Acl) -> libc::c_int;
+            fn acl_free(object: *mut libc::c_void) -> libc::c_int;
+        }
+
+        let text = CString::new(text).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "captured access control list contains an interior NUL byte",
             )
-        } < 0
-        {
+        })?;
+        // SAFETY: `text` is a live NUL-terminated string. The returned ACL is
+        // either null with an OS error or an allocation released below.
+        let acl = unsafe { acl_from_text(text.as_ptr()) };
+        if acl.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: the descriptor and parsed ACL remain live for the call. The
+        // operation changes only the destination's descriptor-resolved ACL.
+        let set_result = unsafe { acl_set_fd(destination.as_raw_fd(), acl) };
+        let set_error = (set_result != 0).then(io::Error::last_os_error);
+        // SAFETY: `acl` is the live allocation returned above and is freed once.
+        let free_result = unsafe { acl_free(acl.cast()) };
+        if let Some(error) = set_error {
+            return Err(error);
+        }
+        if free_result != 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())

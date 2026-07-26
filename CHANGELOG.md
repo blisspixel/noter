@@ -30,8 +30,9 @@ release, so current work remains under Unreleased.
   verify the displaced original after atomic exchange, require its stable
   metadata payload to still match the snapshot, and never apply unratified or
   stale metadata to the committed file.
-- Keep macOS resource-fork values out of the ACL carrier and apply only the
-  already-bounded immutable xattr snapshot.
+- Serialize the macOS ACL into the immutable metadata snapshot and replay it
+  through the destination descriptor, eliminating temporary ACL paths while
+  keeping resource forks and other xattrs inside the bounded snapshot.
 - Surface exact save cleanup and durability warnings instead of a generic
   success warning.
 - Process same-frame editor input before file commands and native close checks.
@@ -50,7 +51,7 @@ release, so current work remains under Unreleased.
 - Keep local agent state and runtime logs in ignored dedicated directories.
 - Remove obsolete tracked agent metadata and commented-out build or CI plans.
 - Expand mutation enforcement through the native platform adapter with a macOS
-  job and a 640-decision supported-platform union with no gap. The new local
+  job and a 639-decision supported-platform union with no gap. The new local
   58-mutant Windows adapter pass catches all 40 viable mutations, including
   descriptor deallocation, with 18 genuine compiler rejections and no miss,
   timeout, or infrastructure failure.

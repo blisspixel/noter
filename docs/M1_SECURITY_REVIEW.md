@@ -79,9 +79,10 @@ bypass the ceiling. Errors are typed, stage-specific, and path-redacted.
   limits the snapshot to 4,096 entries and 64 MiB of aggregate names and values,
   and retries size races only three times. This closes a later checker finding
   where a small macOS data fork with a file-sized resource fork could bypass the
-  document ceiling, exhaust memory or temporary storage, or stall Save. The
-  macOS private carrier now stores only the ACL; resource forks and other xattrs
-  are applied from the already-bounded immutable snapshot.
+  document ceiling, exhaust memory or temporary storage, or stall Save. macOS
+  now serializes the ACL into the immutable snapshot and replays it through the
+  destination descriptor; resource forks and other xattrs use the bounded
+  snapshot.
 - A failed Unix post-commit file barrier now downgrades the result to Best Effort
   and remains distinct from parent-sync and cleanup warnings.
 - Save warnings retain every cleanup and durability detail in the GUI. Save and
@@ -140,7 +141,7 @@ focused tests and isolated reruns produce a composite classification of 270
 caught, 148 unviable, zero missed, and zero timed out. The expanded native
 adapter scope adds a clean local 57-mutant Windows pass with 39 caught and 18
 unviable. The descriptor-deallocation repair expands this to a clean 58-mutant
-Windows pass with 40 caught and 18 unviable. Its three-platform 640-mutant union
-assigns 556 candidates to Linux, 476 to Windows, and 170 to macOS with no set
+Windows pass with 40 caught and 18 unviable. Its three-platform 639-mutant union
+assigns 556 candidates to Linux, 476 to Windows, and 169 to macOS with no set
 union gap. It requires a fresh exact-commit
 hosted campaign before this checkpoint becomes complete CI evidence.
