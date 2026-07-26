@@ -170,9 +170,11 @@ library remains `unsafe_code = "forbid"`.
 The pure fault-injected protocol is verified across the CI matrix at commit
 `0edc342`, and the private-sibling slice is verified at commit `d44b1ec`.
 BLAKE3-256 fingerprints, stable-handle loading, metadata change tokens, and the
-complete `FilesystemStorage` adapter are implemented locally. The adapter copies
-Linux and macOS metadata, uses native Windows and Unix commit primitives,
-reconciles documented partial states, verifies exact committed identity and
-bytes, reports cleanup and durability independently, and is integrated with the
-sealed revision-aware Document API. The native CI run, manual platform and weak
-filesystem matrix, and mutation evidence remain required before M1 is Verified.
+complete `FilesystemStorage` adapter are verified at commit `c76515c` in
+[GitHub Actions run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267).
+The adapter copies Linux and macOS metadata, uses native Windows and Unix commit
+primitives, reconciles documented partial states, verifies exact committed
+identity and bytes, reports cleanup and durability independently, and is
+integrated with the sealed revision-aware Document API. The manual platform and
+weak-filesystem matrix plus mutation evidence remain required before M1 is
+Verified.

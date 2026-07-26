@@ -68,7 +68,7 @@ evidence above, and it is not yet a milestone sign-off.
 | Release SHA-256 | `82B885A7F21FA79DE598A0294DC9517503EB91608C7A34363FE3D6CBE33F304D` |
 | Resolved Cargo packages across all targets | 339 |
 | RustSec audit | Pass, no known vulnerability reported |
-| Native Windows, macOS, and Linux CI | Pending for this worktree |
+| Native Windows, macOS, and Linux CI | Pass at `c76515c`, [run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267) |
 
 The 81 tests comprise 71 primary-crate unit tests, one 19-case golden-corpus
 test, three generated property suites with 512 cases each, and six platform-crate
@@ -82,6 +82,6 @@ reconciliation, stable-handle loading, and revision-aware saves. The lock graph
 grew by 14 packages from M0: eight test-only property packages, four BLAKE3
 packages, one internal workspace member, and one Linux-only `xattr` package.
 
-The next evidence update must attach native CI results, mutation results, manual
-platform metadata fixtures, weaker-filesystem observations, and reproducible
-latency and memory measurements. Until then M1 remains In Progress.
+The next evidence update must attach mutation results, manual platform metadata
+fixtures, weaker-filesystem observations, and reproducible latency and memory
+measurements. Until then M1 remains In Progress.

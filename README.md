@@ -86,18 +86,21 @@ Private exclusive sibling creation and identity-safe cleanup are verified at
 commit `d44b1ec` in
 [GitHub Actions run 30179090177](https://github.com/blisspixel/noter/actions/runs/30179090177).
 
-The current local checkpoint adds the production storage adapter: stable-handle
-loading, metadata-only conflict tokens, Linux mode and extended-attribute
-preservation, macOS ACL and extended-attribute transfer, native Windows and
-Unix commit operations, exact post-commit reconciliation, and revision-aware
-Document Save and Save As. Final links are refused, read-only destinations are
-not changed implicitly, and hard-linked destinations require explicit
-confirmation. All 81 local workspace tests pass with 92.76 percent measured
-trust-kernel line coverage. The 339-package lockfile has a clean RustSec audit,
-and the stripped Windows release is 4.65 MiB. Cross-platform CI and the manual
-metadata and filesystem matrix still gate this M1 slice. Recovery, the complete
-dirty-document lifecycle, and the production UI also remain unfinished, so the
-GUI is still a prototype rather than a safe daily editor.
+The production storage adapter checkpoint adds stable-handle loading,
+metadata-only conflict tokens, Linux mode and extended-attribute preservation,
+macOS ACL and extended-attribute transfer, native Windows and Unix commit
+operations, exact post-commit reconciliation, and revision-aware Document Save
+and Save As. Final links are refused, read-only destinations are not changed
+implicitly, and hard-linked destinations require explicit confirmation. Its
+evidence commit `c76515c` passed all Windows, macOS, Linux, strict lint, rustdoc,
+documentation, and 90 percent coverage jobs in
+[GitHub Actions run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267).
+All 81 local workspace tests pass with 92.76 percent measured trust-kernel line
+coverage. The 339-package lockfile has a clean RustSec audit, and the stripped
+Windows release is 4.65 MiB. The manual metadata and filesystem matrix, mutation
+testing, and reproducible benchmarks still gate this M1 slice. Recovery, the
+complete dirty-document lifecycle, and the production UI also remain unfinished,
+so the GUI is still a prototype rather than a safe daily editor.
 
 A structured adversarial design review was performed on the initial planning corpus. The review and our responses are captured in [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
 

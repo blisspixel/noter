@@ -246,6 +246,13 @@ of the GUI.
   Clippy, and rustdoc pass. Measured trust-kernel line coverage is 92.76 percent;
   CI enforces the M1 floor of 90 percent. Linux full-crate and macOS platform-crate
   cross-target Clippy also pass from the Windows reference environment.
+- **Verified in CI:** the complete production-adapter evidence commit `c76515c`
+  passed Windows, macOS, Linux, strict workspace lint, rustdoc, documentation,
+  and the 90 percent coverage gate in
+  [GitHub Actions run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267).
+  The hosted Windows run also verifies that native file-attribute changes
+  invalidate an observation on volumes that do not advance `ChangeTime` for the
+  update.
 - **Measured:** the property harness adds eight test-only lock entries and the
   digest adds four runtime lock entries, bringing the cross-target graph to
   337 packages. The internal platform workspace member brings the graph to
@@ -254,9 +261,9 @@ of the GUI.
   `xattr` adds one package, for 339 total. The reachable adapter produces a
   stripped Windows release of 4,871,680 bytes, or 4.65 MiB. RustSec reports no
   known vulnerability in the lockfile.
-- **Next:** obtain green native CI for this complete adapter slice, execute the
-  manual NTFS, Linux, macOS, and weaker-filesystem fixtures, then run mutation
-  testing before marking M1 Verified.
+- **Next:** execute the manual NTFS, Linux, macOS, and weaker-filesystem fixtures,
+  run mutation testing, and record reproducible latency and memory measurements
+  before marking M1 Verified.
 
 **Work:**
 
