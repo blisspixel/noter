@@ -2,16 +2,50 @@ use std::path::PathBuf;
 
 use eframe::egui;
 use noter::core::document::{Document, PreparedSaveAs};
+use noter::core::markdown::analyze_markdown;
 use noter::core::save::SaveOutcome;
 use noter::error::NoterError;
+
+use crate::markdown_ui::MarkdownEditor;
+use crate::theme::{self, AppTheme, THEME_STORAGE_KEY};
 
 const DIRTY_INTERLOCK_MESSAGE: &str =
     "Unsaved changes are protected. Save the document, then retry this action.";
 const EDITOR_ID_SALT: &str = "noter-document-editor";
-const ABOUT_SUMMARY: &str = "A focused, local-only plain-text editor built around data safety.";
-const ABOUT_MARKDOWN_STATUS: &str = "Markdown assistance and explicit formatting are planned for opt-in v0.2. They are not available in the current prototype.";
-const ABOUT_PRIVACY: &str = "Noter has no telemetry, accounts, or in-process network client.";
+const ABOUT_SUMMARY: &str = "A focused editor for plain text and Markdown files.";
+const ABOUT_MARKDOWN_STATUS: &str = "Markdown Mode is under active development. This build supports formatted reading, direct block editing, and core formatting actions while keeping Markdown source authoritative.";
+const ABOUT_PRIVACY: &str = "Noter has no accounts, telemetry, or background network activity.";
 const ABOUT_LINK_BEHAVIOR: &str = "The project link opens in your default browser.";
+const UPDATE_STATUS: &str = "No Noter release has been published yet. This source build cannot safely self-update without verified release artifacts.";
+const RELEASES_URL: &str = "https://github.com/blisspixel/noter/releases";
+const MENU_BAR_HEIGHT: f32 = 30.0;
+const EDITOR_TOOLBAR_HEIGHT: f32 = 40.0;
+const STATUS_BAR_HEIGHT: f32 = 26.0;
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum DocumentView {
+    #[default]
+    Text,
+    Markdown,
+}
+
+impl DocumentView {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Text => "Text",
+            Self::Markdown => "Markdown",
+        }
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct LaunchOptions {
+    pub initial_path: Option<PathBuf>,
+    pub theme: Option<AppTheme>,
+    pub view: Option<DocumentView>,
+    pub show_updates: bool,
+    pub screenshot_path: Option<PathBuf>,
+}
 
 #[derive(Clone, Copy)]
 enum FileCommand {
@@ -41,39 +75,87 @@ impl PendingHardLinkSave {
     }
 }
 
-#[derive(Default)]
 pub struct NoterApp {
     text: String,
     document: Document,
+    view: DocumentView,
+    theme: AppTheme,
+    markdown_editor: MarkdownEditor,
+    document_editor_serial: u64,
     error_msg: Option<String>,
     about_open: bool,
+    updates_open: bool,
     pending_hard_link_save: Option<PendingHardLinkSave>,
+    #[cfg(feature = "screenshot-qa")]
+    screenshot: Option<ScreenshotCapture>,
+}
+
+impl Default for NoterApp {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            document: Document::new(),
+            view: DocumentView::Text,
+            theme: AppTheme::System,
+            markdown_editor: MarkdownEditor::default(),
+            document_editor_serial: 0,
+            error_msg: None,
+            about_open: false,
+            updates_open: false,
+            pending_hard_link_save: None,
+            #[cfg(feature = "screenshot-qa")]
+            screenshot: None,
+        }
+    }
 }
 
 impl NoterApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut style = (*cc.egui_ctx.global_style()).clone();
+    pub fn new(cc: &eframe::CreationContext<'_>, options: LaunchOptions) -> Self {
+        theme::configure_styles(&cc.egui_ctx);
+        let selected_theme = options
+            .theme
+            .unwrap_or_else(|| AppTheme::from_storage(cc.storage));
+        selected_theme.apply(&cc.egui_ctx);
 
-        style.visuals.panel_fill = egui::Color32::from_rgb(24, 26, 31);
-        style.visuals.faint_bg_color = egui::Color32::from_rgb(32, 35, 42);
-        style.visuals.extreme_bg_color = egui::Color32::from_rgb(18, 20, 24);
-
-        for (text_style, font_id) in &mut style.text_styles {
-            if *text_style == egui::TextStyle::Body || *text_style == egui::TextStyle::Button {
-                font_id.size = 14.0;
-            } else if *text_style == egui::TextStyle::Monospace {
-                font_id.size = 15.0;
-            } else if *text_style == egui::TextStyle::Heading {
-                font_id.size = 20.0;
-            }
+        let mut app = Self {
+            theme: selected_theme,
+            updates_open: options.show_updates,
+            ..Self::default()
+        };
+        if let Some(path) = options.initial_path {
+            app.open_path(&path, options.view);
+        } else if let Some(view) = options.view {
+            app.view = view;
         }
 
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(6.0, 4.0);
+        #[cfg(feature = "screenshot-qa")]
+        if let Some(path) = options.screenshot_path {
+            app.screenshot = Some(ScreenshotCapture::new(path));
+        }
+        #[cfg(not(feature = "screenshot-qa"))]
+        if options.screenshot_path.is_some() {
+            app.error_msg = Some(
+                "Screenshot capture requires a build with the `screenshot-qa` feature.".to_owned(),
+            );
+        }
 
-        cc.egui_ctx.set_global_style(style);
+        app
+    }
 
-        Self::default()
+    fn open_path(&mut self, path: &std::path::Path, requested_view: Option<DocumentView>) {
+        match Document::from_path(path) {
+            Ok(document) => {
+                self.text = String::from(document.rope());
+                self.document = document;
+                self.view = requested_view.unwrap_or_else(|| preferred_view_for_path(path));
+                self.advance_document_editor();
+                self.markdown_editor.reset();
+                self.error_msg = None;
+            }
+            Err(error) => {
+                self.error_msg = Some(format!("Failed to open file: {error}"));
+            }
+        }
     }
 
     fn do_open(&mut self) {
@@ -81,16 +163,7 @@ impl NoterApp {
             return;
         }
         if let Some(path) = rfd::FileDialog::new().pick_file() {
-            match Document::from_path(&path) {
-                Ok(doc) => {
-                    self.text = String::from(doc.rope());
-                    self.document = doc;
-                    self.error_msg = None;
-                }
-                Err(e) => {
-                    self.error_msg = Some(format!("Failed to open file: {e}"));
-                }
-            }
+            self.open_path(&path, None);
         }
     }
 
@@ -207,6 +280,9 @@ impl NoterApp {
         }
         self.text.clear();
         self.document = Document::new();
+        self.view = DocumentView::Text;
+        self.advance_document_editor();
+        self.markdown_editor.reset();
         self.error_msg = None;
         true
     }
@@ -284,14 +360,18 @@ impl NoterApp {
     }
 
     fn show_menu(&mut self, ui: &mut egui::Ui, command: &mut Option<FileCommand>) {
-        egui::Panel::top("menu_bar").show_inside(ui, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("File", |ui| Self::show_file_menu(ui, command));
-                ui.menu_button("Edit", Self::show_edit_menu);
-                ui.menu_button("View", Self::show_view_menu);
-                ui.menu_button("Help", |ui| self.show_help_menu(ui));
+        egui::Panel::top("menu_bar")
+            .exact_size(MENU_BAR_HEIGHT)
+            .show(ui, |ui| {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    egui::MenuBar::new().ui(ui, |ui| {
+                        ui.menu_button("File", |ui| Self::show_file_menu(ui, command));
+                        ui.menu_button("View", |ui| self.show_view_menu(ui));
+                        ui.menu_button("Help", |ui| self.show_help_menu(ui));
+                    });
+                });
             });
-        });
     }
 
     fn show_file_menu(ui: &mut egui::Ui, command: &mut Option<FileCommand>) {
@@ -326,55 +406,40 @@ impl NoterApp {
         ui.separator();
         if ui.button("Quit").clicked() {
             command.get_or_insert(FileCommand::Quit);
+            ui.close();
         }
     }
 
-    fn show_edit_menu(ui: &mut egui::Ui) {
-        ui.add_enabled(
-            false,
-            egui::Button::new("Undo (planned)").shortcut_text("Ctrl+Z"),
-        );
-        ui.add_enabled(
-            false,
-            egui::Button::new("Redo (planned)").shortcut_text("Ctrl+Y"),
-        );
-        ui.separator();
-        for (label, shortcut) in [("Cut", "Ctrl+X"), ("Copy", "Ctrl+C"), ("Paste", "Ctrl+V")] {
-            ui.add_enabled(
-                false,
-                egui::Button::new(format!("{label} (planned)")).shortcut_text(shortcut),
-            );
+    fn show_view_menu(&mut self, ui: &mut egui::Ui) {
+        ui.label("Document mode");
+        for view in [DocumentView::Text, DocumentView::Markdown] {
+            if ui
+                .selectable_value(&mut self.view, view, view.label())
+                .clicked()
+            {
+                self.markdown_editor.reset();
+                ui.close();
+            }
         }
         ui.separator();
-        for (label, shortcut) in [("Find", "Ctrl+F"), ("Replace", "Ctrl+H")] {
-            ui.add_enabled(
-                false,
-                egui::Button::new(format!("{label} (planned)")).shortcut_text(shortcut),
-            );
+        ui.label("Theme");
+        for theme in AppTheme::ALL {
+            if ui
+                .selectable_value(&mut self.theme, theme, theme.label())
+                .clicked()
+            {
+                self.theme.apply(ui.ctx());
+                ui.close();
+            }
         }
-    }
-
-    fn show_view_menu(ui: &mut egui::Ui) {
-        ui.add_enabled(false, egui::Button::new("Word Wrap (planned)"));
-        ui.separator();
-        for (label, shortcut) in [
-            ("Zoom In", "Ctrl++"),
-            ("Zoom Out", "Ctrl+-"),
-            ("Restore Default Zoom", "Ctrl+0"),
-        ] {
-            ui.add_enabled(
-                false,
-                egui::Button::new(format!("{label} (planned)")).shortcut_text(shortcut),
-            );
-        }
-        ui.separator();
-        ui.add_enabled(
-            false,
-            egui::Button::new("Markdown Assist (planned for v0.2)"),
-        );
     }
 
     fn show_help_menu(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Check for Updates...").clicked() {
+            self.open_updates();
+            ui.close();
+        }
+        ui.separator();
         if ui.button("About Noter").clicked() {
             self.open_about();
             ui.close();
@@ -383,6 +448,10 @@ impl NoterApp {
 
     const fn open_about(&mut self) {
         self.about_open = true;
+    }
+
+    const fn open_updates(&mut self) {
+        self.updates_open = true;
     }
 
     fn show_about(&mut self, ctx: &egui::Context) {
@@ -411,6 +480,31 @@ impl NoterApp {
                 }
             });
         self.about_open = open && !close;
+    }
+
+    fn show_updates(&mut self, ctx: &egui::Context) {
+        if !self.updates_open {
+            return;
+        }
+
+        let mut open = self.updates_open;
+        let mut close = false;
+        egui::Window::new("Noter Updates")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.heading("Update status");
+                ui.label(UPDATE_STATUS);
+                ui.separator();
+                ui.label("The releases page opens only when you select this link.");
+                ui.hyperlink_to("Open Noter releases", RELEASES_URL);
+                ui.separator();
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        self.updates_open = open && !close;
     }
 
     fn show_hard_link_confirmation(&mut self, ctx: &egui::Context) {
@@ -451,7 +545,7 @@ impl NoterApp {
     fn show_error(&mut self, ui: &mut egui::Ui) {
         let mut dismiss = false;
         if let Some(error) = self.error_msg.as_deref() {
-            egui::Panel::top("error_bar").show_inside(ui, |ui| {
+            egui::Panel::top("error_bar").show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.colored_label(egui::Color32::RED, format!("Error: {error}"));
                     dismiss = ui.button("Dismiss").clicked();
@@ -464,25 +558,84 @@ impl NoterApp {
     }
 
     fn show_status(&self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("status_bar").show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                let document_label = self
-                    .document
-                    .path()
-                    .map_or_else(|| "Untitled".to_owned(), |path| path.display().to_string());
-                ui.label(document_label);
+        egui::Panel::bottom("status_bar")
+            .exact_size(STATUS_BAR_HEIGHT)
+            .show(ui, |ui| {
+                ui.style_mut().override_text_style = Some(egui::TextStyle::Small);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let document_label = self.document.path().map_or_else(
+                        || "Untitled".to_owned(),
+                        |path| {
+                            path.file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned()
+                        },
+                    );
+                    let document_response = ui.label(document_label);
+                    if let Some(path) = self.document.path() {
+                        document_response.on_hover_text(path.display().to_string());
+                    }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(self.document.line_endings().status_label());
-                    ui.separator();
-                    ui.label(self.document.encoding().status_label());
-                    if self.document.bom().is_present() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.view == DocumentView::Markdown {
+                            let issue_count = analyze_markdown(&self.text).len();
+                            let label = if issue_count == 0 {
+                                "Markdown checks: clean".to_owned()
+                            } else {
+                                format!("Markdown checks: {issue_count}")
+                            };
+                            ui.label(label);
+                            ui.separator();
+                        }
+                        ui.label(format!("{} Mode", self.view.label()));
                         ui.separator();
-                        ui.label("BOM");
+                        ui.label(self.document.line_endings().status_label());
+                        ui.separator();
+                        ui.label(self.document.encoding().status_label());
+                        if self.document.bom().is_present() {
+                            ui.separator();
+                            ui.label("BOM");
+                        }
+                    });
+                });
+            });
+    }
+
+    fn show_mode_toolbar(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("editor_toolbar")
+            .exact_size(EDITOR_TOOLBAR_HEIGHT)
+            .show(ui, |ui| {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new("Mode")
+                            .text_style(egui::TextStyle::Button)
+                            .weak(),
+                    );
+                    for view in [DocumentView::Text, DocumentView::Markdown] {
+                        let selected = ui.add(
+                            egui::Button::selectable(self.view == view, view.label())
+                                .min_size(egui::vec2(78.0, 28.0)),
+                        );
+                        if selected.clicked() {
+                            self.view = view;
+                            self.markdown_editor.reset();
+                        }
+                    }
+                    if self.view == DocumentView::Markdown {
+                        ui.separator();
+                        self.markdown_editor.toolbar(ui);
+                        if !self.markdown_editor.is_editing() && ui.available_width() >= 180.0 {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.weak("Click a block to edit");
+                                },
+                            );
+                        }
                     }
                 });
             });
-        });
     }
 
     fn show_editor(&mut self, ui: &mut egui::Ui) {
@@ -492,31 +645,58 @@ impl NoterApp {
                     .fill(ui.visuals().extreme_bg_color)
                     .inner_margin(egui::Margin::same(12)),
             )
-            .show_inside(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let response = ui.add_sized(
-                        ui.available_size(),
-                        egui::TextEdit::multiline(&mut self.text)
-                            .id(Self::editor_id())
-                            .font(egui::TextStyle::Monospace)
-                            .code_editor()
-                            .frame(egui::Frame::NONE)
-                            .lock_focus(true),
-                    );
-
-                    if response.changed()
-                        && let Err(error) = self.document.replace_text(&self.text)
-                    {
-                        self.error_msg = Some(format!("Failed to record edit: {error}"));
-                    }
-                });
+            .show(ui, |ui| {
+                let changed = match self.view {
+                    DocumentView::Text => self.show_text_editor(ui),
+                    DocumentView::Markdown => self.show_markdown_editor(ui),
+                };
+                if changed && let Err(error) = self.document.replace_text(&self.text) {
+                    self.error_msg = Some(format!("Failed to record edit: {error}"));
+                }
             });
+    }
+
+    fn show_text_editor(&mut self, ui: &mut egui::Ui) -> bool {
+        let editor_id = self.editor_id();
+        egui::ScrollArea::vertical()
+            .show(ui, |ui| {
+                ui.add_sized(
+                    ui.available_size(),
+                    egui::TextEdit::multiline(&mut self.text)
+                        .id(editor_id)
+                        .font(egui::TextStyle::Monospace)
+                        .code_editor()
+                        .frame(egui::Frame::NONE)
+                        .lock_focus(true),
+                )
+                .changed()
+            })
+            .inner
+    }
+
+    fn show_markdown_editor(&mut self, ui: &mut egui::Ui) -> bool {
+        egui::ScrollArea::vertical()
+            .show(ui, |ui| {
+                let content_width = ui.available_width().min(840.0);
+                let left_margin = ((ui.available_width() - content_width) / 2.0).max(0.0);
+                ui.horizontal_top(|ui| {
+                    ui.add_space(left_margin);
+                    ui.vertical(|ui| {
+                        ui.set_width(content_width);
+                        self.markdown_editor.show(ui, &mut self.text)
+                    })
+                    .inner
+                })
+                .inner
+            })
+            .inner
     }
 
     fn render_frame(&mut self, ui: &mut egui::Ui) {
         let mut command = Self::collect_shortcut(ui);
         self.show_menu(ui, &mut command);
         self.show_error(ui);
+        self.show_mode_toolbar(ui);
         self.show_status(ui);
         self.show_editor(ui);
         if let Some(command) = command
@@ -527,12 +707,129 @@ impl NoterApp {
         self.protect_native_close(ui.ctx());
         self.update_title(ui.ctx());
         self.show_about(ui.ctx());
+        self.show_updates(ui.ctx());
         self.show_hard_link_confirmation(ui.ctx());
     }
 
-    fn editor_id() -> egui::Id {
-        egui::Id::new(EDITOR_ID_SALT)
+    fn editor_id(&self) -> egui::Id {
+        egui::Id::new((EDITOR_ID_SALT, self.document_editor_serial))
     }
+
+    const fn advance_document_editor(&mut self) {
+        self.document_editor_serial = self.document_editor_serial.wrapping_add(1);
+    }
+
+    #[cfg(feature = "screenshot-qa")]
+    fn advance_screenshot_capture(&mut self, ctx: &egui::Context) {
+        let completed = ctx.input(|input| {
+            input.events.iter().find_map(|event| {
+                let egui::Event::Screenshot {
+                    user_data, image, ..
+                } = event
+                else {
+                    return None;
+                };
+                user_data
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.downcast_ref::<String>())
+                    .filter(|marker| marker.as_str() == ScreenshotCapture::MARKER)
+                    .map(|_| image.clone())
+            })
+        });
+
+        if let Some(image) = completed {
+            let Some(capture) = self.screenshot.take() else {
+                return;
+            };
+            if let Err(error) = write_screenshot_png(&capture.path, &image) {
+                self.error_msg = Some(format!("Failed to write screenshot: {error}"));
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
+        let Some(capture) = self.screenshot.as_mut() else {
+            return;
+        };
+        if capture.requested {
+            return;
+        }
+        if capture.frames_remaining > 0 {
+            capture.frames_remaining -= 1;
+            ctx.request_repaint();
+            return;
+        }
+        capture.requested = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+            ScreenshotCapture::MARKER.to_owned(),
+        )));
+    }
+}
+
+fn preferred_view_for_path(path: &std::path::Path) -> DocumentView {
+    let is_markdown = path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+    });
+    if is_markdown {
+        DocumentView::Markdown
+    } else {
+        DocumentView::Text
+    }
+}
+
+#[cfg(feature = "screenshot-qa")]
+struct ScreenshotCapture {
+    path: PathBuf,
+    frames_remaining: u8,
+    requested: bool,
+}
+
+#[cfg(feature = "screenshot-qa")]
+impl ScreenshotCapture {
+    const MARKER: &str = "noter-readme-screenshot";
+
+    const fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            frames_remaining: 5,
+            requested: false,
+        }
+    }
+}
+
+#[cfg(feature = "screenshot-qa")]
+fn write_screenshot_png(path: &std::path::Path, image: &egui::ColorImage) -> std::io::Result<()> {
+    const EXPORT_WIDTH: u32 = 1200;
+    const EXPORT_HEIGHT: u32 = 760;
+
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let width = u32::try_from(image.size[0])
+        .map_err(|_| std::io::Error::other("screenshot width exceeds PNG limits"))?;
+    let height = u32::try_from(image.size[1])
+        .map_err(|_| std::io::Error::other("screenshot height exceeds PNG limits"))?;
+    let bytes = image
+        .pixels
+        .iter()
+        .flat_map(egui::Color32::to_srgba_unmultiplied)
+        .collect::<Vec<_>>();
+    let captured = image::RgbaImage::from_raw(width, height, bytes)
+        .ok_or_else(|| std::io::Error::other("screenshot pixel count is inconsistent"))?;
+    let exported = image::imageops::resize(
+        &captured,
+        EXPORT_WIDTH,
+        EXPORT_HEIGHT,
+        image::imageops::FilterType::Lanczos3,
+    );
+    exported
+        .save_with_format(path, image::ImageFormat::Png)
+        .map_err(std::io::Error::other)?;
+    Ok(())
 }
 
 fn append_cleanup_error(
@@ -548,6 +845,12 @@ fn append_cleanup_error(
 impl eframe::App for NoterApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.render_frame(ui);
+        #[cfg(feature = "screenshot-qa")]
+        self.advance_screenshot_capture(ui.ctx());
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string(THEME_STORAGE_KEY, self.theme.storage_value().to_owned());
     }
 }
 
@@ -569,15 +872,15 @@ mod tests {
         assert!(!output.shapes.is_empty());
         assert_eq!(
             ABOUT_SUMMARY,
-            "A focused, local-only plain-text editor built around data safety."
+            "A focused editor for plain text and Markdown files."
         );
         assert_eq!(
             ABOUT_MARKDOWN_STATUS,
-            "Markdown assistance and explicit formatting are planned for opt-in v0.2. They are not available in the current prototype."
+            "Markdown Mode is under active development. This build supports formatted reading, direct block editing, and core formatting actions while keeping Markdown source authoritative."
         );
         assert_eq!(
             ABOUT_PRIVACY,
-            "Noter has no telemetry, accounts, or in-process network client."
+            "Noter has no accounts, telemetry, or background network activity."
         );
         assert_eq!(
             ABOUT_LINK_BEHAVIOR,
@@ -613,12 +916,14 @@ mod tests {
             text: "stale view text".to_owned(),
             ..NoterApp::default()
         };
+        let previous_editor_id = app.editor_id();
 
         assert!(app.start_new_document());
         assert!(app.text.is_empty());
         assert_eq!(app.document.rope().len_bytes(), 0);
         assert!(!app.document.is_dirty());
         assert!(app.error_msg.is_none());
+        assert_ne!(app.editor_id(), previous_editor_id);
     }
 
     #[test]
@@ -673,7 +978,7 @@ mod tests {
     fn same_frame_editor_input_is_recorded_before_native_close_decision() {
         let mut app = NoterApp::default();
         let context = egui::Context::default();
-        context.memory_mut(|memory| memory.request_focus(NoterApp::editor_id()));
+        context.memory_mut(|memory| memory.request_focus(app.editor_id()));
         let mut input = egui::RawInput::default();
         input.events.push(egui::Event::Text("unsaved".to_owned()));
         input

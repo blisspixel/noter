@@ -2,74 +2,80 @@
 
 **Effective for release candidates:** July 2026
 
-**Status:** Release contract. A prerelease is not privacy-verified until its
-dependency audit and runtime network inspection pass.
+**Status:** Product contract. A release is not privacy-verified until dependency
+review and runtime network inspection pass on every supported platform.
 
-Noter is designed for local plain text. The application has no business model,
-feature, or diagnostic need that requires document data to leave the machine.
+Noter is designed for local text and Markdown. Document data has no reason to
+leave the machine during editing.
 
-## 1. Zero application network activity
+## 1. No background network activity
 
-The official Noter application:
+The official Noter application has no telemetry, analytics, advertising,
+account, synchronization, remote font, remote image, link preview, automatic
+crash upload, or background update check.
 
-- has no telemetry, analytics, advertising, account, synchronization, update
-  check, remote font, remote image, link preview, or automatic crash report;
-- does not fetch links or Markdown assets;
-- does not contain a user-facing action that transmits document data;
-- treats an unexpected outgoing connection as a critical security defect.
+Noter does not fetch Markdown assets or execute embedded content. An unexpected
+background connection is a critical security defect.
 
-Release evidence includes dependency capability review and runtime traffic
-inspection on each supported operating system.
+## 2. Explicit external actions
 
-## 2. Files Noter may read
+A link opens outside Noter only after the user selects it. The current
+`Help > Check for Updates` action and `noter update` command open a local status
+dialog; they perform no network request. The dialog can open Noter's GitHub
+releases page only after the user selects that link.
+
+A future updater may contact only the documented release channel after an
+explicit update action. Its request must contain only the information required
+to select a compatible release, such as current version, operating system, and
+architecture. It must not contain document content, document paths, search
+text, a stable installation identifier, or an analytics payload.
+
+## 3. Files Noter may read
 
 Noter reads document content only when:
 
 - the user selects or explicitly launches that path;
-- the user selects a recent-file entry created from an earlier explicit open;
-- Noter validates a versioned recovery record that Noter itself created.
+- the user selects a recent-file entry created by an earlier explicit open; or
+- Noter validates a versioned recovery record that Noter created.
 
 Noter does not crawl folders, index unrelated files, inspect neighboring
-documents, or follow links for preview content.
+documents, or follow Markdown references to collect content.
 
-## 3. Local state
+## 4. Local state
 
-Preferences, window state, and recent-file paths live in the platform's
-per-user application configuration or local-data directory. Recovery records
-live in the private per-user application state or local-data directory, not the
-general temporary directory.
+Preferences, window state, and recent-file paths belong in the platform's
+per-user application directory. Recovery records belong in the private
+per-user state directory, not a shared temporary directory.
 
-Recovery may contain unsaved document content. It therefore receives restrictive
-permissions, checksums, versioning, bounded retention, and explicit cleanup
-after successful Save or confirmed Discard. Recovery never silently writes the
-original document.
+Recovery and durable-save staging can contain complete document bytes. They
+therefore require restrictive creation permissions, bounded size and retention,
+checksums or identity validation where applicable, and explicit cleanup.
+Recovery never silently overwrites the original document.
 
-Durable-save staging files also contain complete document bytes. Unix creates
-them at mode 0600. Windows supplies a protected DACL at creation that grants full
-control only to the object owner and SYSTEM, rather than inheriting broader
-parent-directory entries.
+Unix staging files are created with mode 0600. macOS additionally suppresses ACL
+inheritance during creation and verifies the finalized ACL before writing.
+Windows creates a protected DACL granting full control only to the owner and
+SYSTEM.
 
-## 4. Diagnostics
+## 5. Diagnostics
 
 Default diagnostics do not contain:
 
-- document or clipboard content;
-- recovery bytes;
-- search or replacement text;
-- full document paths;
-- recent-file lists;
-- user or machine identifiers.
+- document, clipboard, recovery, search, or replacement content;
+- full document paths or recent-file lists; or
+- user, machine, account, or installation identifiers.
 
-If a future diagnostic export needs sensitive context, it must be opt-in,
+Any future diagnostic export that needs sensitive context must be opt-in,
 previewable, local by default, and separately specified before implementation.
 
-## 5. No AI use
+## 6. No AI processing
 
 Noter has no AI feature and does not transmit content for training, inference,
 classification, moderation, or profiling.
 
-## 6. Verification and reporting
+## 7. Verification and reporting
 
-The source, dependency graph, build provenance, and release checks are intended
-to make these claims auditable. Report any unexpected file access, outgoing
-connection, or sensitive log entry as a critical security issue.
+Release evidence includes dependency-capability review, locked advisory checks,
+build provenance, and runtime traffic inspection on Windows, macOS, X11, and
+Wayland. Report unexpected file access, outgoing traffic, or sensitive log data
+as a critical security issue.

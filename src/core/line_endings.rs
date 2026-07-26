@@ -15,6 +15,72 @@ pub enum LineEnding {
     Cr,
 }
 
+/// One logical source line with its original terminator, when present.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LineSegment<'a> {
+    content: &'a str,
+    ending: Option<LineEnding>,
+}
+
+impl<'a> LineSegment<'a> {
+    /// Returns the source bytes before the line ending.
+    pub const fn content(self) -> &'a str {
+        self.content
+    }
+
+    /// Returns the exact original line ending, or `None` for a final unterminated line.
+    pub const fn ending(self) -> Option<LineEnding> {
+        self.ending
+    }
+}
+
+/// Iterator over logical lines that preserves LF, CRLF, CR, and mixed endings.
+pub struct LogicalLines<'a> {
+    remaining: &'a str,
+}
+
+impl<'a> Iterator for LogicalLines<'a> {
+    type Item = LineSegment<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining.is_empty() {
+            return None;
+        }
+
+        let bytes = self.remaining.as_bytes();
+        let ending_start = bytes.iter().position(|byte| matches!(byte, b'\r' | b'\n'));
+        let Some(ending_start) = ending_start else {
+            let content = self.remaining;
+            self.remaining = "";
+            return Some(LineSegment {
+                content,
+                ending: None,
+            });
+        };
+
+        let (ending, ending_length) =
+            if bytes[ending_start] == b'\r' && bytes.get(ending_start + 1) == Some(&b'\n') {
+                (LineEnding::CrLf, 2)
+            } else if bytes[ending_start] == b'\r' {
+                (LineEnding::Cr, 1)
+            } else {
+                (LineEnding::Lf, 1)
+            };
+        let content = &self.remaining[..ending_start];
+        self.remaining = &self.remaining[ending_start + ending_length..];
+        Some(LineSegment {
+            content,
+            ending: Some(ending),
+        })
+    }
+}
+
+/// Splits strict UTF-8 text into logical lines without normalizing terminators.
+#[must_use]
+pub const fn logical_lines(text: &str) -> LogicalLines<'_> {
+    LogicalLines { remaining: text }
+}
+
 impl LineEnding {
     /// Returns the encoded line-ending sequence.
     pub const fn as_str(self) -> &'static str {
@@ -406,5 +472,34 @@ mod tests {
         assert_eq!(none.counts().total(), 0);
         assert_eq!(none.status_label(), "No EOL");
         assert_eq!(LineEndingProfile::detect("\n\r").status_label(), "Mixed");
+    }
+
+    #[test]
+    fn logical_lines_preserve_mixed_terminators_without_a_synthetic_tail() {
+        let segments = logical_lines("one\r\ntwo\rthree\nfour").collect::<Vec<_>>();
+
+        assert_eq!(
+            segments,
+            vec![
+                LineSegment {
+                    content: "one",
+                    ending: Some(LineEnding::CrLf),
+                },
+                LineSegment {
+                    content: "two",
+                    ending: Some(LineEnding::Cr),
+                },
+                LineSegment {
+                    content: "three",
+                    ending: Some(LineEnding::Lf),
+                },
+                LineSegment {
+                    content: "four",
+                    ending: None,
+                },
+            ]
+        );
+        assert!(logical_lines("").next().is_none());
+        assert_eq!(logical_lines("\n").count(), 1);
     }
 }

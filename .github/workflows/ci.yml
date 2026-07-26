@@ -3,9 +3,9 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -44,6 +44,13 @@ jobs:
           fallback: none
       - name: Audit locked dependencies
         run: cargo audit --deny warnings
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@e62b3bdab54265ba809383c8707cb0600da93f19
+        with:
+          tool: cargo-deny@0.19.8
+          fallback: none
+      - name: Check dependency licenses, sources, and bans
+        run: cargo deny --locked check
 
   test:
     strategy:
@@ -65,19 +72,47 @@ jobs:
       - name: Run tests
         run: cargo test --locked --verbose --workspace --all-targets --all-features
 
+      - name: Install from source (PowerShell)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:GITHUB_WORKSPACE 'scripts/install.ps1'
+          Push-Location -LiteralPath $env:RUNNER_TEMP
+          try {
+            $env:CARGO_INSTALL_ROOT = 'noter installer root'
+            & $installer -Source $env:GITHUB_WORKSPACE
+          } finally {
+            Pop-Location
+          }
+
+      - name: Install from source (POSIX)
+        if: runner.os != 'Windows'
+        shell: sh
+        run: |
+          sh -n scripts/install.sh
+          installer=$PWD/scripts/install.sh
+          cd "$RUNNER_TEMP"
+          CARGO_INSTALL_ROOT='noter installer root' sh "$installer" --source "$GITHUB_WORKSPACE"
+
       - name: Install cargo-llvm-cov
         if: matrix.os == 'ubuntu-latest'
         uses: taiki-e/install-action@e62b3bdab54265ba809383c8707cb0600da93f19 # cargo-llvm-cov
         with:
           tool: cargo-llvm-cov@0.8.7
           fallback: none
-      - name: Generate coverage (Linux only)
+      - name: Enforce whole-workspace coverage (Linux only)
         if: matrix.os == 'ubuntu-latest'
         run: >
           cargo llvm-cov --locked --all-targets --all-features --workspace
-          --ignore-filename-regex 'src[/\\](app|main)\.rs$'
-          --fail-under-lines 90
+          --fail-under-lines 80
           --lcov --output-path lcov.info
+      - name: Enforce trust-kernel coverage (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: >
+          cargo llvm-cov --locked --all-targets --all-features --workspace
+          --ignore-filename-regex 'src[/\\](app|main|markdown_ui)\.rs$'
+          --fail-under-lines 90
+          --summary-only
       - name: Upload coverage artifact
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -162,6 +197,8 @@ jobs:
           test -s docs/REQUIREMENTS.md
           test -s docs/DESIGN.md
           test -s docs/ROADMAP.md
+          test -s docs/INSTALLATION.md
+          test -s docs/MARKDOWN.md
           test -s docs/PRIVACY.md
           test -s docs/adr/0001-egui-and-editor-gate.md
           test -s docs/adr/0002-encoding-and-line-endings.md
@@ -170,5 +207,12 @@ jobs:
           echo "All core planning documents present and non-empty."
       - name: Check local documentation links
         run: python3 scripts/check_doc_links.py
+      - name: Check README screenshot assets
+        run: python3 scripts/check_readme_assets.py
+      - name: Lint repository validation scripts
+        run: |
+          python3 -m pip install --disable-pip-version-check ruff==0.15.16
+          ruff check scripts
+          ruff format --check scripts
       - name: Test repository validation scripts
         run: python3 -m unittest discover -s scripts -p 'test_*.py'

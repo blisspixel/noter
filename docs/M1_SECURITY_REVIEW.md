@@ -4,6 +4,8 @@
 
 **Review date:** 2026-07-25
 
+**Follow-up:** 2026-07-26 macOS staging review and remediation
+
 **Coverage:** Partial repository review with full-file inspection of the runtime
 document, observation, save, platform, GUI lifecycle, dependency, and CI paths.
 
@@ -13,7 +15,8 @@ The review treated user-selected bytes and paths, concurrent filesystem actors,
 native API results, dependencies, and build inputs as untrusted. It traced the
 document loader and durable-save protocol from user intent through the safe core
 and native platform boundary. Validation used bounded synthetic files, fault
-injection, full-file review receipts, and native Windows filesystem fixtures.
+injection, full-file review receipts, native Windows filesystem fixtures, and
+source and compile review of the Unix and macOS paths.
 
 Documentation, tests, generated build output, Git internals, local agent state,
 and the application icon were excluded as non-runtime entry points. Test
@@ -36,6 +39,24 @@ to SDDL and verifies the exact protected owner-and-system DACL, writable creatio
 exact bytes, exclusive refusal of an existing path, and denial of competing write
 handles. Unix continues to create siblings at mode 0600.
 
+### macOS staging files could inherit broader directory permissions
+
+Severity was medium. Mode 0600 restricts POSIX mode bits but does not prevent a
+new macOS file from inheriting access-control entries from its parent directory.
+The previous Unix creation path therefore could expose staged document bytes
+under an inheritable parent ACL even though the mode bits appeared private.
+
+The remediation uses `openx_np` to create the file with mode 0600 and a
+zero-entry ACL carrying the global `no_inherit` flag in the same kernel
+operation. A native fixture is defined to prove an ordinary child inherits the
+parent ACE, then verify the staging file's immediate ACL contains no inherited
+ACE. Exact-commit hosted macOS execution remains an evidence gap below.
+The adapter removes the bootstrap ACL through the live descriptor, verifies true
+ACL absence and mode 0600, and only then returns the still-empty file for a
+write. Any finalization failure closes the descriptor, preserves the random
+zero-byte pathname, and produces actionable cleanup guidance instead of risking
+a pathname deletion race.
+
 ### Document loading had no byte ceiling
 
 Severity was low because exploitation requires a user-assisted local open and
@@ -52,7 +73,7 @@ bypass the ceiling. Errors are typed, stage-specific, and path-redacted.
 ## Reliability issues fixed during the review
 
 - New, Open, Quit, and native close no longer discard a dirty document. They
-  remain blocked with a visible explanation until M3 supplies the shared Save,
+  remain blocked with a visible explanation until M4 supplies the shared Save,
   Discard, and Cancel state machine.
 - Windows backup cleanup now opens without following reparse points, verifies
   identity, fingerprint, and length on the live handle, and deletes that same
@@ -60,7 +81,9 @@ bypass the ceiling. Errors are typed, stage-specific, and path-redacted.
   rebound path remains untouched and a same-object writer cannot enter the
   verification-to-deletion window.
 - Unix existing-file replacement uses an atomic exchange while staging remains
-  mode 0600. Required metadata is captured into an immutable snapshot and
+  owner-only. macOS additionally suppresses ACL inheritance at the atomic create
+  point and removes its bootstrap ACL before writing. Required metadata is
+  captured into an immutable snapshot and
   revalidated through the open source handle before commit. Because exchange can
   legitimately change the displaced inode's `ctime`, the post-exchange check
   ratifies the new token with stable native identity, link count, content
@@ -82,7 +105,9 @@ bypass the ceiling. Errors are typed, stage-specific, and path-redacted.
   document ceiling, exhaust memory or temporary storage, or stall Save. macOS
   now serializes the ACL into the immutable snapshot and replays it through the
   destination descriptor; resource forks and other xattrs use the bounded
-  snapshot.
+  snapshot. Native ACL absence remains a distinct snapshot state and is replayed
+  with macOS's remove-ACL sentinel, preserving its distinction from an allocated
+  empty ACL.
 - A failed Unix post-commit file barrier now downgrades the result to Best Effort
   and remains distinct from parent-sync and cleanup warnings.
 - Save warnings retain every cleanup and durability detail in the GUI. Save and
@@ -104,11 +129,12 @@ bypass the ceiling. Errors are typed, stage-specific, and path-redacted.
   typed warning naming the safe random artifact basename and explicit inspect,
   recovery, retry, and removal actions. Displaced artifacts use neutral wording
   because concurrent bytes may not be the prior destination revision.
-- A creation-time native identity failure now preserves the primary creation
-  error and a separate cleanup warning when the just-created sibling cannot be
-  removed by handle. The warning names only the random basename, states that
-  Noter had not written application bytes, acknowledges same-authority changes,
-  and gives inspection and removal guidance.
+- A creation-time native identity or platform privacy-finalization failure now
+  preserves the primary creation error and a separate cleanup warning when the
+  just-created sibling cannot be removed by handle. The warning names only the
+  random basename, states that Noter had not written application bytes,
+  acknowledges same-authority changes, and gives inspection and removal
+  guidance.
 - File commands and native close are evaluated only after same-frame editor input
   updates authoritative document state.
 
@@ -129,10 +155,10 @@ claim depends on inference from a filesystem name or a local-only test.
 
 ## Remediation validation checkpoint
 
-The remediated worktree passes all 134 Windows-local workspace tests, strict
+The remediated worktree passes all 170 Windows-local workspace tests, strict
 workspace Clippy, rustdoc with warnings denied, documentation-link validation,
-and RustSec audit. Fixed-seed measured line coverage is 93.13 percent for the
-trust kernel and 90.18 percent for the complete workspace. The first expanded
+and RustSec audit. Fixed-seed measured line coverage is 93.53 percent for the
+trust kernel and 87.94 percent for the complete workspace. The first expanded
 mutation run exposed nine file-limit boundary survivors. Exact inclusive-limit,
 oversized-announcement, constant-value, and overflow tests closed them; the last
 completed Windows-applicable campaign classified all 383 mutants as 254 caught
@@ -140,8 +166,9 @@ and 129 unviable. The checker-expanded 418-mutant run found four survivors;
 focused tests and isolated reruns produce a composite classification of 270
 caught, 148 unviable, zero missed, and zero timed out. The expanded native
 adapter scope adds a clean local 57-mutant Windows pass with 39 caught and 18
-unviable. The descriptor-deallocation repair expands this to a clean 58-mutant
-Windows pass with 40 caught and 18 unviable. Its three-platform 639-mutant union
-assigns 556 candidates to Linux, 476 to Windows, and 169 to macOS with no set
-union gap. It requires a fresh exact-commit
+unviable. The descriptor-deallocation repair produced a clean 58-mutant Windows
+pass with 40 caught and 18 unviable. The current adapter scope is 66. The settled
+three-platform 747-mutant union assigns 639 candidates to Linux, 559 to Windows,
+and 202 to macOS with no set-union gap. The new scope requires a fresh
+exact-commit
 hosted campaign before this checkpoint becomes complete CI evidence.

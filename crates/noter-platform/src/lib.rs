@@ -3,6 +3,7 @@
 //! The product crate forbids unsafe code. Calls that cannot yet be expressed
 //! through stable standard-library APIs live here behind safe, tested types.
 
+use std::fmt;
 use std::fs::File;
 use std::io;
 use std::path::Path;
@@ -11,13 +12,17 @@ use std::path::Path;
 use imp::{
     unix_apply_required_metadata as platform_apply_required_metadata,
     unix_capture_required_metadata as platform_capture_required_metadata,
-    unix_create_private_new_file as platform_create_private_new_file,
     unix_delete_open_file as platform_delete_open_file, unix_file_facts as platform_file_facts,
     unix_install_new as platform_install_new, unix_open_for_cleanup as platform_open_for_cleanup,
     unix_replace_existing as platform_replace_existing,
     unix_required_metadata_matches_source as platform_required_metadata_matches_source,
     unix_sync_file as platform_sync_file, unix_sync_parent as platform_sync_parent,
 };
+
+#[cfg(target_os = "macos")]
+use imp::macos_create_private_new_file as platform_create_private_new_file;
+#[cfg(all(unix, not(target_os = "macos")))]
+use imp::unix_create_private_new_file as platform_create_private_new_file;
 #[cfg(not(any(unix, windows)))]
 use imp::{
     unsupported_create_private_new_file as platform_create_private_new_file,
@@ -36,6 +41,55 @@ use imp::{
     windows_replace_existing as platform_replace_existing, windows_sync_file as platform_sync_file,
     windows_sync_parent as platform_sync_parent,
 };
+
+#[derive(Debug)]
+struct RetainedPrivateCreation {
+    cause: io::Error,
+}
+
+impl fmt::Display for RetainedPrivateCreation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "private file security finalization failed after exclusive creation: {}",
+            self.cause
+        )
+    }
+}
+
+impl std::error::Error for RetainedPrivateCreation {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn retained_private_creation_error(cause: io::Error) -> io::Error {
+    io::Error::new(cause.kind(), RetainedPrivateCreation { cause })
+}
+
+/// Reports whether private-file creation succeeded but security finalization failed.
+///
+/// A `true` result means the caller must conservatively report that the newly
+/// created zero-byte pathname may remain. It must not remove that pathname
+/// without independently proving that it still identifies the created object.
+#[must_use]
+pub fn creation_error_may_have_retained_private_file(error: &io::Error) -> bool {
+    retained_private_file_creation_cause(error).is_some()
+}
+
+/// Returns the native failure that followed successful private-file creation.
+///
+/// Callers may use its error kind and raw operating-system code for a redacted
+/// primary diagnostic. The separate retained-path warning must still avoid full
+/// paths and must not imply that pathname cleanup is safe.
+#[must_use]
+pub fn retained_private_file_creation_cause(error: &io::Error) -> Option<&io::Error> {
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<RetainedPrivateCreation>())
+        .map(|marker| &marker.cause)
+}
 
 /// Strength of the platform-provided file identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -167,13 +221,19 @@ pub fn file_facts(file: &File) -> io::Result<FileFacts> {
 
 /// Exclusively creates a private read-write file at a new path.
 ///
-/// Unix uses owner-only mode at creation. Windows supplies a protected DACL at
-/// creation so permissive parent entries are never inherited by the new file.
+/// Linux and other supported Unix targets request owner-only mode at creation.
+/// macOS atomically requests mode 0600 and a no-inherit bootstrap ACL, then sets
+/// exact mode 0600 and removes and verifies that ACL before returning the
+/// still-empty file. Windows supplies a protected DACL at creation so permissive
+/// parent entries are never inherited by the new file.
 ///
 /// # Errors
 ///
 /// Returns an operating-system error when the path already exists, the private
-/// security descriptor cannot be constructed, or the file cannot be created.
+/// security descriptor cannot be constructed, the file cannot be created, or
+/// the macOS mode or bootstrap ACL cannot be finalized and verified. Call
+/// [`creation_error_may_have_retained_private_file`] to distinguish the last
+/// case, where an empty random sibling may require operator inspection.
 pub fn create_private_new_file(path: &Path) -> io::Result<File> {
     platform_create_private_new_file(path)
 }
@@ -368,6 +428,186 @@ mod imp {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     const MAX_XATTR_READ_ATTEMPTS: usize = 3;
 
+    #[cfg(target_os = "macos")]
+    #[allow(unsafe_code)]
+    mod macos_private_creation {
+        use std::ffi::{CStr, CString};
+        use std::fs::File;
+        use std::io;
+        use std::os::fd::FromRawFd;
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::Path;
+
+        type Acl = *mut libc::c_void;
+        type FileSecurity = *mut libc::c_void;
+        pub(super) type AclDeallocator = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
+        pub(super) type FileSecurityDeallocator = unsafe extern "C" fn(FileSecurity);
+
+        const FILESEC_MODE: libc::c_int = 4;
+        const FILESEC_ACL: libc::c_int = 5;
+        const PRIVATE_MODE: libc::mode_t = 0o600;
+        const BOOTSTRAP_ACL: &CStr = c"!#acl 1 no_inherit\n";
+
+        unsafe extern "C" {
+            fn acl_from_text(buffer: *const libc::c_char) -> Acl;
+            fn acl_free(object: *mut libc::c_void) -> libc::c_int;
+            fn filesec_init() -> FileSecurity;
+            fn filesec_free(filesec: FileSecurity);
+            fn filesec_set_property(
+                filesec: FileSecurity,
+                property: libc::c_int,
+                value: *const libc::c_void,
+            ) -> libc::c_int;
+            fn openx_np(
+                path: *const libc::c_char,
+                flags: libc::c_int,
+                filesec: FileSecurity,
+            ) -> libc::c_int;
+        }
+
+        pub(super) struct OwnedAcl {
+            raw: Acl,
+            deallocate: AclDeallocator,
+        }
+
+        impl OwnedAcl {
+            fn parse(text: &CStr) -> io::Result<Self> {
+                // SAFETY: `text` is a live NUL-terminated ACL representation.
+                // A non-null result is owned until the guard releases it.
+                let raw = unsafe { acl_from_text(text.as_ptr()) };
+                if raw.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(Self {
+                    raw,
+                    deallocate: acl_free,
+                })
+            }
+
+            #[cfg(test)]
+            pub(super) const fn from_raw_with_deallocator(
+                raw: Acl,
+                deallocate: AclDeallocator,
+            ) -> Self {
+                Self { raw, deallocate }
+            }
+
+            pub(super) fn release(mut self) -> io::Result<()> {
+                let raw = std::mem::replace(&mut self.raw, std::ptr::null_mut());
+                // SAFETY: `raw` is the unique allocation returned by
+                // `acl_from_text` and this consumes the guard exactly once.
+                if unsafe { (self.deallocate)(raw.cast()) } != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            }
+        }
+
+        impl Drop for OwnedAcl {
+            fn drop(&mut self) {
+                if !self.raw.is_null() {
+                    // SAFETY: a non-null value remains the allocation uniquely
+                    // owned by this guard. Drop is its final release path.
+                    let _ = unsafe { (self.deallocate)(self.raw.cast()) };
+                }
+            }
+        }
+
+        pub(super) struct OwnedFileSecurity {
+            raw: FileSecurity,
+            deallocate: FileSecurityDeallocator,
+        }
+
+        impl OwnedFileSecurity {
+            fn new() -> io::Result<Self> {
+                // SAFETY: this allocation has no input pointers. A non-null
+                // result is owned until the guard releases it.
+                let raw = unsafe { filesec_init() };
+                if raw.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(Self {
+                    raw,
+                    deallocate: filesec_free,
+                })
+            }
+
+            #[cfg(test)]
+            pub(super) const fn from_raw_with_deallocator(
+                raw: FileSecurity,
+                deallocate: FileSecurityDeallocator,
+            ) -> Self {
+                Self { raw, deallocate }
+            }
+
+            fn set_mode(&self, mode: libc::mode_t) -> io::Result<()> {
+                // SAFETY: the descriptor is live and the mode pointer remains
+                // valid for the complete property-copying call.
+                if unsafe {
+                    filesec_set_property(self.raw, FILESEC_MODE, std::ptr::from_ref(&mode).cast())
+                } != 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            }
+
+            fn set_acl(&self, acl: &OwnedAcl) -> io::Result<()> {
+                let raw = acl.raw;
+                // SAFETY: both objects are live. Apple's FILESEC_ACL contract
+                // copies the pointed-to ACL, including its global flags.
+                if unsafe {
+                    filesec_set_property(self.raw, FILESEC_ACL, std::ptr::from_ref(&raw).cast())
+                } != 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            }
+
+            fn create(&self, path: &CStr) -> io::Result<File> {
+                let flags = libc::O_CLOEXEC
+                    | libc::O_CREAT
+                    | libc::O_EXCL
+                    | libc::O_NOFOLLOW
+                    | libc::O_RDWR;
+                // SAFETY: the path and file-security descriptor are live for
+                // the call. On success the returned descriptor is uniquely
+                // owned and wrapped exactly once below.
+                let descriptor = unsafe { openx_np(path.as_ptr(), flags, self.raw) };
+                if descriptor == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                // SAFETY: `openx_np` returned a new owned descriptor and no
+                // other Rust value owns or will close it.
+                Ok(unsafe { File::from_raw_fd(descriptor) })
+            }
+        }
+
+        impl Drop for OwnedFileSecurity {
+            fn drop(&mut self) {
+                // SAFETY: this is the unique live allocation returned by
+                // `filesec_init`; the API's deallocator returns no status.
+                unsafe { (self.deallocate)(self.raw) };
+            }
+        }
+
+        pub fn create(path: &Path) -> io::Result<File> {
+            let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "file path contains an interior NUL byte",
+                )
+            })?;
+            let acl = OwnedAcl::parse(BOOTSTRAP_ACL)?;
+            let security = OwnedFileSecurity::new()?;
+            security.set_mode(PRIVATE_MODE)?;
+            security.set_acl(&acl)?;
+            acl.release()?;
+            security.create(&path)
+        }
+    }
+
     #[cfg(target_os = "linux")]
     use self::{
         apply_linux_metadata as apply_native_metadata,
@@ -400,6 +640,7 @@ mod imp {
         ))
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn unix_create_private_new_file(path: &Path) -> io::Result<File> {
         OpenOptions::new()
             .read(true)
@@ -407,6 +648,37 @@ mod imp {
             .create_new(true)
             .mode(0o600)
             .open(path)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn macos_create_private_new_file(path: &Path) -> io::Result<File> {
+        let file = macos_private_creation::create(path)?;
+        if let Err(error) = macos_finalize_private_creation(&file) {
+            return Err(super::retained_private_creation_error(error));
+        }
+        Ok(file)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_finalize_private_creation(file: &File) -> io::Result<()> {
+        const PRIVATE_MODE: u32 = 0o600;
+        const PERMISSION_BITS: u32 = 0o7777;
+
+        unix_apply_mode(PRIVATE_MODE, file)?;
+        if file.metadata()?.mode() & PERMISSION_BITS != PRIVATE_MODE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "private file mode differs after creation",
+            ));
+        }
+        remove_macos_acl(file)?;
+        if read_macos_acl_snapshot(file)? != MacosAclSnapshot::Absent {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "private file retains its bootstrap access control list",
+            ));
+        }
+        Ok(())
     }
 
     pub fn unix_open_for_cleanup(path: &Path) -> io::Result<File> {
@@ -429,7 +701,14 @@ mod imp {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         attributes: Vec<ExtendedAttribute>,
         #[cfg(target_os = "macos")]
-        acl_text: Vec<u8>,
+        acl: MacosAclSnapshot,
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Debug, Eq, PartialEq)]
+    enum MacosAclSnapshot {
+        Absent,
+        Present(Vec<u8>),
     }
 
     pub fn unix_capture_required_metadata(
@@ -459,12 +738,12 @@ mod imp {
         let stamp = unix_metadata_stamp(source)?;
         unix_ensure_metadata_source_matches(source, stamp, expected_source, "before capture")?;
         let attributes = unix_read_native_xattrs(source)?;
-        let acl_text = read_macos_acl_text(source)?;
+        let acl = read_macos_acl_snapshot(source)?;
         unix_ensure_metadata_source_matches(source, stamp, expected_source, "during capture")?;
         Ok(RequiredMetadata {
             stamp,
             attributes,
-            acl_text,
+            acl,
         })
     }
 
@@ -513,11 +792,11 @@ mod imp {
     #[cfg(target_os = "macos")]
     fn apply_macos_metadata(metadata: &RequiredMetadata, destination: &File) -> io::Result<()> {
         unix_apply_ownership(metadata.stamp, destination)?;
-        apply_macos_acl_text(&metadata.acl_text, destination)?;
+        apply_macos_acl_snapshot(&metadata.acl, destination)?;
         unix_apply_native_xattrs(&metadata.attributes, destination)?;
         unix_apply_mode(metadata.stamp.mode, destination)?;
         unix_verify_native_xattrs(&metadata.attributes, destination)?;
-        verify_macos_acl(&metadata.acl_text, destination)?;
+        verify_macos_acl(&metadata.acl, destination)?;
         unix_verify_destination_stamp(metadata.stamp, destination)
     }
 
@@ -551,7 +830,7 @@ mod imp {
         Ok(
             unix_metadata_payload_stamp_matches(metadata.stamp, unix_metadata_stamp(source)?)
                 && metadata.attributes == unix_read_native_xattrs(source)?
-                && metadata.acl_text == read_macos_acl_text(source)?,
+                && metadata.acl == read_macos_acl_snapshot(source)?,
         )
     }
 
@@ -1133,7 +1412,28 @@ mod imp {
 
     #[cfg(target_os = "macos")]
     #[allow(unsafe_code)]
-    fn apply_macos_acl_text(text: &[u8], destination: &File) -> io::Result<()> {
+    fn remove_macos_acl(destination: &File) -> io::Result<()> {
+        type Acl = *mut libc::c_void;
+
+        unsafe extern "C" {
+            fn acl_set_fd(fd: libc::c_int, acl: Acl) -> libc::c_int;
+        }
+
+        // macOS exposes `_FILESEC_REMOVE_ACL` as the opaque pointer value 1.
+        // It instructs `acl_set_fd` to write the kernel's distinct no-ACL
+        // sentinel and is not an allocation that may be passed to `acl_free`.
+        let remove_acl = std::ptr::without_provenance_mut::<libc::c_void>(1);
+        // SAFETY: the descriptor is live and the sentinel is the exact public
+        // macOS contract for removing its extended ACL.
+        if unsafe { acl_set_fd(destination.as_raw_fd(), remove_acl) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[allow(unsafe_code)]
+    fn apply_macos_acl_snapshot(snapshot: &MacosAclSnapshot, destination: &File) -> io::Result<()> {
         type Acl = *mut libc::c_void;
 
         unsafe extern "C" {
@@ -1142,7 +1442,10 @@ mod imp {
             fn acl_free(object: *mut libc::c_void) -> libc::c_int;
         }
 
-        let text = CString::new(text).map_err(|_| {
+        let MacosAclSnapshot::Present(text) = snapshot else {
+            return remove_macos_acl(destination);
+        };
+        let text = CString::new(text.as_slice()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "captured access control list contains an interior NUL byte",
@@ -1172,7 +1475,7 @@ mod imp {
 
     #[cfg(target_os = "macos")]
     #[allow(unsafe_code)]
-    fn read_macos_acl_text(file: &File) -> io::Result<Vec<u8>> {
+    fn read_macos_acl_snapshot(file: &File) -> io::Result<MacosAclSnapshot> {
         use std::ffi::CStr;
         use std::os::fd::AsRawFd;
 
@@ -1189,7 +1492,11 @@ mod imp {
         // caller and released below with `acl_free`.
         let acl = unsafe { acl_get_fd(file.as_raw_fd()) };
         if acl.is_null() {
-            return Err(io::Error::last_os_error());
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ENOENT) {
+                return Ok(MacosAclSnapshot::Absent);
+            }
+            return Err(error);
         }
 
         // SAFETY: `acl` is live and owned until the explicit frees below. A null
@@ -1212,12 +1519,12 @@ mod imp {
         if text_free != 0 || acl_free_result != 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(result)
+        Ok(MacosAclSnapshot::Present(result))
     }
 
     #[cfg(target_os = "macos")]
-    fn verify_macos_acl(expected: &[u8], destination: &File) -> io::Result<()> {
-        if expected != read_macos_acl_text(destination)? {
+    fn verify_macos_acl(expected: &MacosAclSnapshot, destination: &File) -> io::Result<()> {
+        if expected != &read_macos_acl_snapshot(destination)? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "access control list differs after metadata transfer",
@@ -1228,20 +1535,165 @@ mod imp {
 
     #[cfg(test)]
     mod tests {
+        #[cfg(target_os = "macos")]
+        use std::fs::File;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         use std::io;
+        #[cfg(target_os = "macos")]
+        use std::os::unix::fs::MetadataExt;
+        #[cfg(target_os = "macos")]
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
+        #[cfg(target_os = "macos")]
+        use tempfile::tempdir;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         use tempfile::tempfile;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         use xattr::FileExt;
 
+        #[cfg(target_os = "macos")]
+        use super::{
+            MacosAclSnapshot, apply_macos_acl_snapshot, macos_finalize_private_creation,
+            macos_private_creation, read_macos_acl_snapshot,
+        };
         use super::{
             MetadataStamp, unix_metadata_payload_stamp_matches, unix_metadata_source_matches,
         };
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         use super::{unix_read_native_xattr_bounded, unix_reserve_metadata_bytes};
         use crate::{FileChangeToken, FileFacts, FileIdentity, IdentityQuality};
+
+        #[cfg(target_os = "macos")]
+        static ACL_DROP_DEALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+        #[cfg(target_os = "macos")]
+        static ACL_RELEASE_DEALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+        #[cfg(target_os = "macos")]
+        static FILESEC_DEALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+        #[cfg(target_os = "macos")]
+        #[allow(unsafe_code)]
+        unsafe extern "C" fn record_acl_deallocation(_raw: *mut libc::c_void) -> libc::c_int {
+            ACL_DROP_DEALLOCATIONS.fetch_add(1, Ordering::SeqCst);
+            0
+        }
+
+        #[cfg(target_os = "macos")]
+        #[allow(unsafe_code)]
+        unsafe extern "C" fn reject_acl_deallocation(_raw: *mut libc::c_void) -> libc::c_int {
+            ACL_RELEASE_DEALLOCATIONS.fetch_add(1, Ordering::SeqCst);
+            -1
+        }
+
+        #[cfg(target_os = "macos")]
+        #[allow(unsafe_code)]
+        unsafe extern "C" fn record_filesec_deallocation(_raw: *mut libc::c_void) {
+            FILESEC_DEALLOCATIONS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn macos_creation_guards_dispatch_exact_deallocators() {
+            ACL_DROP_DEALLOCATIONS.store(0, Ordering::SeqCst);
+            FILESEC_DEALLOCATIONS.store(0, Ordering::SeqCst);
+            let sentinel = std::ptr::without_provenance_mut::<libc::c_void>(17);
+
+            drop(macos_private_creation::OwnedAcl::from_raw_with_deallocator(
+                sentinel,
+                record_acl_deallocation,
+            ));
+            drop(
+                macos_private_creation::OwnedFileSecurity::from_raw_with_deallocator(
+                    sentinel,
+                    record_filesec_deallocation,
+                ),
+            );
+
+            assert_eq!(ACL_DROP_DEALLOCATIONS.load(Ordering::SeqCst), 1);
+            assert_eq!(FILESEC_DEALLOCATIONS.load(Ordering::SeqCst), 1);
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn macos_acl_release_propagates_deallocation_failure_once() {
+            ACL_RELEASE_DEALLOCATIONS.store(0, Ordering::SeqCst);
+            let sentinel = std::ptr::without_provenance_mut::<libc::c_void>(19);
+            let acl = macos_private_creation::OwnedAcl::from_raw_with_deallocator(
+                sentinel,
+                reject_acl_deallocation,
+            );
+
+            assert!(acl.release().is_err());
+            assert_eq!(ACL_RELEASE_DEALLOCATIONS.load(Ordering::SeqCst), 1);
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn private_creation_suppresses_an_inheritable_parent_acl() -> io::Result<()> {
+            const PRIVATE_MODE: u32 = 0o600;
+            const PERMISSION_BITS: u32 = 0o7777;
+
+            let directory = tempdir()?;
+            let clear_status = std::process::Command::new("/bin/chmod")
+                .arg("-N")
+                .arg(directory.path())
+                .status()?;
+            if !clear_status.success() {
+                return Err(io::Error::other(format!(
+                    "chmod failed to clear the parent ACL fixture: {clear_status}"
+                )));
+            }
+            let status = std::process::Command::new("/bin/chmod")
+                .args(["+a", "everyone allow read,file_inherit"])
+                .arg(directory.path())
+                .status()?;
+            if !status.success() {
+                return Err(io::Error::other(format!(
+                    "chmod failed to create the inheritable ACL fixture: {status}"
+                )));
+            }
+
+            let inherited = File::create(directory.path().join("inherited.txt"))?;
+            let MacosAclSnapshot::Present(inherited_acl) = read_macos_acl_snapshot(&inherited)?
+            else {
+                return Err(io::Error::other(
+                    "the control file did not inherit the parent ACL",
+                ));
+            };
+            assert!(!inherited_acl.is_empty());
+            assert_ne!(inherited_acl, b"!#acl 1\n");
+
+            let protected_path = directory.path().join("protected.txt");
+            let protected = macos_private_creation::create(&protected_path)?;
+            assert_eq!(
+                read_macos_acl_snapshot(&protected)?,
+                MacosAclSnapshot::Present(b"!#acl 1\n".to_vec())
+            );
+            let creation_mode = protected.metadata()?.mode() & PERMISSION_BITS;
+            assert_eq!(creation_mode & !PRIVATE_MODE, 0);
+            assert_eq!(protected.metadata()?.len(), 0);
+
+            macos_finalize_private_creation(&protected)?;
+            assert_eq!(protected.metadata()?.mode() & PERMISSION_BITS, PRIVATE_MODE);
+            assert_eq!(
+                read_macos_acl_snapshot(&protected)?,
+                MacosAclSnapshot::Absent
+            );
+            assert_eq!(protected.metadata()?.len(), 0);
+            Ok(())
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn explicit_empty_acl_snapshot_replays_as_present() -> io::Result<()> {
+            let directory = tempdir()?;
+            let file = File::create(directory.path().join("empty-acl.txt"))?;
+            let snapshot = MacosAclSnapshot::Present(b"!#acl 1\n".to_vec());
+
+            apply_macos_acl_snapshot(&snapshot, &file)?;
+
+            assert_eq!(read_macos_acl_snapshot(&file)?, snapshot);
+            Ok(())
+        }
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         #[test]
@@ -2116,6 +2568,10 @@ mod tests {
     use super::{
         apply_required_metadata, capture_required_metadata, required_metadata_matches_source,
     };
+    use super::{
+        creation_error_may_have_retained_private_file, retained_private_creation_error,
+        retained_private_file_creation_cause,
+    };
 
     #[test]
     fn change_token_components_are_exposed_exactly() {
@@ -2123,6 +2579,29 @@ mod tests {
 
         assert_eq!(token.primary(), 17);
         assert_eq!(token.secondary(), 29);
+    }
+
+    #[test]
+    fn retained_private_creation_errors_are_distinct_and_preserve_the_cause() {
+        let ordinary = io::Error::new(io::ErrorKind::PermissionDenied, "ordinary failure");
+        assert!(!creation_error_may_have_retained_private_file(&ordinary));
+
+        let permission_denied_code = if cfg!(windows) { 5 } else { 13 };
+        let marked =
+            retained_private_creation_error(io::Error::from_raw_os_error(permission_denied_code));
+        assert_eq!(marked.kind(), io::ErrorKind::PermissionDenied);
+        assert!(creation_error_may_have_retained_private_file(&marked));
+        assert!(marked.to_string().contains("security finalization"));
+        let source = retained_private_file_creation_cause(&marked)
+            .expect("the retained marker must preserve its original cause");
+        assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(source.raw_os_error(), Some(permission_denied_code));
+        let error_source = marked
+            .get_ref()
+            .and_then(std::error::Error::source)
+            .and_then(|source| source.downcast_ref::<io::Error>())
+            .expect("the marker's error chain must expose the native cause");
+        assert_eq!(error_source.raw_os_error(), Some(permission_denied_code));
     }
 
     #[test]
@@ -2271,23 +2750,17 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_acl_snapshot_detects_change_and_restores_only_captured_acl() -> io::Result<()> {
-        use std::process::Command;
-
         let directory = tempdir()?;
         let source_path = directory.path().join("source.txt");
         let destination_path = directory.path().join("destination.txt");
         fs::write(&source_path, b"source")?;
         fs::write(&destination_path, b"destination")?;
 
-        let add_status = Command::new("/bin/chmod")
-            .args(["+a", "everyone deny write"])
-            .arg(&source_path)
-            .status()?;
-        if !add_status.success() {
-            return Err(io::Error::other(format!(
-                "chmod failed to create the macOS ACL fixture: {add_status}"
-            )));
-        }
+        run_macos_chmod(
+            &source_path,
+            &["+a", "everyone deny write"],
+            "create the ACL fixture",
+        )?;
 
         let source = File::open(&source_path)?;
         let destination = File::options()
@@ -2302,15 +2775,7 @@ mod tests {
             source_facts
         )?);
 
-        let remove_status = Command::new("/bin/chmod")
-            .args(["-a#", "0"])
-            .arg(&source_path)
-            .status()?;
-        if !remove_status.success() {
-            return Err(io::Error::other(format!(
-                "chmod failed to mutate the macOS ACL fixture: {remove_status}"
-            )));
-        }
+        run_macos_chmod(&source_path, &["-a#", "0"], "mutate the ACL fixture")?;
         assert!(!required_metadata_matches_source(
             &metadata,
             &source,
@@ -2323,6 +2788,62 @@ mod tests {
             &destination,
             file_facts(&destination)?
         )?);
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_absent_acl_snapshot_clears_a_destination_acl() -> io::Result<()> {
+        let directory = tempdir()?;
+        let source_path = directory.path().join("source.txt");
+        let destination_path = directory.path().join("destination.txt");
+        fs::write(&source_path, b"source")?;
+        fs::write(&destination_path, b"destination")?;
+
+        run_macos_chmod(&source_path, &["-N"], "remove the source ACL fixture")?;
+
+        let source = File::open(&source_path)?;
+        let destination = File::options()
+            .read(true)
+            .write(true)
+            .open(&destination_path)?;
+        run_macos_chmod(
+            &destination_path,
+            &["+a", "everyone deny write"],
+            "create the destination ACL fixture",
+        )?;
+        let source_facts = file_facts(&source)?;
+        let metadata = capture_required_metadata(&source, source_facts)?;
+        assert!(!required_metadata_matches_source(
+            &metadata,
+            &destination,
+            file_facts(&destination)?
+        )?);
+
+        apply_required_metadata(&metadata, &destination)?;
+        assert!(required_metadata_matches_source(
+            &metadata,
+            &destination,
+            file_facts(&destination)?
+        )?);
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn run_macos_chmod(
+        path: &std::path::Path,
+        arguments: &[&str],
+        operation: &str,
+    ) -> io::Result<()> {
+        let status = std::process::Command::new("/bin/chmod")
+            .args(arguments)
+            .arg(path)
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "chmod failed to {operation}: {status}"
+            )));
+        }
         Ok(())
     }
 

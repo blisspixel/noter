@@ -1,10 +1,10 @@
 # Noter Product Requirements
 
-**Version:** 0.3
+**Version:** 0.4
 
-**Reviewed:** 2026-07-25
+**Reviewed:** 2026-07-26
 
-**Status:** Ratified product contract for v0.1 and v0.2
+**Status:** Ratified contract for the first public-quality release
 
 This document defines what Noter must do. [DESIGN.md](DESIGN.md) defines how,
 [ROADMAP.md](ROADMAP.md) defines when, and dated evidence proves whether a
@@ -13,18 +13,24 @@ latest ratified architecture decision record govern.
 
 ## 1. Product promise
 
-Noter is a focused, single-document, cross-platform plain-text editor. It opens,
-edits, and saves user-selected UTF-8 files without hidden transformation,
-network activity, telemetry, accounts, or proprietary document formats.
+Noter is a focused, single-document, cross-platform editor for ordinary `.txt`
+and `.md` files. It combines a classic Text Mode with an editable native Markdown
+Mode, diagnostics, and explicit formatting. The file on disk
+remains UTF-8 text or standard Markdown source. Noter has no telemetry, accounts,
+cloud service, or proprietary document format.
 
-The v0.1 release earns trust in ordinary text editing. Markdown assistance is a
-separate opt-in v0.2 capability and cannot weaken any v0.1 guarantee.
+The first public-quality release must earn trust in both text and Markdown
+workflows. Markdown depends on the same save, undo, lifecycle, accessibility,
+privacy, and performance guarantees as plain text. It is not a separate rich-text
+document model and cannot weaken those guarantees.
 
 ### 1.1 User mental model
 
 The product must preserve these expectations:
 
-1. The document is plain text and the visible source is the saved source.
+1. The document is text or Markdown source. Markdown Mode is a reversible,
+   directly editable projection of that source, and Text Mode always exposes the
+   exact saved representation.
 2. Save writes the current intended revision to the selected file.
 3. Save never silently changes encoding, BOM state, existing line endings, or
    Unicode normalization.
@@ -32,7 +38,9 @@ The product must preserve these expectations:
 5. New, Open, Reload, Close, and Quit cannot discard dirty work without an
    explicit Save, Discard, or Cancel decision.
 6. Crash recovery is a safety net, not a hidden replacement for Save.
-7. The application never connects to a network or reads unrelated documents.
+7. The application reads no unrelated document and performs no background
+   network activity. A user-initiated update action may contact the documented
+   release endpoint without document data or a persistent identifier.
 
 Any intentional exception requires visible UI, an explicit command, one-step
 undo where content changes, and a testable specification.
@@ -48,7 +56,7 @@ undo where content changes, and a testable specification.
 
 Feature presence alone is not verification.
 
-## 2. v0.1 functional requirements
+## 2. Core functional requirements
 
 ### 2.1 Document and file operations
 
@@ -74,8 +82,9 @@ Feature presence alone is not verification.
   replacing or following it implicitly. A failed or indeterminate save that may
   leave a private sibling must identify the safe random basename and give
   explicit inspection, recovery, retry, and removal guidance. If identity
-  inspection fails immediately after exclusive creation, report the creation
-  failure and any retained-sibling cleanup failure separately.
+  inspection or platform-specific privacy finalization fails immediately after
+  exclusive creation, report the creation failure and any retained-sibling
+  cleanup failure separately.
 - **FR-015 Recent files:** Maintain at most ten deduplicated user-opened paths.
   Missing or inaccessible entries fail safely and can be removed without
   reading their parent directories.
@@ -171,12 +180,39 @@ Feature presence alone is not verification.
 - **FR-086 Dialogs:** Use system file dialogs. The rendered application chrome is
   consistent and system-integrated; native widget appearance is not promised.
 
-## 3. v0.2 Markdown requirements
+### 2.6 Installation and updates
 
-- **FR-100 Opt in:** Markdown assistance is off by default and adds negligible
-  idle work when disabled.
-- **FR-101 Visible source:** Inline styling keeps all Markdown punctuation and
-  source text visible.
+- **FR-090 Install:** Provide supported per-user installer commands for Windows,
+  macOS, and Linux that select the correct published artifact, verify it, and do
+  not require administrator access by default.
+- **FR-091 Update command:** `noter update` checks the documented release channel,
+  shows the offered version and trust information, and performs a verified
+  upgrade without losing the working installation on failure.
+- **FR-092 Update UI:** Help > Check for Updates invokes the same version and
+  verification policy as the command-line updater.
+- **FR-093 Explicit network:** Update checks occur only after an explicit action
+  unless the user later enables a clearly labeled periodic check. Requests contain
+  no document data, path, account, or persistent installation identifier.
+- **FR-094 Package ownership:** A package-manager installation is updated by that
+  package manager. Noter must not replace files owned by another installer.
+- **FR-095 Lifecycle safety:** An update cannot begin while unsaved work exists and
+  must preserve settings, recovery records, and the previous executable until the
+  new artifact is verified and committed.
+- **FR-096 Uninstall:** Every supported install path documents complete uninstall
+  behavior and distinguishes binaries, preferences, and recovery data.
+
+The complete release and verification contract is in
+[INSTALLATION.md](INSTALLATION.md).
+
+## 3. Native Markdown requirements
+
+- **FR-100 Modes:** Text Mode opens any supported document as exact source.
+  Markdown files can switch to Markdown Mode without changing bytes. Text Mode
+  schedules no Markdown work.
+- **FR-101 Source authority:** Source remains the authoritative document.
+  Markdown Mode maps every direct edit to the smallest practical Markdown source
+  transaction, preserves untouched source, and exposes ambiguous constructs as
+  source instead of guessing.
 - **FR-102 Diagnostics:** Lint findings are non-mutating and include a rule ID,
   range, explanation, and explicit fix where available.
 - **FR-103 Format:** Formatting is an explicit command with a diff preview,
@@ -190,19 +226,34 @@ Feature presence alone is not verification.
   or make a network request.
 - **FR-107 Conformance:** Supported syntax is ratified against CommonMark plus an
   explicitly listed subset of GitHub Flavored Markdown, if any.
-- **FR-108 Views:** Provide explicit Source, Preview, and synchronized Split
-  Preview views. Source remains the authoritative editable document in every
-  view, and switching views never changes document bytes.
+- **FR-108 Views:** Provide Text Mode and Markdown Mode, with optional
+  reading-focused and synchronized split layouts. Both editable modes operate on
+  one source revision; switching modes never changes document bytes.
 - **FR-109 Formatting controls:** Provide selection-aware Bold, Italic,
   Strikethrough, Inline Code, Link, Heading, Quote, List, Task List, and Code
   Fence commands through accessible menus and documented keyboard paths. Each
   command is one explicit `EditTransaction` and one undo step.
-- **FR-110 Preview synchronization:** Preview output is revision-tagged, updates
-  without accepting stale parser results, and supports deterministic
-  source-to-preview scroll mapping in Split Preview.
-- **FR-111 Native restricted rendering:** Preview renders a restricted native
-  document model rather than arbitrary HTML or a webview. Unsupported or unsafe
-  constructs remain inert source text.
+- **FR-110 Layout synchronization:** Rendered output is revision-tagged, rejects
+  stale parser results, and supports deterministic Text-to-Markdown scroll
+  mapping in a split layout.
+- **FR-111 Native restricted rendering:** Markdown Mode renders a restricted
+  native document model rather than arbitrary HTML or a webview. Unsupported or
+  unsafe constructs remain inert and accessible in Text Mode.
+- **FR-112 Direct formatted editing:** Headings, emphasis, links, lists, tasks,
+  quotes, code, and supported tables are directly editable in Markdown Mode while
+  retaining keyboard, selection, IME, clipboard, and accessibility parity.
+- **FR-113 Minimal transactions:** A Markdown Mode operation changes only the source
+  range required by the user action. It cannot normalize unrelated blocks.
+- **FR-114 Malformed source:** Invalid, incomplete, or unsupported Markdown stays
+  visible and editable. Parser failure cannot block Text Mode or saving.
+- **FR-115 Quality profiles:** Diagnostics distinguish portable syntax problems
+  from optional style policy. Every rule has a stable ID, severity, explanation,
+  revision-tagged range, and safe fix only when unambiguous.
+- **FR-116 Formatter determinism:** Whole-document Format is deterministic and
+  idempotent. It preserves front matter and documented opaque regions, rejects a
+  supported semantic-tree change, previews the diff, and commits as one undo step.
+
+[MARKDOWN.md](MARKDOWN.md) is the normative interaction and safety specification.
 
 ## 4. Non-functional requirements
 
@@ -242,9 +293,12 @@ samples for latency percentiles, and explicit cold or warm state.
 | Input to painted frame | p95 at most 16.7 ms, p99 at most 33 ms |
 | Warm scroll frame time | p99 at most 16.7 ms |
 | First literal-search match in 50 MiB | p95 at most 800 ms |
+| Native Markdown edit to painted frame for 1 MiB | p95 at most 33 ms |
+| Markdown diagnostic refresh after ordinary edit | p95 at most 150 ms |
+| Text Mode to Markdown Mode switch for 1 MiB | p95 at most 250 ms |
 | Idle RSS on reference Windows machine | at most 120 MiB |
 | 50 MiB document RSS | at most 350 MiB |
-| Stripped Windows release binary | target under 10 MiB, ceiling 18 MiB |
+| Stripped Windows release binary | target under 10 MiB, ceiling 12 MiB |
 
 Files around 500 MB, files larger than memory, and instant open within one frame
 are deferred until evidence supports a separate viewer or editing mode.
@@ -275,9 +329,10 @@ are deferred until evidence supports a separate viewer or editing mode.
 
 ### 4.4 Security and privacy
 
-- **NFR-SEC-01 Zero network:** The application makes no outgoing connection,
-  update check, telemetry submission, remote asset request, or automatic crash
-  report.
+- **NFR-SEC-01 Explicit network only:** The editor makes no background outgoing
+  connection, telemetry submission, remote asset request, or automatic crash
+  report. A user-initiated update action may access only the documented release
+  service under FR-093.
 - **NFR-SEC-02 Local scope:** Read document content only from paths the user
   explicitly opened and versioned recovery records the application created.
 - **NFR-SEC-03 Private state:** Configuration and recovery use least-permission
@@ -301,8 +356,10 @@ Noter v0.1 is releasable only when:
    the release candidate for at least 14 days each without data loss.
 7. Install, portable use, upgrade, recovery, and uninstall are verified from
    clean environments.
+8. Text Mode, Markdown Mode, diagnostics, and Format pass the conformance,
+   source-preservation, semantic-equivalence, accessibility, and security gates.
 
-## 6. Explicit non-goals for v0.1 and v0.2
+## 6. Explicit non-goals
 
 - Tabs, projects, folder trees, and workspaces
 - Rich text or a proprietary document format
@@ -310,7 +367,7 @@ Noter v0.1 is releasable only when:
 - LSP, Git integration, terminal, plugins, or command palette
 - Accounts, synchronization, collaboration, or cloud storage
 - AI features
-- Built-in network access of any kind
+- Background networking, remote Markdown assets, or automatic telemetry
 - Non-UTF-8 save encodings
 - Arbitrary themes or a font marketplace
 - 500 MB editable-file guarantees
@@ -323,12 +380,14 @@ milestone. The minimum mapping is:
 | Contract area | Milestone | Primary evidence |
 | --- | --- | --- |
 | FR-010 to FR-019, NFR-REL-01 to 03 | M1 | golden bytes, property tests, injected I/O failures |
-| FR-020 to FR-028, NFR-REL-04 | M2 | reference-model edit and undo tests |
-| FR-060 to FR-069, NFR-REL-05 to 07 | M3 | state-machine, recovery, conflict, and crash tests |
-| FR-030 to FR-036, FR-080 to FR-086 | M4 and M5 | semantic UI tests and signed platform matrices |
-| Performance requirements | M5 and M6 | reproducible benchmark reports |
-| FR-100 to FR-111 | M7 | conformance, equivalence, idempotence, transaction, synchronization, safety, and UI tests |
-| Security and release requirements | Every gate, final in M6 | audits, runtime inspection, SBOM, provenance, release checklist |
+| FR-020 to FR-028, NFR-REL-04 | M3 | reference-model edit and undo tests |
+| FR-060 to FR-069, NFR-REL-05 to 07 | M4 | state-machine, recovery, conflict, and crash tests |
+| FR-030 to FR-036 | M2, M3, and M5 | shell, command, status, and production-editor UI tests |
+| FR-080 to FR-086 | M5 | semantic accessibility, IME, display, and platform matrices |
+| FR-090 to FR-096 | M7 | clean-machine install, update, rollback, and uninstall evidence |
+| Performance requirements | M5 to M7 | reproducible benchmark reports |
+| FR-100 to FR-116 | M6 | conformance, source mapping, equivalence, idempotence, synchronization, safety, accessibility, and UI tests |
+| Security and release requirements | Every gate, final in M7 | audits, runtime inspection, SBOM, provenance, release checklist |
 
 No requirement becomes Verified without a stable evidence link on the same
 commit.

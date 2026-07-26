@@ -50,9 +50,9 @@ The [cargo-mutants CI guidance](https://mutants.rs/ci.html) recommends
 `--in-place` for a disposable CI checkout. The tool documents that
 [`--in-place` cannot be combined with `--jobs`](https://mutants.rs/in-place.html),
 so each CI gate runs serially and uploads `mutants.out` even on failure. The
-current Linux job covers 556 candidates, the Windows job covers 476, and the
-macOS adapter job covers 169. The scopes intentionally overlap on common code;
-deduplicating exact mutation descriptions produces all 639 configured
+current Linux job covers 639 candidates, the Windows job covers 559, and the
+macOS adapter job covers 202. The scopes intentionally overlap on common code;
+deduplicating exact mutation descriptions produces all 747 configured
 supported-platform candidates with no missing entry. The filters are runner
 assignments, not a claim that every exclusion is inactive. Linux assigns several
 active cross-platform decisions with Windows-specific branches to the Windows
@@ -92,11 +92,12 @@ snapshots, and manual accessibility verification in later milestones.
 | Checker-expanded Windows-applicable run | 418 | 265 | 149 | 4 | 0 | 28.48 minutes |
 | Checker-expanded composite result | 418 | 270 | 148 | 0 | 0 | 31.04 minutes cumulative |
 | Windows native-adapter run before descriptor Drop proof | 57 | 39 | 18 | 0 | 0 | 10.68 minutes |
-| Final current-tree Windows native-adapter run | 58 | 40 | 18 | 0 | 0 | 3.25 minutes |
+| Last completed pre-creation-hardening Windows native-adapter run | 58 | 40 | 18 | 0 | 0 | 3.25 minutes |
 
 `Unviable` means the mutation did not compile. It is distinct from a survivor.
-The current local Windows core and adapter results have no missed mutation and
-no timeout. Earlier
+The completed local Windows core and predecessor adapter results have no missed
+mutation and no timeout. The current source enumerates 66 Windows native-adapter
+candidates and requires a fresh campaign. Earlier
 lower mutant counts reflect removal of redundant branches and mutation-prone
 loop bookkeeping, not an excluded source path.
 
@@ -170,6 +171,14 @@ size races only within a fixed bound. macOS serializes the ACL before commit and
 replays it through the destination descriptor; resource forks and other xattrs
 are applied from the bounded snapshot rather than copied live.
 
+Exact-commit run
+[30202690197](https://github.com/blisspixel/noter/actions/runs/30202690197)
+then proved that macOS reports a missing extended ACL from `acl_get_fd` as
+`ENOENT` rather than returning an allocated empty ACL. The current repair
+retains that as a distinct `Absent` snapshot state, replays it through the
+native remove-ACL sentinel, and adds a native test that distinguishes true
+absence from an allocated zero-entry ACL.
+
 Mutation scope now includes the native platform adapter. The focused Windows
 adapter campaign caught all 40 compiling behavioral mutations, classified 18
 type-level mutations as unviable, and had no miss, timeout, or recognized
@@ -189,7 +198,20 @@ target, then the entire 58-candidate campaign was repeated in one fresh target
 directory. The final single report is 40 caught and 18 genuine compiler
 rejections, and the infrastructure validator reports no recognized failure.
 
-The complete three-platform CI gate must still rerun the full 639-mutant union
+The settled worktree now enumerates 747 candidates: 639 assigned to Linux, 559
+to Windows, and 202 to macOS. Deduplicating the three scopes yields all 747
+configured candidates with no missing or outside entry. The focused Windows
+adapter scope is 66 candidates. The increase since the creation-hardening
+checkpoint includes the new UI-independent Markdown diagnostics module.
+
+The final focused Markdown diagnostics run enumerated 58 candidates. It caught
+54 and initially labeled four unviable, but the infrastructure validator found
+a Windows linker failure in the `FenceMarker::closes` result. A fresh isolated
+two-candidate rerun caught both variants, producing a composite 55 caught and
+three genuine compile-time rejections with zero missed and zero timed out. This
+is focused local evidence, not a substitute for the full platform matrix.
+
+The complete three-platform CI gate must still rerun the full 747-mutant union
 on one immutable commit before this expanded result becomes hosted exact-commit
 evidence.
 

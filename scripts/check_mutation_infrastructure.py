@@ -97,9 +97,7 @@ def main(arguments: list[str] | None = None) -> int:
     """Validate one cargo-mutants output directory."""
     arguments = sys.argv[1:] if arguments is None else arguments
     if len(arguments) != 1:
-        print(
-            "usage: check_mutation_infrastructure.py <mutants.out>", file=sys.stderr
-        )
+        print("usage: check_mutation_infrastructure.py <mutants.out>", file=sys.stderr)
         return 2
 
     try:

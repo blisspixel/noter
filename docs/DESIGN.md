@@ -2,7 +2,7 @@
 
 **Version:** 0.3
 
-**Reviewed:** 2026-07-25
+**Reviewed:** 2026-07-26
 
 **Status:** Active architecture contract
 
@@ -34,8 +34,9 @@ The current M1 worktree has:
   prohibition while wrapping the required native identity, metadata, commit,
   and synchronization operations;
 - 128-bit random, exclusive, owner-tracked sibling files with bounded collision
-  handling, owner-only Unix mode, a protected Windows DACL, strongest supported
-  file synchronization, and identity-and-content-safe cleanup;
+  handling, owner-only Unix mode, atomic macOS ACL-inheritance suppression, a
+  protected Windows DACL, strongest supported file synchronization, and
+  identity-and-content-safe cleanup;
 - a production `FilesystemStorage` adapter with metadata transfer, atomic
   existing-file replacement, exclusive new-file installation, documented
   Windows partial-state reconciliation, parent barriers, and exact destination
@@ -45,12 +46,15 @@ The current M1 worktree has:
   commit;
 - strict refusal for final links, read-only destinations, and unconfirmed
   hard-link separation;
-- 134 Windows-local workspace tests, 93.13 percent line coverage across the
-  expanded workspace trust kernel, and 90.18 percent whole-workspace line
+- persisted System, Light, and Dark themes plus a source-backed native Markdown
+  slice with formatted block editing and conservative diagnostics;
+- 170 Windows-local workspace tests, 93.53 percent line coverage across the
+  expanded workspace trust kernel, and 87.94 percent whole-workspace line
   coverage; and
 - a 418-mutant Windows core campaign classified as 270 caught and 148 unviable,
   plus a clean 58-mutant Windows native-adapter pass classified as 40 caught
-  and 18 unviable.
+  and 18 unviable. The settled source now enumerates a 747-candidate
+  three-platform union and requires a fresh campaign.
 
 The historical production-adapter checkpoint passes Windows, macOS, and Linux
 CI. The subsequent immutable Unix snapshot repair passes local Windows and
@@ -308,9 +312,10 @@ never infers commit state from a generic I/O error.
 2. Revalidate the target. If an external revision is present, return Conflict
    before creating a temporary file.
 3. Create an unpredictable sibling with create-new semantics. Never reuse or
-   truncate a guessed temporary name. If native identity inspection fails after
-   creation, preserve the primary error and report a distinct cleanup warning
-   naming the random sibling when handle-bound removal is unavailable.
+   truncate a guessed temporary name. If native identity inspection or required
+   platform privacy finalization fails after creation, preserve the primary
+   error and report a distinct cleanup warning naming the random sibling when
+   handle-bound removal is unavailable.
 4. Stream all bytes and flush user-space buffers.
 5. Validate the existing target's identity, metadata source, and read-only
    policy without widening private staging access. Refuse a Unix snapshot above
@@ -401,10 +406,17 @@ Save As stores the pre-dialog `TargetExpectation` inside an opaque preparation;
 confirmation consumes that exact value, so a rebound selection conflicts rather
 than being silently re-inspected and adopted.
 Read-only files are not made writable implicitly. New Unix files remain
-owner-only at mode 0600. Windows temporary and new files use a protected DACL
-granting full control only to the object owner and SYSTEM and deny competing
-write handles while owned, so permissive parent entries never expose or modify
-staged document bytes. Existing
+owner-only at mode 0600. Because mode alone does not suppress macOS inherited
+ACL entries, macOS creates each sibling with a zero-entry `no_inherit` bootstrap
+ACL and mode 0600 in one `openx_np` operation. The native fixture verifies that
+the immediate ACL has no inherited entries. At runtime, Noter removes the
+bootstrap ACL through the live descriptor and verifies true ACL absence before
+any document bytes are written. Failure
+closes the descriptor and reports the possible random zero-byte artifact without
+unlinking an unverified pathname. Windows temporary and new files use a
+protected DACL granting full control only to the object owner and SYSTEM and deny
+competing write handles while owned, so permissive parent entries never expose
+or modify staged document bytes. Existing
 Windows replacements still receive the destination metadata merged by
 `ReplaceFileW`. Existing Unix replacements remain mode 0600 through the exchange;
 the adapter captures required metadata into an immutable snapshot before commit,
@@ -419,7 +431,10 @@ and retry only within a fixed bound when metadata changes. macOS resource forks
 are covered by the same xattr budget. The ACL is serialized into the immutable
 snapshot before commit, reconstructed after the exchange, applied through the
 destination descriptor, and re-serialized for exact verification. No temporary
-ACL pathname is exposed. Resource-fork and other xattr values are applied from
+ACL pathname is exposed. A source with no extended ACL is represented by the
+distinct `Absent` snapshot state and replayed with macOS's native remove-ACL
+sentinel. This preserves the kernel-level distinction between absence and an
+allocated zero-entry ACL. Resource-fork and other xattr values are applied from
 the bounded immutable snapshot rather than copied live.
 
 No implementation may claim durable atomic save while these cases are silently
@@ -505,7 +520,7 @@ has no behavior is absent.
 
 ## 9. GUI and editor strategy
 
-### 9.1 M4 correctness adapter
+### 9.1 M2 correctness adapter
 
 The built-in egui `TextEdit` remains a bounded alpha adapter. Because its
 `TextBuffer` contract requires a contiguous string, the adapter maintains a
@@ -594,38 +609,50 @@ platform events where available and checked on focus elsewhere. Contrast,
 selection, focus, disabled state, and error state are tested, not selected only
 for appearance.
 
-## 12. Markdown v0.2
+## 12. Native Markdown architecture
 
-Markdown is source-first and operates on immutable revision snapshots after
-v0.1. The user can choose Source, Preview, or synchronized Split Preview.
-Source is the only editable authority; view changes and preview rendering never
-change document bytes.
+Markdown Mode and Text Mode share one authoritative Markdown source. Text Mode
+shows the exact source. Markdown Mode projects source ranges into native
+formatted blocks and maps direct edits back to the smallest practical source
+range. Switching modes does not modify bytes.
 
-1. Parse the ratified CommonMark dialect off the UI thread.
-2. Tag syntax spans and diagnostics with the source revision.
-3. Apply only non-mutating styling and diagnostic results that still match.
-4. Transform parser output into a restricted native document model. Do not
-   render arbitrary HTML or host the preview in a webview.
-5. Build explicit fixes and selection-aware Bold, Italic, Strikethrough, Inline
-   Code, Link, Heading, Quote, List, Task List, and Code Fence commands as
-   `EditTransaction` values. Every command has an accessible menu path, a
-   documented keyboard path where assigned, and exactly one undo step.
-6. Map stable source block ranges to preview blocks. Split Preview scroll
-   synchronization uses those mappings, ignores stale revisions, and never
-   infers an edit from preview position.
-7. For Format, produce a diff, parse before and after, reject semantic
-   differences, preserve BOM and EOL policy, and apply one undo transaction only
-   after confirmation.
+The current M2 slice is deliberately bounded. It parses through
+`pulldown-cmark`, renders restricted native blocks through `egui_commonmark`,
+opens a selected block as source-backed editable text, and provides eight core
+formatting actions. Four conservative diagnostics operate directly on source.
+This establishes the interaction direction but does not satisfy M6.
 
-Remote images, link fetching, HTML execution, and implicit formatting have no
-implementation path. Markdown disabled schedules no parser work.
+The M6 architecture completes the model:
+
+1. Parse the ratified CommonMark and selected GFM dialect off the UI thread from
+   an immutable revision snapshot.
+2. Tag blocks, source ranges, styling, and diagnostics with that revision, and
+   discard stale results.
+3. Transform parser output into a restricted native document model. Raw HTML is
+   inert, remote assets are not loaded, and no webview is used.
+4. Express direct formatted edits, source edits, formatting actions, and safe
+   fixes as the same minimal `EditTransaction` type used by Text Mode.
+5. Preserve unsupported source as opaque editable ranges and reveal source when
+   a formatted edit is ambiguous.
+6. Give every command an accessible menu path, a documented keyboard path where
+   assigned, and exactly one undo step.
+7. For whole-document Format, produce a reviewed diff, parse before and after,
+   reject unsupported semantic differences, preserve BOM and EOL policy, and
+   apply one transaction only after confirmation.
+
+A reading-focused presentation or synchronized split layout may be added later,
+but neither defines Markdown support. The primary feature is a directly editable
+native Markdown document whose saved representation remains standard source.
+Text Mode schedules no Markdown work.
 
 ## 13. Performance and concurrency
 
 Noter uses bounded worker threads and message passing, not a general async
 runtime, unless later evidence justifies one. Work items carry cancellation and
-revision tokens. The render thread never waits for disk sync, full-file search,
-recovery serialization, or Markdown parsing.
+revision tokens. The current block-focused Markdown slice parses synchronously;
+moving that work behind revision-tagged background parsing is an M6 requirement.
+At that milestone, the render thread must not wait for disk sync, full-file
+search, recovery serialization, or Markdown parsing.
 
 The benchmark corpus contains:
 
@@ -650,8 +677,10 @@ Internal errors are typed by operation and commit state. User messages answer:
 
 Tracing is off or minimal by default. Logs never include document content,
 clipboard content, recovery bytes, or full paths unless a user explicitly
-exports a diagnostic bundle and previews it. The application has no network
-client, updater, remote fonts, remote images, or telemetry endpoint.
+exports and reviews a diagnostic bundle. Editing has no background network
+client, remote fonts, remote images, or telemetry endpoint. An explicit update
+action may contact only the documented release channel under the constraints in
+[PRIVACY.md](PRIVACY.md) and [INSTALLATION.md](INSTALLATION.md).
 
 ## 15. Verification architecture
 
@@ -707,8 +736,8 @@ M1 adds `proptest` 1.11 as a development-only dependency for shrinking
 counterexamples to byte-round-trip, line-ending, edit, and state-machine
 invariants. Default features are disabled and only `std` is enabled, excluding
 the unneeded fork, timeout, and bit-set surfaces. Its Rust requirement is below
-Noter's pinned toolchain, its license is MIT or Apache-2.0, and it adds nothing
-to release binaries. It can be removed only if an equivalent shrinking
+Noter's pinned toolchain. The `proptest` dependency is dual-licensed MIT or
+Apache-2.0 and adds nothing to release binaries. It can be removed only if an equivalent shrinking
 property-test harness replaces the required invariant suites.
 
 The addition resolves eight test-only packages, moving the cross-target lock
@@ -751,7 +780,8 @@ bringing the graph to 338 packages.
 
 M1 directly uses `getrandom` 0.4 only to fill the 16-byte private sibling-name
 nonce from the operating system's preferred random source. No optional features
-are enabled. The crate is MIT or Apache-2.0, declares Rust 1.85, and was already
+are enabled. The `getrandom` dependency is dual-licensed MIT or Apache-2.0,
+declares Rust 1.85, and was already
 present at version 0.4.3 through the development graph, so direct use adds no
 lock entry or duplicate. It has no network capability; its intended capability
 is narrowly the operating-system entropy interface. Random-source errors and
@@ -767,17 +797,23 @@ descriptor-based enumeration and value reads use the already-resolved `libc`
 0.2 package. Linux also probes POSIX ACL, SELinux, and capability names
 explicitly; macOS uses `libc` for ACL copy and serialization. `rustix` and
 `libc` were already in the lockfile; `xattr` adds one package, bringing the
-cross-target graph to 339. All three are
-MIT or Apache-family licensed, have no application network capability, and build
-under the pinned toolchain. `xattr` does not publish an MSRV, so CI establishes
-compatibility.
+M1 adapter checkpoint to 339 packages. All three are MIT or Apache-family
+licensed, have no application network capability, and build under the pinned
+toolchain. `xattr` does not publish an MSRV, so CI establishes compatibility.
 
-With the adapter reachable from the GUI, the stripped Windows release is
-4,953,088 bytes, or 4.72 MiB, compared with the 4,748,800-byte M0 baseline. The
-2026-07-25 RustSec audit of all 339 locked packages is clean. This measured delta
-is accepted for native metadata preservation, cryptographic conflict detection,
-and reconciled commit semantics. Later release gates still enforce the 12 MiB
-ceiling and require duplicate, license, source, and capability audits.
+Those statements describe third-party dependency licenses. Noter itself is
+licensed only under Apache-2.0, as declared by both package manifests and the
+root [LICENSE](../LICENSE).
+
+The current graph contains 418 cross-target packages after the egui 0.35 and
+egui_commonmark 0.24 upgrades. The normal stripped Windows release is 7,344,128
+bytes, or 7.00 MiB, compared with the 4,748,800-byte M0 baseline. The increase
+includes native metadata preservation, cryptographic conflict detection,
+reconciled commit semantics, current text shaping, persisted themes, and the
+early native Markdown surface. Release gates still enforce the 12 MiB ceiling.
+The checked-in cargo-deny policy gates licenses, sources, advisories, wildcard
+versions, and duplicate-version visibility; a release capability audit remains
+required.
 
 CI uses the pinned Rust toolchain, locked Cargo graph, immutable action commits,
 minimum permissions, formatting, strict Clippy, cross-platform tests, coverage,
@@ -792,20 +828,20 @@ credentials exist, and cargo-dist artifacts verified on clean systems.
 | F1 | Partial or truncated save replaces original | 10 | pre-commit fault injection and durable replacement | M1 |
 | F2 | Older save clears newer dirty revision | 10 | revision-tagged snapshot and completion tests | M1 |
 | F3 | Encoding, BOM, or EOL changes silently | 9 | strict loader, byte goldens, property tests | M1 |
-| F4 | Dirty lifecycle discards content | 10 | one pure state machine and model tests | M3 |
-| F5 | Recovery is missing, corrupt, or belongs elsewhere | 9 | version, checksum, identity, quarantine, crash tests | M3 |
-| F6 | External revision is overwritten | 9 | identity revalidation and explicit conflict decision | M3 |
-| F7 | Undo restores the wrong content or selection | 8 | inverse transactions and reference-model tests | M2 |
-| F8 | IME commit corrupts or duplicates text | 9 | composition model, real IME matrix, semantic tests | M4/M5 |
-| F9 | Screen-reader user cannot inspect or edit text | 8 | accessibility contract and real reader matrix | M4/M5 |
+| F4 | Dirty lifecycle discards content | 10 | one pure state machine and model tests | M4 |
+| F5 | Recovery is missing, corrupt, or belongs elsewhere | 9 | version, checksum, identity, quarantine, crash tests | M4 |
+| F6 | External revision is overwritten | 9 | identity revalidation and explicit conflict decision | M4 |
+| F7 | Undo restores the wrong content or selection | 8 | inverse transactions and reference-model tests | M3 |
+| F8 | IME commit corrupts or duplicates text | 9 | composition model, real IME matrix, semantic tests | M5 |
+| F9 | Screen-reader user cannot inspect or edit text | 8 | accessibility contract and real reader matrix | M5 |
 | F10 | Long line or large file freezes the UI | 7 | bounded layout, cancellation, adversarial benchmarks | M5 |
 | F11 | Config corruption prevents startup | 5 | versioning, per-field fallback, durable state writes | M4 |
 | F12 | Sensitive content enters logs | 8 | redaction tests and diagnostic review | Every gate |
 | F13 | A dependency introduces network behavior | 9 | feature audit and runtime traffic inspection | Every gate |
-| F14 | Markdown formatter changes meaning | 9 | diff preview, parse equivalence, idempotence, undo | M7 |
+| F14 | Markdown formatter changes meaning | 9 | reviewed diff, parse equivalence, idempotence, undo | M6 |
 | F15 | Platform reports failure after changing replacement state | 10 | explicit unknown-commit outcome, backup-aware reconciliation, recovery retention | M1 |
 | F16 | Atomic replacement silently drops permissions or extended metadata | 9 | platform metadata fixtures and pre-commit refusal on preservation failure | M1 |
-| F17 | Save replaces a symlink entry or surprises other hard links | 9 | link identity revalidation, Save As refusal, hard-link confirmation | M1/M3 |
+| F17 | Save replaces a symlink entry or surprises other hard links | 9 | link identity revalidation, Save As refusal, hard-link confirmation | M1/M4 |
 | F18 | Resource-fork or extended-attribute metadata exhausts memory or temporary storage | 7 | preallocation byte and count limits, bounded retries, pathless serialized macOS ACL snapshot | M1 |
 
 The FMEA is updated whenever a test, incident, dependency, or platform behavior

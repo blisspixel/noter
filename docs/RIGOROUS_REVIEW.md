@@ -67,7 +67,7 @@ insertion rules, and explicit undoable conversion.
 **Finding:** Coalescing examples did not prove that edits, selections, and
 inverse operations preserve information.
 
-**Disposition:** Accepted. M2 now requires revision-tagged edit transactions,
+**Disposition:** Accepted. M3 now requires revision-tagged edit transactions,
 exact inverses, a bounded history, a simple reference model, and property tests
 after every undo and redo.
 
@@ -94,9 +94,11 @@ contracts. M5 cannot pass without real IME and screen-reader evidence.
 **Finding:** A "Ruff for Markdown" can change meaning through heading, list,
 table, whitespace, or extension decisions. Regex formatting was unsafe.
 
-**Disposition:** Accepted. Markdown follows v0.1. Styling is source-visible,
-diagnostics are non-mutating, and Format requires a diff preview, parse
-equivalence, EOL/BOM preservation, confirmation, and one-step undo.
+**Disposition:** Accepted. The first public-quality release includes Markdown
+after its text, transaction, lifecycle, and accessibility prerequisites. Text
+Mode remains exact source, Markdown Mode is a directly editable source-backed
+projection, diagnostics are non-mutating, and Format requires a reviewed diff,
+parse equivalence, EOL/BOM preservation, confirmation, and one-step undo.
 
 ### R-09 Dependency selection lacked governance
 

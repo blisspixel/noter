@@ -24,13 +24,59 @@ const BACKUP_SUFFIX: &str = ".bak";
 #[derive(Debug)]
 struct RetainedCreationArtifact {
     basename: String,
-    inspection_kind: io::ErrorKind,
-    cleanup_kind: io::ErrorKind,
+    cause: RetainedCreationCause,
+}
+
+#[derive(Debug)]
+enum RetainedCreationCause {
+    IdentityInspection {
+        inspection_kind: io::ErrorKind,
+        cleanup_kind: io::ErrorKind,
+    },
+    SecurityFinalization {
+        failure_kind: io::ErrorKind,
+        os_code: Option<i32>,
+    },
 }
 
 impl RetainedCreationArtifact {
+    fn primary_error(&self) -> StorageError {
+        match self.cause {
+            RetainedCreationCause::IdentityInspection {
+                inspection_kind, ..
+            } => StorageError::new(
+                SaveStage::CreateTemporary,
+                format!(
+                    "inspect the identity of the new private sibling failed with {inspection_kind:?}"
+                ),
+            ),
+            RetainedCreationCause::SecurityFinalization {
+                failure_kind,
+                os_code,
+            } => {
+                let os_code = os_code.map_or_else(String::new, |code| format!(", OS code {code}"));
+                StorageError::new(
+                    SaveStage::CreateTemporary,
+                    format!(
+                        "finalize private sibling security failed with {failure_kind:?}{os_code}"
+                    ),
+                )
+            }
+        }
+    }
+
     fn cleanup_error(&self) -> StorageError {
-        StorageError::new(SaveStage::Cleanup, self.to_string())
+        let message = match self.cause {
+            RetainedCreationCause::IdentityInspection { cleanup_kind, .. } => format!(
+                "handle-bound cleanup failed with {cleanup_kind:?}; the newly created private sibling `{}` may remain beside the destination. Noter had not written application bytes, but a same-authority process could have changed it. Inspect it before retrying or removing it.",
+                self.basename
+            ),
+            RetainedCreationCause::SecurityFinalization { .. } => format!(
+                "the zero-byte sibling created with the requested private no-inherit ACL may remain as `{}` beside the destination. A same-authority process could have changed it. Inspect it before retrying or removing it.",
+                self.basename
+            ),
+        };
+        StorageError::new(SaveStage::Cleanup, message)
     }
 }
 
@@ -38,8 +84,9 @@ impl fmt::Display for RetainedCreationArtifact {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "creation-time identity inspection failed with {:?}, then handle-bound cleanup failed with {:?}. The newly created private sibling `{}` may remain beside the destination. Noter had not written application bytes, but a same-authority process could have changed it. Inspect it before retrying or removing it.",
-            self.inspection_kind, self.cleanup_kind, self.basename
+            "{}; {}",
+            self.primary_error().message(),
+            self.cleanup_error().message()
         )
     }
 }
@@ -252,15 +299,20 @@ impl Drop for TemporaryFile {
 /// Creates an unpredictable, exclusive sibling in the destination directory.
 ///
 /// The sibling starts owner-only on Unix and is opened for both reading and
-/// writing. Existing-file metadata is finalized only after atomic exchange, so
-/// staged bytes are never exposed through a widened precommit mode. Its name
-/// contains 128 bits from the operating-system random source.
+/// writing. macOS suppresses inherited ACLs atomically and removes its bootstrap
+/// ACL before this function can return a writable sibling. Existing-file
+/// metadata is finalized only after atomic exchange, so staged bytes are never
+/// exposed through a widened precommit mode. Its name contains 128 bits from the
+/// operating-system random source.
 ///
 /// # Errors
 ///
 /// Returns an error when the destination has no filename, the operating-system
 /// random source fails, or an exclusive sibling cannot be created after a
-/// bounded number of collisions.
+/// bounded number of collisions. On macOS, creation also fails when the private
+/// mode or bootstrap ACL cannot be finalized and verified. Such a failure can
+/// carry a retained-artifact warning because the random zero-byte sibling was
+/// already created.
 pub fn create_unique_sibling(destination: &Path) -> io::Result<TemporaryFile> {
     create_unique_sibling_with(destination, &mut OsRandom)
 }
@@ -309,8 +361,10 @@ fn create_unique_sibling_with_identity(
                             error_kind,
                             RetainedCreationArtifact {
                                 basename,
-                                inspection_kind: error_kind,
-                                cleanup_kind: cleanup_error.kind(),
+                                cause: RetainedCreationCause::IdentityInspection {
+                                    inspection_kind: error_kind,
+                                    cleanup_kind: cleanup_error.kind(),
+                                },
                             },
                         ));
                     }
@@ -325,10 +379,11 @@ fn create_unique_sibling_with_identity(
                     cleanup_armed: true,
                 });
             }
-            Err(error) => match error.kind() {
-                io::ErrorKind::AlreadyExists => {}
-                _ => return Err(error),
-            },
+            Err(error) => {
+                let retained_cause = noter_platform::retained_private_file_creation_cause(&error)
+                    .map(|cause| (cause.kind(), cause.raw_os_error()));
+                classify_exclusive_creation_failure(basename, error, retained_cause)?;
+            }
         }
     }
 
@@ -336,6 +391,30 @@ fn create_unique_sibling_with_identity(
         io::ErrorKind::AlreadyExists,
         "could not create an exclusive random sibling after 16 attempts",
     ))
+}
+
+fn classify_exclusive_creation_failure(
+    basename: String,
+    error: io::Error,
+    retained_cause: Option<(io::ErrorKind, Option<i32>)>,
+) -> io::Result<()> {
+    if let Some((failure_kind, os_code)) = retained_cause {
+        return Err(io::Error::new(
+            failure_kind,
+            RetainedCreationArtifact {
+                basename,
+                cause: RetainedCreationCause::SecurityFinalization {
+                    failure_kind,
+                    os_code,
+                },
+            },
+        ));
+    }
+    if error.kind() == io::ErrorKind::AlreadyExists {
+        Ok(())
+    } else {
+        Err(error)
+    }
 }
 
 fn open_exclusive(path: &Path) -> io::Result<File> {
@@ -1298,14 +1377,15 @@ fn redacted_io_error(stage: SaveStage, operation: &str, error: &io::Error) -> St
 }
 
 fn temporary_creation_failure(error: &io::Error) -> TemporaryCreationFailure {
-    let cleanup_error = error
+    let retained_artifact = error
         .get_ref()
-        .and_then(|source| source.downcast_ref::<RetainedCreationArtifact>())
-        .map(RetainedCreationArtifact::cleanup_error);
-    TemporaryCreationFailure::new(
-        redacted_io_error(SaveStage::CreateTemporary, "create private sibling", error),
-        cleanup_error,
-    )
+        .and_then(|source| source.downcast_ref::<RetainedCreationArtifact>());
+    let primary_error = retained_artifact.map_or_else(
+        || redacted_io_error(SaveStage::CreateTemporary, "create private sibling", error),
+        RetainedCreationArtifact::primary_error,
+    );
+    let cleanup_error = retained_artifact.map(RetainedCreationArtifact::cleanup_error);
+    TemporaryCreationFailure::new(primary_error, cleanup_error)
 }
 
 #[cfg(test)]
@@ -2514,15 +2594,73 @@ mod tests {
     fn retained_creation_artifact_message_is_exact_and_actionable() {
         let artifact = RetainedCreationArtifact {
             basename: ".noter-save-00112233445566778899aabbccddeeff.tmp".to_owned(),
-            inspection_kind: io::ErrorKind::PermissionDenied,
-            cleanup_kind: io::ErrorKind::Unsupported,
+            cause: RetainedCreationCause::IdentityInspection {
+                inspection_kind: io::ErrorKind::PermissionDenied,
+                cleanup_kind: io::ErrorKind::Unsupported,
+            },
         };
 
         assert_eq!(
             artifact.to_string(),
-            "creation-time identity inspection failed with PermissionDenied, then handle-bound cleanup failed with Unsupported. The newly created private sibling `.noter-save-00112233445566778899aabbccddeeff.tmp` may remain beside the destination. Noter had not written application bytes, but a same-authority process could have changed it. Inspect it before retrying or removing it."
+            "inspect the identity of the new private sibling failed with PermissionDenied; handle-bound cleanup failed with Unsupported; the newly created private sibling `.noter-save-00112233445566778899aabbccddeeff.tmp` may remain beside the destination. Noter had not written application bytes, but a same-authority process could have changed it. Inspect it before retrying or removing it."
         );
+        assert_eq!(artifact.primary_error().stage(), SaveStage::CreateTemporary);
         assert_eq!(artifact.cleanup_error().stage(), SaveStage::Cleanup);
+    }
+
+    #[test]
+    fn retained_security_finalization_message_is_exact_and_actionable() {
+        let artifact = RetainedCreationArtifact {
+            basename: ".noter-save-00112233445566778899aabbccddeeff.tmp".to_owned(),
+            cause: RetainedCreationCause::SecurityFinalization {
+                failure_kind: io::ErrorKind::InvalidData,
+                os_code: Some(22),
+            },
+        };
+
+        assert_eq!(
+            artifact.to_string(),
+            "finalize private sibling security failed with InvalidData, OS code 22; the zero-byte sibling created with the requested private no-inherit ACL may remain as `.noter-save-00112233445566778899aabbccddeeff.tmp` beside the destination. A same-authority process could have changed it. Inspect it before retrying or removing it."
+        );
+        assert_eq!(
+            artifact.primary_error().message(),
+            "finalize private sibling security failed with InvalidData, OS code 22"
+        );
+        assert!(!artifact.cleanup_error().message().contains("OS code"));
+        assert!(!artifact.cleanup_error().message().contains('\\'));
+        assert_eq!(artifact.cleanup_error().stage(), SaveStage::Cleanup);
+    }
+
+    #[test]
+    fn exclusive_creation_failure_classifier_covers_every_disposition() {
+        let basename = ".noter-save-00112233445566778899aabbccddeeff.tmp";
+        let retained = classify_exclusive_creation_failure(
+            basename.to_owned(),
+            io::Error::other("outer marker"),
+            Some((io::ErrorKind::InvalidData, Some(22))),
+        )
+        .expect_err("security finalization must preserve the random sibling");
+        assert_eq!(retained.kind(), io::ErrorKind::InvalidData);
+        assert!(retained.to_string().contains(basename));
+        assert!(retained.to_string().contains("OS code 22"));
+
+        assert!(
+            classify_exclusive_creation_failure(
+                basename.to_owned(),
+                io::Error::new(io::ErrorKind::AlreadyExists, "collision"),
+                None,
+            )
+            .is_ok(),
+            "an exclusive-name collision must retry"
+        );
+
+        let ordinary = classify_exclusive_creation_failure(
+            basename.to_owned(),
+            io::Error::from_raw_os_error(5),
+            None,
+        )
+        .expect_err("ordinary creation failures must remain terminal");
+        assert_eq!(ordinary.raw_os_error(), Some(5));
     }
 
     #[test]

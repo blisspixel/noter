@@ -1,6 +1,6 @@
-# Exceptional UX for Noter
+# Noter UX Direction
 
-**Reviewed:** 2026-07-25
+**Reviewed:** 2026-07-26
 
 This is the experiential direction. [REQUIREMENTS.md](REQUIREMENTS.md) owns
 behavior and [ROADMAP.md](ROADMAP.md) owns measurable delivery gates.
@@ -20,7 +20,7 @@ Noter should feel predictable before it feels clever:
 The best trust UI is consistent behavior. Status indicators and dialogs support
 that behavior rather than compensating for ambiguity.
 
-## 2. Text is the visual hierarchy
+## 2. The document is the visual hierarchy
 
 The editing surface receives most of the window. Chrome is compact, calm, and
 legible:
@@ -57,12 +57,21 @@ may help without taking ownership from the user:
 - no alert relies on color alone;
 - keyboard and screen-reader users receive the same state and choices.
 
-## 5. Markdown follows the plain-text release
+## 5. Text Mode and Markdown Mode serve different needs
 
-Markdown assistance keeps punctuation visible. Diagnostics do not mutate text.
-Formatting requires an explicit command, a diff preview, a semantic-equivalence
-check, and confirmation. Markdown disabled means no background parser and no
-behavioral difference from a plain-text document.
+Text Mode is the classic notepad surface and can open any supported text file,
+including Markdown, as exact source. Markdown Mode displays the same `.md` source
+as clean formatted content and remains directly editable. Bold appears bold,
+headings have hierarchy, and list items behave like lists; each edit is mapped
+back to the smallest practical Markdown source transaction.
+
+Switching modes never changes bytes. Text Mode remains available when source is
+malformed or a construct is unsupported. Markdown Mode is a native editor and
+viewer, not a web preview or proprietary rich-text document.
+
+Diagnostics do not mutate text. Whole-document formatting requires an explicit
+command, a diff, a supported semantic-equivalence check, and confirmation. Text
+Mode schedules no Markdown work.
 
 ## 6. The quality test
 
@@ -71,4 +80,4 @@ documentation. An unfamiliar user should recover from every error without
 guessing. A keyboard, IME, or screen-reader user should not receive a reduced
 editor. Performance should be demonstrated, not described with adjectives.
 
-That combination of restraint, evidence, and care is the exceptional UX.
+That combination of restraint, evidence, and care is the intended experience.

@@ -1,22 +1,33 @@
-# docs/
+# Noter Documentation
 
-Supporting documentation that is part of the product definition.
+The root [README](../README.md) is the concise project introduction. This
+directory contains the product contracts, engineering decisions, and evidence
+needed to verify the work.
 
-- `RESEARCH.md` - dated evidence and decisions behind the product direction.
-- `BASELINE.md` - measured M0 repository, coverage, size, and dependency baseline.
-- `M1_MUTATION_EVIDENCE.md` - reproducible trust-kernel mutation campaign and results.
-- `M1_SECURITY_REVIEW.md` - scoped M1 security findings, remediation, and residual evidence gaps.
-- `ROADMAP.md` - milestone order, quality gates, metrics, and next backlog.
-- `REQUIREMENTS.md` - ratified product contract for v0.1 and v0.2.
-- `DESIGN.md` - active technical architecture, trust protocols, and FMEA.
-- `CODE-QUALITY-STANDARDS.md` - implementation, verification, review, and merge contract.
-- `manual-test-matrix.md` - the living checklist used for milestone and release sign-off. Copy it and date the copies for each release candidate.
-- `PRIVACY.md` - privacy contract.
-- `RIGOROUS_REVIEW.md` - prior internal critical review.
-- `UX_VISION.md` - aspirational UX notes. The roadmap owns measurable commitments.
-- `adr/` - architecture decision records for safety-critical and expensive choices.
+## Product contracts
 
-Future documents include `USAGE.md`, `RECOVERY.md`, architecture decision
-records, performance baselines, stewardship guidance, and release evidence.
+- [ROADMAP.md](ROADMAP.md): milestone status, order, and exit evidence
+- [REQUIREMENTS.md](REQUIREMENTS.md): testable product and release requirements
+- [MARKDOWN.md](MARKDOWN.md): native Markdown Mode contract and current limits
+- [INSTALLATION.md](INSTALLATION.md): current source install and release updater contract
+- [PRIVACY.md](PRIVACY.md): local-first data and network policy
+- [UX_VISION.md](UX_VISION.md): focused interaction principles
 
-These files are referenced from the root planning documents and from CI/release processes.
+## Engineering contracts
+
+- [DESIGN.md](DESIGN.md): active architecture and failure analysis
+- [CODE-QUALITY-STANDARDS.md](CODE-QUALITY-STANDARDS.md): implementation and merge gates
+- [manual-test-matrix.md](manual-test-matrix.md): platform release checklist
+- [adr/](adr/): accepted architecture decisions
+
+## Evidence and review
+
+- [RESEARCH.md](RESEARCH.md): dated primary-source research and decisions
+- [BASELINE.md](BASELINE.md): measured repository baseline
+- [M1_SECURITY_REVIEW.md](M1_SECURITY_REVIEW.md): durable-save security review
+- [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md): mutation-test evidence
+- [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md): critical design review and dispositions
+
+Release evidence is added only after the stated command and platform checks have
+run on the cited commit. Planned documents remain in the
+[roadmap](ROADMAP.md), not in the root README.

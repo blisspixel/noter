@@ -8,6 +8,8 @@ pub mod file_observation;
 pub mod fs_storage;
 /// Exact line-ending classification and insertion policy.
 pub mod line_endings;
+/// Conservative, source-based Markdown diagnostics.
+pub mod markdown;
 /// Monotonic document revision values.
 pub mod revision;
 /// Revision-tagged, fault-injectable save protocol.

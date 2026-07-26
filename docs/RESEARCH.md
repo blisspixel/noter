@@ -1,6 +1,8 @@
 # Noter Product and Engineering Research
 
-**Research date:** 2026-07-25
+**Initial research:** 2026-07-25
+
+**Updated:** 2026-07-26
 
 This document records the evidence behind the roadmap. It is intentionally
 separate from the product requirements so that claims can be revised when the
@@ -21,8 +23,9 @@ The immediate priority is therefore the trust kernel, not the custom renderer:
 3. Complete the classic single-document workflow on the existing editor control.
 4. Run a time-boxed custom-editor feasibility gate for performance, IME, and
    accessibility before committing to a ground-up widget.
-5. Ship and dogfood the reliable plain-text editor before adding Markdown
-   formatting.
+5. Stabilize the text transaction, lifecycle, and accessibility foundations
+   before expanding the early Markdown slice. The first public-quality release
+   includes both Text Mode and native Markdown Mode.
 
 ## Repository evidence
 
@@ -45,8 +48,8 @@ At that point:
   properties named by the roadmap were not all implemented.
 - Formatting and strict Clippy failed locally.
 - The CI document check still referenced files that had moved into `docs/`.
-- The local branch was five commits ahead of and one commit behind
-  `origin/master`, so publishing requires an explicit history reconciliation.
+- The local and public histories had diverged, so publishing required explicit
+  reconciliation before consolidating on one `main` branch.
 
 The statement that Phase 1 was complete was therefore not supported by its own
 quality gate.
@@ -234,8 +237,10 @@ style rules.
 
 Product decision:
 
-- Markdown work follows the trustworthy plain-text release.
-- Inline styling keeps source punctuation visible and never changes bytes.
+- Markdown implementation follows the trustworthy text prerequisites, but it is
+  part of the first public-quality release rather than a later optional release.
+- Text Mode always exposes source; Markdown Mode is a directly editable native
+  projection of the same source.
 - Diagnostics are non-mutating.
 - Format is an explicit command that previews a diff, verifies AST equivalence,
   applies one undoable transaction, and preserves the document EOL/BOM policy.
@@ -350,10 +355,14 @@ entry. Portable Unix unlink cannot express the same object-bound condition, so
 Noter retains uncommitted siblings and displaced originals with explicit cleanup
 warnings. Unix replacement uses an atomic exchange, and siblings remain mode
 0600 until their bytes have committed. An absent Unix destination keeps that
-owner-only mode as the intentional v0.1 new-file policy. Windows staging and new
-files use a protected DACL granting full control only to the owner and SYSTEM;
-broad parent entries are not inherited. Direct `getrandom` use adds no lock
-entry because the exact version was already present.
+owner-only mode as the intentional v0.1 new-file policy. On macOS, mode 0600
+alone does not suppress inherited ACL entries. Noter therefore passes a
+zero-entry ACL with the global `no_inherit` flag and mode 0600 to `openx_np`
+atomically. A native fixture verifies that no parent ACE was inherited. Runtime
+removes the bootstrap ACL through the live file descriptor and verifies true
+absence before writing bytes. Windows staging and new files use a protected DACL granting full control
+only to the owner and SYSTEM; broad parent entries are not inherited. Direct
+`getrandom` use adds no lock entry because the exact version was already present.
 
 For Linux metadata, the adapter first commits the owner-only sibling through an
 atomic exchange. It then uses descriptor-based `fchown` and copies and verifies
@@ -369,12 +378,15 @@ hard-link, mode, ownership, and synchronization operations. The Linux and macOS
 metadata adapters use `xattr` 1.6, the one new package in the 339-package lock
 graph.
 
-On macOS, `acl_to_text` serializes the source ACL into the immutable pre-commit
-snapshot. After the owner-only exchange commits, `acl_from_text` reconstructs
-that ACL and `acl_set_fd` applies it through the destination descriptor. Noter
-applies owner and mode separately and replays bounded extended-attribute values
-from the same snapshot, so a successful save advances modification time. See
-the [Xcode `acl(3)` manual](https://keith.github.io/xcode-man-pages/acl.3.html).
+On macOS, `acl_get_fd` obtains the source ACL and `acl_to_text` serializes an
+existing ACL into the immutable pre-commit snapshot. An `ENOENT` result denotes
+ACL absence and remains distinct from an allocated empty ACL. After the
+private exchange commits, `acl_from_text` reconstructs a present ACL or the
+native `_FILESEC_REMOVE_ACL` sentinel restores absence; `acl_set_fd` applies
+either state through the destination descriptor. Noter applies owner and mode
+separately and replays bounded extended-attribute values from the same snapshot,
+so a successful save advances modification time. See the
+[Xcode `acl(3)` manual](https://keith.github.io/xcode-man-pages/acl.3.html).
 The sibling receives `F_FULLFSYNC` where supported and falls back to `sync_all`
 only when the stronger operation is reported unsupported or invalid.
 
@@ -399,39 +411,48 @@ checksums, pin GitHub Actions by immutable commit SHA, minimize token permission
 and attach provenance. Current research found cargo-dist 0.32.0, so the existing
 0.28.0 planning comment must be refreshed when distribution work starts.
 
-## Markdown assist research update
+## Native Markdown and text-rendering update
 
-The requested Markdown view and formatting controls do not exist in the current
-prototype. They remain dependency-ordered after the trustworthy v0.1 editor,
-undo, lifecycle, recovery, and accessibility gates. Current primary-source
-research sharpens M7 without moving it ahead of those prerequisites:
+An early source-backed Markdown Mode now exists, but it is not the completed M6
+editor. Current primary-source research defines the remaining direction:
 
 - [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/) supplies the base
   conformance corpus. The [GFM specification](https://github.github.com/gfm/)
   defines tables, task lists, strikethrough, and autolinks as explicit
   extensions and warns that rendered HTML still requires sanitization.
-- [VS Code's Markdown documentation](https://code.visualstudio.com/docs/languages/markdown)
-  establishes source, preview, and side-by-side preview as distinct commands,
-  with live updates, scroll synchronization, and strict preview security.
-- [Zed's Markdown actions](https://zed.dev/docs/all-actions) independently expose
-  preview and preview-to-the-side commands. Its
-  [Markdown guide](https://zed.dev/docs/languages/markdown) makes Format an
-  explicit action and treats list continuation and indentation as configurable
-  behaviors rather than invisible rewrites.
+- [Zed's appearance documentation](https://zed.dev/docs/appearance) separates UI
+  and buffer type, exposes deliberate line-height choices, and keeps System,
+  Light, and Dark behavior explicit.
+- [DirectWrite](https://learn.microsoft.com/en-us/windows/win32/direct2d/direct2d-and-directwrite),
+  [Core Text](https://developer.apple.com/documentation/coretext/), and
+  [FreeType](https://freetype.org/freetype2/docs/hinting/text-rendering-general.html)
+  converge on font metrics, shaping, hinting, subpixel placement, antialiasing,
+  gamma behavior, and display density as the relevant quality controls. Generic
+  image dithering is not a sound text-editor rendering strategy.
+- [egui 0.35 FontTweak](https://docs.rs/egui/latest/egui/struct.FontTweak.html)
+  exposes hinting targets and per-font subpixel binning. Noter upgraded to the
+  matching eframe and Markdown-renderer versions and keeps both global hinting
+  and subpixel binning enabled.
 - The current [pulldown-cmark options](https://docs.rs/pulldown-cmark/0.13.4/pulldown_cmark/struct.Options.html)
   keep CommonMark as the default and require extensions to be enabled by named
-  flags. It is a candidate for the later parser spike, not a dependency decision
-  before M7.
+  flags. The current bounded implementation uses named options only; M6 owns the
+  final dialect and conformance evidence.
 
-The resulting product direction is native and source-first. Markdown Assist off
-schedules no parser work. Turning it on may open source-only or synchronized
-source-and-preview layout, but the source buffer remains authoritative. The
-preview renders a restricted native document model, not arbitrary HTML or a
-webview, and never fetches images or links. Selection-aware Bold, Italic,
-Strikethrough, Inline Code, Link, Heading, Quote, List, Task List, and Code Fence
-commands become explicit edit transactions with keyboard and accessible menu
-paths. Whole-document Format remains a separate previewed diff with semantic
-equivalence, idempotence, byte-policy preservation, and one-step undo evidence.
+The resulting product direction is native and source-first. Text Mode schedules
+no Markdown work. Markdown Mode renders a restricted local model, never executes
+HTML, and never fetches images or references. Direct edits and formatting
+actions update standard source. The current block-focused implementation is a
+vertical slice; M6 replaces its local edit path with shared revision-tagged
+transactions, full keyboard and accessibility behavior, stale-result rejection,
+and conformance evidence. Whole-document Format remains a separately reviewed
+diff with semantic equivalence, idempotence, byte-policy preservation, and
+one-step undo.
+
+For visual quality, Noter uses separate document and UI type scales, fixed
+control metrics, an 840-point reading measure, theme-specific contrast, and
+deterministic Light and Dark captures from the native release renderer. Low-level
+rasterization preferences are not exposed as feature clutter until native
+platform testing demonstrates a user benefit.
 
 ## Rejected shortcuts
 

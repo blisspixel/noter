@@ -1,0 +1,115 @@
+# Native Markdown Mode
+
+**Status:** Early source-backed implementation available. The complete contract
+below remains in progress.
+
+## Purpose
+
+Noter treats `.txt` and `.md` as first-class, ordinary files. Text Mode is the
+classic notepad surface for exact source. Markdown Mode presents the same `.md`
+source as clean formatted content and maps direct edits back to standard
+Markdown. Neither mode creates a proprietary document or uses a webview.
+
+The source bytes, revision, encoding policy, and line endings remain
+authoritative. Changing modes never rewrites a file.
+
+## What the current build does
+
+- `.md` and `.markdown` files open in Markdown Mode by default; any supported
+  file can be viewed in Text Mode.
+- Markdown is rendered through a restricted native egui document surface.
+- Selecting a formatted block opens that exact source range for direct editing.
+- H1, H2, Bold, Italic, Link, Code, List, and Quote actions update the selected
+  block's Markdown source immediately.
+- Switching to Text Mode exposes the exact source produced by those edits.
+- Source diagnostics currently report skipped heading levels, unsafe trailing
+  spaces, repeated blank lines, and a missing final newline with stable rule
+  identifiers.
+- System, Light, and Dark themes share the same document model.
+- Remote images are not loaded, raw HTML is not executed, and no content is
+  fetched in the background. A link can open externally only after a click.
+
+This is an intentionally bounded implementation slice. It proves the native,
+source-backed direction without claiming the final editing model is complete.
+
+## Current limitations
+
+- Editing is block-focused rather than fully inline across the formatted
+  document.
+- Cross-block Markdown references may not resolve in every rendered fragment.
+- Undo transactions, parser workers, stale-revision rejection, and complete
+  keyboard selection semantics are not implemented.
+- GFM and CommonMark conformance, malformed-input behavior, IME, screen-reader,
+  high-DPI, and large-file requirements still require release evidence.
+- Diagnostics are a conservative initial set, not a complete Markdown linter.
+- Whole-document Format, reviewed diffs, semantic-equivalence checks, and safe
+  fixes are not implemented.
+
+Text Mode remains the recovery path for unsupported or malformed source.
+
+## Final document model
+
+- Text Mode exposes complete source and punctuation without Markdown work.
+- Markdown Mode is a directly editable projection of that same source.
+- Untouched regions are preserved byte-for-byte.
+- Every Markdown operation changes the smallest practical source range and is
+  one reversible transaction.
+- Ambiguous edits reveal source instead of guessing.
+- Unsupported constructs remain visible and editable as source.
+- Parser failure cannot block Text Mode or saving.
+
+## Formatting controls
+
+The completed toolbar and accessible menus cover headings, emphasis,
+strikethrough, inline and fenced code, links, quotes, ordered and unordered
+lists, task lists, and supported tables. Commands must work with empty and
+non-empty selections, expose keyboard paths, and avoid stacking invalid
+delimiters when toggled repeatedly.
+
+## Markdown quality engine
+
+Diagnostics are non-mutating and tied to an exact document revision. Each rule
+has a stable identifier, severity, concise explanation, and a safe fix only when
+the transformation is unambiguous. Correctness rules remain separate from style
+preferences.
+
+The default profile targets portable CommonMark plus an explicitly documented
+GitHub Flavored Markdown subset. Rules cover structural consistency, ambiguous
+syntax, heading and list hygiene, fenced-code clarity, local link integrity,
+table structure, and formatter conflicts.
+
+### Format Document
+
+Whole-document formatting is always explicit. Before applying it, Noter must:
+
+1. parse the original under the selected syntax profile;
+2. create deterministic candidate source;
+3. parse the candidate under the same profile;
+4. reject unsupported semantic differences;
+5. present an accurate diff;
+6. preserve encoding, BOM, line endings, front matter, and opaque regions under
+   documented rules; and
+7. commit the accepted result as one undoable transaction.
+
+The formatter must be idempotent. A regex-only document formatter is not an
+acceptable implementation.
+
+## Safety and performance
+
+- Raw HTML is inert and remote content is never fetched automatically.
+- Parse and render results carry revisions; stale work is discarded.
+- Parser depth, tokens, caches, diagnostics, and formatter output are bounded.
+- Markdown work is incremental where the parser permits it and never blocks
+  ordinary Text Mode editing.
+- Typing, selection, IME, and scrolling take priority over decorative styling.
+
+Exact latency and memory budgets are in [REQUIREMENTS.md](REQUIREMENTS.md).
+
+## Completion evidence
+
+Markdown Mode is not release-complete until automated and manual evidence proves
+CommonMark and selected GFM conformance, exact source preservation, minimal and
+reversible transactions, formatter idempotence and semantic safety,
+stale-result rejection, keyboard and IME behavior, accessibility, high-DPI and
+theme behavior, inert remote content, and bounded malformed and large-file
+performance.

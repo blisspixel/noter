@@ -1,9 +1,9 @@
 # Noter Engineering Baseline
 
-**Measured:** 2026-07-25
+**Measured:** 2026-07-26
 
-**Source state:** `m0-foundation` at M0 evidence commit `7512534` after dependency
-cleanup. These measurements are a development baseline, not release evidence.
+**Source state:** M0 evidence commit `7512534` after dependency cleanup. These
+measurements are a development baseline, not release evidence.
 
 ## Reference environment
 
@@ -48,51 +48,55 @@ semantic UI and manual platform tests.
 - Duplicate target-specific dependency families remain in the GUI stack and
   require a release audit.
 
-## M1 local adapter checkpoint
+## Current worktree checkpoint
 
-This checkpoint measures the current M1 worktree after the production storage
-adapter became reachable from the GUI. It does not replace or reinterpret the M0
-evidence above, and it is not yet a milestone sign-off.
+This checkpoint measures the current pre-alpha worktree after the M1 storage
+adapter, M2 shell work, and early M6 Markdown slice became reachable from the
+GUI. It does not replace or reinterpret the M0 evidence above, and it is not yet
+a milestone sign-off.
 
 | Measure | Result |
 | --- | --- |
 | `cargo fmt --all -- --check` | Pass |
 | Strict workspace Clippy, locked, all targets and features | Pass |
-| Windows-local workspace tests | 134 passed, 0 failed |
-| Testable trust-kernel line coverage | 93.13 percent, 3,904 of 4,192 lines |
-| Whole-workspace line coverage | 90.18 percent, 4,408 of 4,888 lines |
-| Enforced development threshold | Pass, at least 90 percent |
-| Windows-applicable trust-kernel mutation testing | 418 total, 270 caught, 148 unviable, 0 missed, 0 timed out |
-| Windows native-adapter mutation testing | 58 total, 40 caught, 18 unviable, 0 missed, 0 timed out |
-| Expanded supported-platform mutation union | 639 total: Linux 556, Windows 476, macOS 169, no union gap; exact-commit CI pending |
+| Windows-local workspace tests | 170 passed, 0 failed |
+| Testable trust-kernel line coverage | 93.53 percent, 4,410 of 4,715 lines |
+| Whole-workspace line coverage | 87.94 percent, 5,580 of 6,345 lines |
+| Enforced development thresholds | Pass, trust kernel at least 90 percent and whole workspace at least 80 percent |
+| Last completed Windows-applicable trust-kernel mutation testing | 418 total, 270 caught, 148 unviable, 0 missed, 0 timed out |
+| Last completed Windows native-adapter mutation testing | 58 total, 40 caught, 18 unviable, 0 missed, 0 timed out |
+| Current Windows native-adapter scope | 66 enumerated; full rerun pending |
+| Focused Markdown diagnostics mutation testing | 58 total, 55 caught, 3 unviable, 0 missed, 0 timed out; one linker-lock result caught in an isolated rerun |
+| Current supported-platform mutation union | 747 total: Linux 639, Windows 559, macOS 202, no union gap; exact-commit CI pending |
 | Rustdoc with warnings denied | Pass |
 | Local Markdown link check | Pass |
 | Linux full-crate cross-target Clippy | Pass |
 | macOS platform-crate cross-target Clippy | Pass |
-| Release binary | 4,953,088 bytes, 4.72 MiB |
-| Release SHA-256 | `78e2b19a274ab3b3c306fc9fa9e7de40c3ed6dfc64db029d20db739af7b63be3` |
-| Resolved Cargo packages across all targets | 339 |
+| Release binary | 7,344,128 bytes, 7.00 MiB |
+| Release SHA-256 | `040d7cf83f8a27ff02c7c06fdd9fed2d76505ee42fe026a9541fc92002eed5cb` |
+| Resolved Cargo packages across all targets | 418 |
 | RustSec audit | Pass, no known vulnerability reported |
+| Cargo dependency policy | Pass for advisories, licenses, sources, and bans; duplicate versions remain visible as warnings |
 | Native Windows, macOS, and Linux CI | Pass at `c76515c`, [run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267) |
 | Paired Linux and Windows mutation CI | Pass at `3830cdd`, [run 30184163737](https://github.com/blisspixel/noter/actions/runs/30184163737) |
 
-The 134 tests comprise 104 primary-library unit tests, 12 binary application
-tests, one 19-case golden-corpus test, three generated property suites with 512
-fixed-seed cases each, and 14 platform-crate tests. Coverage excludes the
-still-prototype `src/app.rs` and `src/main.rs` under the same explicit CI rule as
-M0 for the trust-kernel gate. The filesystem adapter itself measures 91.13
-percent line coverage, and the trust-kernel total remains above the M1 90
-percent gate. A separate unfiltered report measures the whole workspace at
-90.18 percent. The UI exclusion from the stricter gate is temporary and is
-replaced by semantic UI and manual accessibility gates before v0.1.
+The 170 tests comprise 117 primary-library unit tests, 34 binary application and
+UI tests, one 19-case golden-corpus test, three generated property suites with
+512 fixed-seed cases each, and 15 platform-crate tests. The stricter trust-kernel
+report excludes the immediate-mode `src/app.rs`, `src/main.rs`, and
+`src/markdown_ui.rs` adapters. Those files remain inside the separate 80 percent
+whole-workspace gate. The filesystem adapter measures 91.44 percent line
+coverage, the Markdown UI adapter 86.72 percent, and the full workspace 87.94
+percent. Semantic UI automation and manual accessibility gates remain required
+before v0.1.
 
-The binary grew by 204,288 bytes from the M0 baseline. That measured cost now
-includes reachable BLAKE3 conflict fingerprints, native metadata transfer, commit
-reconciliation, stable-handle loading, revision-aware saves, and the truthful
-About dialog. The lock graph
-grew by 14 packages from M0: eight test-only property packages, four BLAKE3
-packages, one internal workspace member, and one `xattr` package used on Linux
-and macOS.
+The binary is 2,595,328 bytes larger than the M0 baseline. That measured cost
+includes reachable BLAKE3 conflict fingerprints, native metadata transfer,
+commit reconciliation, stable-handle loading, revision-aware saves, current
+text shaping and rasterization, persisted themes, and the early native Markdown
+surface. It remains below the 12 MiB first-release ceiling. The full locked
+cross-target graph now contains 418 packages and still requires the release
+duplicate, license, source, and capability audit.
 
 The complete mutation campaign is recorded in
 [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md). The next evidence update must

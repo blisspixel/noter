@@ -57,9 +57,11 @@ unit tests, and coverage cannot prove.
   without changing the link or its target.
 - [ ] IO-14 Cloud, network, removable, and weaker-filesystem limitations are
   explicit, and the reported durability never exceeds observed capability.
-- [ ] IO-15 A newly created Unix document is mode 0600; a new Windows document
-  has a protected DACL granting full control only to its owner and SYSTEM, even
-  under a parent with broader inheritable entries.
+- [ ] IO-15 A newly created Unix document is mode 0600. Under a parent with a
+  broader inheritable ACL, the immediate macOS bootstrap ACL contains no
+  inherited ACE; that ACL is then removed and true absence is verified before
+  the first byte is written. A new Windows document has a protected DACL
+  granting full control only to its owner and SYSTEM.
 - [ ] IO-16 A multiply hard-linked destination is refused until explicit
   GUI confirmation; after confirmation only the selected name receives new
   bytes and the dialog states that other names keep the previous revision.
@@ -193,13 +195,14 @@ Attach the reproducible benchmark report rather than estimating subjectively.
 
 ## 10. Privacy and security
 
-- [ ] SEC-01 Runtime traffic capture shows no outgoing application connection.
+- [ ] SEC-01 Runtime traffic capture shows no unexpected background connection;
+  an explicit release-link action is separately identified.
 - [ ] SEC-02 Opening one file causes no unrelated directory or document reads.
 - [ ] SEC-03 Recovery and configuration permissions match the platform policy.
 - [ ] SEC-04 Default logs contain no content, clipboard text, recovery bytes, or
   full paths.
-- [ ] SEC-05 Markdown samples with remote images, HTML, and links trigger no
-  fetch or execution.
+- [ ] SEC-05 Markdown samples with remote images and HTML trigger no fetch or
+  execution; links open externally only after an explicit click.
 - [ ] SEC-06 Dependency, license, advisory, SBOM, and provenance evidence is
   attached.
 
@@ -213,18 +216,26 @@ Attach the reproducible benchmark report rather than estimating subjectively.
 - [ ] REL-06 At least one tester is not the primary developer.
 - [ ] REL-07 At least one full soak occurred on a non-Windows platform.
 - [ ] REL-08 No data-loss incident or unresolved critical or high defect occurred.
+- [ ] REL-09 README screenshots are regenerated from the cited native release
+  build in Light and Dark, contain polished non-sensitive demo text, and pass
+  visual review at 100 and 150 percent scaling.
 
-## 12. Markdown v0.2, when applicable
+## 12. Native Markdown Mode
 
-- [ ] MD-01 Markdown off schedules no parser work and changes no behavior.
-- [ ] MD-02 Source punctuation remains visible under inline styling.
-- [ ] MD-03 Diagnostics are non-mutating and accessible.
-- [ ] MD-04 Each explicit fix is one undo transaction.
-- [ ] MD-05 Format shows an accurate diff and requires confirmation.
-- [ ] MD-06 Format is idempotent, parsed-document equivalent, and preserves BOM
+- [ ] MD-01 Text Mode schedules no Markdown work and exposes exact source.
+- [ ] MD-02 Switching between Text Mode and Markdown Mode changes no bytes.
+- [ ] MD-03 Selecting a formatted block exposes the matching source range and
+  direct edits update only that range.
+- [ ] MD-04 Each formatting action and safe fix is one minimal undo transaction.
+- [ ] MD-05 Diagnostics are revision-tagged, non-mutating, and accessible.
+- [ ] MD-06 Format shows an accurate diff and requires confirmation.
+- [ ] MD-07 Format is idempotent, parsed-document equivalent, and preserves BOM
   and EOL policy.
-- [ ] MD-07 Remote images, HTML, and links cause no network or execution.
-- [ ] MD-08 Stale parser results never appear on a newer revision.
+- [ ] MD-08 Remote images and HTML cause no network or execution; links require
+  an explicit external-open action.
+- [ ] MD-09 Stale parser results never appear on a newer revision.
+- [ ] MD-10 Keyboard selection, IME, screen readers, high DPI, and both themes
+  pass the same document-editing expectations as Text Mode.
 
 ## Sign-off
 
