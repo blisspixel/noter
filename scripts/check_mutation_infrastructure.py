@@ -10,8 +10,18 @@ from pathlib import Path
 from typing import Any
 
 
+ANSI_CSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
 INFRASTRUCTURE_PATTERNS = (
     ("linker invocation failure", re.compile(r"error: linking with .* failed", re.I)),
+    (
+        "linker process crash",
+        re.compile(
+            r"linker command failed due to signal|"
+            r"unable to execute command:\s*segmentation fault",
+            re.I,
+        ),
+    ),
     ("Windows linker file error", re.compile(r"\bLNK\d{4}\b", re.I)),
     ("compiler internal error", re.compile(r"internal compiler error", re.I)),
     (
@@ -83,8 +93,9 @@ def infrastructure_failures(output_directory: Path) -> list[str]:
             )
             continue
 
+        normalized_log = ANSI_CSI_PATTERN.sub("", log)
         for label, pattern in INFRASTRUCTURE_PATTERNS:
-            if pattern.search(log):
+            if pattern.search(normalized_log):
                 diagnostics.append(
                     f"{scenario_name(outcome.get('scenario'))}: {label} in {log_path}"
                 )

@@ -59,6 +59,43 @@ class MutationInfrastructureTests(unittest.TestCase):
                 ],
             )
 
+    def test_ansi_decorated_linker_failure_is_rejected(self) -> None:
+        """Cargo color escapes cannot conceal a linker invocation failure."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_report(
+                root,
+                "Unviable",
+                "\x1b[1m\x1b[91merror\x1b[0m: linking with `cc` failed",
+            )
+
+            self.assertEqual(
+                infrastructure_failures(root),
+                [
+                    "src/core/save.rs:1: sample: linker invocation failure in "
+                    "log/mutation.log"
+                ],
+            )
+
+    def test_clang_linker_process_crash_is_rejected(self) -> None:
+        """A clang signal failure cannot count as a compiler rejection."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_report(
+                root,
+                "Unviable",
+                "clang: error: linker command failed due to signal "
+                "(use -v to see invocation)",
+            )
+
+            self.assertEqual(
+                infrastructure_failures(root),
+                [
+                    "src/core/save.rs:1: sample: linker process crash in "
+                    "log/mutation.log"
+                ],
+            )
+
     def test_caught_mutant_log_is_not_reclassified(self) -> None:
         """Only build failures already labeled unviable are inspected."""
         with tempfile.TemporaryDirectory() as directory:
