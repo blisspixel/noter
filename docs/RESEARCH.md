@@ -298,13 +298,13 @@ product library and isolates three by-handle observation calls in the internal
 `noter-platform` crate. It prefers the 128-bit ID, treats a failed query or
 all-zero unsupported ID as a labeled reduced fallback, and combines identity
 with BLAKE3 content rather than trusting timestamps. The third query reads
-Windows `ChangeTime` from
+Windows `ChangeTime` and `FileAttributes` from
 [`FILE_BASIC_INFORMATION`](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ns-wdm-_file_basic_information),
-so metadata-only changes invalidate a saved observation. Unix uses inode change
-time with nanosecond precision. Observation hashes one open handle, checks stable
-metadata around the read, and reopens the final path before accepting the
-result. Final links and Windows reparse points are classified without following
-them.
+so metadata-only changes invalidate a saved observation even on volumes that do
+not advance `ChangeTime` for an attribute update. Unix uses inode change time
+with nanosecond precision. Observation hashes one open handle, checks stable
+metadata around the read, and reopens the final path before accepting the result.
+Final links and Windows reparse points are classified without following them.
 
 For private sibling names, [`getrandom::fill`](https://docs.rs/getrandom/0.4.3/getrandom/fn.fill.html)
 uses the operating system's preferred random source and reports every failure,

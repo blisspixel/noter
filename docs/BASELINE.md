@@ -65,7 +65,7 @@ evidence above, and it is not yet a milestone sign-off.
 | Linux full-crate cross-target Clippy | Pass |
 | macOS platform-crate cross-target Clippy | Pass |
 | Release binary | 4,871,680 bytes, 4.65 MiB |
-| Release SHA-256 | `23747D13CE4B081D4794B5CE4907381200C07C2F4D021D00A2A6109FF79C2E5C` |
+| Release SHA-256 | `82B885A7F21FA79DE598A0294DC9517503EB91608C7A34363FE3D6CBE33F304D` |
 | Resolved Cargo packages across all targets | 339 |
 | RustSec audit | Pass, no known vulnerability reported |
 | Native Windows, macOS, and Linux CI | Pending for this worktree |

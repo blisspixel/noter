@@ -42,7 +42,7 @@ impl FileChangeToken {
         self.primary
     }
 
-    /// Returns the platform timestamp's subsecond or reserved component.
+    /// Returns the platform's secondary change component.
     #[must_use]
     pub const fn secondary(self) -> i64 {
         self.secondary
@@ -547,7 +547,7 @@ mod imp {
         Ok(FileFacts::new(
             identity,
             u64::from(basic.nNumberOfLinks),
-            FileChangeToken::new(timestamps.ChangeTime, 0),
+            FileChangeToken::new(timestamps.ChangeTime, i64::from(timestamps.FileAttributes)),
         ))
     }
 

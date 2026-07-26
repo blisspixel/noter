@@ -92,7 +92,7 @@ impl ContentFingerprint {
     }
 }
 
-/// Opaque platform timestamp components for the last content or metadata change.
+/// Opaque platform components for the last content or metadata change.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct FileChangeToken {
     primary: i64,
@@ -110,7 +110,7 @@ impl FileChangeToken {
         self.primary
     }
 
-    /// Returns the subsecond or reserved platform timestamp component.
+    /// Returns the platform's secondary change component.
     pub const fn secondary(self) -> i64 {
         self.secondary
     }
