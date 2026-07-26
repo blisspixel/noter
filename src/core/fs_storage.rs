@@ -45,6 +45,16 @@ impl IntendedContent {
     }
 }
 
+const fn is_supported_regular_entry(is_file: bool, is_final_link: bool) -> bool {
+    is_file && !is_final_link
+}
+
+fn normalized_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 impl TemporaryFile {
     /// Returns the private sibling path.
     pub fn path(&self) -> &Path {
@@ -108,7 +118,7 @@ impl TemporaryFile {
     /// Returns an I/O error when the path or its identity cannot be inspected.
     pub fn path_still_identifies_file(&self) -> io::Result<bool> {
         let metadata = fs::symlink_metadata(&self.path)?;
-        if !metadata.is_file() || is_final_link(&metadata) {
+        if !is_supported_regular_entry(metadata.is_file(), is_final_link(&metadata)) {
             return Ok(false);
         }
 
@@ -134,25 +144,21 @@ impl TemporaryFile {
                     "temporary path no longer identifies the owned file",
                 ));
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.cleanup_armed = false;
-                return Ok(());
-            }
-            Err(error) => return Err(error),
+            Err(error) => match error.kind() {
+                io::ErrorKind::NotFound => {
+                    self.cleanup_armed = false;
+                    return Ok(());
+                }
+                _ => return Err(error),
+            },
         }
 
         self.file.take();
-        match fs::remove_file(&self.path) {
-            Ok(()) => {
-                self.cleanup_armed = false;
-                Ok(())
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.cleanup_armed = false;
-                Ok(())
-            }
-            Err(error) => Err(error),
+        let result = missing_cleanup_is_success(fs::remove_file(&self.path));
+        if result.is_ok() {
+            self.cleanup_armed = false;
         }
+        result
     }
 
     fn file(&self) -> io::Result<&File> {
@@ -187,6 +193,16 @@ impl TemporaryFile {
 
     const fn preserve_artifact(&mut self) {
         self.cleanup_armed = false;
+    }
+}
+
+fn missing_cleanup_is_success(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => match error.kind() {
+            io::ErrorKind::NotFound => Ok(()),
+            _ => Err(error),
+        },
     }
 }
 
@@ -225,10 +241,7 @@ fn create_unique_sibling_with(
         ));
     }
 
-    let parent = destination
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    let parent = normalized_parent(destination);
 
     for _ in 0..MAX_CREATE_ATTEMPTS {
         let mut random_bytes = [0_u8; RANDOM_NAME_BYTES];
@@ -253,8 +266,10 @@ fn create_unique_sibling_with(
                     cleanup_armed: true,
                 });
             }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
+            Err(error) => match error.kind() {
+                io::ErrorKind::AlreadyExists => {}
+                _ => return Err(error),
+            },
         }
     }
 
@@ -617,30 +632,33 @@ fn reconcile_existing_failure(
     }
 
     let partial_move = is_documented_partial_replacement(platform_error);
-    if partial_move
-        && actual == TargetState::Missing
-        && matches!(temporary.path_still_identifies_file(), Ok(true))
-        && backup
-            .as_deref()
-            .is_some_and(|path| backup_matches_expected(path, expected))
-    {
-        match noter_platform::install_new(temporary.path(), destination) {
-            Ok(_outcome) => {
-                return finalize_commit(
-                    temporary,
-                    destination,
-                    backup.map(|path| (path, expected)),
-                    Vec::new(),
-                );
-            }
-            Err(_finish_error) => {
-                return unknown_with_preserved_temporary(
-                    temporary,
-                    StorageError::new(
-                        SaveStage::Reconcile,
-                        "documented partial replacement could not be completed safely",
-                    ),
-                );
+    if partial_move {
+        let state_is_completable = partial_state_is_completable(
+            actual == TargetState::Missing,
+            matches!(temporary.path_still_identifies_file(), Ok(true)),
+            backup
+                .as_deref()
+                .is_some_and(|path| backup_matches_expected(path, expected)),
+        );
+        if state_is_completable {
+            match noter_platform::install_new(temporary.path(), destination) {
+                Ok(_outcome) => {
+                    return finalize_commit(
+                        temporary,
+                        destination,
+                        backup.map(|path| (path, expected)),
+                        Vec::new(),
+                    );
+                }
+                Err(_finish_error) => {
+                    return unknown_with_preserved_temporary(
+                        temporary,
+                        StorageError::new(
+                            SaveStage::Reconcile,
+                            "documented partial replacement could not be completed safely",
+                        ),
+                    );
+                }
             }
         }
     }
@@ -675,6 +693,14 @@ fn reconcile_existing_failure(
     }
 }
 
+const fn partial_state_is_completable(
+    destination_is_missing: bool,
+    temporary_is_owned: bool,
+    backup_matches: bool,
+) -> bool {
+    destination_is_missing && temporary_is_owned && backup_matches
+}
+
 fn finalize_commit(
     temporary: TemporaryFile,
     destination: &Path,
@@ -682,13 +708,19 @@ fn finalize_commit(
     mut cleanup_warnings: Vec<StorageError>,
 ) -> ReplaceOutcome<TemporaryFile> {
     let observation = match inspect_target(destination, SaveStage::Reconcile) {
-        Ok(TargetState::Regular(observation))
-            if matches!(
-                temporary.committed_observation_matches(observation),
-                Ok(true)
-            ) =>
-        {
-            observation
+        Ok(TargetState::Regular(observation)) => {
+            match temporary.committed_observation_matches(observation) {
+                Ok(true) => observation,
+                Ok(false) | Err(_) => {
+                    return unknown_with_preserved_temporary(
+                        temporary,
+                        StorageError::new(
+                            SaveStage::Reconcile,
+                            "commit operation returned success but destination verification differed",
+                        ),
+                    );
+                }
+            }
         }
         Ok(_) => {
             return unknown_with_preserved_temporary(
@@ -732,16 +764,18 @@ fn unknown_with_preserved_temporary(
 fn remove_verified_backup(path: &Path, expected: FileObservation) -> Result<(), StorageError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(redacted_io_error(
-                SaveStage::Cleanup,
-                "inspect replacement backup",
-                &error,
-            ));
-        }
+        Err(error) => match error.kind() {
+            io::ErrorKind::NotFound => return Ok(()),
+            _ => {
+                return Err(redacted_io_error(
+                    SaveStage::Cleanup,
+                    "inspect replacement backup",
+                    &error,
+                ));
+            }
+        },
     };
-    if !metadata.is_file() || is_final_link(&metadata) {
+    if !is_supported_regular_entry(metadata.is_file(), is_final_link(&metadata)) {
         return Err(StorageError::new(
             SaveStage::Cleanup,
             "replacement backup path no longer names the expected regular file",
@@ -803,49 +837,54 @@ const fn platform_identity_matches(
         )
 }
 
-#[cfg(windows)]
+// Keep one fallible cross-platform contract: Windows reserves a backup path,
+// while other platforms intentionally return no backup path.
+#[cfg_attr(
+    not(windows),
+    allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)
+)]
 fn replacement_backup_path(destination: &Path) -> io::Result<Option<PathBuf>> {
-    let parent = normalized_parent(destination);
-    for _ in 0..MAX_CREATE_ATTEMPTS {
-        let mut random = [0_u8; RANDOM_NAME_BYTES];
-        OsRandom.fill(&mut random)?;
-        let candidate = parent.join(artifact_name(BACKUP_PREFIX, &random, BACKUP_SUFFIX));
-        match fs::symlink_metadata(&candidate) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(Some(candidate));
+    #[cfg(windows)]
+    {
+        let parent = normalized_parent(destination);
+        for _ in 0..MAX_CREATE_ATTEMPTS {
+            let mut random = [0_u8; RANDOM_NAME_BYTES];
+            OsRandom.fill(&mut random)?;
+            let candidate = parent.join(artifact_name(BACKUP_PREFIX, &random, BACKUP_SUFFIX));
+            match fs::symlink_metadata(&candidate) {
+                Ok(_) => {}
+                Err(error) => match error.kind() {
+                    io::ErrorKind::NotFound => return Ok(Some(candidate)),
+                    _ => return Err(error),
+                },
             }
-            Ok(_) => {}
-            Err(error) => return Err(error),
         }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not reserve a random backup name after 16 attempts",
+        ))
     }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not reserve a random backup name after 16 attempts",
-    ))
+    #[cfg(not(windows))]
+    {
+        let _ = destination;
+        Ok(None)
+    }
 }
 
-#[cfg(not(windows))]
-#[allow(clippy::unnecessary_wraps)]
-const fn replacement_backup_path(_destination: &Path) -> io::Result<Option<PathBuf>> {
-    Ok(None)
-}
-
-#[cfg(windows)]
+// The Windows branch must inspect an OS error; the other branch preserves the
+// same call site and always rejects the Windows-only partial-move condition.
+#[cfg_attr(not(windows), allow(clippy::missing_const_for_fn))]
 fn is_documented_partial_replacement(error: &io::Error) -> bool {
-    const ERROR_UNABLE_TO_MOVE_REPLACEMENT_2: i32 = 1_177;
-    error.raw_os_error() == Some(ERROR_UNABLE_TO_MOVE_REPLACEMENT_2)
-}
-
-#[cfg(not(windows))]
-const fn is_documented_partial_replacement(_error: &io::Error) -> bool {
-    false
-}
-
-#[cfg(windows)]
-fn normalized_parent(path: &Path) -> &Path {
-    path.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
+    #[cfg(windows)]
+    {
+        const ERROR_UNABLE_TO_MOVE_REPLACEMENT_2: i32 = 1_177;
+        error.raw_os_error() == Some(ERROR_UNABLE_TO_MOVE_REPLACEMENT_2)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 fn redacted_io_error(stage: SaveStage, operation: &str, error: &io::Error) -> StorageError {
@@ -869,7 +908,8 @@ mod tests {
     use super::*;
     use crate::core::revision::Revision;
     use crate::core::save::{
-        SaveOutcome, SaveSnapshot, SpecialFileKind, TargetExpectation, save_snapshot,
+        FileChangeToken, SaveOutcome, SaveSnapshot, SpecialFileKind, TargetExpectation,
+        save_snapshot,
     };
 
     struct SequenceRandom {
@@ -909,6 +949,62 @@ mod tests {
             candidate_name(&[0xab; RANDOM_NAME_BYTES]),
             ".noter-save-abababababababababababababababab.tmp"
         );
+    }
+
+    #[test]
+    fn intended_content_requires_matching_fingerprint_and_length() {
+        let expected_fingerprint = ContentFingerprint::from_bytes(b"expected");
+        let intended = IntendedContent {
+            fingerprint: expected_fingerprint,
+            length: 8,
+        };
+        let identity = FileIdentity::new(1, 2);
+        let change_token = FileChangeToken::new(3, 4);
+        let matching = FileObservation::new(identity, expected_fingerprint, 8, 1, change_token);
+        let wrong_fingerprint = FileObservation::new(
+            identity,
+            ContentFingerprint::from_bytes(b"different"),
+            8,
+            1,
+            change_token,
+        );
+        let wrong_length = FileObservation::new(identity, expected_fingerprint, 9, 1, change_token);
+
+        assert!(intended.matches(matching));
+        assert!(!intended.matches(wrong_fingerprint));
+        assert!(!intended.matches(wrong_length));
+    }
+
+    #[test]
+    fn regular_entry_policy_has_an_exact_truth_table() {
+        assert!(!is_supported_regular_entry(false, false));
+        assert!(!is_supported_regular_entry(false, true));
+        assert!(!is_supported_regular_entry(true, true));
+        assert!(is_supported_regular_entry(true, false));
+    }
+
+    #[test]
+    fn normalized_parent_handles_relative_and_nested_destinations() {
+        assert_eq!(normalized_parent(Path::new("note.txt")), Path::new("."));
+        assert_eq!(
+            normalized_parent(Path::new("notes/note.txt")),
+            Path::new("notes")
+        );
+    }
+
+    #[test]
+    fn operating_system_randomness_overwrites_independent_candidates() -> io::Result<()> {
+        let sentinel = [0xa5; RANDOM_NAME_BYTES];
+        let mut first = sentinel;
+        let mut second = sentinel;
+
+        OsRandom.fill(&mut first)?;
+        OsRandom.fill(&mut second)?;
+
+        assert_ne!(first, sentinel);
+        assert_ne!(second, sentinel);
+        assert_ne!(first, second);
+        Ok(())
     }
 
     #[test]
@@ -999,6 +1095,31 @@ mod tests {
     }
 
     #[test]
+    fn committed_observation_requires_content_and_identity_independently() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        let other = directory.path().join("other.txt");
+        let temporary = prepared_temporary(&destination, b"mine")?;
+        fs::hard_link(temporary.path(), &destination)?;
+        fs::write(&other, b"mine")?;
+        let matching = regular_observation(&destination);
+        let other_identity = regular_observation(&other);
+        let wrong_content = FileObservation::new(
+            matching.identity(),
+            ContentFingerprint::from_bytes(b"not mine"),
+            8,
+            matching.link_count(),
+            matching.change_token(),
+        );
+
+        assert!(temporary.committed_observation_matches(matching)?);
+        assert!(!temporary.committed_observation_matches(other_identity)?);
+        assert!(!temporary.committed_observation_matches(wrong_content)?);
+        temporary.discard()?;
+        Ok(())
+    }
+
+    #[test]
     fn drop_removes_an_uncommitted_sibling() -> io::Result<()> {
         let directory = tempdir()?;
         let destination = directory.path().join("note.txt");
@@ -1057,6 +1178,18 @@ mod tests {
 
         temporary.discard()?;
         Ok(())
+    }
+
+    #[test]
+    fn cleanup_result_accepts_only_success_or_an_already_missing_path() {
+        assert!(missing_cleanup_is_success(Ok(())).is_ok());
+        assert!(missing_cleanup_is_success(Err(io::Error::from(io::ErrorKind::NotFound))).is_ok());
+        assert_eq!(
+            missing_cleanup_is_success(Err(io::Error::from(io::ErrorKind::PermissionDenied)))
+                .expect_err("a real cleanup failure must remain visible")
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
     }
 
     #[test]
@@ -1363,6 +1496,14 @@ mod tests {
     }
 
     #[test]
+    fn partial_completion_requires_every_reconciled_fact() {
+        assert!(partial_state_is_completable(true, true, true));
+        assert!(!partial_state_is_completable(false, true, true));
+        assert!(!partial_state_is_completable(true, false, true));
+        assert!(!partial_state_is_completable(true, true, false));
+    }
+
+    #[test]
     fn existing_failure_with_uninspectable_destination_remains_unknown() -> io::Result<()> {
         let directory = tempdir()?;
         let observed_path = directory.path().join("observed.txt");
@@ -1397,6 +1538,23 @@ mod tests {
         let outcome = finalize_commit(temporary, &destination, None, Vec::new());
 
         assert!(matches!(outcome, ReplaceOutcome::CommitStateUnknown { .. }));
+        assert_eq!(fs::read(&temporary_path)?, b"mine");
+        fs::remove_file(temporary_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn claimed_success_with_different_regular_destination_remains_unknown() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        fs::write(&destination, b"someone else's complete file")?;
+        let temporary = prepared_temporary(&destination, b"mine")?;
+        let temporary_path = temporary.path().to_path_buf();
+
+        let outcome = finalize_commit(temporary, &destination, None, Vec::new());
+
+        assert!(matches!(outcome, ReplaceOutcome::CommitStateUnknown { .. }));
+        assert_eq!(fs::read(&destination)?, b"someone else's complete file");
         assert_eq!(fs::read(&temporary_path)?, b"mine");
         fs::remove_file(temporary_path)?;
         Ok(())
@@ -1532,6 +1690,83 @@ mod tests {
 
         assert!(platform_identity_matches(actual, matching));
         assert!(!platform_identity_matches(actual, wrong_quality));
+        Ok(())
+    }
+
+    #[test]
+    fn platform_fact_match_checks_identity_and_each_change_component() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("facts.txt");
+        fs::write(&path, b"facts")?;
+        let file = File::open(&path)?;
+        let facts = noter_platform::file_facts(&file)?;
+        let expected = regular_observation(&path);
+        let identity = expected.identity();
+        let wrong_identity = match identity.quality() {
+            IdentityQuality::Preferred => {
+                FileIdentity::new(identity.volume(), identity.file().wrapping_add(1))
+            }
+            IdentityQuality::Reduced => {
+                FileIdentity::reduced(identity.volume(), identity.file().wrapping_add(1))
+            }
+        };
+        let token = expected.change_token();
+        let with_identity = |identity, change_token| {
+            FileObservation::new(
+                identity,
+                expected.fingerprint(),
+                expected.length(),
+                expected.link_count(),
+                change_token,
+            )
+        };
+
+        assert!(platform_facts_match(facts, expected));
+        assert!(!platform_facts_match(
+            facts,
+            with_identity(wrong_identity, token)
+        ));
+        assert!(!platform_facts_match(
+            facts,
+            with_identity(
+                identity,
+                FileChangeToken::new(token.primary().wrapping_add(1), token.secondary())
+            )
+        ));
+        assert!(!platform_facts_match(
+            facts,
+            with_identity(
+                identity,
+                FileChangeToken::new(token.primary(), token.secondary().wrapping_add(1))
+            )
+        ));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_backup_path_and_partial_error_classification_are_exact() -> io::Result<()> {
+        const ERROR_UNABLE_TO_MOVE_REPLACEMENT_2: i32 = 1_177;
+
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        let backup = replacement_backup_path(&destination)?
+            .expect("Windows existing-file replacement requires a backup path");
+        let name = backup
+            .file_name()
+            .expect("backup path should have a private filename")
+            .to_string_lossy();
+
+        assert_eq!(backup.parent(), Some(directory.path()));
+        assert!(name.starts_with(BACKUP_PREFIX));
+        assert!(name.ends_with(BACKUP_SUFFIX));
+        assert!(!backup.exists());
+        assert!(is_documented_partial_replacement(
+            &io::Error::from_raw_os_error(ERROR_UNABLE_TO_MOVE_REPLACEMENT_2)
+        ));
+        assert!(!is_documented_partial_replacement(
+            &io::Error::from_raw_os_error(5)
+        ));
         Ok(())
     }
 

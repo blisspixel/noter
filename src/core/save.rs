@@ -1080,6 +1080,17 @@ mod tests {
     }
 
     #[test]
+    fn warning_emptiness_checks_cleanup_and_durability_independently() {
+        let cleanup = StorageError::new(SaveStage::Cleanup, "cleanup warning");
+        let durability = StorageError::new(SaveStage::SyncParent, "durability warning");
+
+        assert!(SaveWarnings::default().is_empty());
+        assert!(!SaveWarnings::new(vec![cleanup.clone()], None).is_empty());
+        assert!(!SaveWarnings::new(Vec::new(), Some(durability.clone())).is_empty());
+        assert!(!SaveWarnings::new(vec![cleanup], Some(durability)).is_empty());
+    }
+
+    #[test]
     fn committed_cleanup_and_durability_warnings_are_both_preserved() {
         let mut storage = FakeStorage::existing(b"old");
         storage.replacement_cleanup_warning = true;

@@ -1,5 +1,7 @@
 //! Exact line-ending classification and insertion policy.
 
+use std::cmp::Ordering;
+
 use ropey::Rope;
 
 /// The byte sequence used to terminate one logical line.
@@ -110,21 +112,20 @@ pub enum LineEndingProfile {
 impl LineEndingProfile {
     /// Classifies every line-ending sequence in strict UTF-8 text.
     pub fn detect(text: &str) -> Self {
-        let bytes = text.as_bytes();
         let mut counts = LineEndingCounts::default();
         let mut first_positions = [usize::MAX; 3];
         let mut first_ending = None;
-        let mut index = 0;
+        let mut bytes = text.as_bytes().iter().copied().enumerate().peekable();
 
-        while index < bytes.len() {
-            let (ending, width) = match bytes[index] {
-                b'\r' if bytes.get(index + 1) == Some(&b'\n') => (LineEnding::CrLf, 2),
-                b'\r' => (LineEnding::Cr, 1),
-                b'\n' => (LineEnding::Lf, 1),
-                _ => {
-                    index += 1;
-                    continue;
+        while let Some((index, byte)) = bytes.next() {
+            let ending = match byte {
+                b'\r' if matches!(bytes.peek(), Some((_, b'\n'))) => {
+                    bytes.next();
+                    LineEnding::CrLf
                 }
+                b'\r' => LineEnding::Cr,
+                b'\n' => LineEnding::Lf,
+                _ => continue,
             };
 
             counts.increment(ending);
@@ -133,7 +134,6 @@ impl LineEndingProfile {
             if first_positions[slot] == usize::MAX {
                 first_positions[slot] = index;
             }
-            index += width;
         }
 
         let Some(mut insertion) = first_ending else {
@@ -150,12 +150,7 @@ impl LineEndingProfile {
         }
 
         for candidate in [LineEnding::Lf, LineEnding::CrLf, LineEnding::Cr] {
-            let candidate_count = counts.get(candidate);
-            let insertion_count = counts.get(insertion);
-            if candidate_count > insertion_count
-                || (candidate_count == insertion_count
-                    && first_positions[candidate.slot()] < first_positions[insertion.slot()])
-            {
+            if ending_precedes(candidate, insertion, counts, first_positions) {
                 insertion = candidate;
             }
         }
@@ -231,7 +226,6 @@ impl LineEndingProfile {
         }
 
         if char_index > 0
-            && char_index < text.len_chars()
             && text.get_char(char_index - 1) == Some('\r')
             && text.get_char(char_index) == Some('\n')
         {
@@ -273,6 +267,22 @@ impl LineEndingProfile {
         }
 
         Some(insertion)
+    }
+}
+
+fn ending_precedes(
+    candidate: LineEnding,
+    current: LineEnding,
+    counts: LineEndingCounts,
+    first_positions: [usize; 3],
+) -> bool {
+    match counts.get(candidate).cmp(&counts.get(current)) {
+        Ordering::Greater => true,
+        Ordering::Equal => matches!(
+            first_positions[candidate.slot()].cmp(&first_positions[current.slot()]),
+            Ordering::Less
+        ),
+        Ordering::Less => false,
     }
 }
 

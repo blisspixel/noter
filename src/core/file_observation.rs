@@ -104,7 +104,7 @@ fn read_once(path: &Path) -> Result<(Vec<u8>, FileObservation), AttemptError> {
         )
     })?;
     let after = handle_stamp(&file)?;
-    if before != after || length != after.length {
+    if read_window_changed(before, after, length) {
         return Err(AttemptError::Changed);
     }
 
@@ -117,7 +117,11 @@ fn read_once(path: &Path) -> Result<(Vec<u8>, FileObservation), AttemptError> {
     let reopened_stamp = handle_stamp(&reopened)?;
     let closing_entry = fs::symlink_metadata(path)
         .map_err(|error| changed_or_io("close final-entry race window", error))?;
-    if non_regular_state(&closing_entry).is_some() || reopened_stamp != after {
+    if reopened_path_changed(
+        non_regular_state(&closing_entry).is_some(),
+        reopened_stamp,
+        after,
+    ) {
         return Err(AttemptError::Changed);
     }
 
@@ -155,7 +159,7 @@ fn inspect_once(path: &Path) -> Result<TargetState, AttemptError> {
         .map_err(|error| AttemptError::io("verify content length", error))?;
     let after = handle_stamp(&file)?;
 
-    if before != after || bytes_read != after.length {
+    if read_window_changed(before, after, bytes_read) {
         return Err(AttemptError::Changed);
     }
 
@@ -170,12 +174,11 @@ fn inspect_once(path: &Path) -> Result<TargetState, AttemptError> {
     let closing_entry = fs::symlink_metadata(path)
         .map_err(|error| changed_or_io("close final-entry race window", error))?;
 
-    if non_regular_state(&closing_entry).is_some()
-        || !reopened_stamp.is_regular
-        || reopened_stamp.facts != after.facts
-        || reopened_stamp.length != after.length
-        || reopened_stamp.modified != after.modified
-    {
+    if reopened_path_changed(
+        non_regular_state(&closing_entry).is_some(),
+        reopened_stamp,
+        after,
+    ) {
         return Err(AttemptError::Changed);
     }
 
@@ -194,6 +197,18 @@ struct HandleStamp {
     length: u64,
     modified: Option<SystemTime>,
     is_regular: bool,
+}
+
+fn read_window_changed(before: HandleStamp, after: HandleStamp, observed_length: u64) -> bool {
+    before != after || observed_length != after.length
+}
+
+fn reopened_path_changed(
+    final_entry_is_special: bool,
+    reopened: HandleStamp,
+    observed: HandleStamp,
+) -> bool {
+    final_entry_is_special || reopened != observed
 }
 
 fn handle_stamp(file: &File) -> Result<HandleStamp, AttemptError> {
@@ -238,19 +253,23 @@ fn non_regular_state(metadata: &Metadata) -> Option<TargetState> {
     }
 }
 
-#[cfg(windows)]
 pub(crate) fn is_final_link(metadata: &Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
+    let is_symlink = metadata.file_type().is_symlink();
+    #[cfg(windows)]
+    let is_reparse_point = {
+        use std::os::windows::fs::MetadataExt;
 
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    };
+    #[cfg(not(windows))]
+    let is_reparse_point = false;
 
-    metadata.file_type().is_symlink()
-        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    link_attributes_indicate_link(is_symlink, is_reparse_point)
 }
 
-#[cfg(not(windows))]
-pub(crate) fn is_final_link(metadata: &Metadata) -> bool {
-    metadata.file_type().is_symlink()
+const fn link_attributes_indicate_link(is_symlink: bool, is_reparse_point: bool) -> bool {
+    is_symlink || is_reparse_point
 }
 
 fn changed_or_io(operation: &'static str, error: io::Error) -> AttemptError {
@@ -288,6 +307,66 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn read_window_change_checks_each_observed_dimension() -> io::Result<()> {
+        let directory = tempdir()?;
+        let first_path = directory.path().join("first.txt");
+        let second_path = directory.path().join("second.txt");
+        fs::write(&first_path, b"same length")?;
+        fs::write(&second_path, b"same length")?;
+        let first = handle_stamp(&File::open(first_path)?)
+            .expect("first test handle facts should be readable");
+        let second = handle_stamp(&File::open(second_path)?)
+            .expect("second test handle facts should be readable");
+
+        assert!(!read_window_changed(first, first, first.length));
+        assert!(read_window_changed(first, second, first.length));
+
+        let mut changed_length = first;
+        changed_length.length += 1;
+        assert!(read_window_changed(first, changed_length, first.length));
+
+        let mut changed_modified = first;
+        changed_modified.modified = if first.modified.is_some() {
+            None
+        } else {
+            Some(SystemTime::UNIX_EPOCH)
+        };
+        assert!(read_window_changed(first, changed_modified, first.length));
+
+        let mut changed_kind = first;
+        changed_kind.is_regular = !first.is_regular;
+        assert!(read_window_changed(first, changed_kind, first.length));
+        assert!(read_window_changed(first, first, first.length + 1));
+        Ok(())
+    }
+
+    #[test]
+    fn reopened_path_change_checks_entry_and_handle_independently() -> io::Result<()> {
+        let directory = tempdir()?;
+        let first_path = directory.path().join("first.txt");
+        let second_path = directory.path().join("second.txt");
+        fs::write(&first_path, b"first")?;
+        fs::write(&second_path, b"second")?;
+        let first = handle_stamp(&File::open(first_path)?)
+            .expect("first test handle facts should be readable");
+        let second = handle_stamp(&File::open(second_path)?)
+            .expect("second test handle facts should be readable");
+
+        assert!(!reopened_path_changed(false, first, first));
+        assert!(reopened_path_changed(true, first, first));
+        assert!(reopened_path_changed(false, second, first));
+        Ok(())
+    }
+
+    #[test]
+    fn link_attribute_classification_has_an_exact_truth_table() {
+        assert!(!link_attributes_indicate_link(false, false));
+        assert!(link_attributes_indicate_link(true, false));
+        assert!(link_attributes_indicate_link(false, true));
+        assert!(link_attributes_indicate_link(true, true));
+    }
 
     #[test]
     fn missing_path_is_classified_without_error() -> io::Result<()> {

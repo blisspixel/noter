@@ -84,6 +84,32 @@ jobs:
           path: lcov.info
 
   # ---------------------------------------------------------------------------
+  # Mutation testing (trust-kernel decision paths, not GUI coverage padding)
+  # ---------------------------------------------------------------------------
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@e62b3bdab54265ba809383c8707cb0600da93f19
+        with:
+          tool: cargo-mutants@27.1.0
+          fallback: none
+      - name: Run trust-kernel mutation tests
+        run: cargo mutants -vV --in-place --colors never
+      - name: Upload mutation results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-results
+          path: mutants.out
+
+  # ---------------------------------------------------------------------------
   # Documentation & planning doc sanity (we treat the MD files as code)
   # ---------------------------------------------------------------------------
   docs:
@@ -97,6 +123,7 @@ jobs:
           test -s LICENSE
           test -s docs/RESEARCH.md
           test -s docs/BASELINE.md
+          test -s docs/M1_MUTATION_EVIDENCE.md
           test -s docs/REQUIREMENTS.md
           test -s docs/DESIGN.md
           test -s docs/ROADMAP.md

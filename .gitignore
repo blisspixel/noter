@@ -86,6 +86,7 @@ desktop.ini
 *.profraw
 cobertura.xml
 tarpaulin-report.html
+/mutants.out*
 
 # =============================================================================
 # Environment & secrets (never commit)
