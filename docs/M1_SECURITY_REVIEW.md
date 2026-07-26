@@ -46,16 +46,16 @@ new macOS file from inheriting access-control entries from its parent directory.
 The previous Unix creation path therefore could expose staged document bytes
 under an inheritable parent ACL even though the mode bits appeared private.
 
-The remediation uses `openx_np` to create the file with mode 0600 and a
-zero-entry ACL carrying the global `no_inherit` flag in the same kernel
-operation. A native fixture is defined to prove an ordinary child inherits the
-parent ACE, then verify the staging file's immediate ACL contains no inherited
-ACE. Exact-commit hosted macOS execution remains an evidence gap below.
-The adapter removes the bootstrap ACL through the live descriptor, verifies true
-ACL absence and mode 0600, and only then returns the still-empty file for a
-write. Any finalization failure closes the descriptor, preserves the random
-zero-byte pathname, and produces actionable cleanup guidance instead of risking
-a pathname deletion race.
+The remediation uses `openx_np` to request mode 0600 and a zero-entry ACL carrying
+the global `no_inherit` flag in the same kernel operation. Exact-commit native
+run 30211571501 proved an ordinary child inherits the parent ACE while the
+protected file immediately reports true ACL absence. It also proved that macOS
+canonicalizes explicit zero-entry ACL text to absence instead of retaining an
+allocated empty ACL. The adapter defensively applies the remove-ACL sentinel
+through the live descriptor, verifies absence and mode 0600, and only then
+returns the still-empty file for a write. Any finalization failure closes the
+descriptor, preserves the random zero-byte pathname, and produces actionable
+cleanup guidance instead of risking a pathname deletion race.
 
 ### Document loading had no byte ceiling
 
@@ -82,7 +82,7 @@ bypass the ceiling. Errors are typed, stage-specific, and path-redacted.
   verification-to-deletion window.
 - Unix existing-file replacement uses an atomic exchange while staging remains
   owner-only. macOS additionally suppresses ACL inheritance at the atomic create
-  point and removes its bootstrap ACL before writing. Required metadata is
+  point and verifies true ACL absence before writing. Required metadata is
   captured into an immutable snapshot and
   revalidated through the open source handle before commit. Because exchange can
   legitimately change the displaced inode's `ctime`, the post-exchange check
@@ -106,8 +106,8 @@ bypass the ceiling. Errors are typed, stage-specific, and path-redacted.
   now serializes the ACL into the immutable snapshot and replays it through the
   destination descriptor; resource forks and other xattrs use the bounded
   snapshot. Native ACL absence remains a distinct snapshot state and is replayed
-  with macOS's remove-ACL sentinel, preserving its distinction from an allocated
-  empty ACL.
+  with macOS's remove-ACL sentinel. Present ACL entries remain serialized, while
+  a zero-entry ACL input follows the kernel's canonical absent representation.
 - A failed Unix post-commit file barrier now downgrades the result to Best Effort
   and remains distinct from parent-sync and cleanup warnings.
 - Save warnings retain every cleanup and durability detail in the GUI. Save and

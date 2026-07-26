@@ -80,9 +80,12 @@ original or staged recovery information.
 
 Most automated trust-kernel behavior is implemented and covered by local tests.
 A checker found and repaired macOS ACL-absence handling and inherited-ACL staging
-risk. That repair still requires one exact-commit native CI run and a fresh
-platform mutation campaign. The reproducible benchmark harness and required
-manual filesystem fixtures also remain open.
+risk. Exact-commit run 30211571501 then proved inheritance suppression and the
+kernel's canonical zero-entry-to-absent behavior, exposing two stale test
+expectations before mutation execution. Their correction still requires one
+green exact-commit native CI run and a fresh platform mutation campaign. The
+reproducible benchmark harness and required manual filesystem fixtures also
+remain open.
 
 Current detailed evidence and known gaps are maintained in:
 

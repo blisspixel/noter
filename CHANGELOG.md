@@ -28,10 +28,12 @@ release, so current work remains under Unreleased.
   forks.
 - Create Windows staging and new files with a protected owner-and-system DACL so
   permissive parent ACLs cannot expose staged document bytes.
-- Create macOS staging and new files with mode 0600 and a zero-entry,
-  no-inherit bootstrap ACL in the same `openx_np` operation. Remove and verify
-  that ACL through the live descriptor before writing any document bytes, and
-  report the random zero-byte sibling if security finalization fails.
+- Create macOS staging and new files by requesting mode 0600 and a zero-entry,
+  no-inherit ACL in the same `openx_np` operation. Native evidence proves the
+  resulting file has true ACL absence while an ordinary control file inherits
+  the parent ACE. Defensively remove and verify ACL absence through the live
+  descriptor before writing any document bytes, and report the random zero-byte
+  sibling if security finalization fails.
 - Add a pinned RustSec audit gate to CI.
 - Add an explicit cargo-deny policy and pinned CI gate for dependency licenses,
   registry and Git sources, wildcard versions, advisories, and duplicate-version
@@ -56,8 +58,8 @@ release, so current work remains under Unreleased.
   through the destination descriptor, eliminating temporary ACL paths while
   keeping resource forks and other xattrs inside the bounded snapshot. Treat
   macOS `ENOENT` from `acl_get_fd` as a distinct absent state, replay it with the
-  native remove-ACL sentinel, and verify true absence instead of collapsing it
-  into an allocated empty ACL.
+  native remove-ACL sentinel, and verify true absence. Record the native kernel
+  behavior that replaying explicit zero-entry ACL text canonicalizes to absence.
 - Surface exact save cleanup and durability warnings instead of a generic
   success warning.
 - Process same-frame editor input before file commands and native close checks.

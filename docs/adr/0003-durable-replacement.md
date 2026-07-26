@@ -75,10 +75,12 @@ I/O error is never interpreted as non-commit.
 2. Inspect the final path without following an unapproved final link. Refuse
    special files and detect an external version before creating a sibling.
 3. Create an unpredictable same-directory sibling with create-new semantics.
-   On macOS, atomically combine mode 0600 with a zero-entry `no_inherit` ACL,
-   rely on that kernel contract to suppress inheritance, then remove and verify
-   the bootstrap ACL through the still-empty file's descriptor before returning
-   it for writes. A native fixture observes the immediate empty ACL.
+   On macOS, atomically request mode 0600 with a zero-entry `no_inherit` ACL and
+   rely on that kernel contract to suppress inheritance. Native execution proves
+   a control file inherits the parent ACE while the protected file immediately
+   reports true ACL absence because the kernel canonicalizes the zero-entry
+   request. Defensively apply the remove-ACL sentinel and verify absence through
+   the still-empty file's descriptor before returning it for writes.
    If native identity inspection or required platform privacy finalization fails
    after creation and handle-bound cleanup is unavailable, return the primary
    creation error plus a distinct cleanup warning naming only the retained
@@ -124,7 +126,7 @@ durability policy.
 | Windows, absent file | `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`, without replace or cross-volume copy flags | Protected DACL grants full control only to object owner and SYSTEM; no parent entries are inherited | Refuse a newly appeared destination; report the barrier strength demonstrated by platform tests |
 | Linux, existing file | Same-directory atomic exchange; retain the displaced destination because portable unlink cannot target a verified handle | Capture and revalidate an immutable ownership, mode, ACL, extended-attribute, security-context, and capability snapshot before commit; bound xattrs by count and aggregate bytes before allocation; keep staging mode 0600 through exchange; verify the displaced original and apply the snapshot only if its stable metadata payload still matches; a failure is committed with a warning | `fsync` sibling, exchange, finalize and resync metadata, then `fsync` opened parent directory |
 | Linux, absent file | No-replace rename where supported, otherwise create a no-overwrite hard link and retain the temporary name | Owner-only mode 0600 | Same file and parent barriers as existing replacement; retained fallback names are explicit cleanup warnings |
-| macOS, existing file | Same-directory atomic exchange through an opened parent; retain the displaced destination because portable unlink cannot target a verified handle | Atomically create staging with mode 0600 and a zero-entry `no_inherit` ACL, then remove and verify that ACL before writing; serialize the destination ACL plus ownership, mode, and a count-and-byte-bounded immutable xattr snapshot before commit; replay the ACL through the destination descriptor with no temporary pathname; resource forks use the same xattr budget; keep staging private through exchange; verify the displaced original and apply the snapshot only if its stable metadata payload still matches; saving intentionally advances modification time | Request `F_FULLFSYNC` for the sibling, exchange, finalize and resync metadata, then synchronize the parent where supported |
+| macOS, existing file | Same-directory atomic exchange through an opened parent; retain the displaced destination because portable unlink cannot target a verified handle | Atomically request staging mode 0600 with a zero-entry `no_inherit` ACL, verify the kernel's resulting ACL absence before writing, and serialize the destination ACL plus ownership, mode, and a count-and-byte-bounded immutable xattr snapshot before commit; replay the ACL through the destination descriptor with no temporary pathname; resource forks use the same xattr budget; keep staging private through exchange; verify the displaced original and apply the snapshot only if its stable metadata payload still matches; saving intentionally advances modification time | Request `F_FULLFSYNC` for the sibling, exchange, finalize and resync metadata, then synchronize the parent where supported |
 | macOS, absent file | No-replace rename where supported, otherwise create a no-overwrite hard link and retain the temporary name | Mode 0600 with atomic inheritance suppression and verified ACL absence before writing | Same barriers as existing replacement; retained fallback names are explicit cleanup warnings |
 | Network, cloud, removable, or unknown filesystem | Use the platform path only when same-filesystem commit prerequisites hold | Never silently discard known metadata | Return `BestEffort` or `FileSynced` according to demonstrated capability; never advertise full durability from filesystem name alone |
 
@@ -182,7 +184,8 @@ library remains `unsafe_code = "forbid"`.
   Xattr capture refuses more than 4,096 entries or 64 MiB of aggregate names and
   values before value allocation. macOS keeps the serialized ACL in memory,
   retains absence as a distinct state replayed with the native remove-ACL
-  sentinel, and applies resource forks from the bounded snapshot.
+  sentinel, canonicalizes zero-entry ACL input to absence, and applies resource
+  forks from the bounded snapshot.
 - Windows cleanup opens the final entry without following reparse points or
   sharing writes, verifies the exact object, and marks that handle for deletion.
   Unix preserves the object because its portable unlink APIs remain

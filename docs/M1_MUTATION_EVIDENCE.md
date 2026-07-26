@@ -176,8 +176,21 @@ Exact-commit run
 then proved that macOS reports a missing extended ACL from `acl_get_fd` as
 `ENOENT` rather than returning an allocated empty ACL. The current repair
 retains that as a distinct `Absent` snapshot state, replays it through the
-native remove-ACL sentinel, and adds a native test that distinguishes true
-absence from an allocated zero-entry ACL.
+native remove-ACL sentinel, and distinguishes absence from present ACLs with
+entries.
+
+Exact-commit run
+[30211571501](https://github.com/blisspixel/noter/actions/runs/30211571501)
+then reached the macOS mutation baseline and exposed two stale native test
+expectations. The inheritable-parent fixture proved that an ordinary control
+file receives the parent ACE while the `openx_np` protected file immediately
+reports true ACL absence. Replaying explicit zero-entry ACL text also reports
+absence. macOS therefore canonicalizes the zero-entry representation rather
+than retaining it as a separately observable stored ACL. The product security
+path behaved correctly; the baseline failed because its assertions and
+documentation expected `Present` in both cases. Those expectations are now
+aligned with the native result, and the full platform campaign must rerun on the
+corrected commit.
 
 Mutation scope now includes the native platform adapter. The focused Windows
 adapter campaign caught all 40 compiling behavioral mutations, classified 18

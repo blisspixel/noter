@@ -222,16 +222,16 @@ pub fn file_facts(file: &File) -> io::Result<FileFacts> {
 /// Exclusively creates a private read-write file at a new path.
 ///
 /// Linux and other supported Unix targets request owner-only mode at creation.
-/// macOS atomically requests mode 0600 and a no-inherit bootstrap ACL, then sets
-/// exact mode 0600 and removes and verifies that ACL before returning the
-/// still-empty file. Windows supplies a protected DACL at creation so permissive
-/// parent entries are never inherited by the new file.
+/// macOS atomically requests mode 0600 and a no-inherit ACL, then sets exact mode
+/// 0600, applies the native remove-ACL sentinel, and verifies true ACL absence
+/// before returning the still-empty file. Windows supplies a protected DACL at
+/// creation so permissive parent entries are never inherited by the new file.
 ///
 /// # Errors
 ///
 /// Returns an operating-system error when the path already exists, the private
 /// security descriptor cannot be constructed, the file cannot be created, or
-/// the macOS mode or bootstrap ACL cannot be finalized and verified. Call
+/// the macOS mode or ACL absence cannot be finalized and verified. Call
 /// [`creation_error_may_have_retained_private_file`] to distinguish the last
 /// case, where an empty random sibling may require operator inspection.
 pub fn create_private_new_file(path: &Path) -> io::Result<File> {
@@ -1666,7 +1666,7 @@ mod imp {
             let protected = macos_private_creation::create(&protected_path)?;
             assert_eq!(
                 read_macos_acl_snapshot(&protected)?,
-                MacosAclSnapshot::Present(b"!#acl 1\n".to_vec())
+                MacosAclSnapshot::Absent
             );
             let creation_mode = protected.metadata()?.mode() & PERMISSION_BITS;
             assert_eq!(creation_mode & !PRIVATE_MODE, 0);
@@ -1684,14 +1684,14 @@ mod imp {
 
         #[cfg(target_os = "macos")]
         #[test]
-        fn explicit_empty_acl_snapshot_replays_as_present() -> io::Result<()> {
+        fn explicit_empty_acl_snapshot_canonicalizes_to_absence() -> io::Result<()> {
             let directory = tempdir()?;
             let file = File::create(directory.path().join("empty-acl.txt"))?;
             let snapshot = MacosAclSnapshot::Present(b"!#acl 1\n".to_vec());
 
             apply_macos_acl_snapshot(&snapshot, &file)?;
 
-            assert_eq!(read_macos_acl_snapshot(&file)?, snapshot);
+            assert_eq!(read_macos_acl_snapshot(&file)?, MacosAclSnapshot::Absent);
             Ok(())
         }
 

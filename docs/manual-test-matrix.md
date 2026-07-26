@@ -58,10 +58,10 @@ unit tests, and coverage cannot prove.
 - [ ] IO-14 Cloud, network, removable, and weaker-filesystem limitations are
   explicit, and the reported durability never exceeds observed capability.
 - [ ] IO-15 A newly created Unix document is mode 0600. Under a parent with a
-  broader inheritable ACL, the immediate macOS bootstrap ACL contains no
-  inherited ACE; that ACL is then removed and true absence is verified before
-  the first byte is written. A new Windows document has a protected DACL
-  granting full control only to its owner and SYSTEM.
+  broader inheritable ACL, an ordinary macOS control file inherits the ACE while
+  the protected file immediately reports true ACL absence; absence is verified
+  again before the first byte is written. A new Windows document has a protected
+  DACL granting full control only to its owner and SYSTEM.
 - [ ] IO-16 A multiply hard-linked destination is refused until explicit
   GUI confirmation; after confirmation only the selected name receives new
   bytes and the dialog states that other names keep the previous revision.

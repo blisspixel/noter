@@ -358,9 +358,11 @@ warnings. Unix replacement uses an atomic exchange, and siblings remain mode
 owner-only mode as the intentional v0.1 new-file policy. On macOS, mode 0600
 alone does not suppress inherited ACL entries. Noter therefore passes a
 zero-entry ACL with the global `no_inherit` flag and mode 0600 to `openx_np`
-atomically. A native fixture verifies that no parent ACE was inherited. Runtime
-removes the bootstrap ACL through the live file descriptor and verifies true
-absence before writing bytes. Windows staging and new files use a protected DACL granting full control
+atomically. Exact-commit native execution proves that a control file inherits
+the parent ACE while the protected file immediately reports true ACL absence.
+The kernel canonicalizes the zero-entry request rather than retaining an empty
+ACL. Runtime defensively applies the remove-ACL sentinel through the live file
+descriptor and verifies absence before writing bytes. Windows staging and new files use a protected DACL granting full control
 only to the owner and SYSTEM; broad parent entries are not inherited. Direct
 `getrandom` use adds no lock entry because the exact version was already present.
 
@@ -380,9 +382,10 @@ graph.
 
 On macOS, `acl_get_fd` obtains the source ACL and `acl_to_text` serializes an
 existing ACL into the immutable pre-commit snapshot. An `ENOENT` result denotes
-ACL absence and remains distinct from an allocated empty ACL. After the
-private exchange commits, `acl_from_text` reconstructs a present ACL or the
-native `_FILESEC_REMOVE_ACL` sentinel restores absence; `acl_set_fd` applies
+ACL absence and remains distinct from every present ACL with entries. Native
+execution shows that an explicit zero-entry ACL is canonicalized to absence.
+After the private exchange commits, `acl_from_text` reconstructs a present ACL,
+or the native `_FILESEC_REMOVE_ACL` sentinel restores absence; `acl_set_fd` applies
 either state through the destination descriptor. Noter applies owner and mode
 separately and replays bounded extended-attribute values from the same snapshot,
 so a successful save advances modification time. See the

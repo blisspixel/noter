@@ -407,11 +407,13 @@ confirmation consumes that exact value, so a rebound selection conflicts rather
 than being silently re-inspected and adopted.
 Read-only files are not made writable implicitly. New Unix files remain
 owner-only at mode 0600. Because mode alone does not suppress macOS inherited
-ACL entries, macOS creates each sibling with a zero-entry `no_inherit` bootstrap
-ACL and mode 0600 in one `openx_np` operation. The native fixture verifies that
-the immediate ACL has no inherited entries. At runtime, Noter removes the
-bootstrap ACL through the live descriptor and verifies true ACL absence before
-any document bytes are written. Failure
+ACL entries, macOS requests a zero-entry `no_inherit` ACL and mode 0600 in one
+`openx_np` operation. Native execution proves that an ordinary child inherits
+the parent ACE while the protected file immediately reports true ACL absence.
+macOS canonicalizes the zero-entry creation request rather than retaining an
+allocated empty ACL. At runtime, Noter defensively applies the native remove-ACL
+sentinel through the live descriptor and verifies absence before any document
+bytes are written. Failure
 closes the descriptor and reports the possible random zero-byte artifact without
 unlinking an unverified pathname. Windows temporary and new files use a
 protected DACL granting full control only to the object owner and SYSTEM and deny
@@ -433,9 +435,11 @@ snapshot before commit, reconstructed after the exchange, applied through the
 destination descriptor, and re-serialized for exact verification. No temporary
 ACL pathname is exposed. A source with no extended ACL is represented by the
 distinct `Absent` snapshot state and replayed with macOS's native remove-ACL
-sentinel. This preserves the kernel-level distinction between absence and an
-allocated zero-entry ACL. Resource-fork and other xattr values are applied from
-the bounded immutable snapshot rather than copied live.
+sentinel. Present ACL entries remain serialized separately. Native evidence also
+shows that explicit zero-entry ACL text is canonicalized to absence, so the
+design does not claim that an empty ACL remains a separately stored state.
+Resource-fork and other xattr values are applied from the bounded immutable
+snapshot rather than copied live.
 
 No implementation may claim durable atomic save while these cases are silently
 undefined.
