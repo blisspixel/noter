@@ -21,18 +21,28 @@ passes `--locked` to Cargo. The local reference command is:
 cargo mutants --jobs 4 --colors never
 ```
 
-The CI command is intentionally different:
+The CI commands are intentionally different:
 
 ```text
+Linux common scope:
+cargo mutants -vV --in-place --colors never \
+  --exclude-re '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement)'
+
+Windows full scope:
 cargo mutants -vV --in-place --colors never
 ```
 
 The [cargo-mutants CI guidance](https://mutants.rs/ci.html) recommends
 `--in-place` for a disposable CI checkout. The tool documents that
 [`--in-place` cannot be combined with `--jobs`](https://mutants.rs/in-place.html),
-so the CI gate runs serially and uploads `mutants.out` even on failure. The
-installer action and cargo-mutants version are both pinned, checksums stay
-enabled, and fallback installation is disabled.
+so each CI gate runs serially and uploads `mutants.out` even on failure. The
+Linux job covers 316 common mutants. The Windows job covers all 341 mutants,
+including four functions containing Windows-only decisions that cannot be
+executed on Linux. The union therefore retains the complete configured scope
+without misclassifying inactive platform branches as survivors. Incremental
+compilation is enabled explicitly for the mutation steps because the cache
+action disables it by default. The installer action and cargo-mutants version
+are both pinned, checksums stay enabled, and fallback installation is disabled.
 
 GUI code is not included to inflate the trust-kernel score. Application and UI
 behavior require semantic UI tests, targeted state-model tests, limited visual
@@ -44,11 +54,21 @@ snapshots, and manual accessibility verification in later milestones.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Initial full scope | 380 | 228 | 111 | 38 | 3 | 10 minutes |
 | Final full scope | 341 | 230 | 111 | 0 | 0 | 9.62 minutes |
+| First hosted Linux full scope | 341 | 220 | 111 | 10 | 0 | 33.33 minutes |
 
 `Unviable` means the mutation did not compile. It is distinct from a survivor.
 The final run has no missed mutation and no timeout. The lower final mutant count
 reflects removal of redundant branches and mutation-prone loop bookkeeping, not
 an excluded source path.
+
+The first hosted Linux run at commit `958cf2d` is intentionally retained as
+negative evidence in
+[GitHub Actions run 30183095388](https://github.com/blisspixel/noter/actions/runs/30183095388).
+All 10 Linux survivors were operations inside Windows-only `cfg` branches. The
+run exposed that a single-platform mutation gate cannot interpret inactive
+platform code correctly and that the cache action's disabled incremental builds
+made the serial campaign take 33.33 minutes. It directly caused the paired
+Linux-common and Windows-full gate described above.
 
 ## Defects in the proof found by mutation
 
@@ -84,5 +104,5 @@ metadata preservation, crash durability, weak-filesystem behavior, GUI
 semantics, or performance. Those remain separate M1 and later milestone gates in
 [ROADMAP.md](ROADMAP.md) and [manual-test-matrix.md](manual-test-matrix.md).
 
-The exact-commit Linux CI mutation result will be linked here after the workflow
-gate completes successfully.
+The exact-commit paired CI mutation results will be linked here after both gates
+complete successfully.

@@ -87,7 +87,15 @@ jobs:
   # Mutation testing (trust-kernel decision paths, not GUI coverage padding)
   # ---------------------------------------------------------------------------
   mutation:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            scope: linux-common
+          - os: windows-latest
+            scope: windows-full
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -100,13 +108,26 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
           fallback: none
-      - name: Run trust-kernel mutation tests
+      - name: Run common trust-kernel mutation tests
+        if: runner.os == 'Linux'
+        env:
+          # rust-cache disables incremental builds by default. Mutation builds
+          # deliberately need them because each scenario changes one expression.
+          CARGO_INCREMENTAL: 1
+        run: >
+          cargo mutants -vV --in-place --colors never
+          --exclude-re
+          '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement)'
+      - name: Run full Windows trust-kernel mutation tests
+        if: runner.os == 'Windows'
+        env:
+          CARGO_INCREMENTAL: 1
         run: cargo mutants -vV --in-place --colors never
       - name: Upload mutation results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: mutation-results
+          name: mutation-results-${{ matrix.scope }}
           path: mutants.out
 
   # ---------------------------------------------------------------------------

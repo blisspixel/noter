@@ -268,10 +268,13 @@ and result artifacts. Its [CI guidance](https://mutants.rs/ci.html) recommends a
 disposable checkout with `--in-place` and uploading `mutants.out`. The
 [`--in-place` contract](https://mutants.rs/in-place.html) explicitly disallows
 parallel `--jobs`, so Noter uses four copied-tree jobs for the local reference
-run and one serial in-place job in CI. The configured scope is `src/core/*.rs`:
-mutation testing is a trust-kernel decision gate, not a substitute for semantic
-GUI tests. The final local campaign evaluated 341 mutants, caught 230, rejected
-111 as unviable, and reported no missed mutation or timeout. See
+run and paired serial in-place jobs in CI. Linux covers the common scope while
+Windows covers the full scope, including inactive-on-Linux platform decisions.
+The configured source scope is `src/core/*.rs`: mutation testing is a
+trust-kernel decision gate, not a substitute for semantic GUI tests. The final
+local campaign evaluated 341 mutants, caught 230, rejected 111 as unviable, and
+reported no missed mutation or timeout. The first hosted Linux run then exposed
+10 Windows-only inactive-branch survivors and drove the platform-aware gate. See
 [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md).
 
 Rust's built-in benchmark harness remains an
