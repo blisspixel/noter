@@ -53,17 +53,16 @@ The current M1 worktree has:
   coverage; and
 - a 418-mutant Windows core campaign classified as 270 caught and 148 unviable,
   plus a clean 58-mutant Windows native-adapter pass classified as 40 caught
-  and 18 unviable. The settled source now enumerates a 741-candidate
-  three-platform union and requires a fresh campaign.
+  and 18 unviable. Exact-commit run 30221793209 passes the settled 741-candidate
+  three-platform union with no miss, timeout, infrastructure error, or scope
+  gap.
 
-The historical production-adapter checkpoint passes Windows, macOS, and Linux
-CI. The subsequent immutable Unix snapshot repair passes local Windows and
-native Linux tests plus cross-target macOS lint, but still needs one
-exact-commit hosted platform run. It also requires the manual metadata and
-weaker-filesystem evidence named by ADR-003 plus the reproducible benchmark
-baseline. Noter does not yet have the edit transaction model, complete dirty
-lifecycle, recovery, complete commands, configuration, accessibility evidence,
-or release performance evidence. M1 therefore remains In Progress.
+The current production-adapter checkpoint passes exact-commit Windows, macOS,
+and Linux CI. It still requires the manual metadata and weaker-filesystem
+evidence named by ADR-003 plus the reproducible benchmark baseline. Noter does
+not yet have the edit transaction model, complete dirty lifecycle, recovery,
+complete commands, configuration, accessibility evidence, or release
+performance evidence. M1 therefore remains In Progress.
 
 ## 2. Architectural principles
 

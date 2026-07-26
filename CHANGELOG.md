@@ -84,18 +84,29 @@ release, so current work remains under Unreleased.
 - Define and enforce repository-wide code-quality and evidence standards.
 - Enforce Ruff linting and formatting for repository validation scripts in CI,
   and normalize text files to LF across supported development platforms.
-- Keep local agent state and runtime logs in ignored dedicated directories.
-- Remove obsolete tracked agent metadata and commented-out build or CI plans.
+- Keep local automation state and runtime logs in ignored dedicated directories.
+- Remove obsolete tracked automation metadata and commented-out build or CI
+  plans.
 - Expand mutation enforcement through the native platform adapter with a macOS
   job and a current 741-candidate supported-platform union with no gap. Hosted
   run 30213398323 completed the 49-candidate macOS scope without a survivor and
   exposed only Linux decision-coverage gaps plus two shared line-scanner
   timeouts. The settled local correction removes mutable progress arithmetic,
   gives repeated native decisions exact named predicates, and retains all
-  supported-platform candidates across Linux, Windows, and macOS. A new hosted
-  campaign is pending.
+  supported-platform candidates across Linux, Windows, and macOS. Exact-commit
+  run 30221793209 passes the complete matrix: Linux 617 total with 438 caught,
+  Windows 557 total with 381 caught, and macOS 49 total with 43 caught. Every
+  remaining candidate is a validated compiler rejection; no scope has a miss or
+  timeout.
+- Give Windows mutation tests a 60-second minimum test-process timeout after a
+  prior hosted run timed out one mutant even though its truth-table test had
+  already failed. A focused rerun catches all four mutations of that predicate;
+  the 90-minute outer job limit remains unchanged.
 - Reject linker, compiler, storage, process, and tool-lock infrastructure
-  failures that cargo-mutants would otherwise classify as unviable.
+  failures that cargo-mutants would otherwise classify as unviable. Normalize
+  ANSI-decorated logs and reject clang linker signal crashes after post-run
+  review found one hidden in the otherwise green run 30219731527; corrected run
+  30221793209 catches that mutant and passes the strengthened validator.
 - Close a focused 58-candidate Markdown diagnostics campaign with a composite
   result of 55 caught and three genuine compiler rejections after isolating and
   rerunning one Windows linker-lock failure.

@@ -35,6 +35,7 @@ cargo mutants -vV --in-place --colors never --workspace \
 
 Windows-applicable scope:
 cargo mutants -vV --in-place --colors never --workspace \
+  --minimum-test-timeout 60 \
   --exclude-re '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|[Mm]acos)'
 
 macOS native-adapter scope:
@@ -93,20 +94,26 @@ snapshots, and manual accessibility verification in later milestones.
 | Security-maintenance repaired run | 369 | 252 | 117 | 0 | 0 | 11 minutes |
 | Cleanup-redesign first Windows run | 394 | 253 | 129 | 12 | 0 | 24 minutes |
 | Cleanup-redesign Windows-applicable run | 383 | 254 | 129 | 0 | 0 | 24 minutes |
-| Checker-expanded Windows-applicable run | 418 | 265 | 149 | 4 | 0 | 28.48 minutes |
-| Checker-expanded composite result | 418 | 270 | 148 | 0 | 0 | 31.04 minutes cumulative |
+| Independent-review-expanded Windows-applicable run | 418 | 265 | 149 | 4 | 0 | 28.48 minutes |
+| Independent-review-expanded composite result | 418 | 270 | 148 | 0 | 0 | 31.04 minutes cumulative |
 | Windows native-adapter run before descriptor Drop proof | 57 | 39 | 18 | 0 | 0 | 10.68 minutes |
 | Last completed pre-creation-hardening Windows native-adapter run | 58 | 40 | 18 | 0 | 0 | 3.25 minutes |
 | Hosted run 30213398323, Linux scope before current repair | 638 | 423 | 181 | 32 | 2 | 24.12 minutes job wall time |
 | Hosted run 30213398323, Windows scope before current repair | 559 | 381 | 176 | 0 | 2 | 44.30 minutes job wall time |
 | Hosted run 30213398323, macOS scope | 49 | 43 | 6 | 0 | 0 | 8.90 minutes job wall time |
+| Rejected run 30219731527, Linux report | 617 | 438 | 179 | 0 | 0 | 21.77 minutes job wall time |
+| Rejected run 30219731527, Windows report | 557 | 381 | 176 | 0 | 0 | 41.48 minutes job wall time |
+| Rejected run 30219731527, macOS raw report | 49 | 42 | 7 | 0 | 0 | 5.82 minutes job wall time |
+| Exact run 30221793209, Linux scope | 617 | 438 | 179 | 0 | 0 | 21.75 minutes job wall time |
+| Exact run 30221793209, Windows scope | 557 | 381 | 176 | 0 | 0 | 41.05 minutes job wall time |
+| Exact run 30221793209, macOS scope | 49 | 43 | 6 | 0 | 0 | 5.40 minutes job wall time |
 
 `Unviable` means the mutation did not compile. It is distinct from a survivor.
 The completed local Windows core and predecessor adapter results have no missed
 mutation and no timeout. The current source enumerates 66 Windows native-adapter
-candidates and requires a fresh campaign. Earlier
-lower mutant counts reflect removal of redundant branches and mutation-prone
-loop bookkeeping, not an excluded source path.
+candidates, all included in the clean exact Windows scope above. Earlier lower
+mutant counts reflect removal of redundant branches and mutation-prone loop
+bookkeeping, not an excluded source path.
 
 The first hosted Linux run at commit `958cf2d` is intentionally retained as
 negative evidence in
@@ -143,7 +150,7 @@ caught and 129 unviable, with zero missed and zero timed out. The five Unix-only
 mutations remain in the paired Linux CI scope, including the post-exchange
 metadata decision truth table and its native Unix fixture.
 
-The checker-expanded scope added exact Save As expectation retention, typed
+Independent review expanded the scope with exact Save As expectation retention, typed
 recovery artifacts, creation-time cleanup reporting, Windows staging handoff
 verification, and associated decision accessors. The full 418-mutant Windows
 run found four survivors: the retained-creation-artifact formatter, the
@@ -171,7 +178,8 @@ and adds a warning. This removes both the prior possibility of applying
 unratified metadata read after commit and the later stale-snapshot overwrite
 window.
 
-A later safety checker found that macOS resource forks can be file-sized xattrs.
+Subsequent security review found that macOS resource forks can be file-sized
+xattrs.
 The snapshot reader now queries every native xattr size before allocation,
 enforces a 4,096-entry and 64 MiB aggregate names-and-values budget, and retries
 size races only within a fixed bound. macOS serializes the ACL before commit and
@@ -266,9 +274,33 @@ two-candidate rerun caught both variants, producing a composite 55 caught and
 three genuine compile-time rejections with zero missed and zero timed out. This
 is focused local evidence, not a substitute for the full platform matrix.
 
-The complete three-platform CI gate must still rerun the full 741-mutant union
-on one immutable commit before this expanded result becomes hosted exact-commit
-evidence.
+Exact-commit run
+[30217724043](https://github.com/blisspixel/noter/actions/runs/30217724043)
+then passed every non-Windows-mutation job. Its Windows scope had zero misses but
+timed out the `partial_state_is_completable` `&&`-to-`||` mutant after the direct
+truth-table test had already printed `FAILED`. Local reproduction made the same
+test fail in 0.00 seconds and the full library suite exit in under one second.
+A focused campaign caught all four mutations of that predicate. CI now gives
+the Windows test process a 60-second minimum while retaining the 90-minute job
+limit.
+
+Exact-commit run
+[30219731527](https://github.com/blisspixel/noter/actions/runs/30219731527)
+reported a green aggregate status at `daaeeff`, but post-run artifact review
+rejected it as baseline evidence. The macOS report classified an ANSI-decorated
+Clang linker crash as unviable. That failure was infrastructure, not a genuine
+compiler rejection. The validator now strips ANSI control sequences and rejects
+linker crashes reported through either Clang diagnostic form.
+
+Corrected exact-commit run
+[30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209)
+passes the complete matrix at `97371d8`. Linux reports 617 total, 438 caught, and
+179 genuine compiler rejections. Windows reports 557 total, 381 caught, and 176
+genuine compiler rejections. macOS reports 49 total, 43 caught, and 6 genuine
+compiler rejections; the formerly misclassified mutation is caught. Every scope
+has zero missed and zero timed out. The strengthened infrastructure validator
+passes all three artifacts, and the deduplicated union contains all 741
+configured candidates with no missing or outside entry.
 
 ## Defects in the proof found by mutation
 
@@ -297,8 +329,8 @@ tokens, and documented Windows partial-replacement classification.
 
 These changes strengthened the implementation as well as the tests. They were
 rerun across the then-configured scope after the last cleanup-race survivor was
-fixed. The later Unix snapshot and native-adapter additions are subject to the
-current three-platform exact-commit rerun requirement above.
+fixed. The later Unix snapshot and native-adapter additions are covered by the
+three-platform exact-commit run recorded above.
 
 ## Interpretation and remaining limits
 
@@ -308,6 +340,6 @@ metadata preservation, crash durability, weak-filesystem behavior, GUI
 semantics, or performance. Those remain separate M1 and later milestone gates in
 [ROADMAP.md](ROADMAP.md) and [manual-test-matrix.md](manual-test-matrix.md).
 
-The expanded counts are local evidence until all three current mutation jobs
-pass on one exact commit. The immutable `3830cdd` paired result remains the
-verified CI baseline in the meantime.
+The expanded counts are hosted exact-commit evidence at `97371d8`. Run
+[30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209)
+is the current CI baseline for the complete supported-platform mutation union.

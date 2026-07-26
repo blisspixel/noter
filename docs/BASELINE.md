@@ -48,12 +48,12 @@ semantic UI and manual platform tests.
 - Duplicate target-specific dependency families remain in the GUI stack and
   require a release audit.
 
-## Current worktree checkpoint
+## Current engineering checkpoint
 
-This checkpoint measures the current pre-alpha worktree after the M1 storage
-adapter, M2 shell work, and early M6 Markdown slice became reachable from the
-GUI. It does not replace or reinterpret the M0 evidence above, and it is not yet
-a milestone sign-off.
+This checkpoint measures the current pre-alpha implementation after the M1
+storage adapter, M2 shell work, and early M6 Markdown slice became reachable
+from the GUI. It does not replace or reinterpret the M0 evidence above, and it
+is not yet a milestone sign-off.
 
 | Measure | Result |
 | --- | --- |
@@ -63,22 +63,21 @@ a milestone sign-off.
 | Testable trust-kernel line coverage | 92.26 percent, 4,921 of 5,334 lines |
 | Whole-workspace line coverage | 87.54 percent, 6,115 of 6,985 lines |
 | Enforced development thresholds | Pass, trust kernel at least 90 percent and whole workspace at least 80 percent |
-| Last completed Windows-applicable trust-kernel mutation testing | 418 total, 270 caught, 148 unviable, 0 missed, 0 timed out |
-| Last completed Windows native-adapter mutation testing | 58 total, 40 caught, 18 unviable, 0 missed, 0 timed out |
-| Current Windows native-adapter scope | 66 enumerated; full rerun pending |
+| Historical focused Windows trust-kernel mutation testing | 418 total, 270 caught, 148 unviable, 0 missed, 0 timed out |
+| Historical focused Windows native-adapter mutation testing | 58 total, 40 caught, 18 unviable, 0 missed, 0 timed out |
+| Current Windows native-adapter scope | 66 candidates included in the exact full Windows run; no scope gap |
 | Focused Markdown diagnostics mutation testing | 58 total, 55 caught, 3 unviable, 0 missed, 0 timed out; one linker-lock result caught in an isolated rerun |
-| Current supported-platform mutation union | 741 total: Linux 617, Windows 557, macOS 49, no union gap; exact-commit CI pending |
+| Current supported-platform mutation union | 741 total with no union gap; Linux 617 total, 438 caught, 179 unviable; Windows 557 total, 381 caught, 176 unviable; macOS 49 total, 43 caught, 6 unviable; 0 missed and 0 timed out in every scope |
 | Rustdoc with warnings denied | Pass |
 | Local Markdown link check | Pass |
 | Linux full-crate cross-target Clippy | Pass |
 | macOS platform-crate cross-target Clippy | Pass |
 | Release binary | 7,344,128 bytes, 7.00 MiB |
-| Release SHA-256 | `040d7cf83f8a27ff02c7c06fdd9fed2d76505ee42fe026a9541fc92002eed5cb` |
+| Release SHA-256 | `2d0fac9d689ed2b51ebf192a0c1207d57e738f215c38080a74a1cd4f5e322657` |
 | Resolved Cargo packages across all targets | 418 |
 | RustSec audit | Pass, no known vulnerability reported |
 | Cargo dependency policy | Pass for advisories, licenses, sources, and bans; duplicate versions remain visible as warnings |
-| Native Windows, macOS, and Linux CI | Pass at `c76515c`, [run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267) |
-| Paired Linux and Windows mutation CI | Pass at `3830cdd`, [run 30184163737](https://github.com/blisspixel/noter/actions/runs/30184163737) |
+| Exact-commit Windows, macOS, and Linux CI | Pass at `97371d8`, including all three mutation scopes and strengthened infrastructure validation, [run 30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209) |
 
 The 172 tests comprise 117 primary-library unit tests, 35 binary application and
 UI tests, one 19-case golden-corpus test, three generated property suites with

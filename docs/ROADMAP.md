@@ -78,15 +78,15 @@ original or staged recovery information.
 
 ### Current state
 
-Most automated trust-kernel behavior is implemented and covered by local tests.
-A checker found and repaired macOS ACL-absence handling and inherited-ACL
-staging risk. Exact-commit run 30213398323 passed all native product tests and
-the 49-candidate macOS mutation scope. Its Linux and Windows mutation jobs then
-exposed repeated native decisions and mutable line-scanner progress arithmetic.
-The settled local repair has a complete 741-candidate three-platform assignment
-with no union gap and focused mutation evidence without a viable survivor. It
-still requires a green exact-commit full campaign. The reproducible benchmark
-harness and required manual filesystem fixtures also remain open.
+Most automated trust-kernel behavior is implemented. Native macOS evidence
+exposed ACL-absence handling and inherited-ACL staging risk, while hosted
+mutation evidence exposed repeated native decisions plus mutable line-scanner
+progress arithmetic. Each defect has a focused regression. Exact-commit run
+[30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209)
+passes native Windows, macOS, and Linux tests, both coverage gates, dependency
+policy, and the complete 741-candidate supported-platform mutation union with no
+miss, timeout, infrastructure misclassification, or scope gap. The reproducible
+benchmark harness and required manual filesystem fixtures remain open.
 
 Current detailed evidence and known gaps are maintained in:
 
@@ -295,8 +295,10 @@ contract.
 
 ## Immediate backlog
 
-1. Run the settled 741-candidate supported-platform mutation union on one
-   immutable commit, reconcile the evidence, and obtain checker approval.
+1. Complete: run the settled 741-candidate supported-platform mutation union on
+   one immutable commit, reconcile the evidence, and pass independent review.
+   Evidence: `97371d8`,
+   [run 30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209).
 2. Build the reproducible M1 benchmark harness and execute the remaining manual
    filesystem fixtures.
 3. Complete M2 evidence for installed About and update actions, theme

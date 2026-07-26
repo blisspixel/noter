@@ -220,19 +220,21 @@ BLAKE3-256 fingerprints, stable-handle loading, metadata change tokens, and the
 then-current `FilesystemStorage` adapter are verified at commit `c76515c` in
 [GitHub Actions run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267).
 That historical checkpoint used live post-commit Unix metadata transfer. The
-current unhosted repair replaces it with immutable pre-commit Linux and macOS
+current repair replaces it with immutable pre-commit Linux and macOS
 metadata snapshots, verifies the displaced payload against that
 snapshot after exchange, refuses stale restoration, and bounds xattr and
-resource-fork capture before allocation. Local Windows and
-native Linux tests plus macOS cross-target lint pass; an exact-commit hosted
-platform run remains required. The adapter uses native Windows and Unix commit
-primitives, reconciles documented partial states, verifies exact committed
-identity and bytes, reports cleanup and durability independently, and is
-integrated with the sealed revision-aware Document API.
+resource-fork capture before allocation. Exact-commit
+[run 30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209)
+passes native Windows, Linux, and macOS tests plus the complete mutation matrix.
+The adapter uses native Windows and Unix commit primitives, reconciles documented
+partial states, verifies exact committed identity and bytes, reports cleanup and
+durability independently, and is integrated with the sealed revision-aware
+Document API.
 Windows cleanup is handle-bound; Unix cleanup is conservatively retained. The
 historical Windows core campaign and the focused Windows native-adapter campaign
 have zero missed mutants and zero timeouts, as recorded in
 [M1 Mutation Evidence](../M1_MUTATION_EVIDENCE.md). A pinned three-platform CI
-gate exists, but the expanded union still requires an exact-commit hosted run.
-The manual platform and weak-filesystem matrix plus the reproducible benchmark
-baseline remain required before M1 is Verified.
+gate passes the expanded 741-candidate union at `97371d8` with zero misses,
+timeouts, infrastructure misclassifications, or scope gaps. The manual platform
+and weak-filesystem matrix plus the reproducible benchmark baseline remain
+required before M1 is Verified.

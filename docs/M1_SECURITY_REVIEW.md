@@ -18,8 +18,8 @@ and native platform boundary. Validation used bounded synthetic files, fault
 injection, full-file review receipts, native Windows filesystem fixtures, and
 source and compile review of the Unix and macOS paths.
 
-Documentation, tests, generated build output, Git internals, local agent state,
-and the application icon were excluded as non-runtime entry points. Test
+Documentation, tests, generated build output, Git internals, local automation
+state, and the application icon were excluded as non-runtime entry points. Test
 assertions and architecture contracts were still used as supporting evidence.
 
 ## Reportable findings and remediation
@@ -100,7 +100,7 @@ bypass the ceiling. Errors are typed, stage-specific, and path-redacted.
   the random sibling basename and gives inspection and removal guidance.
 - Unix metadata capture now queries each xattr size before allocating its value,
   limits the snapshot to 4,096 entries and 64 MiB of aggregate names and values,
-  and retries size races only three times. This closes a later checker finding
+  and retries size races only three times. This closes a later review finding
   where a small macOS data fork with a file-sized resource fork could bypass the
   document ceiling, exhaust memory or temporary storage, or stall Save. macOS
   now serializes the ACL into the immutable snapshot and replays it through the
@@ -162,7 +162,8 @@ trust kernel and 87.54 percent for the complete workspace. The first expanded
 mutation run exposed nine file-limit boundary survivors. Exact inclusive-limit,
 oversized-announcement, constant-value, and overflow tests closed them; the last
 completed Windows-applicable campaign classified all 383 mutants as 254 caught
-and 129 unviable. The checker-expanded 418-mutant run found four survivors;
+and 129 unviable. The independent-review-expanded 418-mutant run found four
+survivors;
 focused tests and isolated reruns produce a composite classification of 270
 caught, 148 unviable, zero missed, and zero timed out. The expanded native
 adapter scope adds a clean local 57-mutant Windows pass with 39 caught and 18
@@ -171,8 +172,10 @@ pass with 40 caught and 18 unviable. The current adapter scope is 66. The settle
 three-platform 741-mutant union assigns 617 candidates to Linux, 557 to Windows,
 and 49 macOS-specific candidates to macOS with no set-union gap. Hosted run
 30213398323 closed the macOS scope and exposed 32 Linux survivors plus two
-shared scanner timeouts. The current local correction replaces the mutable
+shared scanner timeouts. The correction replaces the mutable
 scanner arithmetic, gives repeated Unix decisions exact named predicates, and
-tests ownership application through deterministic error injection. A fresh
-exact-commit hosted campaign is required before this checkpoint becomes
-complete CI evidence.
+tests ownership application through deterministic error injection. Exact-commit
+run [30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209)
+passes the complete matrix. Linux classifies 438 caught and 179 unviable,
+Windows 381 caught and 176 unviable, and macOS 43 caught and 6 unviable. Every
+scope has zero missed and zero timed out, and infrastructure validation passes.
