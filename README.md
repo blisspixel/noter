@@ -95,12 +95,22 @@ implicitly, and hard-linked destinations require explicit confirmation. Its
 evidence commit `c76515c` passed all Windows, macOS, Linux, strict lint, rustdoc,
 documentation, and 90 percent coverage jobs in
 [GitHub Actions run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267).
-All 81 local workspace tests pass with 92.76 percent measured trust-kernel line
+
+The current mutation checkpoint evaluated 341 trust-kernel mutations with
+cargo-mutants 27.1.0: 230 were caught, 111 were rejected by the compiler, and
+none were missed or timed out. The checked-in configuration and CI gate are
+documented in [docs/M1_MUTATION_EVIDENCE.md](docs/M1_MUTATION_EVIDENCE.md).
+The prototype now opens a real About dialog and visibly disables unfinished
+menu commands instead of accepting no-op clicks. Markdown assistance remains
+intentionally absent until the opt-in M7 work after the trustworthy v0.1
+release.
+
+All 96 local workspace tests pass with 93.48 percent measured trust-kernel line
 coverage. The 339-package lockfile has a clean RustSec audit, and the stripped
-Windows release is 4.65 MiB. The manual metadata and filesystem matrix, mutation
-testing, and reproducible benchmarks still gate this M1 slice. Recovery, the
-complete dirty-document lifecycle, and the production UI also remain unfinished,
-so the GUI is still a prototype rather than a safe daily editor.
+Windows release is 4.69 MiB. The manual metadata and filesystem matrix plus
+reproducible benchmarks still gate this M1 slice. Recovery, the complete
+dirty-document lifecycle, and the production UI also remain unfinished, so the
+GUI is still a prototype rather than a safe daily editor.
 
 A structured adversarial design review was performed on the initial planning corpus. The review and our responses are captured in [docs/RIGOROUS_REVIEW.md](docs/RIGOROUS_REVIEW.md). That document, together with the expansions it drove (explicit safety/liveness properties, FMEA table, dependency governance, mental model alignment, stewardship planning), is the primary mechanism we are using to ensure this does not become "just another slopware text editor."
 
@@ -108,6 +118,7 @@ See:
 
 - [docs/RESEARCH.md](docs/RESEARCH.md) - repository audit, ecosystem research, and decisions
 - [docs/BASELINE.md](docs/BASELINE.md) - measured M0 quality, coverage, size, and dependency baseline
+- [docs/M1_MUTATION_EVIDENCE.md](docs/M1_MUTATION_EVIDENCE.md) - reproducible M1 mutation-testing evidence
 - [docs/ROADMAP.md](docs/ROADMAP.md) - milestone order, gates, metrics, and immediate backlog
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) - ratified v0.1 and v0.2 product contract
 - [docs/DESIGN.md](docs/DESIGN.md) - active architecture, trust protocols, verification strategy, and FMEA
@@ -181,6 +192,7 @@ cargo install cargo-llvm-cov --locked
 cargo llvm-cov --locked --all-targets --all-features --workspace \
   --ignore-filename-regex 'src[/\\](app|main)\.rs$' \
   --fail-under-lines 90 --summary-only
+cargo mutants --jobs 4 --colors never
 ```
 
 ### Release binary size (target)

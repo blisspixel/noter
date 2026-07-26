@@ -41,7 +41,8 @@ semantic UI and manual platform tests.
 - At the M0 evidence commit, the document module exceeded the initial percentage
   target but still lacked its I/O adapter, property tests, failure injection, and
   mutation evidence.
-- The GUI shell has no automated UI coverage.
+- The current GUI shell has one About-window smoke test but still lacks the
+  semantic command, state, accessibility, and visual coverage required for v0.1.
 - Startup, input latency, open latency, RSS, and long-file measurements do not
   yet have a reproducible harness.
 - Duplicate target-specific dependency families remain in the GUI stack and
@@ -57,31 +58,36 @@ evidence above, and it is not yet a milestone sign-off.
 | --- | --- |
 | `cargo fmt --all -- --check` | Pass |
 | Strict workspace Clippy, locked, all targets and features | Pass |
-| Workspace tests | 81 passed, 0 failed |
-| Testable trust-kernel line coverage | 92.76 percent |
+| Workspace tests | 96 passed, 0 failed |
+| Testable trust-kernel line coverage | 93.48 percent, 2,940 of 3,145 lines |
 | Enforced development threshold | Pass, at least 90 percent |
+| Trust-kernel mutation testing | 341 total, 230 caught, 111 unviable, 0 missed, 0 timed out |
 | Rustdoc with warnings denied | Pass |
 | Local Markdown link check | Pass |
 | Linux full-crate cross-target Clippy | Pass |
 | macOS platform-crate cross-target Clippy | Pass |
-| Release binary | 4,871,680 bytes, 4.65 MiB |
-| Release SHA-256 | `82B885A7F21FA79DE598A0294DC9517503EB91608C7A34363FE3D6CBE33F304D` |
+| Release binary | 4,913,664 bytes, 4.69 MiB |
+| Release SHA-256 | `7a729009c80a5326e45a6b3c7396a89e5f97be4db2a58ed69a6dad572996f198` |
 | Resolved Cargo packages across all targets | 339 |
 | RustSec audit | Pass, no known vulnerability reported |
 | Native Windows, macOS, and Linux CI | Pass at `c76515c`, [run 30181088267](https://github.com/blisspixel/noter/actions/runs/30181088267) |
 
-The 81 tests comprise 71 primary-crate unit tests, one 19-case golden-corpus
-test, three generated property suites with 512 cases each, and six platform-crate
-tests. Coverage excludes the still-prototype `src/app.rs` and `src/main.rs` under
-the same explicit CI rule as M0. The new adapter itself measures 89.23 percent
-line coverage, and the total remains above the M1 90 percent gate.
+The 96 tests comprise 85 primary-library unit tests, one binary About-window
+smoke test, one 19-case golden-corpus test, three generated property suites with
+512 cases each, and six platform-crate tests. Coverage excludes the
+still-prototype `src/app.rs` and `src/main.rs` under the same explicit CI rule as
+M0. The filesystem adapter itself measures 91.06 percent line coverage, and the
+total remains above the M1 90 percent gate. The UI exclusion is temporary and is
+replaced by semantic UI and manual accessibility gates before v0.1.
 
-The binary grew by 122,880 bytes from the M0 baseline. That measured cost now
+The binary grew by 164,864 bytes from the M0 baseline. That measured cost now
 includes reachable BLAKE3 conflict fingerprints, native metadata transfer, commit
-reconciliation, stable-handle loading, and revision-aware saves. The lock graph
+reconciliation, stable-handle loading, revision-aware saves, and the truthful
+About dialog. The lock graph
 grew by 14 packages from M0: eight test-only property packages, four BLAKE3
 packages, one internal workspace member, and one Linux-only `xattr` package.
 
-The next evidence update must attach mutation results, manual platform metadata
-fixtures, weaker-filesystem observations, and reproducible latency and memory
-measurements. Until then M1 remains In Progress.
+The complete mutation campaign is recorded in
+[M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md). The next evidence update must
+attach manual platform metadata fixtures, weaker-filesystem observations, and
+reproducible latency and memory measurements. Until then M1 remains In Progress.

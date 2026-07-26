@@ -262,6 +262,30 @@ bit-set features, and its Rust requirement is below Noter's pinned 1.97.1
 toolchain. The M1 suite therefore uses it only as a narrowly configured
 development dependency; it does not enter release artifacts.
 
+For mutation testing, [cargo-mutants 27.1.0](https://mutants.rs/) supports a
+checked-in `.cargo/mutants.toml`, workspace tests, Cargo argument forwarding,
+and result artifacts. Its [CI guidance](https://mutants.rs/ci.html) recommends a
+disposable checkout with `--in-place` and uploading `mutants.out`. The
+[`--in-place` contract](https://mutants.rs/in-place.html) explicitly disallows
+parallel `--jobs`, so Noter uses four copied-tree jobs for the local reference
+run and one serial in-place job in CI. The configured scope is `src/core/*.rs`:
+mutation testing is a trust-kernel decision gate, not a substitute for semantic
+GUI tests. The final local campaign evaluated 341 mutants, caught 230, rejected
+111 as unviable, and reported no missed mutation or timeout. See
+[M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md).
+
+Rust's built-in benchmark harness remains an
+[unstable nightly feature](https://doc.rust-lang.org/unstable-book/library-features/test.html),
+which conflicts with Noter's pinned stable toolchain and reproducibility goal.
+The M1 benchmark harness should therefore be a small stable binary that uses
+[`std::hint::black_box`](https://doc.rust-lang.org/std/hint/fn.black_box.html),
+a deterministic generated corpus, warmup rounds, enough measured samples for
+percentiles, and machine-readable output. Baselines must record the commit,
+toolchain, operating system, CPU, memory, build profile, corpus checksum, sample
+count, and raw measurements. A regression gate should compare like-for-like
+reference environments and retain artifacts rather than treating one developer
+machine as a universal latency oracle.
+
 For external-change detection, the official [`blake3` 1.8.5 Rust
 implementation](https://docs.rs/blake3/1.8.5/blake3/) supplies a 32-byte
 cryptographic digest and a
@@ -278,8 +302,9 @@ but no runtime I/O capability is imported by Noter. The upstream `pure` flag is
 documented as an unstable testing feature, so relying on it would be a weaker
 maintenance contract than accepting and recording the optimized build path.
 The dependency adds four lock entries and passed a 2026-07-25 RustSec scan. Once
-the production adapter made hashing reachable from the GUI, the complete native
-I/O slice measured 4,871,680 bytes, or 4.65 MiB, in the stripped Windows release.
+the production adapter made hashing reachable from the GUI, the current native
+I/O and truthful-shell slice measured 4,913,664 bytes, or 4.69 MiB, in the
+stripped Windows release.
 Hashing latency still requires the reproducible M1 benchmark corpus.
 
 For stable file identity, Rust 1.97.1 exposes Unix `dev`, `ino`, and `nlink`
@@ -351,9 +376,11 @@ artifacts. New-file installation uses `MoveFileExW` with only
 `MOVEFILE_WRITE_THROUGH`; replacement and cross-volume copy flags are absent.
 
 The native adapter adds one lock package overall, bringing the cross-target graph
-to 339. The 2026-07-25 RustSec audit is clean. The remaining evidence is native
-CI plus manual NTFS, Linux, macOS, cloud, network, removable, and weaker-filesystem
-testing; the implementation does not infer durability from a filesystem label.
+to 339. The 2026-07-25 RustSec audit is clean, and the adapter passes native
+Windows, macOS, and Linux CI. The remaining evidence is manual NTFS, Linux,
+macOS, cloud, network, removable, and weaker-filesystem testing plus the
+reproducible benchmark corpus; the implementation does not infer durability from
+a filesystem label.
 
 For releases, use a current `cargo-dist` configuration, generate an SBOM and
 checksums, pin GitHub Actions by immutable commit SHA, minimize token permissions,

@@ -35,8 +35,8 @@ resolver = "3"
 #   dark-light       = "2.0"    # Clean system theme detection (Windows registry, macOS appearance,
 #                               # Linux gsettings). MSRV 1.78. Preferred over hand-rolled for v1.
 #
-# Phase 2–3 (polish + markdown QOL)
-#   pulldown-cmark   = "0.13"   # CommonMark parser for the preview (pure Rust). 0.13.4 current.
+# Post-v0.1 Markdown assist, only after M6 verification
+#   pulldown-cmark   = "0.13"   # Parser for visible-source styling, diagnostics, and explicit format preview.
 #   tempfile         = "3.27"   # Golden tests & recovery simulation (dev-dependency).
 #
 # Future / only if justified (and after GA)

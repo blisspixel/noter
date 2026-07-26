@@ -42,15 +42,18 @@ The current M1 worktree has:
   preserve dirty state on conflict or failure and adopt a new path only after
   commit;
 - strict refusal for final links, read-only destinations, and unconfirmed
-  hard-link separation; and
-- 81 Windows-local workspace tests and 92.76 percent line coverage across the
-  expanded workspace trust kernel.
+  hard-link separation;
+- 96 Windows-local workspace tests and 93.48 percent line coverage across the
+  expanded workspace trust kernel; and
+- a 341-mutant trust-kernel campaign with 230 caught, 111 unviable, zero missed,
+  and zero timed out.
 
-The native adapter still requires green Windows, macOS, and Linux CI plus the
-manual metadata and weaker-filesystem evidence named by ADR-003. Noter does not
-yet have the edit transaction model, complete dirty lifecycle, recovery,
-complete commands, configuration, accessibility evidence, or release
-performance evidence. M1 therefore remains In Progress.
+The native adapter passes Windows, macOS, and Linux CI. It still requires the
+manual metadata and weaker-filesystem evidence named by ADR-003 plus the
+reproducible benchmark baseline. Noter does not yet have the edit transaction
+model, complete dirty lifecycle, recovery, complete commands, configuration,
+accessibility evidence, or release performance evidence. M1 therefore remains
+In Progress.
 
 ## 2. Architectural principles
 
@@ -695,7 +698,7 @@ under the pinned toolchain. `xattr` does not publish an MSRV, so CI establishes
 compatibility.
 
 With the adapter reachable from the GUI, the stripped Windows release is
-4,871,680 bytes, or 4.65 MiB, compared with the 4,748,800-byte M0 baseline. The
+4,913,664 bytes, or 4.69 MiB, compared with the 4,748,800-byte M0 baseline. The
 2026-07-25 RustSec audit of all 339 locked packages is clean. This measured delta
 is accepted for native metadata preservation, cryptographic conflict detection,
 and reconciled commit semantics. Later release gates still enforce the 12 MiB
@@ -703,9 +706,9 @@ ceiling and require duplicate, license, source, and capability audits.
 
 CI uses the pinned Rust toolchain, locked Cargo graph, immutable action commits,
 minimum permissions, formatting, strict Clippy, cross-platform tests, coverage,
-and documentation checks. Release work adds license and advisory audits, SBOM,
-provenance, checksums, signatures where credentials exist, and cargo-dist
-artifacts verified on clean systems.
+full trust-kernel mutation testing, and documentation checks. Release work adds
+license and advisory audits, SBOM, provenance, checksums, signatures where
+credentials exist, and cargo-dist artifacts verified on clean systems.
 
 ## 17. Failure modes and effects
 

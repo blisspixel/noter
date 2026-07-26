@@ -175,6 +175,8 @@ complete `FilesystemStorage` adapter are verified at commit `c76515c` in
 The adapter copies Linux and macOS metadata, uses native Windows and Unix commit
 primitives, reconciles documented partial states, verifies exact committed
 identity and bytes, reports cleanup and durability independently, and is
-integrated with the sealed revision-aware Document API. The manual platform and
-weak-filesystem matrix plus mutation evidence remain required before M1 is
-Verified.
+integrated with the sealed revision-aware Document API. The complete local
+mutation campaign has zero missed mutants and zero timeouts, as recorded in
+[M1 Mutation Evidence](../M1_MUTATION_EVIDENCE.md), and a pinned full-scope CI
+gate now enforces it. The manual platform and weak-filesystem matrix plus the
+reproducible benchmark baseline remain required before M1 is Verified.

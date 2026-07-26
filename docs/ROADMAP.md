@@ -41,10 +41,11 @@ perform basic Open, Save, and Save As operations. It is not a completed Phase 1
 editor.
 
 Missing or unproven capabilities include dirty-state guards, real undo policy,
-find and replace, configuration, recent files, recovery, external-change
-detection, window persistence, complete themes, cross-platform shortcuts,
-automated UI tests, custom-editor accessibility, performance evidence,
-packaging, and release sign-off.
+find and replace, configuration, recent files, recovery, window persistence,
+complete themes, cross-platform shortcuts, automated semantic UI tests,
+custom-editor accessibility, performance evidence, packaging, and release
+sign-off. The prototype About command now opens a real dialog, and unfinished
+menu commands are visibly disabled instead of accepting no-op clicks.
 
 The initial 2026-07-25 baseline found 28.24 percent whole-program line coverage,
 85.96 percent line coverage in `core/document.rs`, only three tests, and no
@@ -242,10 +243,11 @@ of the GUI.
   committed revision, Save As adopts its path only after commit, external changes
   become conflicts, final links and read-only destinations are refused, and hard
   links require explicit confirmation.
-- **Verified locally:** all 81 workspace tests, formatting, strict workspace
-  Clippy, and rustdoc pass. Measured trust-kernel line coverage is 92.76 percent;
-  CI enforces the M1 floor of 90 percent. Linux full-crate and macOS platform-crate
-  cross-target Clippy also pass from the Windows reference environment.
+- **Verified locally:** all 96 workspace tests, formatting, strict workspace
+  Clippy, and rustdoc pass. Measured trust-kernel line coverage is 93.48 percent,
+  or 2,940 of 3,145 lines; CI enforces the M1 floor of 90 percent. Linux
+  full-crate and macOS platform-crate cross-target Clippy also pass from the
+  Windows reference environment.
 - **Verified in CI:** the complete production-adapter evidence commit `c76515c`
   passed Windows, macOS, Linux, strict workspace lint, rustdoc, documentation,
   and the 90 percent coverage gate in
@@ -259,11 +261,18 @@ of the GUI.
   338 without adding an external package. Direct use of the already-resolved
   `getrandom`, `rustix`, and `libc` packages adds no lock entry. Linux-only
   `xattr` adds one package, for 339 total. The reachable adapter produces a
-  stripped Windows release of 4,871,680 bytes, or 4.65 MiB. RustSec reports no
+  stripped Windows release of 4,913,664 bytes, or 4.69 MiB. RustSec reports no
   known vulnerability in the lockfile.
-- **Next:** execute the manual NTFS, Linux, macOS, and weaker-filesystem fixtures,
-  run mutation testing, and record reproducible latency and memory measurements
-  before marking M1 Verified.
+- **Verified locally:** cargo-mutants 27.1.0 evaluated the complete configured
+  trust-kernel scope. The initial run exposed 38 survivors and three timeouts.
+  After strengthening decision structure and exact tests, the final 341-mutant
+  run caught 230 mutations, rejected 111 as unviable, and had zero missed
+  mutations or timeouts. The checked-in configuration, repair categories, and CI
+  design are recorded in
+  [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md).
+- **Next:** execute the manual NTFS, Linux, macOS, and weaker-filesystem fixtures
+  and record reproducible latency and memory measurements before marking M1
+  Verified.
 
 **Work:**
 
@@ -522,25 +531,23 @@ silently rewriting content.
 
 These are the next tasks in dependency order:
 
-1. Run the complete native adapter on Windows, macOS, and Linux CI and fix every
-   platform-specific failure before accepting the slice.
-2. Add and execute platform fixtures for NTFS DACLs, named streams, compression,
+1. Add and execute platform fixtures for NTFS DACLs, named streams, compression,
    encryption, and documented partial errors; Linux mode, ACL, extended
    attributes, ownership limits, SELinux, and capabilities; and macOS ACLs,
    extended attributes, resource forks, quarantine, flags, and timestamp policy.
-3. Exercise final links, hard links, read-only files, external writers, local
+2. Exercise final links, hard links, read-only files, external writers, local
    filesystems, SMB, cloud-synced folders, removable media, and at least one
    weaker filesystem. Record the exact durability result rather than inferring
    it from the filesystem name.
-4. Add mutation testing for serialization, conflict, commit-state, dirty-revision,
-   and cleanup decisions, resolving or documenting every high-impact survivor.
-5. Add the benchmark corpus generator and automate the trust-kernel baseline.
-6. Close the M1 evidence gate, then implement the M2 edit transaction, selection,
+3. Land the pinned full-scope mutation CI gate and attach its exact-commit
+   artifact to the local campaign evidence.
+4. Add the benchmark corpus generator and automate the trust-kernel baseline.
+5. Close the M1 evidence gate, then implement the M2 edit transaction, selection,
    and reference-model undo and redo properties.
-7. Implement the M3 dirty-document lifecycle state machine, versioned
+6. Implement the M3 dirty-document lifecycle state machine, versioned
    state-directory recovery records, crash scanning, and controlled child-process
    crash harness.
-8. Create the pure command and application-state reducer, then connect the proven
+7. Create the pure command and application-state reducer, then connect the proven
    core to the complete M4 UI.
 
 The answer to "what is next" is therefore unambiguous: finish M1 by proving the

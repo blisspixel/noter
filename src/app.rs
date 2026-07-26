@@ -8,6 +8,7 @@ pub struct NoterApp {
     text: String,
     document: Document,
     error_msg: Option<String>,
+    about_open: bool,
 }
 
 impl NoterApp {
@@ -157,7 +158,7 @@ impl NoterApp {
                 ui.menu_button("File", |ui| self.show_file_menu(ui));
                 ui.menu_button("Edit", Self::show_edit_menu);
                 ui.menu_button("View", Self::show_view_menu);
-                ui.menu_button("Help", Self::show_help_menu);
+                ui.menu_button("Help", |ui| self.show_help_menu(ui));
             });
         });
     }
@@ -199,61 +200,89 @@ impl NoterApp {
     }
 
     fn show_edit_menu(ui: &mut egui::Ui) {
-        if ui
-            .add(egui::Button::new("Undo").shortcut_text("Ctrl+Z"))
-            .clicked()
-        {
-            ui.close();
-        }
-        if ui
-            .add(egui::Button::new("Redo").shortcut_text("Ctrl+Y"))
-            .clicked()
-        {
-            ui.close();
-        }
+        ui.add_enabled(
+            false,
+            egui::Button::new("Undo (planned)").shortcut_text("Ctrl+Z"),
+        );
+        ui.add_enabled(
+            false,
+            egui::Button::new("Redo (planned)").shortcut_text("Ctrl+Y"),
+        );
         ui.separator();
         for (label, shortcut) in [("Cut", "Ctrl+X"), ("Copy", "Ctrl+C"), ("Paste", "Ctrl+V")] {
-            if ui
-                .add(egui::Button::new(label).shortcut_text(shortcut))
-                .clicked()
-            {
-                ui.close();
-            }
+            ui.add_enabled(
+                false,
+                egui::Button::new(format!("{label} (planned)")).shortcut_text(shortcut),
+            );
         }
         ui.separator();
         for (label, shortcut) in [("Find", "Ctrl+F"), ("Replace", "Ctrl+H")] {
-            if ui
-                .add(egui::Button::new(label).shortcut_text(shortcut))
-                .clicked()
-            {
-                ui.close();
-            }
+            ui.add_enabled(
+                false,
+                egui::Button::new(format!("{label} (planned)")).shortcut_text(shortcut),
+            );
         }
     }
 
     fn show_view_menu(ui: &mut egui::Ui) {
-        if ui.button("Word Wrap").clicked() {
-            ui.close();
-        }
+        ui.add_enabled(false, egui::Button::new("Word Wrap (planned)"));
         ui.separator();
         for (label, shortcut) in [
             ("Zoom In", "Ctrl++"),
             ("Zoom Out", "Ctrl+-"),
             ("Restore Default Zoom", "Ctrl+0"),
         ] {
-            if ui
-                .add(egui::Button::new(label).shortcut_text(shortcut))
-                .clicked()
-            {
-                ui.close();
-            }
+            ui.add_enabled(
+                false,
+                egui::Button::new(format!("{label} (planned)")).shortcut_text(shortcut),
+            );
+        }
+        ui.separator();
+        ui.add_enabled(
+            false,
+            egui::Button::new("Markdown Assist (planned for v0.2)"),
+        );
+    }
+
+    fn show_help_menu(&mut self, ui: &mut egui::Ui) {
+        if ui.button("About Noter").clicked() {
+            self.open_about();
+            ui.close();
         }
     }
 
-    fn show_help_menu(ui: &mut egui::Ui) {
-        if ui.button("About Noter").clicked() {
-            ui.close();
+    const fn open_about(&mut self) {
+        self.about_open = true;
+    }
+
+    fn show_about(&mut self, ctx: &egui::Context) {
+        if !self.about_open {
+            return;
         }
+
+        let mut open = self.about_open;
+        let mut close = false;
+        egui::Window::new("About Noter")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.heading("Noter");
+                ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                ui.label("A focused, local-only plain-text editor built around data safety.");
+                ui.separator();
+                ui.label(
+                    "Markdown assistance and explicit formatting are planned for opt-in v0.2. \
+                     They are not available in the current prototype.",
+                );
+                ui.label("Noter has no telemetry, accounts, or network features.");
+                ui.hyperlink_to("Project repository", env!("CARGO_PKG_REPOSITORY"));
+                ui.separator();
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        self.about_open = open && !close;
     }
 
     fn show_error(&mut self, ui: &mut egui::Ui) {
@@ -329,5 +358,23 @@ impl eframe::App for NoterApp {
         self.show_error(ui);
         self.show_status(ui);
         self.show_editor(ui);
+        self.show_about(ui.ctx());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn about_action_opens_and_renders_the_window() {
+        let mut app = NoterApp::default();
+        app.open_about();
+
+        assert!(app.about_open);
+        let context = egui::Context::default();
+        let output = context.run_ui(egui::RawInput::default(), |ui| app.show_about(ui.ctx()));
+        assert!(!output.shapes.is_empty());
+        assert!(app.about_open);
     }
 }

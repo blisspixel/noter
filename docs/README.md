@@ -4,6 +4,7 @@ Supporting documentation that is part of the product definition.
 
 - `RESEARCH.md` - dated evidence and decisions behind the product direction.
 - `BASELINE.md` - measured M0 repository, coverage, size, and dependency baseline.
+- `M1_MUTATION_EVIDENCE.md` - reproducible trust-kernel mutation campaign and results.
 - `ROADMAP.md` - milestone order, quality gates, metrics, and next backlog.
 - `REQUIREMENTS.md` - ratified product contract for v0.1 and v0.2.
 - `DESIGN.md` - active technical architecture, trust protocols, and FMEA.
