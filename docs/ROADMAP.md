@@ -130,14 +130,15 @@ that a release exists when the repository has no published artifact.
 ### Current state
 
 System, Light, and Dark themes, working About and update-status dialogs, source
-install helpers, a unified aligned editor toolbar, a bundled variable document
-typeface, and deterministic native README screenshots are implemented locally.
-Hinting, subpixel positioning, real heading and emphasis weights, and
-theme-correct text coverage transfer are verified explicitly rather than
-assumed from toolkit defaults. The early source-backed Markdown slice is visible
-for product evaluation but remains governed by M6. M2 still needs
-installed-app semantic automation, cross-platform visual and persistence
-evidence, and disposable clean-user installer tests before verification.
+install helpers, a responsive upper-right Mode control and Theme menu, a
+contextual Markdown format bar, a bundled variable document typeface, and
+deterministic native README screenshots are implemented locally. Hinting,
+subpixel positioning, real heading and emphasis weights, and theme-correct text
+coverage transfer are verified explicitly rather than assumed from toolkit
+defaults. The early source-backed Markdown slice is visible for product
+evaluation but remains governed by M6. M2 still needs installed-app semantic
+automation, cross-platform visual and persistence evidence, and disposable
+clean-user installer tests before verification.
 
 ### Exit criteria
 

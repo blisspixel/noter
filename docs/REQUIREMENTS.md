@@ -152,8 +152,8 @@ Feature presence alone is not verification.
 
 - **FR-030 Status:** Show path or Untitled, modified state, one-based logical line
   and column, selection size, encoding, BOM, and EOL classification.
-- **FR-031 Theme:** Provide System, Light, and Dark. Persist the choice and follow
-  system changes when System is selected.
+- **FR-031 Theme:** Provide System, Light, and Dark through a visible top-level
+  selector. Persist the choice and follow system changes when System is selected.
 - **FR-032 Zoom:** Provide keyboard and menu zoom with a readable bounded range.
 - **FR-033 Window state:** Restore valid size, position, and maximized state
   without placing a window entirely off screen.
@@ -208,7 +208,9 @@ The complete release and verification contract is in
 
 - **FR-100 Modes:** Text Mode opens any supported document as exact source.
   Markdown files can switch to Markdown Mode without changing bytes. Text Mode
-  schedules no Markdown work.
+  schedules no Markdown work. The primary mode control remains visible in the
+  top application row; Markdown formatting controls consume a separate row only
+  while Markdown Mode is active.
 - **FR-101 Source authority:** Source remains the authoritative document.
   Markdown Mode maps every direct edit to the smallest practical Markdown source
   transaction, preserves untouched source, and exposes ambiguous constructs as

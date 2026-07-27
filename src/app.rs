@@ -20,6 +20,9 @@ const UNCERTAIN_SAVE_ABANDON_GUIDANCE: &str = "Cancel this dialog, then use Save
 const MENU_BAR_HEIGHT: f32 = 30.0;
 const EDITOR_TOOLBAR_HEIGHT: f32 = 40.0;
 const STATUS_BAR_HEIGHT: f32 = 26.0;
+const EXPANDED_TOP_CONTROLS_MIN_WIDTH: f32 = 600.0;
+const EXPANDED_TOP_CONTROLS_WIDTH: f32 = 326.0;
+const COMPACT_TOP_CONTROLS_WIDTH: f32 = 280.0;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum DocumentView {
@@ -34,6 +37,13 @@ impl DocumentView {
             Self::Text => "Text",
             Self::Markdown => "Markdown",
         }
+    }
+}
+
+const fn document_view_button_width(view: DocumentView) -> f32 {
+    match view {
+        DocumentView::Text => 52.0,
+        DocumentView::Markdown => 86.0,
     }
 }
 
@@ -456,15 +466,109 @@ impl NoterApp {
         egui::Panel::top("menu_bar")
             .exact_size(MENU_BAR_HEIGHT)
             .show(ui, |ui| {
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    egui::MenuBar::new().ui(ui, |ui| {
-                        ui.menu_button("File", |ui| Self::show_file_menu(ui, command));
-                        ui.menu_button("View", |ui| self.show_view_menu(ui));
-                        ui.menu_button("Help", |ui| self.show_help_menu(ui));
-                    });
+                let available = ui.available_rect_before_wrap();
+                let expanded = available.width() >= EXPANDED_TOP_CONTROLS_MIN_WIDTH;
+                let controls_width = if expanded {
+                    EXPANDED_TOP_CONTROLS_WIDTH
+                } else {
+                    COMPACT_TOP_CONTROLS_WIDTH
+                }
+                .min(available.width());
+                let split_x = available.max.x - controls_width;
+                let menu_rect =
+                    egui::Rect::from_min_max(available.min, egui::pos2(split_x, available.max.y));
+                let controls_rect =
+                    egui::Rect::from_min_max(egui::pos2(split_x, available.min.y), available.max);
+
+                let mut menu_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(menu_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                menu_ui.spacing_mut().item_spacing.x = 2.0;
+                egui::MenuBar::new().ui(&mut menu_ui, |ui| {
+                    ui.menu_button("File", |ui| Self::show_file_menu(ui, command));
+                    ui.menu_button("View", |ui| self.show_view_menu(ui));
+                    ui.menu_button("Help", |ui| self.show_help_menu(ui));
                 });
+
+                let mut controls_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(controls_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                self.show_top_controls(&mut controls_ui, expanded);
             });
+    }
+
+    fn show_top_controls(&mut self, ui: &mut egui::Ui, expanded: bool) {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if !expanded {
+            self.show_document_mode_menu_button(ui);
+            let theme_label = format!("Theme: {}", self.theme.label());
+            self.show_theme_menu_button(ui, &theme_label);
+            return;
+        }
+
+        ui.label(
+            egui::RichText::new("Mode")
+                .text_style(egui::TextStyle::Button)
+                .weak(),
+        );
+        for view in [DocumentView::Text, DocumentView::Markdown] {
+            let is_selected = self.view == view;
+            let response = ui.add(
+                egui::Button::selectable(is_selected, view.label())
+                    .min_size(egui::vec2(document_view_button_width(view), 28.0)),
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::RadioButton,
+                    true,
+                    is_selected,
+                    format!("{} Mode", view.label()),
+                )
+            });
+            if response.clicked() {
+                self.select_document_view(view);
+            }
+        }
+        ui.separator();
+        ui.label(
+            egui::RichText::new("Theme")
+                .text_style(egui::TextStyle::Button)
+                .weak(),
+        );
+        self.show_theme_menu_button(ui, self.theme.label());
+    }
+
+    fn show_document_mode_menu_button(&mut self, ui: &mut egui::Ui) {
+        let label = format!("Mode: {}", self.view.label());
+        let response = ui
+            .menu_button(&label, |ui| {
+                ui.set_min_width(132.0);
+                self.show_document_mode_choices(ui);
+            })
+            .response;
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label));
+    }
+
+    fn show_theme_menu_button(&mut self, ui: &mut egui::Ui, label: &str) {
+        let response = ui
+            .menu_button(label, |ui| {
+                ui.set_min_width(120.0);
+                self.show_theme_choices(ui);
+            })
+            .response;
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::ComboBox,
+                true,
+                format!("Theme: {}", self.theme.label()),
+            )
+        });
+        response.on_hover_text("Choose the application theme");
     }
 
     fn show_file_menu(ui: &mut egui::Ui, command: &mut Option<FileCommand>) {
@@ -504,27 +608,47 @@ impl NoterApp {
     }
 
     fn show_view_menu(&mut self, ui: &mut egui::Ui) {
-        ui.label("Document mode");
-        for view in [DocumentView::Text, DocumentView::Markdown] {
-            if ui
-                .selectable_value(&mut self.view, view, view.label())
-                .clicked()
-            {
-                self.markdown_editor.reset();
-                ui.close();
-            }
-        }
+        ui.label("Mode");
+        self.show_document_mode_choices(ui);
         ui.separator();
         ui.label("Theme");
-        for theme in AppTheme::ALL {
+        self.show_theme_choices(ui);
+    }
+
+    fn show_document_mode_choices(&mut self, ui: &mut egui::Ui) {
+        for view in [DocumentView::Text, DocumentView::Markdown] {
             if ui
-                .selectable_value(&mut self.theme, theme, theme.label())
+                .selectable_label(self.view == view, view.label())
                 .clicked()
             {
-                self.theme.apply(ui.ctx());
+                self.select_document_view(view);
                 ui.close();
             }
         }
+    }
+
+    fn show_theme_choices(&mut self, ui: &mut egui::Ui) {
+        for theme in AppTheme::ALL {
+            if ui
+                .selectable_label(self.theme == theme, theme.label())
+                .clicked()
+            {
+                self.select_theme(theme, ui.ctx());
+                ui.close();
+            }
+        }
+    }
+
+    fn select_document_view(&mut self, view: DocumentView) {
+        if self.view != view {
+            self.view = view;
+            self.markdown_editor.reset();
+        }
+    }
+
+    fn select_theme(&mut self, theme: AppTheme, context: &egui::Context) {
+        self.theme = theme;
+        theme.apply(context);
     }
 
     fn show_help_menu(&mut self, ui: &mut egui::Ui) {
@@ -754,37 +878,20 @@ impl NoterApp {
             });
     }
 
-    fn show_mode_toolbar(&mut self, ui: &mut egui::Ui) {
+    fn show_format_toolbar(&mut self, ui: &mut egui::Ui) {
+        if self.view != DocumentView::Markdown {
+            return;
+        }
+
         egui::Panel::top("editor_toolbar")
             .exact_size(EDITOR_TOOLBAR_HEIGHT)
             .show(ui, |ui| {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new("Mode")
-                            .text_style(egui::TextStyle::Button)
-                            .weak(),
-                    );
-                    for view in [DocumentView::Text, DocumentView::Markdown] {
-                        let selected = ui.add(
-                            egui::Button::selectable(self.view == view, view.label())
-                                .min_size(egui::vec2(78.0, 28.0)),
-                        );
-                        if selected.clicked() {
-                            self.view = view;
-                            self.markdown_editor.reset();
-                        }
-                    }
-                    if self.view == DocumentView::Markdown {
-                        ui.separator();
-                        self.markdown_editor.toolbar(ui);
-                        if !self.markdown_editor.is_editing() && ui.available_width() >= 180.0 {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.weak("Select content to format");
-                                },
-                            );
-                        }
+                    self.markdown_editor.toolbar(ui);
+                    if !self.markdown_editor.is_editing() && ui.available_width() >= 180.0 {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.weak("Select content to format");
+                        });
                     }
                 });
             });
@@ -848,7 +955,7 @@ impl NoterApp {
         let mut command = Self::collect_shortcut(ui);
         self.show_menu(ui, &mut command);
         self.show_error(ui);
-        self.show_mode_toolbar(ui);
+        self.show_format_toolbar(ui);
         self.show_status(ui);
         self.show_editor(ui);
         if let Some(command) = command
@@ -1013,10 +1120,140 @@ impl eframe::App for NoterApp {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::fs;
 
     use super::*;
     use tempfile::tempdir;
+
+    fn collect_text_shapes(shape: &egui::Shape, text: &mut Vec<(String, egui::Pos2)>) {
+        match shape {
+            egui::Shape::Text(text_shape) => {
+                text.push((text_shape.galley.job.text.clone(), text_shape.pos));
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_text_shapes(shape, text);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn rendered_text(output: &egui::FullOutput) -> Vec<(String, egui::Pos2)> {
+        let mut text = Vec::new();
+        for shape in &output.shapes {
+            collect_text_shapes(&shape.shape, &mut text);
+        }
+        text
+    }
+
+    fn accesskit_labels(output: &egui::FullOutput) -> Vec<String> {
+        fn visit(
+            id: egui::accesskit::NodeId,
+            nodes: &HashMap<egui::accesskit::NodeId, &egui::accesskit::Node>,
+            labels: &mut Vec<String>,
+        ) {
+            let node = nodes
+                .get(&id)
+                .unwrap_or_else(|| panic!("missing AccessKit node {id:?}"));
+            if let Some(label) = node.label() {
+                labels.push(label.to_owned());
+            }
+            for child in node.children() {
+                visit(*child, nodes, labels);
+            }
+        }
+
+        let update = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled");
+        let root = update
+            .tree
+            .as_ref()
+            .expect("the first AccessKit update must include a tree")
+            .root;
+        let nodes = update
+            .nodes
+            .iter()
+            .map(|(id, node)| (*id, node))
+            .collect::<HashMap<_, _>>();
+        let mut labels = Vec::new();
+        visit(root, &nodes, &mut labels);
+        labels
+    }
+
+    fn accesskit_bounds(output: &egui::FullOutput, label: &str) -> egui::accesskit::Rect {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled")
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}` with bounds"))
+    }
+
+    fn text_position(text: &[(String, egui::Pos2)], label: &str) -> egui::Pos2 {
+        text.iter()
+            .find_map(|(candidate, position)| (candidate == label).then_some(*position))
+            .unwrap_or_else(|| {
+                let rendered = text
+                    .iter()
+                    .map(|(candidate, _)| candidate.as_str())
+                    .collect::<Vec<_>>();
+                panic!("expected the UI to render `{label}` among {rendered:?}")
+            })
+    }
+
+    fn ui_input(width: f32, height: f32, time: f64) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, height),
+            )),
+            time: Some(time),
+            ..Default::default()
+        }
+    }
+
+    fn click_input(width: f32, height: f32, time: f64, position: egui::Pos2) -> egui::RawInput {
+        let mut input = ui_input(width, height, time);
+        input.events = vec![
+            egui::Event::PointerMoved(position),
+            egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ];
+        input
+    }
+
+    fn show_menu_frame(
+        app: &mut NoterApp,
+        context: &egui::Context,
+        input: egui::RawInput,
+    ) -> egui::FullOutput {
+        context.run_ui(input, |ui| {
+            let mut command = None;
+            app.show_menu(ui, &mut command);
+        })
+    }
 
     fn app_with_dismissed_uncertain_save() -> NoterApp {
         use noter::core::revision::Revision;
@@ -1068,6 +1305,187 @@ mod tests {
             "https://github.com/blisspixel/noter"
         );
         assert!(app.about_open);
+    }
+
+    #[test]
+    fn top_menu_aligns_mode_and_theme_controls_opposite_the_application_menus() {
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            theme: AppTheme::System,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::configure_styles(&context);
+        let output = show_menu_frame(&mut app, &context, ui_input(1_200.0, 760.0, 0.0));
+        let text = rendered_text(&output);
+        let file = text_position(&text, "File");
+        let help = text_position(&text, "Help");
+        let mode = text_position(&text, "Mode");
+        let plain_text = text_position(&text, "Text");
+        let markdown = text_position(&text, "Markdown");
+        let theme = text_position(&text, "Theme");
+        let system = text_position(&text, "System");
+        let theme_bounds = accesskit_bounds(&output, "Theme: System");
+
+        assert!(file.x < help.x);
+        assert!(help.x < mode.x);
+        assert!(mode.x < plain_text.x);
+        assert!(plain_text.x < markdown.x);
+        assert!(markdown.x < theme.x);
+        assert!(theme.x < system.x);
+        assert!(system.x > 1_130.0);
+        assert!(
+            theme_bounds.x1 <= 1_200.0,
+            "Theme extends beyond the viewport: {theme_bounds:?}"
+        );
+        for position in [help, mode, plain_text, markdown, theme, system] {
+            assert!((file.y - position.y).abs() <= 2.0);
+        }
+    }
+
+    #[test]
+    fn narrow_top_controls_use_labeled_menus_without_losing_mode_or_theme() {
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::configure_styles(&context);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(420.0, 300.0),
+            )),
+            ..Default::default()
+        };
+        let output = context.run_ui(input, |ui| {
+            let mut command = None;
+            app.show_menu(ui, &mut command);
+        });
+        let text = rendered_text(&output);
+        let file = text_position(&text, "File");
+        let help = text_position(&text, "Help");
+        let mode = text_position(&text, "Mode: Markdown");
+        let theme = text_position(&text, "Theme: System");
+        let help_bounds = accesskit_bounds(&output, "Help");
+        let mode_bounds = accesskit_bounds(&output, "Mode: Markdown");
+        let theme_bounds = accesskit_bounds(&output, "Theme: System");
+
+        assert!(file.x < help.x);
+        assert!(help.x < mode.x);
+        assert!(mode.x < theme.x);
+        assert!(
+            help_bounds.x1 <= mode_bounds.x0,
+            "Help and Mode overlap: {help_bounds:?}, {mode_bounds:?}"
+        );
+        assert!(
+            mode_bounds.x1 <= theme_bounds.x0,
+            "Mode and Theme overlap: {mode_bounds:?}, {theme_bounds:?}"
+        );
+        assert!(
+            theme_bounds.x1 <= 420.0,
+            "Theme extends beyond the minimum viewport: {theme_bounds:?}"
+        );
+        for position in [help, mode, theme] {
+            assert!((file.y - position.y).abs() <= 2.0);
+        }
+        assert!(!text.iter().any(|(label, _)| label == "Text"));
+    }
+
+    #[test]
+    fn top_mode_switch_and_theme_menu_execute_from_normal_pointer_clicks() {
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            theme: AppTheme::Light,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+        AppTheme::Light.apply(&context);
+
+        let initial = show_menu_frame(&mut app, &context, ui_input(1_200.0, 760.0, 0.0));
+        let initial_text = rendered_text(&initial);
+        let text_button = text_position(&initial_text, "Text") + egui::vec2(4.0, 4.0);
+
+        let mode_switched = show_menu_frame(
+            &mut app,
+            &context,
+            click_input(1_200.0, 760.0, 0.1, text_button),
+        );
+        assert_eq!(app.view, DocumentView::Text);
+        let light_button =
+            text_position(&rendered_text(&mode_switched), "Light") + egui::vec2(4.0, 4.0);
+
+        show_menu_frame(
+            &mut app,
+            &context,
+            click_input(1_200.0, 760.0, 0.2, light_button),
+        );
+        let theme_menu = show_menu_frame(&mut app, &context, ui_input(1_200.0, 760.0, 0.25));
+        let dark_choice = text_position(&rendered_text(&theme_menu), "Dark") + egui::vec2(4.0, 4.0);
+        show_menu_frame(
+            &mut app,
+            &context,
+            click_input(1_200.0, 760.0, 0.3, dark_choice),
+        );
+
+        assert_eq!(app.theme, AppTheme::Dark);
+        assert_eq!(context.theme(), egui::Theme::Dark);
+    }
+
+    #[test]
+    fn top_menu_accessibility_order_matches_visual_order() {
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            theme: AppTheme::Light,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::configure_styles(&context);
+
+        let output = show_menu_frame(&mut app, &context, ui_input(1_200.0, 760.0, 0.0));
+        let expected = [
+            "File",
+            "View",
+            "Help",
+            "Text Mode",
+            "Markdown Mode",
+            "Theme: Light",
+        ];
+        let labels = accesskit_labels(&output);
+        let relevant = labels
+            .iter()
+            .map(String::as_str)
+            .filter(|label| expected.contains(label))
+            .collect::<Vec<_>>();
+
+        assert_eq!(relevant, expected);
+    }
+
+    #[test]
+    fn format_toolbar_is_present_only_in_markdown_mode() {
+        let mut app = NoterApp::default();
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+
+        let text_output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(1_200.0);
+            app.show_format_toolbar(ui);
+        });
+        assert!(rendered_text(&text_output).is_empty());
+
+        app.select_document_view(DocumentView::Markdown);
+        let markdown_output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(1_200.0);
+            app.show_format_toolbar(ui);
+        });
+        let text = rendered_text(&markdown_output);
+        text_position(&text, "Format");
+        text_position(&text, "Bold");
+        assert!(!text.iter().any(|(label, _)| label == "Mode"));
     }
 
     #[test]

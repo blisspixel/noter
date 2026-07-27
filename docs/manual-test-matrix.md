@@ -183,6 +183,11 @@ Required real readers:
   behavior match the platform.
 - [ ] UI-09 The Markdown document uses the same borderless editor surface as
   Text Mode, without a card or document box, in both Light and Dark.
+- [ ] UI-10 At ordinary widths, File, View, and Help align left while Mode and
+  Theme align right on the same row. At the 420-pixel minimum width, labeled
+  mode and theme menus remain visible without overlap. The formatting row is
+  absent in Text Mode. Keyboard focus and screen-reader traversal follow the
+  same left-to-right sequence as the visible controls.
 
 ## 9. Performance and resources
 

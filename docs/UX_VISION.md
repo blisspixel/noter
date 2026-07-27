@@ -69,6 +69,10 @@ Switching modes never changes bytes. Text Mode remains available when source is
 malformed or a construct is unsupported. Markdown Mode is a native editor and
 viewer, not a web preview or proprietary rich-text document.
 
+Mode and Theme are quiet top-level controls, aligned opposite the application
+menus. Markdown formatting actions use a contextual row that disappears in Text
+Mode instead of reserving empty document space.
+
 Diagnostics do not mutate text. Whole-document formatting requires an explicit
 command, a diff, a supported semantic-equivalence check, and confirmation. Text
 Mode schedules no Markdown work.

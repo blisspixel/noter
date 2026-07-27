@@ -7,8 +7,8 @@ release, so current work remains under Unreleased.
 
 ### Added
 
-- Add persisted System, Light, and Dark themes with a unified aligned editor
-  toolbar and deliberate document typography.
+- Add persisted System, Light, and Dark themes with deliberate document
+  typography.
 - Add an early native Markdown Mode with source-backed formatted editing, H1,
   H2, Bold, Italic, Link, Code, List, and Quote actions, plus four conservative
   source diagnostics. Supported heading and inline delimiters remain hidden in
@@ -23,6 +23,13 @@ release, so current work remains under Unreleased.
   validation using a polished non-sensitive Markdown demo document. The capture
   keeps formatted content active so the direct editor and formatting controls
   are visible together.
+
+### Changed
+
+- Place the responsive Text and Markdown mode control and the current Theme
+  menu on the upper-right of the application menu row. The second toolbar now
+  appears only in Markdown Mode and contains formatting actions only. Visual,
+  keyboard, and accessibility-tree order follow the same left-to-right sequence.
 
 ### Security
 

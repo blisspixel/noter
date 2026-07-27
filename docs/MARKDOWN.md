@@ -28,6 +28,8 @@ authoritative. Changing modes never rewrites a file.
   is edited, then hidden again after the caret leaves that target.
 - H1, H2, Bold, Italic, Link, Code, List, and Quote actions update the selected
   block's Markdown source immediately.
+- The primary Text and Markdown switch remains in the upper-right application
+  row. The contextual formatting bar appears only in Markdown Mode.
 - Switching to Text Mode exposes the exact source produced by those edits.
 - Source diagnostics currently report skipped heading levels, unsafe trailing
   spaces, repeated blank lines, and a missing final newline with stable rule

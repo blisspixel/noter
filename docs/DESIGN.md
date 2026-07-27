@@ -636,9 +636,13 @@ The inactive document and active source-backed editor use the same explicit
 body, heading, emphasis, link, and code style mapping. Supported heading and
 inline delimiters remain in source while being visually suppressed, and a link
 target is revealed only while it is edited. Eight core formatting actions map
-back to ordinary Markdown. Text Mode exposes every delimiter, and four
-conservative diagnostics operate directly on source. This establishes the
-interaction direction but does not satisfy M6.
+back to ordinary Markdown. The responsive top row keeps the primary Mode and
+Theme controls opposite the application menus, while the separate format bar
+exists only in Markdown Mode. The top-row construction order matches its visual
+order so keyboard focus and accessibility-tree traversal do not reverse the
+right-aligned controls. Text Mode exposes every delimiter, and four conservative
+diagnostics operate directly on source. This establishes the interaction
+direction but does not satisfy M6.
 
 The M6 architecture completes the model:
 
