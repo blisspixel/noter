@@ -78,7 +78,7 @@ is not yet a milestone sign-off.
 | Linux full-crate cross-target Clippy | Pass |
 | macOS platform-crate cross-target Clippy | Pass |
 | Release binary | 8,075,776 bytes, 7.70 MiB |
-| Release SHA-256 | `9142374a83fba839ffe5810f932702b6f7a3c2cf0f1bd63c577b273257293bba` |
+| Release checksum | Not published until reproducible, signed release artifacts exist |
 | Resolved Cargo packages across all targets | 413 |
 | RustSec audit | Pass, no known vulnerability reported |
 | Cargo dependency policy | Pass for advisories, licenses, sources, and bans; duplicate versions remain visible as warnings |
