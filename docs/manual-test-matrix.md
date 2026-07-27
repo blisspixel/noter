@@ -183,7 +183,14 @@ Required real readers:
   behavior match the platform.
 - [ ] UI-09 The Markdown document uses the same borderless editor surface as
   Text Mode, without a card or document box, in both Light and Dark.
-- [ ] UI-10 At ordinary widths, File, View, and Help align left while Mode and
+- [ ] UI-10 Command or Control plus Shift plus S invokes Save As rather than
+  Save, and every displayed shortcut uses the platform convention.
+- [ ] UI-11 Markdown files at the exact source-byte ceiling, including UTF-8
+  multibyte text and a BOM, enter Markdown Mode without byte changes. A file
+  that exceeds the source, logical-line, line-length, block-count, block-span,
+  or parser-event ceiling stays unchanged and saveable in Text Mode and names
+  the temporary budget it exceeded.
+- [ ] UI-12 At ordinary widths, File, View, and Help align left while Mode and
   Theme align right on the same row. At the 420-pixel minimum width, labeled
   mode and theme menus remain visible without overlap. The formatting row is
   absent in Text Mode. Keyboard focus and screen-reader traversal follow the

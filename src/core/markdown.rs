@@ -49,6 +49,22 @@ impl MarkdownDiagnostic {
 #[must_use]
 pub fn analyze_markdown(source: &str) -> Vec<MarkdownDiagnostic> {
     let mut diagnostics = Vec::new();
+    visit_markdown_diagnostics(source, |diagnostic| diagnostics.push(diagnostic));
+    diagnostics
+}
+
+/// Counts diagnostics without retaining a result vector.
+///
+/// This follows the same deterministic rule traversal as [`analyze_markdown`]
+/// and is intended for status summaries that do not display individual items.
+#[must_use]
+pub fn count_markdown_diagnostics(source: &str) -> usize {
+    let mut count = 0_usize;
+    visit_markdown_diagnostics(source, |_| count += 1);
+    count
+}
+
+fn visit_markdown_diagnostics(source: &str, mut emit: impl FnMut(MarkdownDiagnostic)) {
     let mut fence = None;
     let mut previous_heading_level = None;
     let mut consecutive_blank_lines = 0_usize;
@@ -81,7 +97,7 @@ pub fn analyze_markdown(source: &str) -> Vec<MarkdownDiagnostic> {
         let is_hard_break =
             trailing_spaces == 2 && !content_before_spaces.trim_matches([' ', '\t']).is_empty();
         if trailing_spaces != 0 && !is_hard_break {
-            diagnostics.push(MarkdownDiagnostic {
+            emit(MarkdownDiagnostic {
                 code: "MD009",
                 line: line_number,
                 message: "Trailing spaces should be removed or use exactly two for a hard break",
@@ -91,7 +107,7 @@ pub fn analyze_markdown(source: &str) -> Vec<MarkdownDiagnostic> {
         if line.trim_matches([' ', '\t']).is_empty() {
             consecutive_blank_lines += 1;
             if consecutive_blank_lines > 1 {
-                diagnostics.push(MarkdownDiagnostic {
+                emit(MarkdownDiagnostic {
                     code: "MD012",
                     line: line_number,
                     message: "Multiple consecutive blank lines",
@@ -104,7 +120,7 @@ pub fn analyze_markdown(source: &str) -> Vec<MarkdownDiagnostic> {
         if let Some(level) = atx_heading_level(line)
             && previous_heading_level.is_some_and(|previous| level > previous + 1)
         {
-            diagnostics.push(MarkdownDiagnostic {
+            emit(MarkdownDiagnostic {
                 code: "MD001",
                 line: line_number,
                 message: "Heading levels should increment by one",
@@ -116,14 +132,12 @@ pub fn analyze_markdown(source: &str) -> Vec<MarkdownDiagnostic> {
     }
 
     if !source.is_empty() && !final_line_has_ending {
-        diagnostics.push(MarkdownDiagnostic {
+        emit(MarkdownDiagnostic {
             code: "MD047",
             line: line_count,
             message: "File should end with a newline",
         });
     }
-
-    diagnostics
 }
 
 fn fence_marker(line: &str) -> Option<FenceMarker> {
@@ -201,6 +215,21 @@ mod tests {
                 ("MD047", 5, "File should end with a newline"),
             ]
         );
+    }
+
+    #[test]
+    fn count_uses_the_exact_diagnostic_traversal_without_retaining_items() {
+        for source in [
+            "",
+            "# Clean\n",
+            "# Heading \n\n\n### Skipped\nNo final newline",
+            "```text\nintentional  \n```\n",
+        ] {
+            assert_eq!(
+                count_markdown_diagnostics(source),
+                analyze_markdown(source).len()
+            );
+        }
     }
 
     #[test]

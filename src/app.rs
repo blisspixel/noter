@@ -2,11 +2,12 @@ use std::path::PathBuf;
 
 use eframe::egui;
 use noter::core::document::{Document, PreparedSaveAs};
-use noter::core::markdown::analyze_markdown;
+use noter::core::markdown::count_markdown_diagnostics;
+use noter::core::revision::Revision;
 use noter::core::save::SaveOutcome;
 use noter::error::NoterError;
 
-use crate::markdown_ui::MarkdownEditor;
+use crate::markdown_ui::{MarkdownEditor, MarkdownProjectionLimit, markdown_projection_limit};
 use crate::theme::{self, AppTheme, THEME_STORAGE_KEY};
 
 const EDITOR_ID_SALT: &str = "noter-document-editor";
@@ -56,7 +57,7 @@ pub struct LaunchOptions {
     pub screenshot_path: Option<PathBuf>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FileCommand {
     New,
     Open,
@@ -65,11 +66,58 @@ enum FileCommand {
     Quit,
 }
 
+impl FileCommand {
+    const SHORTCUTS_IN_PRECEDENCE_ORDER: [(Self, egui::KeyboardShortcut); 4] = [
+        (
+            Self::SaveAs,
+            egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                egui::Key::S,
+            ),
+        ),
+        (
+            Self::New,
+            egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N),
+        ),
+        (
+            Self::Open,
+            egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::O),
+        ),
+        (
+            Self::Save,
+            egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S),
+        ),
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::New => "New",
+            Self::Open => "Open...",
+            Self::Save => "Save",
+            Self::SaveAs => "Save As...",
+            Self::Quit => "Quit",
+        }
+    }
+
+    fn shortcut(self) -> Option<egui::KeyboardShortcut> {
+        Self::SHORTCUTS_IN_PRECEDENCE_ORDER
+            .iter()
+            .find_map(|(command, shortcut)| (*command == self).then_some(*shortcut))
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PendingAbandonAction {
     New,
     Open,
     Quit,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct MarkdownIssueCache {
+    document_serial: u64,
+    revision: Revision,
+    issue_count: usize,
 }
 
 impl PendingAbandonAction {
@@ -108,6 +156,7 @@ pub struct NoterApp {
     theme: AppTheme,
     markdown_editor: MarkdownEditor,
     document_editor_serial: u64,
+    markdown_issue_cache: Option<MarkdownIssueCache>,
     error_msg: Option<String>,
     save_recovery_msg: Option<String>,
     about_open: bool,
@@ -128,6 +177,7 @@ impl Default for NoterApp {
             theme: AppTheme::System,
             markdown_editor: MarkdownEditor::default(),
             document_editor_serial: 0,
+            markdown_issue_cache: None,
             error_msg: None,
             save_recovery_msg: None,
             about_open: false,
@@ -182,10 +232,14 @@ impl NoterApp {
             Ok(document) => {
                 self.text = String::from(document.rope());
                 self.document = document;
-                self.view = requested_view.unwrap_or_else(|| preferred_view_for_path(path));
                 self.advance_document_editor();
                 self.markdown_editor.reset();
+                self.markdown_issue_cache = None;
                 self.error_msg = None;
+                self.view = DocumentView::Text;
+                self.select_document_view(
+                    requested_view.unwrap_or_else(|| preferred_view_for_path(path)),
+                );
             }
             Err(error) => {
                 self.error_msg = Some(format!("Failed to open file: {error}"));
@@ -326,6 +380,7 @@ impl NoterApp {
         self.view = DocumentView::Text;
         self.advance_document_editor();
         self.markdown_editor.reset();
+        self.markdown_issue_cache = None;
         self.error_msg = None;
     }
 
@@ -411,29 +466,11 @@ impl NoterApp {
         let mut command = None;
 
         ui.input_mut(|i| {
-            if i.consume_shortcut(&egui::KeyboardShortcut::new(
-                egui::Modifiers::CTRL,
-                egui::Key::N,
-            )) {
-                command.get_or_insert(FileCommand::New);
-            }
-            if i.consume_shortcut(&egui::KeyboardShortcut::new(
-                egui::Modifiers::CTRL,
-                egui::Key::O,
-            )) {
-                command.get_or_insert(FileCommand::Open);
-            }
-            if i.consume_shortcut(&egui::KeyboardShortcut::new(
-                egui::Modifiers::CTRL,
-                egui::Key::S,
-            )) {
-                command.get_or_insert(FileCommand::Save);
-            }
-            if i.consume_shortcut(&egui::KeyboardShortcut::new(
-                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
-                egui::Key::S,
-            )) {
-                command.get_or_insert(FileCommand::SaveAs);
+            for (candidate, shortcut) in FileCommand::SHORTCUTS_IN_PRECEDENCE_ORDER {
+                if i.consume_shortcut(&shortcut) {
+                    command = Some(candidate);
+                    break;
+                }
             }
         });
 
@@ -572,36 +609,23 @@ impl NoterApp {
     }
 
     fn show_file_menu(ui: &mut egui::Ui, command: &mut Option<FileCommand>) {
-        if ui
-            .add(egui::Button::new("New").shortcut_text("Ctrl+N"))
-            .clicked()
-        {
-            command.get_or_insert(FileCommand::New);
-            ui.close();
-        }
-        if ui
-            .add(egui::Button::new("Open...").shortcut_text("Ctrl+O"))
-            .clicked()
-        {
-            command.get_or_insert(FileCommand::Open);
-            ui.close();
-        }
-        if ui
-            .add(egui::Button::new("Save").shortcut_text("Ctrl+S"))
-            .clicked()
-        {
-            command.get_or_insert(FileCommand::Save);
-            ui.close();
-        }
-        if ui
-            .add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S"))
-            .clicked()
-        {
-            command.get_or_insert(FileCommand::SaveAs);
-            ui.close();
+        for candidate in [
+            FileCommand::New,
+            FileCommand::Open,
+            FileCommand::Save,
+            FileCommand::SaveAs,
+        ] {
+            let mut button = egui::Button::new(candidate.label());
+            if let Some(shortcut) = candidate.shortcut() {
+                button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+            }
+            if ui.add(button).clicked() {
+                command.get_or_insert(candidate);
+                ui.close();
+            }
         }
         ui.separator();
-        if ui.button("Quit").clicked() {
+        if ui.button(FileCommand::Quit.label()).clicked() {
             command.get_or_insert(FileCommand::Quit);
             ui.close();
         }
@@ -640,6 +664,12 @@ impl NoterApp {
     }
 
     fn select_document_view(&mut self, view: DocumentView) {
+        if view == DocumentView::Markdown
+            && let Some(limit) = markdown_projection_limit(&self.text)
+        {
+            self.error_msg = Some(markdown_limit_message(self.text.len(), limit));
+            return;
+        }
         if self.view != view {
             self.view = view;
             self.markdown_editor.reset();
@@ -833,7 +863,31 @@ impl NoterApp {
         }
     }
 
-    fn show_status(&self, ui: &mut egui::Ui) {
+    fn markdown_issue_count(&mut self) -> usize {
+        self.markdown_issue_count_with(count_markdown_diagnostics)
+    }
+
+    fn markdown_issue_count_with(&mut self, analyze: impl FnOnce(&str) -> usize) -> usize {
+        let revision = self.document.revision();
+        if let Some(cache) = self.markdown_issue_cache
+            && cache.document_serial == self.document_editor_serial
+            && cache.revision == revision
+        {
+            return cache.issue_count;
+        }
+
+        let issue_count = analyze(&self.text);
+        self.markdown_issue_cache = Some(MarkdownIssueCache {
+            document_serial: self.document_editor_serial,
+            revision,
+            issue_count,
+        });
+        issue_count
+    }
+
+    fn show_status(&mut self, ui: &mut egui::Ui) {
+        let markdown_issue_count =
+            (self.view == DocumentView::Markdown).then(|| self.markdown_issue_count());
         egui::Panel::bottom("status_bar")
             .exact_size(STATUS_BAR_HEIGHT)
             .show(ui, |ui| {
@@ -854,8 +908,7 @@ impl NoterApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if self.view == DocumentView::Markdown {
-                            let issue_count = analyze_markdown(&self.text).len();
+                        if let Some(issue_count) = markdown_issue_count {
                             let label = if issue_count == 0 {
                                 "Markdown checks: clean".to_owned()
                             } else {
@@ -909,10 +962,42 @@ impl NoterApp {
                     DocumentView::Text => self.show_text_editor(ui),
                     DocumentView::Markdown => self.show_markdown_editor(ui),
                 };
-                if changed && let Err(error) = self.document.replace_text(&self.text) {
-                    self.error_msg = Some(format!("Failed to record edit: {error}"));
+                if changed {
+                    self.record_editor_change();
                 }
             });
+    }
+
+    fn record_editor_change(&mut self) {
+        self.record_editor_change_with(Document::replace_text);
+    }
+
+    fn record_editor_change_with(
+        &mut self,
+        record: impl FnOnce(&mut Document, &str) -> Result<bool, NoterError>,
+    ) {
+        let result = record(&mut self.document, &self.text);
+        match result {
+            Ok(_) if self.view == DocumentView::Markdown => {
+                let Some(limit) = markdown_projection_limit(&self.text) else {
+                    return;
+                };
+                self.view = DocumentView::Text;
+                self.markdown_editor.reset();
+                self.error_msg = Some(markdown_limit_message(self.text.len(), limit));
+            }
+            Ok(_) => {}
+            Err(error) => self.restore_editor_after_failed_change(&error),
+        }
+    }
+
+    fn restore_editor_after_failed_change(&mut self, error: &NoterError) {
+        self.text = String::from(self.document.rope());
+        self.advance_document_editor();
+        self.markdown_editor.reset();
+        self.error_msg = Some(format!(
+            "Failed to record edit. The editor was restored to the last authoritative text: {error}"
+        ));
     }
 
     fn show_text_editor(&mut self, ui: &mut egui::Ui) -> bool {
@@ -934,7 +1019,7 @@ impl NoterApp {
     }
 
     fn show_markdown_editor(&mut self, ui: &mut egui::Ui) -> bool {
-        egui::ScrollArea::vertical()
+        let outcome = egui::ScrollArea::vertical()
             .show(ui, |ui| {
                 let content_width = ui.available_width().min(840.0);
                 let left_margin = ((ui.available_width() - content_width) / 2.0).max(0.0);
@@ -948,7 +1033,13 @@ impl NoterApp {
                 })
                 .inner
             })
-            .inner
+            .inner;
+        if let Some(limit) = outcome.projection_limit() {
+            self.view = DocumentView::Text;
+            self.markdown_editor.reset();
+            self.error_msg = Some(markdown_limit_message(self.text.len(), limit));
+        }
+        outcome.changed()
     }
 
     fn render_frame(&mut self, ui: &mut egui::Ui) {
@@ -1040,6 +1131,13 @@ fn preferred_view_for_path(path: &std::path::Path) -> DocumentView {
     } else {
         DocumentView::Text
     }
+}
+
+fn markdown_limit_message(byte_len: usize, limit: MarkdownProjectionLimit) -> String {
+    format!(
+        "Markdown Mode is unavailable because this pre-alpha renderer would exceed its {}. This {byte_len}-byte source remains fully available in Text Mode and can be edited there.",
+        limit.description()
+    )
 }
 
 #[cfg(feature = "screenshot-qa")]
@@ -1244,6 +1342,25 @@ mod tests {
         input
     }
 
+    fn shortcut_input(modifiers: egui::Modifiers, key: egui::Key) -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        });
+        input
+    }
+
+    fn collect_shortcut_from_input(input: egui::RawInput) -> Option<FileCommand> {
+        let context = egui::Context::default();
+        let mut command = None;
+        let _ = context.run_ui(input, |ui| command = NoterApp::collect_shortcut(ui));
+        command
+    }
+
     fn show_menu_frame(
         app: &mut NoterApp,
         context: &egui::Context,
@@ -1305,6 +1422,133 @@ mod tests {
             "https://github.com/blisspixel/noter"
         );
         assert!(app.about_open);
+    }
+
+    #[test]
+    fn save_as_shortcut_is_checked_before_the_less_specific_save_shortcut() {
+        let modifiers = egui::Modifiers {
+            ctrl: true,
+            shift: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+
+        assert!(matches!(
+            collect_shortcut_from_input(shortcut_input(modifiers, egui::Key::S)),
+            Some(FileCommand::SaveAs)
+        ));
+    }
+
+    #[test]
+    fn file_shortcuts_accept_the_platform_command_modifier() {
+        let modifiers = egui::Modifiers {
+            mac_cmd: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+
+        assert!(matches!(
+            collect_shortcut_from_input(shortcut_input(modifiers, egui::Key::S)),
+            Some(FileCommand::Save)
+        ));
+    }
+
+    #[test]
+    fn file_shortcut_labels_are_platform_correct() {
+        let shortcuts = [
+            FileCommand::New,
+            FileCommand::Open,
+            FileCommand::Save,
+            FileCommand::SaveAs,
+        ]
+        .map(|command| {
+            command
+                .shortcut()
+                .expect("each tested file command should have a shortcut")
+        });
+
+        assert_eq!(
+            shortcuts.map(|shortcut| shortcut.format(&egui::ModifierNames::NAMES, false)),
+            ["Ctrl+N", "Ctrl+O", "Ctrl+S", "Ctrl+Shift+S"]
+        );
+        assert_eq!(
+            shortcuts.map(|shortcut| shortcut.format(&egui::ModifierNames::NAMES, true)),
+            ["Cmd+N", "Cmd+O", "Cmd+S", "Shift+Cmd+S"]
+        );
+    }
+
+    #[test]
+    fn rendered_file_menu_contains_every_platform_shortcut() {
+        for operating_system in [
+            egui::os::OperatingSystem::Windows,
+            egui::os::OperatingSystem::Mac,
+        ] {
+            let context = egui::Context::default();
+            context.set_os(operating_system);
+            let mut command = None;
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(320.0);
+                NoterApp::show_file_menu(ui, &mut command);
+            });
+            let labels = rendered_text(&output)
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect::<Vec<_>>();
+
+            for file_command in [
+                FileCommand::New,
+                FileCommand::Open,
+                FileCommand::Save,
+                FileCommand::SaveAs,
+            ] {
+                let shortcut = file_command
+                    .shortcut()
+                    .expect("each rendered file command should have a shortcut");
+                let expected = context.format_shortcut(&shortcut);
+                assert!(
+                    labels.contains(&expected),
+                    "missing {expected:?} from {operating_system:?} menu labels {labels:?}"
+                );
+            }
+            assert!(command.is_none());
+        }
+    }
+
+    #[test]
+    fn failed_editor_change_restores_the_authoritative_document() {
+        let mut app = NoterApp::default();
+        app.document
+            .replace_text("authoritative text")
+            .expect("the authoritative fixture should advance the revision");
+        app.text = "unrecorded editor text".to_owned();
+        app.markdown_editor.activate_first_block(&app.text);
+        let previous_editor_serial = app.document_editor_serial;
+
+        app.record_editor_change_with(|_, _| Err(NoterError::RevisionExhausted));
+
+        assert_eq!(app.text, "authoritative text");
+        assert_eq!(
+            app.document_editor_serial,
+            previous_editor_serial.wrapping_add(1)
+        );
+        assert!(!app.markdown_editor.is_editing());
+        assert!(
+            app.error_msg
+                .as_deref()
+                .is_some_and(|message| message.contains("restored to the last authoritative text"))
+        );
+
+        let context = egui::Context::default();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            app.request_close(ui.ctx());
+        });
+        assert!(app.document.is_dirty());
+        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::Quit));
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::CancelClose)
+        );
     }
 
     #[test]
@@ -1486,6 +1730,188 @@ mod tests {
         text_position(&text, "Format");
         text_position(&text, "Bold");
         assert!(!text.iter().any(|(label, _)| label == "Mode"));
+    }
+
+    #[test]
+    fn oversized_markdown_files_open_safely_in_text_mode() -> std::io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("large.md");
+        fs::write(
+            &path,
+            vec![b'x'; crate::markdown_ui::PROTOTYPE_MARKDOWN_MAX_BYTES + 1],
+        )?;
+        let mut app = NoterApp::default();
+
+        app.open_path(&path, None);
+
+        assert_eq!(app.view, DocumentView::Text);
+        assert_eq!(
+            app.text.len(),
+            crate::markdown_ui::PROTOTYPE_MARKDOWN_MAX_BYTES + 1
+        );
+        assert_eq!(app.document.to_bytes(), app.text.as_bytes());
+        assert!(
+            app.error_msg
+                .as_deref()
+                .is_some_and(|message| message.contains("fully available in Text Mode"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_limit_unicode_markdown_preserves_its_utf8_bom() -> std::io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("unicode.md");
+        let source = format!("{}\n\n", "é".repeat(2_047)).repeat(256);
+        let mut bytes = Vec::with_capacity(source.len() + 3);
+        bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+        bytes.extend_from_slice(source.as_bytes());
+        fs::write(&path, &bytes)?;
+        let mut app = NoterApp::default();
+
+        app.open_path(&path, None);
+
+        assert_eq!(
+            source.len(),
+            crate::markdown_ui::PROTOTYPE_MARKDOWN_MAX_BYTES
+        );
+        assert_eq!(app.view, DocumentView::Markdown);
+        assert_eq!(app.text, source);
+        assert_eq!(app.document.to_bytes(), bytes);
+        assert!(app.error_msg.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn structurally_adversarial_markdown_opens_safely_in_text_mode() -> std::io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("many-blocks.md");
+        let source = "# x\n\n".repeat(513);
+        fs::write(&path, &source)?;
+        let mut app = NoterApp::default();
+
+        app.open_path(&path, None);
+
+        assert_eq!(app.view, DocumentView::Text);
+        assert_eq!(app.text, source);
+        assert_eq!(app.document.to_bytes(), app.text.as_bytes());
+        assert!(app.error_msg.as_deref().is_some_and(|message| {
+            message.contains("512-block layout budget")
+                && message.contains("fully available in Text Mode")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_edits_crossing_the_prototype_limit_fall_back_to_text_mode() {
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            text: "x".repeat(crate::markdown_ui::PROTOTYPE_MARKDOWN_MAX_BYTES + 1),
+            ..NoterApp::default()
+        };
+
+        app.record_editor_change();
+
+        assert_eq!(app.view, DocumentView::Text);
+        assert_eq!(app.document.to_bytes(), app.text.as_bytes());
+        assert!(!app.markdown_editor.is_editing());
+        assert!(app.error_msg.is_some());
+    }
+
+    #[test]
+    fn markdown_edits_crossing_a_structural_budget_fall_back_to_text_mode() {
+        let original = "# x\n\n".repeat(512);
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            text: original.clone(),
+            ..NoterApp::default()
+        };
+        app.document
+            .replace_text(&original)
+            .expect("the in-budget fixture should advance the revision");
+        app.text.push_str("# x\n\n");
+
+        app.record_editor_change();
+
+        assert_eq!(app.view, DocumentView::Text);
+        assert_eq!(app.document.to_bytes(), app.text.as_bytes());
+        assert!(!app.markdown_editor.is_editing());
+        assert!(app.error_msg.as_deref().is_some_and(|message| {
+            message.contains("512-block layout budget")
+                && message.contains("fully available in Text Mode")
+        }));
+    }
+
+    #[test]
+    fn markdown_diagnostic_cache_is_revision_and_document_scoped() {
+        use std::cell::Cell;
+
+        let mut app = NoterApp {
+            text: "# First\n\n### Third\n".to_owned(),
+            ..NoterApp::default()
+        };
+        app.document
+            .replace_text(&app.text)
+            .expect("the first diagnostic fixture should advance the revision");
+
+        let analysis_calls = Cell::new(0_usize);
+        assert_eq!(
+            app.markdown_issue_count_with(|_| {
+                analysis_calls.set(analysis_calls.get() + 1);
+                1
+            }),
+            1
+        );
+        let first_cache = app
+            .markdown_issue_cache
+            .expect("the analysis result should be cached");
+        assert_eq!(
+            app.markdown_issue_count_with(|_| {
+                analysis_calls.set(analysis_calls.get() + 1);
+                99
+            }),
+            1
+        );
+        assert_eq!(analysis_calls.get(), 1);
+        assert_eq!(app.markdown_issue_cache, Some(first_cache));
+
+        app.text = "# First\n".to_owned();
+        app.document
+            .replace_text(&app.text)
+            .expect("the same document edit should advance its revision");
+        assert_eq!(app.document_editor_serial, first_cache.document_serial);
+        assert_ne!(app.document.revision(), first_cache.revision);
+        assert_eq!(
+            app.markdown_issue_count_with(|_| {
+                analysis_calls.set(analysis_calls.get() + 1);
+                0
+            }),
+            0
+        );
+        assert_eq!(analysis_calls.get(), 2);
+
+        app.document = Document::new();
+        app.text = "# First\n\n### Third\n".to_owned();
+        app.document
+            .replace_text(&app.text)
+            .expect("the second diagnostic fixture should advance the revision");
+        app.advance_document_editor();
+
+        assert_eq!(app.document.revision(), first_cache.revision);
+        assert_eq!(
+            app.markdown_issue_count_with(|_| {
+                analysis_calls.set(analysis_calls.get() + 1);
+                1
+            }),
+            1
+        );
+        assert_eq!(analysis_calls.get(), 3);
+        assert_ne!(
+            app.markdown_issue_cache
+                .expect("the second analysis result should be cached")
+                .document_serial,
+            first_cache.document_serial
+        );
     }
 
     #[test]

@@ -2,9 +2,9 @@
 
 **Original review:** June 2026
 
-**Disposition reviewed:** 2026-07-25
+**Disposition reviewed:** 2026-07-27
 
-**Status:** Historical findings with current responses
+**Status:** Current ranked review plus historical findings
 
 This document preserves the useful challenges from the first adversarial review
 without treating a persona or prose critique as evidence. Current requirements,
@@ -22,7 +22,191 @@ The central corrective action is:
 > Every trust or performance claim must identify an invariant, implementation
 > boundary, failure case, and artifact that can falsify it.
 
-## 2. Findings and current disposition
+The durable-save trust kernel and its evidence are substantially stronger than
+the rest of the application. That is a real achievement, but it also exposes an
+imbalance: thousands of lines and a complete mutation campaign protect the save
+protocol while the editor still lacks transactions, undo, recovery, search,
+incremental layout, and release-grade accessibility evidence. Coverage cannot
+compensate for missing product architecture.
+
+## 2. Current assessment
+
+Noter is a strong pre-alpha engineering foundation, not yet an exceptional text
+editor. The repository currently earns high marks for explicit failure states,
+native save semantics, dependency controls, and honest documentation. It does
+not earn release-level marks for editing, lifecycle, performance,
+accessibility, Markdown conformance, installation, or updates because the
+corresponding designs are not yet implemented and falsified on supported
+systems.
+
+The next investment must move from proving more variants of the already strong
+save kernel to building the shared editor and lifecycle foundations on which
+both Text Mode and Markdown Mode depend.
+
+## 3. Ranked A+ program
+
+### 1. Establish one transaction-based source authority
+
+**Evidence:** `NoterApp` holds both a mutable contiguous `String` and a
+`Document`; the framework editors mutate the string and then call
+`Document::replace_text`. `MarkdownEditor` also owns an active block draft.
+`src/core/edit.rs` and `src/core/undo.rs`, named by the target architecture, do
+not exist.
+
+**Risk:** selection intent, coalescing, undo, stale work, and source-range
+mapping have no common model. A failed synchronization can make displayed text
+and save authority diverge unless every adapter path repairs it correctly.
+
+**A+ bar:** implement a revision-checked `EditTransaction` with validated UTF-8
+boundaries, exact inverse operations, before and after selections, origin, and
+bounded byte cost. Route typing, deletion, paste, replace, EOL conversion, and
+Markdown commands through it. Prove inverse and coalescing properties against a
+simple reference model.
+
+### 2. Replace lifecycle flags with a pure state machine and recovery protocol
+
+**Evidence:** close, abandon, hard-link confirmation, uncertain-save guidance,
+and close authorization are represented by several mutable fields in
+`NoterApp`. The designed `AppState::reduce(Command) -> Vec<Effect>` center and
+versioned recovery records are absent.
+
+**Risk:** adding Reload, external changes, recovery, or asynchronous work to the
+current flag combination will multiply invalid and untested states.
+
+**A+ bar:** introduce a total reducer with explicit states and correlation IDs,
+model every save outcome and repeated event, then implement private checksummed
+recovery records, startup review, quarantine, and crash-fault tests.
+
+### 3. Pass the production-editor feasibility gate before expanding features
+
+**Evidence:** Text Mode uses egui `TextEdit` over a complete `String`.
+Markdown Mode synchronously finds all block ranges and builds every rendered
+block inside a non-virtualized scroll area. The authoritative `Rope` therefore
+does not provide incremental display behavior.
+
+**Risk:** large documents and pathological lines can perform work proportional
+to the complete document on input and paint. More features added to this path
+increase the cost of replacing it.
+
+**Immediate containment:** the pre-alpha projection now rejects work above
+explicit source-byte, logical-line, line-length, block-count, block-span, and
+parser-event ceilings, while leaving the authoritative source available in Text
+Mode. This bounds known synchronous work but does not satisfy the feasibility
+gate.
+
+**A+ bar:** time-box the documented editor spike. Demonstrate rope-backed edits,
+visible-row layout, bounded caches, long-line behavior, hit testing, selection,
+IME pre-edit, candidate placement, and AccessKit actions. Retain the framework
+adapter until measured parity exists.
+
+### 4. Make Unicode, IME, and accessibility executable contracts
+
+**Evidence:** the requirements name grapheme, word, bidirectional, IME, and
+screen-reader behavior, but current automation primarily inspects menu labels
+and bounds. The manual matrix remains the only planned evidence for real NVDA,
+VoiceOver, Orca, and CJK input.
+
+**Risk:** byte-correct storage can still produce a text editor that corrupts
+composition, splits user-perceived characters, or is unusable without sight or
+a mouse.
+
+**A+ bar:** define navigation and deletion against a declared Unicode text
+segmentation profile, add generated conformance data, expose editable text and
+selection actions semantically, and pass real IME and screen-reader matrices on
+Windows, macOS, X11, and Wayland.
+
+### 5. Replace the Markdown slice with a conformance-driven semantic model
+
+**Evidence:** the current projection reconstructs block ranges around
+`pulldown-cmark` events, reparses individual blocks for presentation decisions,
+and supports eight local formatting commands plus four diagnostics. It has no
+shared undo transaction, complete CommonMark or GFM corpus, whole-document
+formatter, or semantic-equivalence proof.
+
+**Risk:** ad hoc source transformations can change meaning or damage unsupported
+syntax while appearing visually correct.
+
+**A+ bar:** ratify the dialect, run the complete applicable conformance corpus,
+map semantic nodes to stable source ranges, preserve unsupported constructs, and
+make Format explicit, idempotent, diff-reviewed, byte-policy-preserving, and
+equivalent under the supported parser model.
+
+### 6. Build reproducible performance evidence, not performance adjectives
+
+**Evidence:** requirements contain concrete launch, input, scroll, Markdown,
+memory, and binary-size budgets, but the repository has no benchmark harness or
+published raw benchmark report. M1 remains open for this reason.
+
+**Risk:** current full-document copies, parsing, diagnostics, and layout can
+regress without a gate even while all functional tests pass.
+
+**A+ bar:** add the stable deterministic harness already specified in the
+design, publish corpus checksums and raw samples, name reference hardware, gate
+like-for-like regressions, and include adversarial long-line and malformed
+Markdown cases.
+
+### 7. Centralize commands, effects, enabled state, and shortcuts
+
+**Evidence:** file commands have a local dispatch path, while view, theme, help,
+dialogs, and editor actions mutate application state through separate methods.
+`src/app.rs` remains the combined shell, coordinator, dialog controller, and
+large test host instead of the target `src/ui/` and `src/platform/` boundaries.
+
+**Risk:** platform shortcuts, menu labels, accessibility metadata, enabled
+state, and help text can drift. State-dependent commands are difficult to model
+or replay.
+
+**A+ bar:** derive every visible action from one typed command descriptor and
+pure reducer, keep native effects behind narrow adapters, then split UI modules
+along those proven boundaries rather than by arbitrary file size.
+
+### 8. Automate the installed product on every supported platform
+
+**Evidence:** unit and native adapter coverage are strong, but installed-app
+semantic verification is not a repeatable tracked suite. The roadmap still
+requires cross-platform visual, theme-persistence, dialog, keyboard, and clean
+installer evidence.
+
+**Risk:** a green library can ship an inert menu, wrong platform shortcut,
+broken focus order, inaccessible dialog, or installer that only works on a
+developer machine.
+
+**A+ bar:** run semantic installed-binary workflows for every visible action on
+Windows, macOS, X11, and Wayland, retain artifacts, and pair them with signed
+manual evidence for behaviors automation cannot establish.
+
+### 9. Ship a real distribution and secure update system
+
+**Evidence:** current helpers compile from source, the update command opens a
+truthful status dialog, and cargo-dist metadata is reserved. There is no release
+workflow, prebuilt installer set, authenticated update manifest, rollback
+protection, SBOM, provenance, or tested uninstall path.
+
+**Risk:** source installation is high friction, while a naive self-updater would
+create a more serious supply-chain risk than having no updater.
+
+**A+ bar:** produce reproducible prebuilt artifacts and per-user installers,
+publish checksums, SBOMs, attestations, and signatures where available, and use
+one bounded manifest policy for the menu and CLI. Defend artifact authenticity,
+rollback, freeze, mix-and-match, interruption, and package-manager ownership.
+
+### 10. Close the last evidence gaps and calibrate quality claims
+
+**Evidence:** native CI, coverage, dependency policy, and the mutation union are
+excellent. M1 still lacks weak-filesystem and manual metadata fixtures; release
+criteria still require clean systems, multiple platforms, and a 14-day
+multi-user candidate period. Internal rubric scores should not be mistaken for
+release evidence.
+
+**Risk:** excellent automated evidence for selected properties can create false
+confidence about properties that were never exercised.
+
+**A+ bar:** maintain a requirement-to-evidence ledger on the exact commit,
+record residual risks, complete native filesystem and clean-machine matrices,
+reproduce releases, and require the stated dogfood period before calling v0.1
+public-quality.
+
+## 4. Historical findings and current disposition
 
 ### R-01 Save was described too loosely
 
@@ -138,7 +322,7 @@ end-of-life criteria, and a small confidence suite for future maintainers.
 platform assumptions, and an unmaintained-state policy remain required release
 documents.
 
-## 3. Required reasoning template
+## 5. Required reasoning template
 
 Every trust-critical feature answers:
 
@@ -152,7 +336,7 @@ Every trust-critical feature answers:
 8. Which platform behavior still needs manual evidence?
 9. What residual risk is accepted, and where is it explained?
 
-## 4. Adversarial release questions
+## 6. Adversarial release questions
 
 Before v0.1, reviewers should be able to answer these from evidence:
 
@@ -177,7 +361,7 @@ Before v0.1, reviewers should be able to answer these from evidence:
 
 Any unanswered question is incomplete work, not an accepted guarantee.
 
-## 5. Living response
+## 7. Living response
 
 This review is rechecked at each milestone gate. New failures become FMEA rows,
 tests, or explicit residual risks. Closed findings remain in history so future

@@ -273,6 +273,12 @@ whole-document editing, shared undo transactions, complete complex-block
 layout, full syntax conformance, accessibility, asynchronous parsing, and the
 quality engine remain open.
 
+The current synchronous formatted slice enforces explicit source-byte, line,
+line-length, block-count, block-span, and parser-event ceilings. Over-budget
+Markdown files stay unchanged and editable in Text Mode. Diagnostic counts are
+cached by document generation and revision. M5 and M6 still own incremental
+parsing, virtualized layout, and the measured final limits.
+
 ### Exit criteria
 
 - Conformance fixtures pass for every supported syntax feature.

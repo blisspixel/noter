@@ -16,6 +16,7 @@
 # Python bytecode produced by repository validation tests
 __pycache__/
 *.py[cod]
+/.ruff_cache/
 
 # Autosave and recovery artifacts
 *.noter-autosave

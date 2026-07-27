@@ -644,6 +644,14 @@ right-aligned controls. Text Mode exposes every delimiter, and four conservative
 diagnostics operate directly on source. This establishes the interaction
 direction but does not satisfy M6.
 
+Because the current slice discovers and renders the complete block set
+synchronously, it enforces prototype ceilings of 1 MiB of source, 8,192 logical
+lines, 64 KiB per line, 512 projected blocks, 64 KiB per block span, and 8,192
+parser events. A document that exceeds any ceiling remains unchanged in Text
+Mode. Diagnostic counts are cached by document generation and revision. These
+ceilings are safety boundaries, not evidence that the final 1 MiB Markdown
+latency requirement passes.
+
 The M6 architecture completes the model:
 
 1. Parse the ratified CommonMark and selected GFM dialect off the UI thread from

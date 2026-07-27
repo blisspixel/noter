@@ -2,7 +2,7 @@
 
 **Initial research:** 2026-07-25
 
-**Updated:** 2026-07-26
+**Updated:** 2026-07-27
 
 This document records the evidence behind the roadmap. It is intentionally
 separate from the product requirements so that claims can be revised when the
@@ -468,6 +468,48 @@ control metrics, an 840-point reading measure, theme-specific contrast, and
 deterministic Light and Dark captures from the native release renderer. Low-level
 rasterization preferences are not exposed as feature clutter until native
 platform testing demonstrates a user benefit.
+
+## 2026-07-27 architecture review update
+
+The current implementation review reinforces four constraints already present
+in the roadmap:
+
+- Unicode navigation cannot be improvised from bytes, scalar values, or ASCII
+  punctuation. [Unicode Standard Annex 29](https://www.unicode.org/reports/tr29/)
+  defines extended grapheme and default word boundaries, identifies editor
+  selection and cursor movement as direct uses, and requires an implementation
+  to declare either the default behavior or a documented profile. Noter must
+  pair the selected profile with the corresponding conformance data and explicit
+  locale limitations.
+- Incremental Markdown work needs an edit-aware syntax representation.
+  [Tree-sitter's editing contract](https://tree-sitter.github.io/tree-sitter/using-parsers/3-advanced-parsing.html)
+  demonstrates the relevant architecture: update the old tree with the exact
+  byte and point edit, then parse against that tree so unchanged structure can be
+  shared. This supports the need for `EditTransaction` and revision-tagged
+  parsing; it does not by itself select Tree-sitter or a particular Markdown
+  grammar. Any parser change still requires dialect, malformed-input,
+  dependency, and source-range evidence.
+- [The Update Framework security model](https://theupdateframework.io/docs/security/)
+  treats arbitrary installation, rollback, fast-forward, freeze, and unbounded
+  download behavior as distinct update-system threats. TLS and a single checksum
+  do not establish that the offered release is current or that metadata cannot
+  be mixed. Noter's updater design must answer these threats before it downloads
+  or installs executable content.
+- [dist 0.32](https://axodotdev.github.io/cargo-dist/) can generate release
+  archives, installers, machine-readable manifests, and release CI, and its
+  configuration can install a standalone updater. These are useful distribution
+  mechanisms, not a substitute for Noter's update threat model, package-manager
+  ownership rules, clean-system tests, or release provenance.
+
+The current formatted Markdown slice still performs synchronous whole-document
+block discovery and non-virtualized rendering. Until the M5 and M6 architecture
+passes its measured gate, Markdown Mode therefore enforces explicit ceilings
+for source bytes, logical lines, line length, projected blocks, block span, and
+parser events. An over-budget file remains unchanged and available in Text
+Mode. Diagnostic counts are cached by document generation and revision so an
+unchanged document is not rescanned merely because another frame is painted.
+These controls bound known prototype work without presenting it as the final
+editor engine.
 
 ## Rejected shortcuts
 

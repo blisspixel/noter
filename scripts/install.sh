@@ -95,4 +95,21 @@ installed_version=$("$installed_binary" --version)
     echo "The installed executable did not report the expected Noter version $expected_version." >&2
     exit 1
 }
+
+cli_temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/noter-install.XXXXXX")
+trap 'rm -rf "$cli_temp_dir"' EXIT HUP INT TERM
+invalid_stdout=$cli_temp_dir/invalid.stdout
+invalid_stderr=$cli_temp_dir/invalid.stderr
+if "$installed_binary" --theme invalid >"$invalid_stdout" 2>"$invalid_stderr"; then
+    invalid_status=0
+else
+    invalid_status=$?
+fi
+[ "$invalid_status" -eq 2 ] &&
+    [ ! -s "$invalid_stdout" ] &&
+    grep -F 'unknown theme `invalid`; expected system, light, or dark' "$invalid_stderr" >/dev/null &&
+    grep -F 'Usage:' "$invalid_stderr" >/dev/null || {
+    echo "The installed executable did not preserve the release command-line error contract." >&2
+    exit 1
+}
 printf "Installed Noter at '%s'.\n" "$installed_binary"

@@ -30,6 +30,9 @@ release, so current work remains under Unreleased.
   menu on the upper-right of the application menu row. The second toolbar now
   appears only in Markdown Mode and contains formatting actions only. Visual,
   keyboard, and accessibility-tree order follow the same left-to-right sequence.
+- Verify version output and invalid-argument status, standard output, and
+  standard error against the installed release executable in both source
+  installers.
 
 ### Security
 
@@ -58,6 +61,19 @@ release, so current work remains under Unreleased.
 
 ### Fixed
 
+- Check the more specific Save As shortcut before Save, use Command on macOS
+  and Control on Windows and Linux, and derive displayed shortcut text from the
+  same command metadata.
+- Return command-line status 2 with actionable usage for invalid arguments, and
+  accept `--` before a document path that begins with a dash. A closed standard
+  output or error pipe no longer panics the Windows release process.
+- Restore the last authoritative document text and reset editor-local state if
+  an in-memory edit cannot advance the document revision.
+- Bound the synchronous pre-alpha Markdown projection by source bytes, logical
+  lines, line length, block count, block span, and parser events. Over-budget
+  files remain unchanged in Text Mode, and Markdown diagnostic counts are
+  cached by document generation and revision without retaining a diagnostic
+  vector.
 - Replace the dirty-document close trap with a Save, Discard Changes, and Cancel
   decision for New, Open, Quit, and native window close.
 - Retain indeterminate-save recovery guidance through every dirty-document

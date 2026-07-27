@@ -14,23 +14,32 @@ use std::path::PathBuf;
 use app::{DocumentView, LaunchOptions, NoterApp};
 use theme::AppTheme;
 
-const HELP: &str = "Noter\n\nUsage:\n  noter [FILE]\n  noter update\n  noter [--theme system|light|dark] [--view text|markdown] [FILE]\n\nDevelopment QA:\n  noter --screenshot PATH --theme light|dark --view markdown FILE";
+const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --theme system|light|dark\n  --view text|markdown\n  -h, --help\n  -V, --version";
 
 fn main() -> eframe::Result {
     let request = match parse_launch_request(std::env::args().skip(1)) {
         Ok(request) => request,
         Err(message) => {
-            eprintln!("noter: {message}\n\n{HELP}");
-            return Ok(());
+            write_line(
+                std::io::stderr().lock(),
+                &format!("noter: {message}\n\n{HELP}"),
+            );
+            std::process::exit(2);
         }
     };
-    let LaunchRequest::Run(launch) = request else {
-        match request {
-            LaunchRequest::Help => println!("{HELP}"),
-            LaunchRequest::Version => println!("noter {}", env!("CARGO_PKG_VERSION")),
-            LaunchRequest::Run(_) => unreachable!(),
+    let launch = match request {
+        LaunchRequest::Run(launch) => launch,
+        LaunchRequest::Help => {
+            write_line(std::io::stdout().lock(), HELP);
+            return Ok(());
         }
-        return Ok(());
+        LaunchRequest::Version => {
+            write_line(
+                std::io::stdout().lock(),
+                &format!("noter {}", env!("CARGO_PKG_VERSION")),
+            );
+            return Ok(());
+        }
     };
 
     let screenshot_qa = launch.screenshot_path.is_some();
@@ -57,6 +66,10 @@ fn main() -> eframe::Result {
     )
 }
 
+fn write_line(mut writer: impl std::io::Write, message: &str) {
+    let _ = writeln!(writer, "{message}");
+}
+
 #[derive(Debug)]
 enum LaunchRequest {
     Run(LaunchOptions),
@@ -78,23 +91,25 @@ fn parse_launch_request(args: impl IntoIterator<Item = String>) -> Result<Launch
     }
 
     let mut options = LaunchOptions::default();
+    let mut options_finished = false;
     while let Some(argument) = args.next() {
         match argument.as_str() {
-            "-h" | "--help" => return Ok(LaunchRequest::Help),
-            "-V" | "--version" => return Ok(LaunchRequest::Version),
-            "--theme" => {
+            "--" if !options_finished => options_finished = true,
+            "-h" | "--help" if !options_finished => return Ok(LaunchRequest::Help),
+            "-V" | "--version" if !options_finished => return Ok(LaunchRequest::Version),
+            "--theme" if !options_finished => {
                 let value = args
                     .next()
                     .ok_or_else(|| "`--theme` requires system, light, or dark".to_owned())?;
                 options.theme = Some(parse_theme(&value)?);
             }
-            "--view" => {
+            "--view" if !options_finished => {
                 let value = args
                     .next()
                     .ok_or_else(|| "`--view` requires text or markdown".to_owned())?;
                 options.view = Some(parse_view(&value)?);
             }
-            "--screenshot" => {
+            "--screenshot" if !options_finished => {
                 if !cfg!(feature = "screenshot-qa") {
                     return Err(
                         "`--screenshot` requires a build with feature `screenshot-qa`".to_owned(),
@@ -105,7 +120,7 @@ fn parse_launch_request(args: impl IntoIterator<Item = String>) -> Result<Launch
                     .ok_or_else(|| "`--screenshot` requires an output path".to_owned())?;
                 options.screenshot_path = Some(PathBuf::from(value));
             }
-            _ if argument.starts_with('-') => {
+            _ if !options_finished && argument.starts_with('-') => {
                 return Err(format!("unknown option `{argument}`"));
             }
             _ if options.initial_path.is_none() => {
@@ -135,6 +150,18 @@ fn parse_view(value: &str) -> Result<DocumentView, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ClosedOutput;
+
+    impl std::io::Write for ClosedOutput {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn parse(arguments: &[&str]) -> Result<LaunchRequest, String> {
         parse_launch_request(arguments.iter().map(ToString::to_string))
@@ -176,5 +203,24 @@ mod tests {
     fn help_and_version_exit_without_opening_a_window() {
         assert!(matches!(parse(&["--help"]), Ok(LaunchRequest::Help)));
         assert!(matches!(parse(&["--version"]), Ok(LaunchRequest::Version)));
+    }
+
+    #[test]
+    fn closed_cli_output_does_not_panic() {
+        write_line(ClosedOutput, "noter 0.1.0");
+    }
+
+    #[test]
+    fn option_terminator_allows_paths_that_start_with_a_dash() {
+        let LaunchRequest::Run(options) =
+            parse(&["--", "-meeting-notes.md"]).expect("the escaped path should parse")
+        else {
+            panic!("the escaped path should launch the application");
+        };
+
+        assert_eq!(
+            options.initial_path,
+            Some(PathBuf::from("-meeting-notes.md"))
+        );
     }
 }

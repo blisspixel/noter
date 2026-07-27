@@ -10,6 +10,55 @@ const MARKER_FONT_SIZE: f32 = 0.1;
 const BODY_WEIGHT: f32 = 400.0;
 const HEADING_WEIGHT: f32 = 600.0;
 const STRONG_WEIGHT: f32 = 700.0;
+pub const PROTOTYPE_MARKDOWN_MAX_BYTES: usize = 1024 * 1024;
+const PROTOTYPE_MARKDOWN_MAX_LOGICAL_LINES: usize = 8192;
+const PROTOTYPE_MARKDOWN_MAX_LINE_BYTES: usize = 64 * 1024;
+const PROTOTYPE_MARKDOWN_MAX_BLOCKS: usize = 512;
+const PROTOTYPE_MARKDOWN_MAX_BLOCK_BYTES: usize = 64 * 1024;
+const PROTOTYPE_MARKDOWN_MAX_PARSER_EVENTS: usize = 8192;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MarkdownProjectionLimit {
+    SourceBytes,
+    LogicalLines,
+    LineBytes,
+    Blocks,
+    BlockBytes,
+    ParserEvents,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MarkdownShowOutcome {
+    Unchanged,
+    Changed,
+    ProjectionLimitExceeded(MarkdownProjectionLimit),
+}
+
+impl MarkdownShowOutcome {
+    pub const fn changed(self) -> bool {
+        !matches!(self, Self::Unchanged)
+    }
+
+    pub const fn projection_limit(self) -> Option<MarkdownProjectionLimit> {
+        match self {
+            Self::ProjectionLimitExceeded(limit) => Some(limit),
+            Self::Unchanged | Self::Changed => None,
+        }
+    }
+}
+
+impl MarkdownProjectionLimit {
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::SourceBytes => "1 MiB source-size limit",
+            Self::LogicalLines => "8,192-line work budget",
+            Self::LineBytes => "64 KiB line-length budget",
+            Self::Blocks => "512-block layout budget",
+            Self::BlockBytes => "64 KiB block-layout budget",
+            Self::ParserEvents => "8,192-event parser budget",
+        }
+    }
+}
 
 fn expanded_toolbar_fits(available_width: f32) -> bool {
     available_width >= EXPANDED_FORMAT_MIN_WIDTH
@@ -21,6 +70,80 @@ fn markdown_parser_options() -> Options {
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_DEFINITION_LIST
+}
+
+pub fn markdown_projection_limit(source: &str) -> Option<MarkdownProjectionLimit> {
+    if source.len() > PROTOTYPE_MARKDOWN_MAX_BYTES {
+        return Some(MarkdownProjectionLimit::SourceBytes);
+    }
+
+    let mut logical_line_count = 0_usize;
+    for line in logical_lines(source) {
+        logical_line_count += 1;
+        if logical_line_count > PROTOTYPE_MARKDOWN_MAX_LOGICAL_LINES {
+            return Some(MarkdownProjectionLimit::LogicalLines);
+        }
+        if line.content().len() > PROTOTYPE_MARKDOWN_MAX_LINE_BYTES {
+            return Some(MarkdownProjectionLimit::LineBytes);
+        }
+    }
+
+    let parser = Parser::new_ext(source, markdown_parser_options()).into_offset_iter();
+    let mut block_count = 0_usize;
+    for (_, definition) in parser.reference_definitions().iter() {
+        if let Some(limit) = count_projection_block(&mut block_count, &definition.span) {
+            return Some(limit);
+        }
+    }
+
+    let mut event_count = 0_usize;
+    let mut depth = 0_usize;
+    let mut current_start = None;
+    let mut current_end = 0_usize;
+    for (event, range) in parser {
+        event_count += 1;
+        if event_count > PROTOTYPE_MARKDOWN_MAX_PARSER_EVENTS {
+            return Some(MarkdownProjectionLimit::ParserEvents);
+        }
+        match event {
+            Event::Start(_) => {
+                if depth == 0 {
+                    current_start = Some(range.start);
+                    current_end = range.end;
+                }
+                depth += 1;
+            }
+            Event::End(_) => {
+                current_end = current_end.max(range.end);
+                depth = depth.saturating_sub(1);
+                if depth == 0
+                    && let Some(start) = current_start.take()
+                    && let Some(limit) =
+                        count_projection_block(&mut block_count, &(start..current_end))
+                {
+                    return Some(limit);
+                }
+            }
+            _ if depth == 0 => {
+                if let Some(limit) = count_projection_block(&mut block_count, &range) {
+                    return Some(limit);
+                }
+            }
+            _ => current_end = current_end.max(range.end),
+        }
+    }
+    None
+}
+
+fn count_projection_block(
+    block_count: &mut usize,
+    range: &Range<usize>,
+) -> Option<MarkdownProjectionLimit> {
+    if range.end.saturating_sub(range.start) > PROTOTYPE_MARKDOWN_MAX_BLOCK_BYTES {
+        return Some(MarkdownProjectionLimit::BlockBytes);
+    }
+    *block_count += 1;
+    (*block_count > PROTOTYPE_MARKDOWN_MAX_BLOCKS).then_some(MarkdownProjectionLimit::Blocks)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -226,7 +349,7 @@ impl MarkdownEditor {
         ));
     }
 
-    #[cfg(feature = "screenshot-qa")]
+    #[cfg(any(test, feature = "screenshot-qa"))]
     /// Opens the first source block so release screenshots show direct editing.
     pub(crate) fn activate_first_block(&mut self, source: &str) {
         let Some(range) = markdown_block_ranges(source).into_iter().next() else {
@@ -242,8 +365,11 @@ impl MarkdownEditor {
         self.active.is_some()
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, source: &mut String) -> bool {
+    pub fn show(&mut self, ui: &mut egui::Ui, source: &mut String) -> MarkdownShowOutcome {
         let mut changed = self.sync_pending_command(source);
+        if changed && let Some(limit) = markdown_projection_limit(source) {
+            return MarkdownShowOutcome::ProjectionLimitExceeded(limit);
+        }
         let ranges = markdown_block_ranges(source);
 
         if ranges.is_empty() {
@@ -251,9 +377,17 @@ impl MarkdownEditor {
                 self.activate(0..0, String::new());
             }
             if self.show_active_editor(ui) {
-                changed |= self.sync_pending_command(source);
+                let synchronized = self.sync_pending_command(source);
+                changed |= synchronized;
+                if synchronized && let Some(limit) = markdown_projection_limit(source) {
+                    return MarkdownShowOutcome::ProjectionLimitExceeded(limit);
+                }
             }
-            return changed;
+            return if changed {
+                MarkdownShowOutcome::Changed
+            } else {
+                MarkdownShowOutcome::Unchanged
+            };
         }
 
         let active_range = self
@@ -280,9 +414,17 @@ impl MarkdownEditor {
             self.active = None;
         }
         if self.active.as_ref().is_some_and(|active| active.dirty) {
-            changed |= self.sync_pending_command(source);
+            let synchronized = self.sync_pending_command(source);
+            changed |= synchronized;
+            if synchronized && let Some(limit) = markdown_projection_limit(source) {
+                return MarkdownShowOutcome::ProjectionLimitExceeded(limit);
+            }
         }
-        changed
+        if changed {
+            MarkdownShowOutcome::Changed
+        } else {
+            MarkdownShowOutcome::Unchanged
+        }
     }
 
     fn sync_pending_command(&mut self, source: &mut String) -> bool {
@@ -1008,6 +1150,82 @@ mod tests {
     }
 
     #[test]
+    fn projection_budget_accepts_exact_byte_boundaries_for_ascii_and_unicode() {
+        let ascii = format!("{}\n\n", "x".repeat(4_094)).repeat(256);
+        let unicode = format!("{}\n\n", "é".repeat(2_047)).repeat(256);
+
+        for source in [ascii, unicode] {
+            assert_eq!(source.len(), PROTOTYPE_MARKDOWN_MAX_BYTES);
+            assert_eq!(markdown_projection_limit(&source), None);
+        }
+    }
+
+    #[test]
+    fn projection_budget_rejects_a_source_one_byte_over_the_limit() {
+        let mut source = format!("{}\n\n", "x".repeat(4_094)).repeat(256);
+        source.push('x');
+
+        assert_eq!(
+            markdown_projection_limit(&source),
+            Some(MarkdownProjectionLimit::SourceBytes)
+        );
+    }
+
+    #[test]
+    fn projection_budget_bounds_lines_blocks_and_parser_events() {
+        let too_many_lines = "x\n".repeat(PROTOTYPE_MARKDOWN_MAX_LOGICAL_LINES + 1);
+        let overlong_line = "x".repeat(PROTOTYPE_MARKDOWN_MAX_LINE_BYTES + 1);
+        let too_many_blocks = "# x\n\n".repeat(PROTOTYPE_MARKDOWN_MAX_BLOCKS + 1);
+        let oversized_block = format!("{}\n", "x".repeat(1_024)).repeat(65);
+        let too_many_events = "*x* ".repeat(3_000);
+
+        assert_eq!(
+            markdown_projection_limit(&too_many_lines),
+            Some(MarkdownProjectionLimit::LogicalLines)
+        );
+        assert_eq!(
+            markdown_projection_limit(&overlong_line),
+            Some(MarkdownProjectionLimit::LineBytes)
+        );
+        assert_eq!(
+            markdown_projection_limit(&too_many_blocks),
+            Some(MarkdownProjectionLimit::Blocks)
+        );
+        assert_eq!(
+            markdown_projection_limit(&oversized_block),
+            Some(MarkdownProjectionLimit::BlockBytes)
+        );
+        assert_eq!(
+            markdown_projection_limit(&too_many_events),
+            Some(MarkdownProjectionLimit::ParserEvents)
+        );
+    }
+
+    #[test]
+    fn projection_budget_accepts_each_exact_structural_ceiling() {
+        let exact_lines = "\n".repeat(PROTOTYPE_MARKDOWN_MAX_LOGICAL_LINES);
+        let exact_line_bytes = "x".repeat(PROTOTYPE_MARKDOWN_MAX_LINE_BYTES);
+        let exact_blocks = "# x\n\n".repeat(PROTOTYPE_MARKDOWN_MAX_BLOCKS);
+        let exact_block_span = format!("{}\n", "x".repeat(1_023)).repeat(63) + &"x".repeat(1_024);
+        let exact_events = "`x` ".repeat(4_095) + "\n\n---\n";
+
+        assert_eq!(exact_block_span.len(), PROTOTYPE_MARKDOWN_MAX_BLOCK_BYTES);
+        assert_eq!(
+            Parser::new_ext(&exact_events, markdown_parser_options()).count(),
+            PROTOTYPE_MARKDOWN_MAX_PARSER_EVENTS
+        );
+        for source in [
+            exact_lines,
+            exact_line_bytes,
+            exact_blocks,
+            exact_block_span,
+            exact_events,
+        ] {
+            assert_eq!(markdown_projection_limit(&source), None);
+        }
+    }
+
+    #[test]
     fn inline_commands_preserve_unicode_selection_boundaries() {
         let result = apply_markdown_command("cafe cafe", 0..4, MarkdownCommand::Bold);
 
@@ -1133,7 +1351,7 @@ mod tests {
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(800.0);
             editor.toolbar(ui);
-            assert!(!editor.show(ui, &mut source));
+            assert!(!editor.show(ui, &mut source).changed());
         });
 
         assert_eq!(source, original);
@@ -1186,7 +1404,7 @@ mod tests {
         let mut source = "# Heading\n\nA **bold** paragraph.\n".to_owned();
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(800.0);
-            assert!(!editor.show(ui, &mut source));
+            assert!(!editor.show(ui, &mut source).changed());
         });
         let mut weights = Vec::new();
         for clipped in &output.shapes {
@@ -1461,12 +1679,41 @@ mod tests {
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(800.0);
             editor.toolbar(ui);
-            assert!(editor.show(ui, &mut source));
+            assert!(editor.show(ui, &mut source).changed());
         });
 
         assert_eq!(source, "**text**");
         assert!(editor.is_editing());
         assert!(!output.shapes.is_empty());
+    }
+
+    #[test]
+    fn pending_format_command_is_bounded_before_projecting_the_changed_source() {
+        let mut source = format!("{}\n", "x".repeat(1_023)).repeat(63) + &"x".repeat(1_024);
+        assert_eq!(markdown_projection_limit(&source), None);
+        let mut active = ActiveBlock::new(0..source.len(), source.clone(), 1);
+        active.selection = 0..source.len();
+        active.apply(MarkdownCommand::Quote);
+        let mut editor = MarkdownEditor {
+            active: Some(active),
+            next_editor_serial: 1,
+        };
+        let context = egui::Context::default();
+        let mut outcome = MarkdownShowOutcome::Unchanged;
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            outcome = editor.show(ui, &mut source);
+        });
+
+        assert_eq!(
+            outcome,
+            MarkdownShowOutcome::ProjectionLimitExceeded(MarkdownProjectionLimit::BlockBytes)
+        );
+        assert_eq!(
+            markdown_projection_limit(&source),
+            Some(MarkdownProjectionLimit::BlockBytes)
+        );
     }
 
     #[test]
@@ -1482,14 +1729,14 @@ mod tests {
 
         let _ = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(800.0);
-            assert!(!editor.show(ui, &mut source));
+            assert!(!editor.show(ui, &mut source).changed());
         });
 
         let mut input = egui::RawInput::default();
         input.events.push(egui::Event::Text("x".to_owned()));
         let output = context.run_ui(input, |ui| {
             ui.set_width(800.0);
-            assert!(editor.show(ui, &mut source));
+            assert!(editor.show(ui, &mut source).changed());
         });
 
         assert_eq!(source, "x\n\nParagraph\n");

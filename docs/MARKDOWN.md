@@ -55,6 +55,11 @@ complete.
   keyboard selection semantics are not implemented.
 - GFM and CommonMark conformance, malformed-input behavior, IME, screen-reader,
   high-DPI, and large-file requirements still require release evidence.
+- The synchronous prototype accepts at most 1 MiB of source, 8,192 logical
+  lines, 64 KiB per line, 512 projected blocks, 64 KiB per block span, and
+  8,192 parser events. A document that exceeds any ceiling opens unchanged and
+  remains fully editable in Text Mode instead of entering an unproven formatted
+  path.
 - Diagnostics are a conservative initial set, not a complete Markdown linter.
 - Whole-document Format, reviewed diffs, semantic-equivalence checks, and safe
   fixes are not implemented.

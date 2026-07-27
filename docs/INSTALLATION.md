@@ -7,9 +7,10 @@ release, signed package, or self-updating release channel.
 
 The source installers validate the locked workspace, build with the pinned Rust
 toolchain, replace an existing Cargo installation, and verify the resulting
-binary. They do not fetch Noter source or require administrator access. On a
-machine without the pinned toolchain or locked crates in its local cache,
-rustup and Cargo may download those build inputs from their configured sources.
+release binary's version and invalid-argument exit contract. They do not fetch
+Noter source or require administrator access. On a machine without the pinned
+toolchain or locked crates in its local cache, rustup and Cargo may download
+those build inputs from their configured sources.
 
 Windows PowerShell:
 
