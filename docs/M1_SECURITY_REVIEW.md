@@ -4,7 +4,8 @@
 
 **Review date:** 2026-07-25
 
-**Follow-up:** 2026-07-26 macOS staging review and remediation
+**Follow-ups:** 2026-07-26 macOS staging review and remediation; 2026-07-27
+repository-wide review and final-entry race hardening
 
 **Coverage:** Partial repository review with full-file inspection of the runtime
 document, observation, save, platform, GUI lifecycle, dependency, and CI paths.
@@ -72,9 +73,18 @@ bypass the ceiling. Errors are typed, stage-specific, and path-redacted.
 
 ## Reliability issues fixed during the review
 
-- New, Open, Quit, and native close no longer discard a dirty document. They
-  remain blocked with a visible explanation until M4 supplies the shared Save,
-  Discard, and Cancel state machine.
+- New, Open, Quit, and native close no longer discard or trap a dirty document.
+  They use one shared Save, Discard Changes, and Cancel decision, and semantic
+  tests cover each continuation and cancellation path.
+- A later repository-wide review found that final-entry metadata checks were
+  separated from ordinary following document opens. A precisely timed hostile
+  filesystem could make both opened handles name one link target while the
+  surrounding checks saw a regular entry. Attack-path analysis found no
+  reportable privilege or disclosure boundary in the current offline product,
+  but the correctness invariant was still repaired. Unix now uses
+  `O_NOFOLLOW`; Windows opens the reparse entry itself, retains ordinary sharing,
+  and rejects link or reparse handle metadata before reading. A focused
+  16-candidate campaign closes with 12 caught and four compiler rejections.
 - Windows backup cleanup now opens without following reparse points, verifies
   identity, fingerprint, and length on the live handle, and deletes that same
   object by handle while denying competing writers. Native fixtures prove a

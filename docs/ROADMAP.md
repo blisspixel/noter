@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-07-26
+**Updated:** 2026-07-27
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -22,9 +22,9 @@ mutation, benchmark, and release records.
 | M1 | Document and durable I/O trust kernel | In progress |
 | M2 | Usable prototype shell, themes, and update entry points | In progress |
 | M3 | Editing transactions, undo, search, and text commands | Planned |
-| M4 | Lifecycle, recovery, and external-change handling | Planned |
+| M4 | Lifecycle, recovery, and external-change handling | In progress |
 | M5 | Production editor, accessibility, and performance | Planned |
-| M6 | Native Markdown editor and quality engine | Planned |
+| M6 | Native Markdown editor and quality engine | In progress |
 | M7 | Cross-platform distribution and first public-quality release | Planned |
 
 `Verified` means the implementation and every named automated, manual, and
@@ -130,14 +130,14 @@ that a release exists when the repository has no published artifact.
 ### Current state
 
 System, Light, and Dark themes, working About and update-status dialogs, source
-install helpers, a unified aligned editor toolbar, and deterministic native
-README screenshots are implemented locally. Hinting, subpixel positioning, and
+install helpers, a unified aligned editor toolbar, a bundled variable document
+typeface, and deterministic native README screenshots are implemented locally.
+Hinting, subpixel positioning, real heading and emphasis weights, and
 theme-correct text coverage transfer are verified explicitly rather than
-assumed from toolkit defaults. The early source-backed Markdown slice is
-visible for product evaluation but remains governed by M6. M2 still needs
+assumed from toolkit defaults. The early source-backed Markdown slice is visible
+for product evaluation but remains governed by M6. M2 still needs
 installed-app semantic automation, cross-platform visual and persistence
-evidence, and disposable
-clean-user installer tests before verification.
+evidence, and disposable clean-user installer tests before verification.
 
 ### Exit criteria
 
@@ -186,6 +186,17 @@ predictable classic editor behavior.
 - recent files with bounded, privacy-preserving storage; and
 - multiple-instance behavior without a fragile global lock.
 
+### Current state
+
+Dirty New, Open, Quit, and native window-close requests now share one visible
+Save, Discard Changes, and Cancel decision path. Saving continues the requested
+action only after the document is clean; a cancelled or failed save retains both
+the document and decision. Indeterminate-save recovery guidance survives these
+decisions and Cancel, and ordinary Save remains blocked until the state is
+reconciled or the user cancels the decision and chooses Save As. The pure
+lifecycle reducer, Reload, recovery records, external-change handling, and
+crash-fault evidence remain open.
+
 ### Exit criteria
 
 - State-machine and crash-fault tests cover every destructive intent and save
@@ -225,9 +236,9 @@ large-file requirements needed by both text and native Markdown editing.
 ## M6: Native Markdown Editor and Quality Engine
 
 **Outcome:** Markdown files can be read and edited in Markdown Mode as native
-formatted content
-while remaining ordinary, inspectable Markdown source. Diagnostics and explicit
-formatting help produce portable, consistent files without hidden rewrites.
+formatted content while remaining ordinary, inspectable Markdown source.
+Diagnostics and explicit formatting help produce portable, consistent files
+without hidden rewrites.
 
 ### Scope
 
@@ -248,6 +259,18 @@ formatting help produce portable, consistent files without hidden rewrites.
 
 The normative interaction, source-preservation, formatting, privacy, and
 completion contract is [MARKDOWN.md](MARKDOWN.md).
+
+### Current state
+
+The current vertical slice builds a borderless native layout before shaping,
+uses real body, heading, and strong-emphasis weights in inactive and active
+content, activates one source range for direct editing without exposing
+supported delimiters, and maps eight formatting actions back to ordinary
+Markdown source. A link target is revealed while it is edited and hidden again
+after the caret leaves it. Text Mode always exposes exact source. Continuous
+whole-document editing, shared undo transactions, complete complex-block
+layout, full syntax conformance, accessibility, asynchronous parsing, and the
+quality engine remain open.
 
 ### Exit criteria
 

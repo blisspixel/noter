@@ -486,7 +486,8 @@ pub struct SaveWarnings {
 }
 
 impl SaveWarnings {
-    const fn new(cleanup: Vec<StorageError>, durability: Vec<StorageError>) -> Self {
+    /// Creates the independent warnings retained after a successful commit.
+    pub const fn new(cleanup: Vec<StorageError>, durability: Vec<StorageError>) -> Self {
         Self {
             cleanup,
             durability,

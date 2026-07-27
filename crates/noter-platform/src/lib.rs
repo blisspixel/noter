@@ -13,7 +13,9 @@ use imp::{
     unix_apply_required_metadata as platform_apply_required_metadata,
     unix_capture_required_metadata as platform_capture_required_metadata,
     unix_delete_open_file as platform_delete_open_file, unix_file_facts as platform_file_facts,
-    unix_install_new as platform_install_new, unix_open_for_cleanup as platform_open_for_cleanup,
+    unix_install_new as platform_install_new,
+    unix_open_existing_no_follow as platform_open_existing_no_follow,
+    unix_open_for_cleanup as platform_open_for_cleanup,
     unix_replace_existing as platform_replace_existing,
     unix_required_metadata_matches_source as platform_required_metadata_matches_source,
     unix_sync_file as platform_sync_file, unix_sync_parent as platform_sync_parent,
@@ -28,6 +30,7 @@ use imp::{
     unsupported_create_private_new_file as platform_create_private_new_file,
     unsupported_delete_open_file as platform_delete_open_file,
     unsupported_file_facts as platform_file_facts, unsupported_install_new as platform_install_new,
+    unsupported_open_existing_no_follow as platform_open_existing_no_follow,
     unsupported_open_for_cleanup as platform_open_for_cleanup,
     unsupported_replace_existing as platform_replace_existing,
     unsupported_sync_file as platform_sync_file, unsupported_sync_parent as platform_sync_parent,
@@ -37,6 +40,7 @@ use imp::{
     windows_create_private_new_file as platform_create_private_new_file,
     windows_delete_open_file as platform_delete_open_file,
     windows_file_facts as platform_file_facts, windows_install_new as platform_install_new,
+    windows_open_existing_no_follow as platform_open_existing_no_follow,
     windows_open_for_cleanup as platform_open_for_cleanup,
     windows_replace_existing as platform_replace_existing, windows_sync_file as platform_sync_file,
     windows_sync_parent as platform_sync_parent,
@@ -236,6 +240,22 @@ pub fn file_facts(file: &File) -> io::Result<FileFacts> {
 /// case, where an empty random sibling may require operator inspection.
 pub fn create_private_new_file(path: &Path) -> io::Result<File> {
     platform_create_private_new_file(path)
+}
+
+/// Opens an existing final entry for read-only observation without following it.
+///
+/// The returned handle is bound to the final directory entry selected by the
+/// operating system. Callers must inspect the handle metadata and reject links,
+/// reparse points, directories, and other unsupported file kinds before reading.
+/// Windows preserves ordinary read, write, and delete sharing so observation does
+/// not impose a cleanup lock on another editor.
+///
+/// # Errors
+///
+/// Returns an operating-system error when the final entry does not exist or
+/// cannot be opened without following a link or reparse point.
+pub fn open_existing_no_follow(path: &Path) -> io::Result<File> {
+    platform_open_existing_no_follow(path)
 }
 
 /// Opens an existing final entry for stable observation and handle-bound cleanup.
@@ -718,6 +738,10 @@ mod imp {
     }
 
     pub fn unix_open_for_cleanup(path: &Path) -> io::Result<File> {
+        unix_open_existing_no_follow(path)
+    }
+
+    pub fn unix_open_existing_no_follow(path: &Path) -> io::Result<File> {
         OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
@@ -2138,9 +2162,9 @@ mod imp {
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL,
         FILE_BASIC_INFO, FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FileBasicInfo, FileDispositionInfo, FileIdInfo,
-        GetFileInformationByHandle, GetFileInformationByHandleEx, MOVEFILE_WRITE_THROUGH,
-        MoveFileExW, ReplaceFileW, SetFileInformationByHandle,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileBasicInfo, FileDispositionInfo,
+        FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW, SetFileInformationByHandle,
     };
 
     use super::{
@@ -2253,6 +2277,14 @@ mod imp {
             .read(true)
             .access_mode(GENERIC_READ | DELETE)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+    }
+
+    pub fn windows_open_existing_no_follow(path: &Path) -> io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)
     }
@@ -2478,7 +2510,8 @@ mod imp {
             IdentityQuality, LocalFree, PRIVATE_FILE_SDDL, WindowsSecurityDescriptor,
             windows_create_private_new_file, windows_delete_open_file,
             windows_extended_information, windows_identity_from_information,
-            windows_open_for_cleanup, windows_security_descriptor_from_sddl,
+            windows_open_existing_no_follow, windows_open_for_cleanup,
+            windows_security_descriptor_from_sddl,
         };
 
         struct LocalWideString(*mut u16);
@@ -2640,6 +2673,19 @@ mod imp {
             drop(cleanup);
 
             OpenOptions::new().write(true).open(&path)?;
+            Ok(())
+        }
+
+        #[test]
+        fn observation_open_preserves_ordinary_writer_sharing() -> io::Result<()> {
+            let directory = tempdir()?;
+            let path = directory.path().join("observed.txt");
+            fs::write(&path, b"observed revision")?;
+
+            let observation = windows_open_existing_no_follow(&path)?;
+            OpenOptions::new().write(true).open(&path)?;
+            drop(observation);
+
             Ok(())
         }
 
@@ -2814,6 +2860,10 @@ mod imp {
         unsupported_error("verified cleanup open")
     }
 
+    pub fn unsupported_open_existing_no_follow(_path: &Path) -> io::Result<File> {
+        unsupported_error("no-follow observation open")
+    }
+
     pub fn unsupported_delete_open_file(_file: &File) -> io::Result<()> {
         unsupported_error("handle-bound file deletion")
     }
@@ -2851,10 +2901,8 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    use std::fs;
-    use std::fs::{File, hard_link};
-    use std::io::{self, Write};
+    use std::fs::{self, File, hard_link};
+    use std::io::{self, Read, Write};
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
@@ -2874,8 +2922,8 @@ mod tests {
         apply_required_metadata, capture_required_metadata, required_metadata_matches_source,
     };
     use super::{
-        creation_error_may_have_retained_private_file, retained_private_creation_error,
-        retained_private_file_creation_cause,
+        creation_error_may_have_retained_private_file, open_existing_no_follow,
+        retained_private_creation_error, retained_private_file_creation_cause,
     };
 
     #[test]
@@ -2893,6 +2941,39 @@ mod tests {
         assert_eq!(identity.quality(), IdentityQuality::Preferred);
         assert_eq!(identity.volume(), 17);
         assert_eq!(identity.file(), 29);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn no_follow_observation_open_reads_an_ordinary_file() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        fs::write(&path, b"exact document bytes")?;
+
+        let mut file = open_existing_no_follow(&path)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+
+        assert_eq!(bytes, b"exact document bytes");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_follow_observation_open_refuses_a_final_symlink() -> io::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir()?;
+        let target = directory.path().join("target.txt");
+        let link = directory.path().join("link.txt");
+        fs::write(&target, b"must not be read through the link")?;
+        symlink(&target, &link)?;
+
+        assert!(
+            open_existing_no_follow(&link).is_err(),
+            "the native open must not follow a final symlink"
+        );
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]

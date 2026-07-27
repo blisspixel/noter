@@ -18,7 +18,6 @@ resolver = "3"
 [dependencies]
 blake3 = { version = "1.8", default-features = false, features = ["std"] }
 eframe = { version = "0.35", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
-egui_commonmark = { version = "0.24", default-features = false, features = ["pulldown_cmark"] }
 getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 noter-platform = { version = "=0.1.0", path = "crates/noter-platform" }

@@ -1,6 +1,8 @@
 # Noter Engineering Baseline
 
-**Measured:** 2026-07-26
+**M0 measured:** 2026-07-26
+
+**Current checkpoint refreshed:** 2026-07-27
 
 **Source state:** M0 evidence commit `7512534` after dependency cleanup. These
 measurements are a development baseline, not release evidence.
@@ -59,43 +61,71 @@ is not yet a milestone sign-off.
 | --- | --- |
 | `cargo fmt --all -- --check` | Pass |
 | Strict workspace Clippy, locked, all targets and features | Pass |
-| Windows-local workspace tests | 172 passed, 0 failed |
-| Testable trust-kernel line coverage | 92.26 percent, 4,921 of 5,334 lines |
-| Whole-workspace line coverage | 87.54 percent, 6,115 of 6,985 lines |
+| Windows-local workspace tests | 208 passed, 0 failed |
+| Testable trust-kernel line coverage | 93.73 percent, 4,498 of 4,799 lines |
+| Whole-workspace line coverage | 89.49 percent, 6,657 of 7,439 lines |
 | Enforced development thresholds | Pass, trust kernel at least 90 percent and whole workspace at least 80 percent |
 | Historical focused Windows trust-kernel mutation testing | 418 total, 270 caught, 148 unviable, 0 missed, 0 timed out |
 | Historical focused Windows native-adapter mutation testing | 58 total, 40 caught, 18 unviable, 0 missed, 0 timed out |
 | Current Windows native-adapter scope | 66 candidates included in the exact full Windows run; no scope gap |
 | Focused Markdown diagnostics mutation testing | 58 total, 55 caught, 3 unviable, 0 missed, 0 timed out; one linker-lock result caught in an isolated rerun |
+| Focused lifecycle and save-result mutation testing | 26 total, 26 caught, 0 unviable, 0 missed, 0 timed out |
+| Focused native Markdown editing and rendering mutation testing | 88 total, 80 caught, 8 compiler rejections, 0 missed, 0 timed out |
+| Focused final-entry observation mutation testing | 16 total, 12 caught, 4 compiler rejections, 0 missed, 0 timed out |
 | Current supported-platform mutation union | 741 total with no union gap; Linux 617 total, 438 caught, 179 unviable; Windows 557 total, 381 caught, 176 unviable; macOS 49 total, 43 caught, 6 unviable; 0 missed and 0 timed out in every scope |
 | Rustdoc with warnings denied | Pass |
 | Local Markdown link check | Pass |
 | Linux full-crate cross-target Clippy | Pass |
 | macOS platform-crate cross-target Clippy | Pass |
-| Release binary | 7,344,128 bytes, 7.00 MiB |
-| Release SHA-256 | `2d0fac9d689ed2b51ebf192a0c1207d57e738f215c38080a74a1cd4f5e322657` |
-| Resolved Cargo packages across all targets | 418 |
+| Release binary | 8,075,776 bytes, 7.70 MiB |
+| Release SHA-256 | `9142374a83fba839ffe5810f932702b6f7a3c2cf0f1bd63c577b273257293bba` |
+| Resolved Cargo packages across all targets | 413 |
 | RustSec audit | Pass, no known vulnerability reported |
 | Cargo dependency policy | Pass for advisories, licenses, sources, and bans; duplicate versions remain visible as warnings |
 | Exact-commit Windows, macOS, and Linux CI | Pass at `97371d8`, including all three mutation scopes and strengthened infrastructure validation, [run 30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209) |
 
-The 172 tests comprise 117 primary-library unit tests, 35 binary application and
+The 208 tests comprise 118 primary-library unit tests, 68 binary application and
 UI tests, one 19-case golden-corpus test, three generated property suites with
-512 fixed-seed cases each, and 16 platform-crate tests. The stricter trust-kernel
+512 fixed-seed cases each, and 18 platform-crate tests. The stricter trust-kernel
 report excludes the immediate-mode `src/app.rs`, `src/main.rs`, and
 `src/markdown_ui.rs` adapters. Those files remain inside the separate 80 percent
-whole-workspace gate. The filesystem adapter measures 90.56 percent line
-coverage, the Markdown UI adapter 86.79 percent, the native platform adapter
-88.63 percent, and the full workspace 87.54 percent. Semantic UI automation and
+whole-workspace gate. The filesystem adapter measures 91.44 percent line
+coverage, the Markdown UI adapter 92.39 percent, the native platform adapter
+93.97 percent, and the full workspace 89.49 percent. Semantic UI automation and
 manual accessibility gates remain required before v0.1.
 
-The binary is 2,595,328 bytes larger than the M0 baseline. That measured cost
+The binary is 3,326,976 bytes larger than the M0 baseline. That measured cost
 includes reachable BLAKE3 conflict fingerprints, native metadata transfer,
 commit reconciliation, stable-handle loading, revision-aware saves, current
-text shaping and rasterization, persisted themes, and the early native Markdown
-surface. It remains below the 12 MiB first-release ceiling. The full locked
-cross-target graph now contains 418 packages and still requires the release
+text shaping and rasterization, the bundled variable document font, persisted
+themes, and the early native Markdown surface. It remains below the 12 MiB
+first-release ceiling. The full locked
+cross-target graph now contains 413 packages and still requires the release
 duplicate, license, source, and capability audit.
+
+### Focused UI mutation commands
+
+The lifecycle result was produced from the settled `src/app.rs` scope with:
+
+```powershell
+$env:CARGO_TARGET_DIR='D:\noter-target-cycle0-final'
+$env:CARGO_MUTANTS_OUTPUT='D:\noter-mutants-lifecycle-cycle6-settled-v3'
+$env:CARGO_INCREMENTAL='0'
+cargo mutants --in-place --no-config --workspace --all-features --colors never --minimum-test-timeout 60 -f src/app.rs --re 'NoterApp::(request_open|request_new_document|request_close|protect_native_close|begin_pending_abandon|cancel_pending_abandon|discard_pending_abandon|save_pending_abandon|continue_pending_abandon_if_clean|execute_abandon_action|restore_save_recovery_message|do_save|do_save_as_to|handle_save_result)\b'
+```
+
+The final Markdown result used cargo-mutants' isolated source copy:
+
+```powershell
+$env:CARGO_TARGET_DIR='D:\noter-target-cycle0-final'
+$env:CARGO_MUTANTS_OUTPUT='D:\noter-mutants-markdown-cycle6-settled-v3'
+$env:CARGO_INCREMENTAL='0'
+cargo mutants --no-config --workspace --all-features --colors never --minimum-test-timeout 60 -f src/markdown_ui.rs --re '(markdown_edit_layout|markdown_render_layout|markdown_source_styles|semantic_target_at_selection|apply_markdown_tag|tag_hides_source_markup|reveal_event_text|markdown_text_format|formatted_block_marker|is_quote_marker|is_block_quote|insert_link)'
+```
+
+Both reports pass `scripts/check_mutation_infrastructure.py`. The eight Markdown
+unviable results are compiler rejections, not linker, storage, process, timeout,
+or tool failures.
 
 The complete mutation campaign is recorded in
 [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md). The next evidence update must

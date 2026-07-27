@@ -1,7 +1,7 @@
 # Native Markdown Mode
 
-**Status:** Early source-backed implementation available. The complete contract
-below remains in progress.
+**Status:** Early source-backed formatted editing is available. The complete
+contract below remains in progress.
 
 ## Purpose
 
@@ -17,8 +17,15 @@ authoritative. Changing modes never rewrites a file.
 
 - `.md` and `.markdown` files open in Markdown Mode by default; any supported
   file can be viewed in Text Mode.
-- Markdown is rendered through a restricted native egui document surface.
-- Selecting a formatted block opens that exact source range for direct editing.
+- Markdown is projected into borderless native egui text layouts before
+  shaping. The inactive document and active editor share explicit Inter body,
+  heading, and strong-emphasis weights rather than simulated bold.
+- Selecting formatted content keeps supported heading and inline syntax
+  visually formatted while editing the exact backing source range. Markdown
+  delimiters remain in the edit buffer and on disk even when they are not
+  painted.
+- A selected link destination is temporarily revealed and underlined while it
+  is edited, then hidden again after the caret leaves that target.
 - H1, H2, Bold, Italic, Link, Code, List, and Quote actions update the selected
   block's Markdown source immediately.
 - Switching to Text Mode exposes the exact source produced by those edits.
@@ -27,15 +34,20 @@ authoritative. Changing modes never rewrites a file.
   identifiers.
 - System, Light, and Dark themes share the same document model.
 - Remote images are not loaded, raw HTML is not executed, and no content is
-  fetched in the background. A link can open externally only after a click.
+  fetched in the background. Markdown-link opening is not implemented in this
+  bounded slice; the final command requires an explicit user action.
 
-This is an intentionally bounded implementation slice. It proves the native,
-source-backed direction without claiming the final editing model is complete.
+This is an intentionally bounded implementation slice. It proves direct native,
+source-backed formatted editing without claiming the final editing model is
+complete.
 
 ## Current limitations
 
-- Editing is block-focused rather than fully inline across the formatted
-  document.
+- Editing is range-focused rather than continuous across the full formatted
+  document. Supported headings, emphasis, links, and inline code remain styled
+  in the active range; complex and unsupported punctuation may remain visible.
+- Tables, images, nested structures, reference resolution, and other complex
+  constructs do not yet have complete native layout or editing behavior.
 - Cross-block Markdown references may not resolve in every rendered fragment.
 - Undo transactions, parser workers, stale-revision rejection, and complete
   keyboard selection semantics are not implemented.

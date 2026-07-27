@@ -35,6 +35,10 @@ unit tests, and coverage cannot prove.
   and loses no state.
 - [ ] LIF-09 Multiple instances edit independent documents without sharing dirty
   or recovery state.
+- [ ] LIF-10 After an indeterminate save, New, Open, Quit, and native Close keep
+  the reconciliation guidance visible. Cancel restores that guidance, ordinary
+  Save stays disabled, and Save As remains available after Cancel to preserve
+  current text.
 
 ## 2. Open, Save, and byte fidelity
 
@@ -177,6 +181,8 @@ Required real readers:
 - [ ] UI-07 Removed or rearranged displays cannot restore the window off screen.
 - [ ] UI-08 System dialogs, Command versus Control shortcuts, and window close
   behavior match the platform.
+- [ ] UI-09 The Markdown document uses the same borderless editor surface as
+  Text Mode, without a card or document box, in both Light and Dark.
 
 ## 9. Performance and resources
 
@@ -224,8 +230,8 @@ Attach the reproducible benchmark report rather than estimating subjectively.
 
 - [ ] MD-01 Text Mode schedules no Markdown work and exposes exact source.
 - [ ] MD-02 Switching between Text Mode and Markdown Mode changes no bytes.
-- [ ] MD-03 Selecting a formatted block exposes the matching source range and
-  direct edits update only that range.
+- [ ] MD-03 Selecting formatted content activates the matching source range,
+  keeps supported syntax visually formatted, and updates only that range.
 - [ ] MD-04 Each formatting action and safe fix is one minimal undo transaction.
 - [ ] MD-05 Diagnostics are revision-tagged, non-mutating, and accessible.
 - [ ] MD-06 Format shows an accurate diff and requires confirmation.
@@ -236,6 +242,13 @@ Attach the reproducible benchmark report rather than estimating subjectively.
 - [ ] MD-09 Stale parser results never appear on a newer revision.
 - [ ] MD-10 Keyboard selection, IME, screen readers, high DPI, and both themes
   pass the same document-editing expectations as Text Mode.
+- [ ] MD-11 Active and inactive Markdown use real heading and strong-emphasis
+  font weights. Supported punctuation stays hidden, while a selected link
+  target becomes visible only for editing.
+- [ ] MD-12 Prose spacing, wrapping, list markers, multiline quotes, and mixed
+  inline weights render without collisions, missing spaces, or source leakage.
+- [ ] MD-13 The native Light and Dark README captures use the same polished demo
+  document, align menus and controls, and match the exact candidate renderer.
 
 ## Sign-off
 

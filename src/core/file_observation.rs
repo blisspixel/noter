@@ -147,11 +147,7 @@ fn read_once(path: &Path) -> Result<(Vec<u8>, FileObservation), AttemptError> {
         ));
     }
 
-    let mut file = File::open(path).map_err(|error| changed_or_io("open regular file", error))?;
-    let before = handle_stamp(&file)?;
-    if !before.is_regular {
-        return Err(AttemptError::Changed);
-    }
+    let (mut file, before) = open_regular_file(path, "open regular file without following links")?;
 
     let bytes = read_bytes_bounded(&mut file, before.length, MAX_SUPPORTED_FILE_BYTES)?;
     let length = u64::try_from(bytes.len()).map_err(|_| {
@@ -173,8 +169,8 @@ fn read_once(path: &Path) -> Result<(Vec<u8>, FileObservation), AttemptError> {
     if non_regular_state(&final_entry).is_some() {
         return Err(AttemptError::Changed);
     }
-    let reopened = File::open(path).map_err(|error| changed_or_io("reopen regular file", error))?;
-    let reopened_stamp = handle_stamp(&reopened)?;
+    let (_, reopened_stamp) =
+        open_regular_file(path, "reopen regular file without following links")?;
     let closing_entry = fs::symlink_metadata(path)
         .map_err(|error| changed_or_io("close final-entry race window", error))?;
     if reopened_path_changed(
@@ -206,7 +202,7 @@ fn inspect_once(path: &Path) -> Result<TargetState, AttemptError> {
         return Ok(state);
     }
 
-    let file = File::open(path).map_err(|error| changed_or_io("open regular file", error))?;
+    let (file, _) = open_regular_file(path, "open regular file without following links")?;
     let (_, observation) = observe_regular_handle(path, file)?;
 
     Ok(TargetState::Regular(observation))
@@ -235,8 +231,8 @@ fn observe_regular_handle(
         return Err(AttemptError::Changed);
     }
 
-    let reopened = File::open(path).map_err(|error| changed_or_io("reopen regular file", error))?;
-    let reopened_stamp = handle_stamp(&reopened)?;
+    let (_, reopened_stamp) =
+        open_regular_file(path, "reopen regular file without following links")?;
     let closing_entry = fs::symlink_metadata(path)
         .map_err(|error| changed_or_io("close final-entry race window", error))?;
 
@@ -342,6 +338,19 @@ fn reopened_path_changed(
     final_entry_is_special || reopened != observed
 }
 
+fn open_regular_file(
+    path: &Path,
+    operation: &'static str,
+) -> Result<(File, HandleStamp), AttemptError> {
+    let file = noter_platform::open_existing_no_follow(path)
+        .map_err(|error| changed_or_io(operation, error))?;
+    let stamp = handle_stamp(&file)?;
+    if !stamp.is_regular {
+        return Err(AttemptError::Changed);
+    }
+    Ok((file, stamp))
+}
+
 fn handle_stamp(file: &File) -> Result<HandleStamp, AttemptError> {
     let metadata = file
         .metadata()
@@ -353,8 +362,12 @@ fn handle_stamp(file: &File) -> Result<HandleStamp, AttemptError> {
         facts,
         length: metadata.len(),
         modified: metadata.modified().ok(),
-        is_regular: metadata.is_file(),
+        is_regular: handle_metadata_is_regular(metadata.is_file(), is_final_link(&metadata)),
     })
+}
+
+const fn handle_metadata_is_regular(is_file: bool, is_final_link: bool) -> bool {
+    is_file && !is_final_link
 }
 
 const fn map_identity(facts: FileFacts) -> FileIdentity {
@@ -498,6 +511,14 @@ mod tests {
         assert!(link_attributes_indicate_link(true, false));
         assert!(link_attributes_indicate_link(false, true));
         assert!(link_attributes_indicate_link(true, true));
+    }
+
+    #[test]
+    fn open_handle_classification_has_an_exact_truth_table() {
+        assert!(!handle_metadata_is_regular(false, false));
+        assert!(!handle_metadata_is_regular(false, true));
+        assert!(handle_metadata_is_regular(true, false));
+        assert!(!handle_metadata_is_regular(true, true));
     }
 
     #[test]
@@ -826,6 +847,11 @@ mod tests {
         File::create(&target)?.write_all(b"secret target")?;
         symlink(&target, &link)?;
 
+        assert!(
+            open_regular_file(&link, "test no-follow open").is_err(),
+            "the observation handle must not expose the link target as a regular file"
+        );
+
         let state = inspect_target(&link, SaveStage::InspectInitial)
             .expect("a final symlink should be classified without following it");
 
@@ -850,6 +876,11 @@ mod tests {
             }
             return Err(error);
         }
+
+        assert!(
+            open_regular_file(&link, "test no-follow open").is_err(),
+            "the observation handle must not expose the reparse target as a regular file"
+        );
 
         let state = inspect_target(&link, SaveStage::InspectInitial)
             .expect("a final symlink should be classified without following it");

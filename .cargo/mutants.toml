@@ -6,7 +6,7 @@ examine_globs = ["src/core/*.rs", "crates/noter-platform/src/*.rs"]
 # API flag occupies a disjoint bit.
 exclude_re = [
     "imp::.*unsupported",
-    "replace \\| with \\^ in imp::windows_(create_private_new_file|open_for_cleanup|reduced_identity)",
+    "replace \\| with \\^ in imp::windows_(create_private_new_file|open_existing_no_follow|open_for_cleanup|reduced_identity)",
     "replace \\| with \\^ in imp::macos_private_creation::OwnedFileSecurity::create",
 ]
 all_features = true

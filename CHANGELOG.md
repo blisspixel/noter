@@ -9,20 +9,27 @@ release, so current work remains under Unreleased.
 
 - Add persisted System, Light, and Dark themes with a unified aligned editor
   toolbar and deliberate document typography.
-- Add an early native Markdown Mode with source-backed block editing, H1, H2,
-  Bold, Italic, Link, Code, List, and Quote actions, plus four conservative
-  source diagnostics.
+- Add an early native Markdown Mode with source-backed formatted editing, H1,
+  H2, Bold, Italic, Link, Code, List, and Quote actions, plus four conservative
+  source diagnostics. Supported heading and inline delimiters remain hidden in
+  the active editor while the file stays ordinary Markdown on disk.
+- Bundle the variable Inter typeface under the SIL Open Font License so headings
+  and strong emphasis use real font weights consistently across platforms.
 - Add working About Noter and truthful update-status dialogs, including the
   `noter update` entry point.
 - Add locked source-install helpers for PowerShell and POSIX systems with check
   and custom-root modes.
 - Add deterministic native Light and Dark README screenshot generation and
   validation using a polished non-sensitive Markdown demo document. The capture
-  keeps one source-backed block active so the formatting controls and underlying
-  Markdown are visible together.
+  keeps formatted content active so the direct editor and formatting controls
+  are visible together.
 
 ### Security
 
+- Bind every document observation and reopen to a native no-follow handle. Unix
+  uses `O_NOFOLLOW`; Windows opens the final entry with
+  `FILE_FLAG_OPEN_REPARSE_POINT`, preserves ordinary sharing, and rejects link
+  or reparse metadata before reading content.
 - Bound document loading and save-target hashing to the explicit 64 MiB v0.1
   limit, including protection against concurrent file growth.
 - Bound Unix extended-attribute snapshots to 4,096 entries and 64 MiB of
@@ -44,8 +51,13 @@ release, so current work remains under Unreleased.
 
 ### Fixed
 
-- Preserve dirty work by blocking New, Open, Quit, and native close until the
-  complete lifecycle decision flow is implemented.
+- Replace the dirty-document close trap with a Save, Discard Changes, and Cancel
+  decision for New, Open, Quit, and native window close.
+- Retain indeterminate-save recovery guidance through every dirty-document
+  decision and Cancel path, and block an ordinary Save retry until the user has
+  reconciled that state or chosen Save As.
+- Keep a link destination visible and selected while it is being edited in
+  Markdown Mode, then hide the source target again when the caret leaves it.
 - Preserve replacement artifacts whose identity or bytes changed during cleanup.
 - Delete Windows cleanup candidates through the exact verified open handle so a
   rebound pathname cannot redirect deletion.
@@ -76,9 +88,12 @@ release, so current work remains under Unreleased.
 
 ### Engineering
 
-- Upgrade eframe and egui to 0.35 and egui_commonmark to 0.24, retaining
-  restricted features while enabling current shaping, hinting, theme-aware font
-  transfer, and subpixel placement behavior.
+- Upgrade eframe and egui to 0.35 while retaining restricted features and
+  enabling current shaping, hinting, theme-aware font transfer, and subpixel
+  placement behavior. Replace the secondary Markdown renderer with one
+  pre-layout native projection built directly from `pulldown-cmark`, reducing
+  the dependency graph while keeping active and inactive content on the same
+  real-weight style mapping.
 - Lock the renderer's distinct light-background and dark-background
   coverage-transfer behavior with a regression test.
 - Define and enforce repository-wide code-quality and evidence standards.
@@ -110,6 +125,15 @@ release, so current work remains under Unreleased.
 - Close a focused 58-candidate Markdown diagnostics campaign with a composite
   result of 55 caught and three genuine compiler rejections after isolating and
   rerunning one Windows linker-lock failure.
-- Maintain measured fixed-seed line coverage at 92.26 percent for the trust
-  kernel and 87.54 percent for the complete workspace. The Windows-local suite
-  contains 172 tests, and CI enforces respective 90 and 80 percent floors.
+- Close focused mutation campaigns for lifecycle and save-result decisions with
+  26 of 26 candidates caught, and for final native Markdown editing and
+  rendering with 80 of 88 candidates caught plus eight genuine compiler
+  rejections. Both final reports pass infrastructure validation with no miss or
+  timeout.
+- Close the focused 16-candidate final-entry observation campaign with 12
+  candidates caught and four genuine compiler rejections. A first pass exposed
+  one handle-kind truth-table gap; the settled rerun has no miss, timeout, or
+  infrastructure failure.
+- Maintain measured fixed-seed line coverage at 93.73 percent for the trust
+  kernel and 89.49 percent for the complete workspace. The Windows-local suite
+  contains 208 tests, and CI enforces respective 90 and 80 percent floors.

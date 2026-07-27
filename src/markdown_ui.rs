@@ -1,12 +1,15 @@
 use std::ops::Range;
 
 use eframe::egui;
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use noter::core::line_endings::logical_lines;
-use pulldown_cmark::{Event, Options, Parser};
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag};
 
 const ACTIVE_EDITOR_ID: &str = "noter-markdown-active-block";
 const EXPANDED_FORMAT_MIN_WIDTH: f32 = 540.0;
+const MARKER_FONT_SIZE: f32 = 0.1;
+const BODY_WEIGHT: f32 = 400.0;
+const HEADING_WEIGHT: f32 = 600.0;
+const STRONG_WEIGHT: f32 = 700.0;
 
 fn expanded_toolbar_fits(available_width: f32) -> bool {
     available_width >= EXPANDED_FORMAT_MIN_WIDTH
@@ -59,8 +62,8 @@ impl MarkdownCommand {
 
     const fn description(self) -> &'static str {
         match self {
-            Self::Heading1 => "Format the active block as a level-one heading",
-            Self::Heading2 => "Format the active block as a level-two heading",
+            Self::Heading1 => "Format the active content as a level-one heading",
+            Self::Heading2 => "Format the active content as a level-two heading",
             Self::Bold => "Wrap the selection in strong emphasis",
             Self::Italic => "Wrap the selection in emphasis",
             Self::Link => "Insert a standard Markdown link",
@@ -130,7 +133,6 @@ impl ActiveBlock {
 
 #[derive(Default)]
 pub struct MarkdownEditor {
-    cache: CommonMarkCache,
     active: Option<ActiveBlock>,
     next_editor_serial: u64,
 }
@@ -138,7 +140,6 @@ pub struct MarkdownEditor {
 impl MarkdownEditor {
     pub fn reset(&mut self) {
         self.active = None;
-        self.cache = CommonMarkCache::default();
         self.next_editor_serial = self.next_editor_serial.wrapping_add(1);
     }
 
@@ -164,7 +165,7 @@ impl MarkdownEditor {
                 .on_hover_text(if enabled {
                     command.description()
                 } else {
-                    "Click a formatted block before applying a format"
+                    "Select formatted content before applying a format"
                 });
             if response.clicked() {
                 self.apply_command(command);
@@ -174,7 +175,7 @@ impl MarkdownEditor {
             ui.separator();
             if ui
                 .add(egui::Button::new("Done").min_size(egui::vec2(54.0, 28.0)))
-                .on_hover_text("Return to the formatted block")
+                .on_hover_text("Finish editing the active content")
                 .clicked()
             {
                 self.active = None;
@@ -206,7 +207,7 @@ impl MarkdownEditor {
             })
             .response;
         if !enabled {
-            response.on_disabled_hover_text("Click a formatted block before applying a format");
+            response.on_disabled_hover_text("Select formatted content before applying a format");
         }
     }
 
@@ -311,25 +312,33 @@ impl MarkdownEditor {
                 if is_reference_definition(block) {
                     ui.label(egui::RichText::new(block).monospace());
                 } else {
-                    CommonMarkViewer::new()
-                        .explicit_image_uri_scheme(true)
-                        .show(ui, &mut self.cache, block);
+                    let mut job = markdown_render_layout(block, ui.style());
+                    job.wrap.max_width = ui.available_width();
+                    let label = egui::Label::new(job).wrap().sense(egui::Sense::click());
+                    if is_block_quote(block) {
+                        let response = ui
+                            .horizontal_top(|ui| {
+                                ui.add_space(12.0);
+                                ui.add(label)
+                            })
+                            .inner;
+                        ui.painter().vline(
+                            response.rect.left() - 8.0,
+                            response.rect.y_range(),
+                            egui::Stroke::new(2.0, ui.visuals().weak_text_color()),
+                        );
+                    } else {
+                        ui.add(label);
+                    }
                 }
             })
             .response
             .interact(egui::Sense::click());
 
-        if response.hovered() {
-            ui.painter().rect_stroke(
-                response.rect,
-                4,
-                egui::Stroke::new(1.0_f32, ui.visuals().widgets.hovered.bg_stroke.color),
-                egui::StrokeKind::Inside,
-            );
-            response
-                .clone()
-                .on_hover_text("Click to edit this Markdown block");
-        }
+        response
+            .clone()
+            .on_hover_cursor(egui::CursorIcon::Text)
+            .on_hover_text("Click to edit this formatted content");
         if response.clicked() {
             self.activate(range, block.to_owned());
         }
@@ -342,12 +351,24 @@ impl MarkdownEditor {
         };
         let rows = logical_lines(&active.draft).count().max(1) + 1;
         let editor_id = active.editor_id();
+        let selection = active.selection.clone();
+        let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
+            let source = buffer.as_str();
+            let selection =
+                char_range_to_byte_range(source, bounded_char_range(source, selection.clone()));
+            let reveal = semantic_target_at_selection(source, &selection);
+            let mut job = markdown_edit_layout(source, ui.style(), reveal);
+            job.wrap.max_width = wrap_width;
+            ui.fonts_mut(|fonts| fonts.layout_job(job))
+        };
         let editor = egui::TextEdit::multiline(&mut active.draft)
             .id(editor_id)
             .font(egui::TextStyle::Body)
             .desired_width(f32::INFINITY)
             .desired_rows(rows)
-            .margin(egui::Margin::same(10));
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::symmetric(8, 2))
+            .layouter(&mut layouter);
         let mut output = editor.show(ui);
 
         if active.request_focus {
@@ -372,6 +393,353 @@ impl MarkdownEditor {
         }
         changed
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct MarkdownSourceStyle {
+    flags: u8,
+    heading_level: u8,
+}
+
+const STYLE_VISIBLE: u8 = 1 << 0;
+const STYLE_STRONG: u8 = 1 << 1;
+const STYLE_EMPHASIS: u8 = 1 << 2;
+const STYLE_CODE: u8 = 1 << 3;
+const STYLE_LINK: u8 = 1 << 4;
+const STYLE_STRIKETHROUGH: u8 = 1 << 5;
+
+impl MarkdownSourceStyle {
+    const fn has(self, flag: u8) -> bool {
+        self.flags & flag != 0
+    }
+
+    const fn add(&mut self, flag: u8) {
+        self.flags |= flag;
+    }
+}
+
+impl Default for MarkdownSourceStyle {
+    fn default() -> Self {
+        Self {
+            flags: STYLE_VISIBLE,
+            heading_level: 0,
+        }
+    }
+}
+
+fn markdown_edit_layout(
+    source: &str,
+    style: &egui::Style,
+    revealed_semantic_target: Option<Range<usize>>,
+) -> egui::text::LayoutJob {
+    let mut source_styles = markdown_source_styles(source);
+    if let Some(range) = revealed_semantic_target {
+        let mut target_style = MarkdownSourceStyle::default();
+        target_style.add(STYLE_LINK);
+        set_source_style(&mut source_styles, range, target_style);
+    }
+    let mut job = egui::text::LayoutJob::default();
+    let mut section_start = 0_usize;
+    let mut section_style = source_styles.first().copied().unwrap_or_default();
+
+    for (index, _) in source.char_indices().skip(1) {
+        let current_style = source_styles[index];
+        if current_style != section_style {
+            job.append(
+                &source[section_start..index],
+                0.0,
+                markdown_text_format(section_style, style),
+            );
+            section_start = index;
+            section_style = current_style;
+        }
+    }
+    if !source.is_empty() {
+        job.append(
+            &source[section_start..],
+            0.0,
+            markdown_text_format(section_style, style),
+        );
+    }
+    job
+}
+
+fn markdown_render_layout(source: &str, style: &egui::Style) -> egui::text::LayoutJob {
+    let source_styles = markdown_source_styles(source);
+    let mut job = egui::text::LayoutJob::default();
+    let mut run = String::new();
+    let mut run_style = None;
+    let mut suppress_quote_space = false;
+
+    for (index, character) in source.char_indices() {
+        let source_style = source_styles[index];
+        if !source_style.has(STYLE_VISIBLE) {
+            append_render_run(&mut job, &mut run, run_style.take(), style);
+            continue;
+        }
+        if is_quote_marker(source, index, character) {
+            append_render_run(&mut job, &mut run, run_style.take(), style);
+            suppress_quote_space = true;
+            continue;
+        }
+        if suppress_quote_space {
+            suppress_quote_space = false;
+            if character == ' ' {
+                continue;
+            }
+        }
+        run_style = Some(source_style);
+        run.push(formatted_block_marker(source, index, character));
+    }
+    append_render_run(&mut job, &mut run, run_style, style);
+    job
+}
+
+fn append_render_run(
+    job: &mut egui::text::LayoutJob,
+    run: &mut String,
+    source_style: Option<MarkdownSourceStyle>,
+    style: &egui::Style,
+) {
+    if let Some(source_style) = source_style
+        && !run.is_empty()
+    {
+        job.append(run, 0.0, markdown_text_format(source_style, style));
+    }
+    run.clear();
+}
+
+fn formatted_block_marker(source: &str, index: usize, character: char) -> char {
+    let line_start = source[..index]
+        .rfind(['\n', '\r'])
+        .map_or(0, |position| position + 1);
+    let indented_line_start = source[line_start..index]
+        .chars()
+        .all(|prefix| matches!(prefix, ' ' | '\t'));
+    let followed_by_space = source[index + character.len_utf8()..].starts_with(' ');
+
+    if indented_line_start && followed_by_space && matches!(character, '-' | '+' | '*') {
+        '•'
+    } else {
+        character
+    }
+}
+
+fn is_quote_marker(source: &str, index: usize, character: char) -> bool {
+    if character != '>' {
+        return false;
+    }
+    let line_start = source[..index]
+        .rfind(['\n', '\r'])
+        .map_or(0, |position| position + 1);
+    source[line_start..index]
+        .chars()
+        .all(|prefix| matches!(prefix, ' ' | '\t'))
+        && source[index + 1..].starts_with(' ')
+}
+
+fn semantic_target_at_selection(source: &str, selection: &Range<usize>) -> Option<Range<usize>> {
+    Parser::new_ext(source, markdown_parser_options())
+        .into_offset_iter()
+        .find_map(|(event, source_range)| {
+            let Event::Start(
+                Tag::Link {
+                    dest_url: destination,
+                    ..
+                }
+                | Tag::Image {
+                    dest_url: destination,
+                    ..
+                },
+            ) = event
+            else {
+                return None;
+            };
+            let raw = source.get(source_range.clone())?;
+            let offset = raw.rfind(destination.as_ref())?;
+            let target =
+                source_range.start + offset..source_range.start + offset + destination.len();
+            let selected = if selection.start == selection.end {
+                (target.start..=target.end).contains(&selection.start)
+            } else {
+                ranges_overlap(selection, &target)
+            };
+            selected.then_some(target)
+        })
+}
+
+fn markdown_source_styles(source: &str) -> Vec<MarkdownSourceStyle> {
+    let mut styles = vec![MarkdownSourceStyle::default(); source.len()];
+    let mut current = MarkdownSourceStyle::default();
+    let mut stack = Vec::new();
+
+    for (event, range) in Parser::new_ext(source, markdown_parser_options()).into_offset_iter() {
+        match event {
+            Event::Start(tag) => {
+                stack.push(current);
+                apply_markdown_tag(&mut current, &tag);
+                if tag_hides_source_markup(&tag) {
+                    set_source_style(&mut styles, range, hidden_source_style());
+                }
+            }
+            Event::End(_) => {
+                current = stack.pop().unwrap_or_default();
+            }
+            Event::Text(text) => {
+                reveal_event_text(source, &mut styles, range, text.as_ref(), current);
+            }
+            Event::Code(code) => {
+                let mut code_style = current;
+                code_style.add(STYLE_CODE);
+                reveal_event_text(source, &mut styles, range, code.as_ref(), code_style);
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                set_source_style(&mut styles, range, current);
+            }
+            _ => {}
+        }
+    }
+    styles
+}
+
+const fn apply_markdown_tag(style: &mut MarkdownSourceStyle, tag: &Tag<'_>) {
+    match tag {
+        Tag::Heading { level, .. } => style.heading_level = heading_level_number(*level),
+        Tag::CodeBlock(_) => style.add(STYLE_CODE),
+        Tag::Emphasis => style.add(STYLE_EMPHASIS),
+        Tag::Strong => style.add(STYLE_STRONG),
+        Tag::Strikethrough => style.add(STYLE_STRIKETHROUGH),
+        Tag::Link { .. } | Tag::Image { .. } => style.add(STYLE_LINK),
+        _ => {}
+    }
+}
+
+const fn tag_hides_source_markup(tag: &Tag<'_>) -> bool {
+    matches!(
+        tag,
+        Tag::Heading { .. }
+            | Tag::CodeBlock(_)
+            | Tag::Emphasis
+            | Tag::Strong
+            | Tag::Strikethrough
+            | Tag::Superscript
+            | Tag::Subscript
+            | Tag::Link { .. }
+            | Tag::Image { .. }
+    )
+}
+
+const fn heading_level_number(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
+    }
+}
+
+fn reveal_event_text(
+    source: &str,
+    styles: &mut [MarkdownSourceStyle],
+    range: Range<usize>,
+    rendered: &str,
+    style: MarkdownSourceStyle,
+) {
+    set_source_style(styles, range.clone(), hidden_source_style());
+    let Some(raw) = source.get(range.clone()) else {
+        return;
+    };
+    let visible = raw.find(rendered).map_or_else(
+        || range.clone(),
+        |offset| range.start + offset..range.start + offset + rendered.len(),
+    );
+    set_source_style(styles, visible, style);
+}
+
+fn set_source_style(
+    styles: &mut [MarkdownSourceStyle],
+    range: Range<usize>,
+    style: MarkdownSourceStyle,
+) {
+    if range.start <= range.end && range.end <= styles.len() {
+        styles[range].fill(style);
+    }
+}
+
+const fn hidden_source_style() -> MarkdownSourceStyle {
+    MarkdownSourceStyle {
+        flags: 0,
+        heading_level: 0,
+    }
+}
+
+fn markdown_text_format(
+    source_style: MarkdownSourceStyle,
+    style: &egui::Style,
+) -> egui::TextFormat {
+    if !source_style.has(STYLE_VISIBLE) {
+        return egui::TextFormat {
+            font_id: egui::FontId::new(MARKER_FONT_SIZE, egui::FontFamily::Proportional),
+            color: egui::Color32::TRANSPARENT,
+            ..Default::default()
+        };
+    }
+
+    let mut font_id = style.text_styles[&egui::TextStyle::Body].clone();
+    let heading_weight = if source_style.heading_level > 0 {
+        font_id.size = match source_style.heading_level {
+            1 => 28.0,
+            2 => 24.0,
+            3 => 21.0,
+            4 => 18.0,
+            5 => 16.0,
+            _ => 15.0,
+        };
+        HEADING_WEIGHT
+    } else {
+        BODY_WEIGHT
+    };
+    if source_style.has(STYLE_CODE) {
+        font_id = style.text_styles[&egui::TextStyle::Monospace].clone();
+    }
+    let weight = if source_style.has(STYLE_STRONG) {
+        STRONG_WEIGHT
+    } else {
+        heading_weight
+    };
+
+    let color = if source_style.has(STYLE_LINK) {
+        style.visuals.hyperlink_color
+    } else if source_style.has(STYLE_STRONG) {
+        style.visuals.strong_text_color()
+    } else {
+        style.visuals.text_color()
+    };
+    let mut format = egui::TextFormat {
+        font_id,
+        color,
+        background: if source_style.has(STYLE_CODE) {
+            style.visuals.code_bg_color
+        } else {
+            egui::Color32::TRANSPARENT
+        },
+        italics: source_style.has(STYLE_EMPHASIS),
+        underline: if source_style.has(STYLE_LINK) {
+            egui::Stroke::new(1.0, style.visuals.hyperlink_color)
+        } else {
+            egui::Stroke::NONE
+        },
+        strikethrough: if source_style.has(STYLE_STRIKETHROUGH) {
+            egui::Stroke::new(1.0, color)
+        } else {
+            egui::Stroke::NONE
+        },
+        ..Default::default()
+    };
+    format.coords.push("wght", weight);
+    format
 }
 
 const fn ranges_overlap(left: &Range<usize>, right: &Range<usize>) -> bool {
@@ -440,6 +808,11 @@ fn is_reference_definition(source: &str) -> bool {
         .iter()
         .next()
         .is_some()
+}
+
+fn is_block_quote(source: &str) -> bool {
+    Parser::new_ext(source, markdown_parser_options())
+        .any(|event| matches!(event, Event::Start(Tag::BlockQuote(_))))
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -651,6 +1024,15 @@ mod tests {
     }
 
     #[test]
+    fn empty_link_selection_selects_the_inserted_label() {
+        let result = apply_markdown_command("before after", 7..7, MarkdownCommand::Link);
+
+        assert_eq!(result.text, "before [link text](https://example.com)after");
+        assert_eq!(result.selection, 8..17);
+        assert_eq!(&result.text[result.selection], "link text");
+    }
+
+    #[test]
     fn heading_command_replaces_existing_atx_marker() {
         let result = apply_markdown_command("#### Details", 0..0, MarkdownCommand::Heading2);
 
@@ -692,6 +1074,56 @@ mod tests {
     }
 
     #[test]
+    fn selected_link_target_is_visible_while_it_is_being_edited() {
+        let style = egui::Style::default();
+        let result = apply_markdown_command("Read Noter", 5..10, MarkdownCommand::Link);
+        let selection = char_range_to_byte_range(&result.text, result.selection);
+        let reveal = semantic_target_at_selection(&result.text, &selection)
+            .expect("the selected URL must be recognized as editable semantic content");
+
+        let job = markdown_edit_layout(&result.text, &style, Some(reveal.clone()));
+        let target = job.format_at_byte(egui::text::ByteIndex(reveal.start));
+
+        assert_ne!(target.color, egui::Color32::TRANSPARENT);
+        assert!(target.font_id.size > MARKER_FONT_SIZE);
+        assert_eq!(target.color, style.visuals.hyperlink_color);
+        assert_ne!(target.underline, egui::Stroke::NONE);
+    }
+
+    #[test]
+    fn caret_inside_link_target_reveals_the_target() {
+        let source = "[label](https://example.com)";
+        let start = source
+            .find("https://")
+            .expect("the fixture contains a link target");
+        let target = start..start + "https://example.com".len();
+        for caret in [target.start, target.end] {
+            assert_eq!(
+                semantic_target_at_selection(source, &(caret..caret)),
+                Some(target.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn link_target_hides_again_after_the_caret_leaves_it() {
+        let source = "[Noter](https://example.com) after";
+        let outside = source.len()..source.len();
+
+        assert!(semantic_target_at_selection(source, &outside).is_none());
+
+        let job = markdown_edit_layout(source, &egui::Style::default(), None);
+        let target_start = source
+            .find("https://")
+            .expect("the fixture contains a link target");
+        assert_eq!(
+            job.format_at_byte(egui::text::ByteIndex(target_start))
+                .color,
+            egui::Color32::TRANSPARENT
+        );
+    }
+
+    #[test]
     fn formatted_view_renders_without_mutating_source() {
         let context = egui::Context::default();
         let mut editor = MarkdownEditor::default();
@@ -707,6 +1139,295 @@ mod tests {
         assert_eq!(source, original);
         assert!(!editor.is_editing());
         assert!(!output.shapes.is_empty());
+    }
+
+    #[test]
+    fn inactive_markdown_uses_real_heading_and_strong_weights() {
+        type WeightedSections = Vec<(String, Vec<([u8; 4], f32)>)>;
+
+        fn collect_weights(shape: &egui::Shape, weights: &mut WeightedSections) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    let job = &text.galley.job;
+                    for section in &job.sections {
+                        weights.push((
+                            job.text[section.byte_range.start.0..section.byte_range.end.0]
+                                .to_owned(),
+                            section
+                                .format
+                                .coords
+                                .as_ref()
+                                .iter()
+                                .map(|(tag, value)| (tag.to_be_bytes(), *value))
+                                .collect(),
+                        ));
+                    }
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect_weights(shape, weights);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn has_weight(weights: &WeightedSections, text: &str, expected: f32) -> bool {
+            weights.iter().any(|(section, coords)| {
+                section == text
+                    && coords.iter().any(|(tag, value)| {
+                        *tag == *b"wght" && value.to_bits() == expected.to_bits()
+                    })
+            })
+        }
+
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "# Heading\n\nA **bold** paragraph.\n".to_owned();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            assert!(!editor.show(ui, &mut source));
+        });
+        let mut weights = Vec::new();
+        for clipped in &output.shapes {
+            collect_weights(&clipped.shape, &mut weights);
+        }
+
+        assert!(has_weight(&weights, "Heading", HEADING_WEIGHT));
+        assert!(has_weight(&weights, "bold", STRONG_WEIGHT));
+    }
+
+    #[test]
+    fn rendered_markdown_preserves_word_spacing_and_formats_list_markers() {
+        let source = "- **Every feature** should earn its place.\n- Plain item";
+        let job = markdown_render_layout(source, &egui::Style::default());
+
+        assert_eq!(
+            job.text,
+            "• Every feature should earn its place.\n• Plain item"
+        );
+        assert!(!job.text.contains("featureshould"));
+        let feature = job
+            .text
+            .find("feature")
+            .expect("the rendered list contains the strong phrase");
+        let format = job.format_at_byte(egui::text::ByteIndex(feature));
+        assert!(format.coords.as_ref().iter().any(|(tag, value)| {
+            tag.to_be_bytes() == *b"wght" && value.to_bits() == STRONG_WEIGHT.to_bits()
+        }));
+    }
+
+    #[test]
+    fn rendered_markdown_coalesces_only_contiguous_equal_style_runs() {
+        let job = markdown_render_layout("plain **bold** tail", &egui::Style::default());
+        let sections = job
+            .sections
+            .iter()
+            .map(|section| &job.text[section.byte_range.start.0..section.byte_range.end.0])
+            .collect::<Vec<_>>();
+
+        assert_eq!(job.text, "plain bold tail");
+        assert_eq!(sections, ["plain ", "bold", " tail"]);
+    }
+
+    #[test]
+    fn list_marker_projection_rejects_prose_and_missing_space() {
+        let style = egui::Style::default();
+
+        assert_eq!(
+            markdown_render_layout("word - text", &style).text,
+            "word - text"
+        );
+        assert_eq!(
+            markdown_render_layout("-not a list", &style).text,
+            "-not a list"
+        );
+    }
+
+    #[test]
+    fn rendered_quote_uses_a_native_visual_marker_without_source_delimiters() {
+        let job = markdown_render_layout(
+            "> 1984 was a warning, not an instruction manual.",
+            &egui::Style::default(),
+        );
+
+        assert_eq!(job.text, "1984 was a warning, not an instruction manual.");
+        assert!(!job.text.contains('>'));
+        assert!(is_block_quote(
+            "> 1984 was a warning, not an instruction manual."
+        ));
+        assert!(!is_block_quote("An ordinary paragraph."));
+    }
+
+    #[test]
+    fn quote_marker_projection_respects_line_boundaries_and_required_space() {
+        let source = "paragraph\n> quoted line";
+        let marker = source
+            .find('>')
+            .expect("the fixture contains a quote marker");
+
+        assert!(is_quote_marker(source, marker, '>'));
+        assert_eq!(
+            markdown_render_layout(source, &egui::Style::default()).text,
+            "paragraph\nquoted line"
+        );
+        assert!(!is_quote_marker("inline > quote", 7, '>'));
+        assert!(!is_quote_marker(">not a quote", 0, '>'));
+    }
+
+    #[test]
+    fn active_markdown_layout_hides_delimiters_and_styles_content() {
+        let style = egui::Style::default();
+        let source = "A **bold** and *italic* [link](https://example.com).";
+
+        let job = markdown_edit_layout(source, &style, None);
+        let marker = job.format_at_byte(egui::text::ByteIndex(2));
+        let bold = job.format_at_byte(egui::text::ByteIndex(4));
+        let italic = job.format_at_byte(egui::text::ByteIndex(17));
+        let link = job.format_at_byte(egui::text::ByteIndex(27));
+
+        assert_eq!(job.text, source);
+        assert_eq!(marker.color, egui::Color32::TRANSPARENT);
+        assert!(marker.font_id.size <= MARKER_FONT_SIZE);
+        assert!(
+            bold.coords
+                .as_ref()
+                .iter()
+                .any(|(tag, value)| tag.to_be_bytes() == *b"wght"
+                    && value.to_bits() == 700.0_f32.to_bits())
+        );
+        assert!(italic.italics);
+        assert_eq!(link.color, style.visuals.hyperlink_color);
+        assert_ne!(link.underline, egui::Stroke::NONE);
+    }
+
+    #[test]
+    fn source_style_state_enters_and_leaves_nested_markdown_exactly() {
+        let source = "**bold** plain *first\nsecond*";
+        let styles = markdown_source_styles(source);
+        let bold = source.find("bold").expect("the fixture contains bold");
+        let plain = source.find("plain").expect("the fixture contains plain");
+        let emphasis = source.find("first").expect("the fixture contains emphasis");
+        let soft_break = source
+            .find('\n')
+            .expect("the fixture contains a soft break");
+        let second = source.find("second").expect("the fixture contains second");
+
+        assert!(!styles[0].has(STYLE_VISIBLE));
+        assert!(styles[bold].has(STYLE_VISIBLE));
+        assert!(styles[bold].has(STYLE_STRONG));
+        assert!(styles[plain].has(STYLE_VISIBLE));
+        assert!(!styles[plain].has(STYLE_STRONG));
+        assert!(styles[emphasis].has(STYLE_EMPHASIS));
+        assert!(styles[soft_break].has(STYLE_EMPHASIS));
+        assert!(styles[second].has(STYLE_EMPHASIS));
+    }
+
+    #[test]
+    fn event_text_reveal_offsets_the_complete_rendered_range() {
+        let source = "xx[visible]yy";
+        let mut styles = vec![MarkdownSourceStyle::default(); source.len()];
+        let mut strong = MarkdownSourceStyle::default();
+        strong.add(STYLE_STRONG);
+
+        reveal_event_text(source, &mut styles, 2..11, "visible", strong);
+
+        assert!(!styles[2].has(STYLE_VISIBLE));
+        assert!(styles[3].has(STYLE_VISIBLE));
+        assert!(styles[9].has(STYLE_VISIBLE));
+        assert!(styles[9].has(STYLE_STRONG));
+        assert!(!styles[10].has(STYLE_VISIBLE));
+    }
+
+    #[test]
+    fn active_heading_layout_hides_source_marker_and_uses_heading_type() {
+        let style = egui::Style::default();
+        let source = "## Formatted heading";
+
+        let job = markdown_edit_layout(source, &style, None);
+        let marker = job.format_at_byte(egui::text::ByteIndex(0));
+        let heading = job.format_at_byte(egui::text::ByteIndex(3));
+
+        assert_eq!(marker.color, egui::Color32::TRANSPARENT);
+        assert!(heading.font_id.size > style.text_styles[&egui::TextStyle::Body].size);
+    }
+
+    #[test]
+    fn active_code_and_strikethrough_layouts_keep_their_visual_meaning() {
+        let style = egui::Style::default();
+        let source = "~~removed~~ and `code`";
+
+        let job = markdown_edit_layout(source, &style, None);
+        let strike_marker = job.format_at_byte(egui::text::ByteIndex(0));
+        let removed = job.format_at_byte(egui::text::ByteIndex(
+            source
+                .find("removed")
+                .expect("the fixture contains removed"),
+        ));
+        let code_marker = job.format_at_byte(egui::text::ByteIndex(
+            source.find('`').expect("the fixture contains code markers"),
+        ));
+        let code = job.format_at_byte(egui::text::ByteIndex(
+            source.find("code").expect("the fixture contains code"),
+        ));
+
+        assert_eq!(strike_marker.color, egui::Color32::TRANSPARENT);
+        assert_ne!(removed.strikethrough, egui::Stroke::NONE);
+        assert_eq!(code_marker.color, egui::Color32::TRANSPARENT);
+        assert_eq!(code.font_id.family, egui::FontFamily::Monospace);
+        assert_eq!(code.background, style.visuals.code_bg_color);
+    }
+
+    #[test]
+    fn active_fenced_code_hides_the_fence_and_preserves_code_styling() {
+        let style = egui::Style::default();
+        let source = "```rust\nlet value = 1;\n```";
+
+        let job = markdown_edit_layout(source, &style, None);
+        let fence = job.format_at_byte(egui::text::ByteIndex(0));
+        let code = job.format_at_byte(egui::text::ByteIndex(
+            source.find("let value").expect("the fixture contains code"),
+        ));
+
+        assert_eq!(fence.color, egui::Color32::TRANSPARENT);
+        assert_eq!(code.font_id.family, egui::FontFamily::Monospace);
+        assert_eq!(code.background, style.visuals.code_bg_color);
+    }
+
+    #[test]
+    fn every_heading_level_has_a_deliberate_type_size() {
+        let style = egui::Style::default();
+        let expected_sizes = [28.0_f32, 24.0, 21.0, 18.0, 16.0, 15.0];
+
+        for (level, expected_size) in (1..=6).zip(expected_sizes) {
+            let source = format!("{} Heading", "#".repeat(level));
+            let job = markdown_edit_layout(&source, &style, None);
+            let marker = job.format_at_byte(egui::text::ByteIndex(0));
+            let heading = job.format_at_byte(egui::text::ByteIndex(level + 1));
+
+            assert_eq!(marker.color, egui::Color32::TRANSPARENT);
+            assert_eq!(heading.font_id.size.to_bits(), expected_size.to_bits());
+            assert!(
+                heading
+                    .coords
+                    .as_ref()
+                    .iter()
+                    .any(|(tag, value)| tag.to_be_bytes() == *b"wght"
+                        && value.to_bits() == HEADING_WEIGHT.to_bits())
+            );
+        }
+    }
+
+    #[test]
+    fn body_text_keeps_the_configured_body_size_and_weight() {
+        let style = egui::Style::default();
+        let job = markdown_edit_layout("ordinary body text", &style, None);
+        let body = job.format_at_byte(egui::text::ByteIndex(0));
+
+        assert_eq!(body.font_id, style.text_styles[&egui::TextStyle::Body]);
+        assert!(body.coords.as_ref().iter().any(|(tag, value)| {
+            tag.to_be_bytes() == *b"wght" && value.to_bits() == BODY_WEIGHT.to_bits()
+        }));
     }
 
     #[cfg(feature = "screenshot-qa")]
@@ -732,7 +1453,6 @@ mod tests {
         active.selection = 0..4;
         active.apply(MarkdownCommand::Bold);
         let mut editor = MarkdownEditor {
-            cache: CommonMarkCache::default(),
             active: Some(active),
             next_editor_serial: 1,
         };
@@ -755,7 +1475,6 @@ mod tests {
         let mut active = ActiveBlock::new(0..3, "# A".to_owned(), 1);
         active.selection = 0..3;
         let mut editor = MarkdownEditor {
-            cache: CommonMarkCache::default(),
             active: Some(active),
             next_editor_serial: 1,
         };

@@ -416,8 +416,9 @@ and attach provenance. Current research found cargo-dist 0.32.0, so the existing
 
 ## Native Markdown and text-rendering update
 
-An early source-backed Markdown Mode now exists, but it is not the completed M6
-editor. Current primary-source research defines the remaining direction:
+An early source-backed formatted Markdown Mode now exists, but it is not the
+completed M6 editor. Current primary-source research defines the remaining
+direction:
 
 - [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/) supplies the base
   conformance corpus. The [GFM specification](https://github.github.com/gfm/)
@@ -436,9 +437,13 @@ editor. Current primary-source research defines the remaining direction:
   exposes hinting targets and per-font subpixel binning. Its
   [coverage-transfer API](https://docs.rs/epaint/0.35.0/epaint/enum.FontColorTransferFunction.html)
   provides distinct defaults for dark text on a light background and light text
-  on a dark background. Noter upgraded to the matching eframe and Markdown
-  renderer versions, keeps global hinting and subpixel binning enabled, and
-  preserves the matching coverage transfer for each theme.
+  on a dark background. Noter uses the matching eframe and egui versions, keeps
+  global hinting and subpixel binning enabled, and preserves the matching
+  coverage transfer for each theme.
+- Noter bundles the variable Inter typeface for proportional document text and
+  requests explicit weight-axis values for body text, headings, and strong
+  emphasis. This avoids simulated bold and makes the formatted editor more
+  consistent across supported operating systems.
 - The current [pulldown-cmark options](https://docs.rs/pulldown-cmark/0.13.4/pulldown_cmark/struct.Options.html)
   keep CommonMark as the default and require extensions to be enabled by named
   flags. The current bounded implementation uses named options only; M6 owns the
@@ -447,12 +452,16 @@ editor. Current primary-source research defines the remaining direction:
 The resulting product direction is native and source-first. Text Mode schedules
 no Markdown work. Markdown Mode renders a restricted local model, never executes
 HTML, and never fetches images or references. Direct edits and formatting
-actions update standard source. The current block-focused implementation is a
-vertical slice; M6 replaces its local edit path with shared revision-tagged
-transactions, full keyboard and accessibility behavior, stale-result rejection,
-and conformance evidence. Whole-document Format remains a separately reviewed
-diff with semantic equivalence, idempotence, byte-policy preservation, and
-one-step undo.
+actions update standard source. Supported inline delimiters remain in source but
+are visually suppressed while their content stays formatted. A direct
+`pulldown-cmark` event projection builds the inactive native layout before text
+shaping, while the active editor keeps the exact source buffer and reveals a
+link destination only while it is edited. The current range-focused
+implementation is a vertical slice; M6 replaces its local edit path with shared
+revision-tagged transactions, full keyboard and accessibility behavior,
+stale-result rejection, and conformance evidence. Whole-document Format remains
+a separately reviewed diff with semantic equivalence, idempotence, byte-policy
+preservation, and one-step undo.
 
 For visual quality, Noter uses separate document and UI type scales, fixed
 control metrics, an 840-point reading measure, theme-specific contrast, and

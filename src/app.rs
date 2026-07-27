@@ -9,15 +9,14 @@ use noter::error::NoterError;
 use crate::markdown_ui::MarkdownEditor;
 use crate::theme::{self, AppTheme, THEME_STORAGE_KEY};
 
-const DIRTY_INTERLOCK_MESSAGE: &str =
-    "Unsaved changes are protected. Save the document, then retry this action.";
 const EDITOR_ID_SALT: &str = "noter-document-editor";
 const ABOUT_SUMMARY: &str = "A focused editor for plain text and Markdown files.";
-const ABOUT_MARKDOWN_STATUS: &str = "Markdown Mode is under active development. This build supports formatted reading, direct block editing, and core formatting actions while keeping Markdown source authoritative.";
+const ABOUT_MARKDOWN_STATUS: &str = "Markdown Mode provides a formatted, direct editing surface while keeping ordinary Markdown source authoritative on disk.";
 const ABOUT_PRIVACY: &str = "Noter has no accounts, telemetry, or background network activity.";
 const ABOUT_LINK_BEHAVIOR: &str = "The project link opens in your default browser.";
 const UPDATE_STATUS: &str = "No Noter release has been published yet. This source build cannot safely self-update without verified release artifacts.";
 const RELEASES_URL: &str = "https://github.com/blisspixel/noter/releases";
+const UNCERTAIN_SAVE_ABANDON_GUIDANCE: &str = "Cancel this dialog, then use Save As to preserve the current text at another path or reconcile the recovery state.";
 const MENU_BAR_HEIGHT: f32 = 30.0;
 const EDITOR_TOOLBAR_HEIGHT: f32 = 40.0;
 const STATUS_BAR_HEIGHT: f32 = 26.0;
@@ -56,6 +55,23 @@ enum FileCommand {
     Quit,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PendingAbandonAction {
+    New,
+    Open,
+    Quit,
+}
+
+impl PendingAbandonAction {
+    const fn prompt(self) -> &'static str {
+        match self {
+            Self::New => "Save your changes before creating a new document?",
+            Self::Open => "Save your changes before opening another file?",
+            Self::Quit => "Save your changes before closing Noter?",
+        }
+    }
+}
+
 #[derive(Debug)]
 enum PendingHardLinkSave {
     Current {
@@ -83,9 +99,12 @@ pub struct NoterApp {
     markdown_editor: MarkdownEditor,
     document_editor_serial: u64,
     error_msg: Option<String>,
+    save_recovery_msg: Option<String>,
     about_open: bool,
     updates_open: bool,
     pending_hard_link_save: Option<PendingHardLinkSave>,
+    pending_abandon: Option<PendingAbandonAction>,
+    allow_dirty_close: bool,
     #[cfg(feature = "screenshot-qa")]
     screenshot: Option<ScreenshotCapture>,
 }
@@ -100,9 +119,12 @@ impl Default for NoterApp {
             markdown_editor: MarkdownEditor::default(),
             document_editor_serial: 0,
             error_msg: None,
+            save_recovery_msg: None,
             about_open: false,
             updates_open: false,
             pending_hard_link_save: None,
+            pending_abandon: None,
+            allow_dirty_close: false,
             #[cfg(feature = "screenshot-qa")]
             screenshot: None,
         }
@@ -161,18 +183,26 @@ impl NoterApp {
         }
     }
 
-    fn do_open(&mut self) {
-        if !self.may_abandon_document() {
-            return;
-        }
+    fn do_open_unchecked(&mut self) {
         if let Some(path) = rfd::FileDialog::new().pick_file() {
             self.open_path(&path, None);
+        }
+    }
+
+    fn request_open(&mut self) {
+        if self.document.is_dirty() {
+            self.begin_pending_abandon(PendingAbandonAction::Open);
+        } else {
+            self.do_open_unchecked();
         }
     }
 
     fn do_save(&mut self) {
         if self.document.path().is_none() {
             self.do_save_as();
+            return;
+        }
+        if self.restore_save_recovery_message() {
             return;
         }
 
@@ -258,50 +288,112 @@ impl NoterApp {
                 Some(message)
             }
             Ok(SaveOutcome::CommitStateUnknown {
-                ref error,
-                ref recovery_artifact,
+                error,
+                recovery_artifact,
                 ..
-            }) => Some(format!(
-                "Save state is uncertain and must be reconciled before retry: {error}. Recovery follow-up: {recovery_artifact}"
-            )),
+            }) => {
+                let message = format!(
+                    "Save state is uncertain and must be reconciled before retry: {error}. Recovery follow-up: {recovery_artifact}"
+                );
+                self.save_recovery_msg = Some(message.clone());
+                Some(message)
+            }
             Err(error) => Some(format!("Failed to save file: {error}")),
         };
     }
 
-    fn may_abandon_document(&mut self) -> bool {
-        if self.document.is_dirty() {
-            self.error_msg = Some(DIRTY_INTERLOCK_MESSAGE.to_owned());
-            false
-        } else {
-            true
-        }
+    fn restore_save_recovery_message(&mut self) -> bool {
+        let Some(message) = self.save_recovery_msg.as_ref() else {
+            return false;
+        };
+        self.error_msg = Some(message.clone());
+        true
     }
 
-    fn start_new_document(&mut self) -> bool {
-        if !self.may_abandon_document() {
-            return false;
-        }
+    fn start_new_document_unchecked(&mut self) {
         self.text.clear();
         self.document = Document::new();
         self.view = DocumentView::Text;
         self.advance_document_editor();
         self.markdown_editor.reset();
         self.error_msg = None;
-        true
+    }
+
+    fn request_new_document(&mut self) {
+        if self.document.is_dirty() {
+            self.begin_pending_abandon(PendingAbandonAction::New);
+        } else {
+            self.start_new_document_unchecked();
+        }
     }
 
     fn request_close(&mut self, ctx: &egui::Context) {
-        if self.may_abandon_document() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else {
+        if self.document.is_dirty() && !self.allow_dirty_close {
+            self.begin_pending_abandon(PendingAbandonAction::Quit);
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
     fn protect_native_close(&mut self, ctx: &egui::Context) {
-        if ctx.input(|input| input.viewport().close_requested()) && self.document.is_dirty() {
-            self.error_msg = Some(DIRTY_INTERLOCK_MESSAGE.to_owned());
+        if ctx.input(|input| input.viewport().close_requested())
+            && self.document.is_dirty()
+            && !self.allow_dirty_close
+        {
+            self.begin_pending_abandon(PendingAbandonAction::Quit);
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+    }
+
+    fn begin_pending_abandon(&mut self, action: PendingAbandonAction) {
+        self.pending_abandon = Some(action);
+        let _ = self.restore_save_recovery_message();
+    }
+
+    fn cancel_pending_abandon(&mut self) {
+        self.pending_abandon = None;
+        self.allow_dirty_close = false;
+        let _ = self.restore_save_recovery_message();
+    }
+
+    fn discard_pending_abandon(&mut self, ctx: &egui::Context) {
+        let Some(action) = self.pending_abandon.take() else {
+            return;
+        };
+        self.execute_abandon_action(action, ctx);
+    }
+
+    fn save_pending_abandon(&mut self, ctx: &egui::Context) {
+        if self.pending_abandon.is_none() {
+            return;
+        }
+        self.do_save();
+        self.continue_pending_abandon_if_clean(ctx);
+    }
+
+    fn continue_pending_abandon_if_clean(&mut self, ctx: &egui::Context) {
+        if self.document.is_dirty() || self.pending_hard_link_save.is_some() {
+            return;
+        }
+        if self.error_msg.is_some() {
+            self.pending_abandon = None;
+            return;
+        }
+        if let Some(action) = self.pending_abandon.take() {
+            self.execute_abandon_action(action, ctx);
+        }
+    }
+
+    fn execute_abandon_action(&mut self, action: PendingAbandonAction, ctx: &egui::Context) {
+        self.allow_dirty_close = false;
+        match action {
+            PendingAbandonAction::New => self.start_new_document_unchecked(),
+            PendingAbandonAction::Open => self.do_open_unchecked(),
+            PendingAbandonAction::Quit => {
+                self.allow_dirty_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
     }
 
@@ -340,10 +432,8 @@ impl NoterApp {
 
     fn execute_file_command(&mut self, command: FileCommand, ctx: &egui::Context) {
         match command {
-            FileCommand::New => {
-                self.start_new_document();
-            }
-            FileCommand::Open => self.do_open(),
+            FileCommand::New => self.request_new_document(),
+            FileCommand::Open => self.request_open(),
             FileCommand::Save => self.do_save(),
             FileCommand::SaveAs => self.do_save_as(),
             FileCommand::Quit => self.request_close(ctx),
@@ -510,20 +600,77 @@ impl NoterApp {
         self.updates_open = open && !close;
     }
 
+    fn show_unsaved_changes_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(action) = self.pending_abandon else {
+            return;
+        };
+        if self.pending_hard_link_save.is_some() {
+            return;
+        }
+
+        let document_name = self.document.path().map_or_else(
+            || "Untitled".to_owned(),
+            |path| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            },
+        );
+        let mut save = false;
+        let mut discard = false;
+        let mut cancel = false;
+
+        let response =
+            egui::Modal::new(egui::Id::new("unsaved-changes-confirmation")).show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.set_max_width(560.0);
+                ui.heading("Save changes?");
+                ui.label(format!("{document_name} has unsaved changes."));
+                ui.label(action.prompt());
+                if let Some(message) = self.save_recovery_msg.as_deref() {
+                    ui.separator();
+                    ui.colored_label(ui.visuals().error_fg_color, message);
+                    ui.label(UNCERTAIN_SAVE_ABANDON_GUIDANCE);
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    save = ui
+                        .add_enabled(
+                            self.save_recovery_msg.is_none(),
+                            egui::Button::new(egui::RichText::new("Save").strong()),
+                        )
+                        .on_disabled_hover_text(
+                            "Ordinary Save is blocked until the uncertain save state is reconciled",
+                        )
+                        .clicked();
+                    discard = ui.button("Discard Changes").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+
+        if save {
+            self.save_pending_abandon(ctx);
+        } else if discard {
+            self.discard_pending_abandon(ctx);
+        } else if cancel || response.should_close() {
+            self.cancel_pending_abandon();
+        }
+    }
+
     fn show_hard_link_confirmation(&mut self, ctx: &egui::Context) {
         let Some(pending) = self.pending_hard_link_save.as_ref() else {
             return;
         };
         let link_count = pending.link_count();
-        let mut open = true;
         let mut confirm = false;
         let mut cancel = false;
 
-        egui::Window::new("Confirm hard-link replacement")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .show(ctx, |ui| {
+        let response = egui::Modal::new(egui::Id::new("hard-link-save-confirmation")).show(
+            ctx,
+            |ui| {
+                ui.set_min_width(440.0);
+                ui.heading("Confirm hard-link replacement");
                 ui.label(format!(
                     "This file has {link_count} directory entries that currently share the same bytes."
                 ));
@@ -536,11 +683,13 @@ impl NoterApp {
                     cancel = ui.button("Cancel").clicked();
                     confirm = ui.button("Replace This Entry").clicked();
                 });
-            });
+            },
+        );
 
         if confirm {
             self.confirm_pending_hard_link_save();
-        } else if cancel || !open {
+            self.continue_pending_abandon_if_clean(ctx);
+        } else if cancel || response.should_close() {
             self.pending_hard_link_save = None;
         }
     }
@@ -632,7 +781,7 @@ impl NoterApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    ui.weak("Click a block to edit");
+                                    ui.weak("Select content to format");
                                 },
                             );
                         }
@@ -704,6 +853,7 @@ impl NoterApp {
         self.show_editor(ui);
         if let Some(command) = command
             && self.pending_hard_link_save.is_none()
+            && self.pending_abandon.is_none()
         {
             self.execute_file_command(command, ui.ctx());
         }
@@ -711,7 +861,11 @@ impl NoterApp {
         self.update_title(ui.ctx());
         self.show_about(ui.ctx());
         self.show_updates(ui.ctx());
-        self.show_hard_link_confirmation(ui.ctx());
+        if self.pending_hard_link_save.is_some() {
+            self.show_hard_link_confirmation(ui.ctx());
+        } else {
+            self.show_unsaved_changes_confirmation(ui.ctx());
+        }
     }
 
     fn editor_id(&self) -> egui::Id {
@@ -864,6 +1018,26 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn app_with_dismissed_uncertain_save() -> NoterApp {
+        use noter::core::revision::Revision;
+        use noter::core::save::{SaveStage, StorageError};
+
+        let mut app = NoterApp::default();
+        app.document
+            .replace_text("unsaved text")
+            .expect("the test edit should advance the document revision");
+        app.handle_save_result(Ok(SaveOutcome::CommitStateUnknown {
+            revision: Revision::INITIAL,
+            error: StorageError::new(SaveStage::Reconcile, "destination state differs"),
+            recovery_artifact: StorageError::new(
+                SaveStage::Cleanup,
+                "inspect `.noter-save-recovery.tmp` before retrying",
+            ),
+        }));
+        app.error_msg = None;
+        app
+    }
+
     #[test]
     fn about_action_opens_and_renders_the_window() {
         let mut app = NoterApp::default();
@@ -879,7 +1053,7 @@ mod tests {
         );
         assert_eq!(
             ABOUT_MARKDOWN_STATUS,
-            "Markdown Mode is under active development. This build supports formatted reading, direct block editing, and core formatting actions while keeping Markdown source authoritative."
+            "Markdown Mode provides a formatted, direct editing surface while keeping ordinary Markdown source authoritative on disk."
         );
         assert_eq!(
             ABOUT_PRIVACY,
@@ -897,7 +1071,7 @@ mod tests {
     }
 
     #[test]
-    fn new_document_is_blocked_while_unsaved_changes_exist() {
+    fn new_document_requests_an_unsaved_changes_decision() {
         let mut app = NoterApp {
             text: "unsaved text".to_owned(),
             ..NoterApp::default()
@@ -906,11 +1080,30 @@ mod tests {
             .replace_text(&app.text)
             .expect("the test edit should advance the document revision");
 
-        assert!(!app.start_new_document());
+        app.request_new_document();
         assert_eq!(app.text, "unsaved text");
         assert_eq!(String::from(app.document.rope()), "unsaved text");
         assert!(app.document.is_dirty());
-        assert_eq!(app.error_msg.as_deref(), Some(DIRTY_INTERLOCK_MESSAGE));
+        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::New));
+        assert!(app.error_msg.is_none());
+    }
+
+    #[test]
+    fn open_requests_an_unsaved_changes_decision() {
+        let mut app = NoterApp {
+            text: "unsaved text".to_owned(),
+            ..NoterApp::default()
+        };
+        app.document
+            .replace_text(&app.text)
+            .expect("the test edit should advance the document revision");
+
+        app.request_open();
+
+        assert_eq!(app.text, "unsaved text");
+        assert!(app.document.is_dirty());
+        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::Open));
+        assert!(app.error_msg.is_none());
     }
 
     #[test]
@@ -921,7 +1114,7 @@ mod tests {
         };
         let previous_editor_id = app.editor_id();
 
-        assert!(app.start_new_document());
+        app.request_new_document();
         assert!(app.text.is_empty());
         assert_eq!(app.document.rope().len_bytes(), 0);
         assert!(!app.document.is_dirty());
@@ -930,7 +1123,7 @@ mod tests {
     }
 
     #[test]
-    fn dirty_close_is_cancelled_and_explained() {
+    fn dirty_close_opens_a_decision_instead_of_an_error() {
         let mut app = NoterApp::default();
         app.document
             .replace_text("unsaved text")
@@ -948,7 +1141,8 @@ mod tests {
 
         assert!(commands.contains(&egui::ViewportCommand::CancelClose));
         assert!(!commands.contains(&egui::ViewportCommand::Close));
-        assert_eq!(app.error_msg.as_deref(), Some(DIRTY_INTERLOCK_MESSAGE));
+        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::Quit));
+        assert!(app.error_msg.is_none());
     }
 
     #[test]
@@ -974,7 +1168,306 @@ mod tests {
             .commands;
 
         assert!(commands.contains(&egui::ViewportCommand::CancelClose));
-        assert_eq!(app.error_msg.as_deref(), Some(DIRTY_INTERLOCK_MESSAGE));
+        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::Quit));
+        assert!(app.error_msg.is_none());
+    }
+
+    #[test]
+    fn native_close_guard_is_inert_without_a_close_request() {
+        let mut app = NoterApp::default();
+        app.document
+            .replace_text("unsaved text")
+            .expect("the test edit should advance the document revision");
+        let context = egui::Context::default();
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            app.protect_native_close(ui.ctx());
+        });
+        let commands = &output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport should have output")
+            .commands;
+
+        assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(app.pending_abandon.is_none());
+    }
+
+    #[test]
+    fn native_close_guard_allows_a_clean_close_request() {
+        let mut app = NoterApp::default();
+        let context = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .events
+            .push(egui::ViewportEvent::Close);
+
+        let output = context.run_ui(input, |ui| app.protect_native_close(ui.ctx()));
+        let commands = &output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport should have output")
+            .commands;
+
+        assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(app.pending_abandon.is_none());
+    }
+
+    #[test]
+    fn native_close_guard_allows_a_confirmed_dirty_close() {
+        let mut app = NoterApp {
+            allow_dirty_close: true,
+            ..NoterApp::default()
+        };
+        app.document
+            .replace_text("discarded text")
+            .expect("the test edit should advance the document revision");
+        let context = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .events
+            .push(egui::ViewportEvent::Close);
+
+        let output = context.run_ui(input, |ui| app.protect_native_close(ui.ctx()));
+        let commands = &output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport should have output")
+            .commands;
+
+        assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(app.pending_abandon.is_none());
+    }
+
+    #[test]
+    fn discarding_a_dirty_close_allows_the_viewport_to_close() {
+        let mut app = NoterApp::default();
+        app.document
+            .replace_text("unsaved text")
+            .expect("the test edit should advance the document revision");
+        app.pending_abandon = Some(PendingAbandonAction::Quit);
+        let context = egui::Context::default();
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            app.discard_pending_abandon(ui.ctx());
+        });
+        let commands = &output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport should have output")
+            .commands;
+
+        assert!(commands.contains(&egui::ViewportCommand::Close));
+        assert!(app.allow_dirty_close);
+        assert!(app.pending_abandon.is_none());
+    }
+
+    #[test]
+    fn cancelling_a_dirty_close_keeps_the_document_and_window() {
+        let mut app = NoterApp::default();
+        app.document
+            .replace_text("unsaved text")
+            .expect("the test edit should advance the document revision");
+        app.pending_abandon = Some(PendingAbandonAction::Quit);
+
+        app.cancel_pending_abandon();
+
+        assert!(app.document.is_dirty());
+        assert!(app.pending_abandon.is_none());
+        assert!(!app.allow_dirty_close);
+    }
+
+    #[test]
+    fn uncertain_save_guidance_survives_every_dirty_action_cancel() {
+        #[derive(Clone, Copy)]
+        enum Trigger {
+            New,
+            Open,
+            Quit,
+            NativeClose,
+        }
+
+        assert_eq!(
+            UNCERTAIN_SAVE_ABANDON_GUIDANCE,
+            "Cancel this dialog, then use Save As to preserve the current text at another path or reconcile the recovery state."
+        );
+
+        for trigger in [
+            Trigger::New,
+            Trigger::Open,
+            Trigger::Quit,
+            Trigger::NativeClose,
+        ] {
+            let mut app = app_with_dismissed_uncertain_save();
+            let context = egui::Context::default();
+            match trigger {
+                Trigger::New => app.request_new_document(),
+                Trigger::Open => app.request_open(),
+                Trigger::Quit => {
+                    let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                        app.request_close(ui.ctx());
+                    });
+                }
+                Trigger::NativeClose => {
+                    let mut input = egui::RawInput::default();
+                    input
+                        .viewports
+                        .entry(egui::ViewportId::ROOT)
+                        .or_default()
+                        .events
+                        .push(egui::ViewportEvent::Close);
+                    let _ = context.run_ui(input, |ui| app.protect_native_close(ui.ctx()));
+                }
+            }
+
+            let recovery = app
+                .save_recovery_msg
+                .clone()
+                .expect("the uncertain save must retain recovery guidance");
+            assert_eq!(app.error_msg.as_deref(), Some(recovery.as_str()));
+            assert!(recovery.contains(".noter-save-recovery.tmp"));
+
+            app.cancel_pending_abandon();
+
+            assert!(app.pending_abandon.is_none());
+            assert_eq!(app.error_msg.as_deref(), Some(recovery.as_str()));
+            assert_eq!(app.save_recovery_msg.as_deref(), Some(recovery.as_str()));
+        }
+    }
+
+    #[test]
+    fn uncertain_save_state_blocks_an_ordinary_retry() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        fs::write(&path, b"original")?;
+        let mut document = Document::from_path(&path)?;
+        document.replace_text("unsaved replacement")?;
+        let mut app = NoterApp {
+            text: "unsaved replacement".to_owned(),
+            document,
+            save_recovery_msg: Some("Reconcile the uncertain save before retrying.".to_owned()),
+            ..NoterApp::default()
+        };
+
+        app.do_save();
+
+        assert_eq!(fs::read(&path)?, b"original");
+        assert!(app.document.is_dirty());
+        assert_eq!(
+            app.error_msg.as_deref(),
+            Some("Reconcile the uncertain save before retrying.")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discarding_before_new_replaces_the_dirty_document() {
+        let mut app = NoterApp {
+            text: "unsaved text".to_owned(),
+            ..NoterApp::default()
+        };
+        app.document
+            .replace_text(&app.text)
+            .expect("the test edit should advance the document revision");
+        app.pending_abandon = Some(PendingAbandonAction::New);
+        let context = egui::Context::default();
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            app.discard_pending_abandon(ui.ctx());
+        });
+
+        assert!(app.text.is_empty());
+        assert_eq!(app.document.rope().len_bytes(), 0);
+        assert!(!app.document.is_dirty());
+        assert!(app.pending_abandon.is_none());
+        assert!(!app.allow_dirty_close);
+    }
+
+    #[test]
+    fn saving_before_close_commits_then_closes() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        fs::write(&path, b"saved text")?;
+        let mut document = Document::from_path(&path)?;
+        document.replace_text("new text")?;
+        let mut app = NoterApp {
+            text: "new text".to_owned(),
+            document,
+            pending_abandon: Some(PendingAbandonAction::Quit),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            app.save_pending_abandon(ui.ctx());
+        });
+        let commands = &output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport should have output")
+            .commands;
+
+        assert_eq!(fs::read(&path)?, b"new text");
+        assert!(!app.document.is_dirty());
+        assert!(app.pending_abandon.is_none());
+        assert!(app.allow_dirty_close);
+        assert!(commands.contains(&egui::ViewportCommand::Close));
+        Ok(())
+    }
+
+    #[test]
+    fn pending_action_waits_while_the_document_is_dirty() {
+        let mut app = NoterApp::default();
+        app.document
+            .replace_text("unsaved text")
+            .expect("the test edit should advance the document revision");
+        app.pending_abandon = Some(PendingAbandonAction::New);
+        let context = egui::Context::default();
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            app.continue_pending_abandon_if_clean(ui.ctx());
+        });
+        let commands = &output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport should have output")
+            .commands;
+
+        assert!(commands.is_empty());
+        assert!(app.document.is_dirty());
+        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::New));
+    }
+
+    #[test]
+    fn post_save_warning_stops_the_pending_action_for_review() {
+        let mut app = NoterApp {
+            error_msg: Some(
+                "Saved, but follow-up is required: inspect retained artifact".to_owned(),
+            ),
+            pending_abandon: Some(PendingAbandonAction::Quit),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            app.continue_pending_abandon_if_clean(ui.ctx());
+        });
+        let commands = &output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport should have output")
+            .commands;
+
+        assert!(commands.is_empty());
+        assert!(app.pending_abandon.is_none());
+        assert!(!app.allow_dirty_close);
+        assert!(app.error_msg.is_some());
     }
 
     #[test]
@@ -1003,6 +1496,7 @@ mod tests {
         assert!(app.document.is_dirty());
         assert!(commands.contains(&egui::ViewportCommand::CancelClose));
         assert!(!commands.contains(&egui::ViewportCommand::Close));
+        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::Quit));
     }
 
     #[test]
@@ -1045,6 +1539,38 @@ mod tests {
         assert!(message.contains("destination state differs"));
         assert!(message.contains(".noter-save-recovery.tmp"));
         assert!(message.contains("before retrying"));
+        assert_eq!(app.save_recovery_msg.as_deref(), Some(message.as_str()));
+    }
+
+    #[test]
+    fn committed_save_warnings_remain_visible() {
+        use noter::core::revision::Revision;
+        use noter::core::save::{
+            ContentFingerprint, Durability, FileChangeToken, FileIdentity, FileObservation,
+            SaveStage, SaveWarnings, StorageError,
+        };
+
+        let warning = StorageError::new(SaveStage::SyncParent, "directory sync failed");
+        let observation = FileObservation::new(
+            FileIdentity::new(1, 2),
+            ContentFingerprint::from_bytes(b"saved"),
+            5,
+            1,
+            FileChangeToken::new(3, 4),
+        );
+        let mut app = NoterApp::default();
+
+        app.handle_save_result(Ok(SaveOutcome::Committed {
+            revision: Revision::INITIAL,
+            durability: Durability::FileSynced,
+            observation,
+            warnings: SaveWarnings::new(Vec::new(), vec![warning]),
+        }));
+
+        assert_eq!(
+            app.error_msg.as_deref(),
+            Some("Saved, but follow-up is required: SyncParent failed: directory sync failed")
+        );
     }
 
     #[test]
@@ -1171,6 +1697,29 @@ mod tests {
                 .as_deref()
                 .is_some_and(|message| message.contains("destination changed"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn save_as_to_single_link_destination_does_not_require_confirmation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let selected = directory.path().join("selected.txt");
+        fs::write(&selected, b"previous document")?;
+
+        let mut app = NoterApp {
+            text: "replacement document".to_owned(),
+            ..NoterApp::default()
+        };
+        app.document.replace_text(&app.text)?;
+
+        app.do_save_as_to(selected.clone());
+
+        assert!(app.pending_hard_link_save.is_none());
+        assert_eq!(app.document.path(), Some(selected.as_path()));
+        assert_eq!(fs::read(&selected)?, b"replacement document");
+        assert!(!app.document.is_dirty());
+        assert!(app.error_msg.is_none());
         Ok(())
     }
 }

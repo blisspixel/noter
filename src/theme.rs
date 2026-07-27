@@ -1,6 +1,9 @@
 use eframe::egui;
+use std::sync::Arc;
 
 pub const THEME_STORAGE_KEY: &str = "noter.theme";
+const NOTER_PROPORTIONAL_FONT: &str = "Inter Variable";
+const NOTER_PROPORTIONAL_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/InterVariable.ttf");
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum AppTheme {
@@ -57,6 +60,7 @@ impl AppTheme {
 }
 
 pub fn configure_styles(context: &egui::Context) {
+    configure_fonts(context);
     context.all_styles_mut(|style| {
         for (text_style, font_id) in &mut style.text_styles {
             if *text_style == egui::TextStyle::Body {
@@ -113,6 +117,20 @@ pub fn configure_styles(context: &egui::Context) {
         visuals.selection.stroke =
             egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(235, 241, 250));
     });
+}
+
+fn configure_fonts(context: &egui::Context) {
+    let mut definitions = egui::FontDefinitions::default();
+    definitions.font_data.insert(
+        NOTER_PROPORTIONAL_FONT.to_owned(),
+        Arc::new(egui::FontData::from_static(NOTER_PROPORTIONAL_FONT_BYTES)),
+    );
+    definitions
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, NOTER_PROPORTIONAL_FONT.to_owned());
+    context.set_fonts(definitions);
 }
 
 #[cfg(test)]
@@ -186,5 +204,18 @@ mod tests {
                 .color_transfer_function,
             egui::epaint::FontColorTransferFunction::DARK_MODE_DEFAULT
         );
+    }
+
+    #[test]
+    fn bundled_proportional_font_supports_real_weight_variation() {
+        let data = egui::FontData::from_static(NOTER_PROPORTIONAL_FONT_BYTES);
+        let weight = data
+            .variation_axes()
+            .into_iter()
+            .find(|axis| axis.tag.to_be_bytes() == *b"wght")
+            .expect("the bundled font must expose a weight axis");
+
+        assert!(weight.range.min <= 400.0);
+        assert!(weight.range.max >= 700.0);
     }
 }

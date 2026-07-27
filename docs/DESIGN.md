@@ -30,6 +30,8 @@ The current M1 worktree has:
   readers, checked against the official reference vectors;
 - a bounded stable-file observation that combines an open-handle identity,
   content fingerprint, length, hard-link count, and metadata change token;
+- native no-follow document opens that bind every read and reopen to the final
+  entry and reject link or reparse metadata on the returned handle;
 - a narrow internal platform crate that preserves the main crate's unsafe-code
   prohibition while wrapping the required native identity, metadata, commit,
   and synchronization operations;
@@ -47,9 +49,11 @@ The current M1 worktree has:
 - strict refusal for final links, read-only destinations, and unconfirmed
   hard-link separation;
 - persisted System, Light, and Dark themes plus a source-backed native Markdown
-  slice with formatted block editing and conservative diagnostics;
-- 172 Windows-local workspace tests, 92.26 percent line coverage across the
-  expanded workspace trust kernel, and 87.54 percent whole-workspace line
+  slice with formatted direct editing and conservative diagnostics;
+- a UI-level Save, Discard Changes, and Cancel decision for dirty New, Open,
+  Close, and Quit requests;
+- 208 Windows-local workspace tests, 93.73 percent line coverage across the
+  expanded workspace trust kernel, and 89.49 percent whole-workspace line
   coverage; and
 - a 418-mutant Windows core campaign classified as 270 caught and 148 unviable,
   plus a clean 58-mutant Windows native-adapter pass classified as 40 caught
@@ -60,9 +64,9 @@ The current M1 worktree has:
 The current production-adapter checkpoint passes exact-commit Windows, macOS,
 and Linux CI. It still requires the manual metadata and weaker-filesystem
 evidence named by ADR-003 plus the reproducible benchmark baseline. Noter does
-not yet have the edit transaction model, complete dirty lifecycle, recovery,
-complete commands, configuration, accessibility evidence, or release
-performance evidence. M1 therefore remains In Progress.
+not yet have the edit transaction model, complete pure lifecycle state machine,
+Reload handling, recovery, complete commands, configuration, accessibility
+evidence, or release performance evidence. M1 therefore remains In Progress.
 
 ## 2. Architectural principles
 
@@ -404,6 +408,13 @@ confirmation in the GUI and explain that other names keep the previous revision.
 Save As stores the pre-dialog `TargetExpectation` inside an opaque preparation;
 confirmation consumes that exact value, so a rebound selection conflicts rather
 than being silently re-inspected and adopted.
+Final-entry classification is not separated from a following content open. Unix
+opens with `O_NOFOLLOW`; Windows opens the final entry itself with
+`FILE_FLAG_OPEN_REPARSE_POINT`. Both paths inspect the returned handle and reject
+links, reparse points, directories, and special files before content is read.
+The second pathname handle uses the same primitive, so matching identities are
+evidence about two no-follow opens rather than two independently followed link
+targets.
 Read-only files are not made writable implicitly. New Unix files remain
 owner-only at mode 0600. Because mode alone does not suppress macOS inherited
 ACL entries, macOS requests a zero-entry `no_inherit` ACL and mode 0600 in one
@@ -620,10 +631,14 @@ formatted blocks and maps direct edits back to the smallest practical source
 range. Switching modes does not modify bytes.
 
 The current M2 slice is deliberately bounded. It parses through
-`pulldown-cmark`, renders restricted native blocks through `egui_commonmark`,
-opens a selected block as source-backed editable text, and provides eight core
-formatting actions. Four conservative diagnostics operate directly on source.
-This establishes the interaction direction but does not satisfy M6.
+`pulldown-cmark` and builds restricted native egui layout jobs before shaping.
+The inactive document and active source-backed editor use the same explicit
+body, heading, emphasis, link, and code style mapping. Supported heading and
+inline delimiters remain in source while being visually suppressed, and a link
+target is revealed only while it is edited. Eight core formatting actions map
+back to ordinary Markdown. Text Mode exposes every delimiter, and four
+conservative diagnostics operate directly on source. This establishes the
+interaction direction but does not satisfy M6.
 
 The M6 architecture completes the model:
 
@@ -808,12 +823,13 @@ Those statements describe third-party dependency licenses. Noter itself is
 licensed only under Apache-2.0, as declared by both package manifests and the
 root [LICENSE](../LICENSE).
 
-The current graph contains 418 cross-target packages after the egui 0.35 and
-egui_commonmark 0.24 upgrades. The normal stripped Windows release is 7,344,128
-bytes, or 7.00 MiB, compared with the 4,748,800-byte M0 baseline. The increase
-includes native metadata preservation, cryptographic conflict detection,
-reconciled commit semantics, current text shaping, persisted themes, and the
-early native Markdown surface. Release gates still enforce the 12 MiB ceiling.
+The current graph contains 413 cross-target packages after the egui 0.35
+upgrade and removal of the redundant secondary Markdown renderer. The normal
+stripped Windows release is 8,075,776 bytes, or 7.70 MiB, compared with the
+4,748,800-byte M0 baseline. The increase includes native metadata preservation,
+cryptographic conflict detection, reconciled commit semantics, current text
+shaping, the bundled variable document font, persisted themes, and the early
+native Markdown surface. Release gates still enforce the 12 MiB ceiling.
 The checked-in cargo-deny policy gates licenses, sources, advisories, wildcard
 versions, and duplicate-version visibility; a release capability audit remains
 required.
