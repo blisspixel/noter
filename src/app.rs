@@ -1390,7 +1390,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_before_close_commits_then_closes() -> Result<(), Box<dyn std::error::Error>> {
+    fn saving_before_close_respects_platform_follow_up() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         let path = directory.path().join("note.txt");
         fs::write(&path, b"saved text")?;
@@ -1416,8 +1416,22 @@ mod tests {
         assert_eq!(fs::read(&path)?, b"new text");
         assert!(!app.document.is_dirty());
         assert!(app.pending_abandon.is_none());
-        assert!(app.allow_dirty_close);
-        assert!(commands.contains(&egui::ViewportCommand::Close));
+        #[cfg(windows)]
+        {
+            assert!(app.error_msg.is_none());
+            assert!(app.allow_dirty_close);
+            assert!(commands.contains(&egui::ViewportCommand::Close));
+        }
+        #[cfg(unix)]
+        {
+            assert!(!app.allow_dirty_close);
+            assert!(!commands.contains(&egui::ViewportCommand::Close));
+            assert!(
+                app.error_msg
+                    .as_deref()
+                    .is_some_and(|message| message.contains("displaced recovery artifact"))
+            );
+        }
         Ok(())
     }
 
@@ -1701,7 +1715,7 @@ mod tests {
     }
 
     #[test]
-    fn save_as_to_single_link_destination_does_not_require_confirmation()
+    fn save_as_to_single_link_destination_commits_without_confirmation()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         let selected = directory.path().join("selected.txt");
@@ -1719,7 +1733,14 @@ mod tests {
         assert_eq!(app.document.path(), Some(selected.as_path()));
         assert_eq!(fs::read(&selected)?, b"replacement document");
         assert!(!app.document.is_dirty());
+        #[cfg(windows)]
         assert!(app.error_msg.is_none());
+        #[cfg(unix)]
+        assert!(
+            app.error_msg
+                .as_deref()
+                .is_some_and(|message| message.contains("displaced recovery artifact"))
+        );
         Ok(())
     }
 }
