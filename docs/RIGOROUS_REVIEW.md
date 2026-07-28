@@ -2,7 +2,7 @@
 
 **Original review:** June 2026
 
-**Disposition reviewed:** 2026-07-27
+**Disposition reviewed:** 2026-07-28
 
 **Status:** Current ranked review plus historical findings
 
@@ -25,9 +25,10 @@ The central corrective action is:
 The durable-save trust kernel and its evidence are substantially stronger than
 the rest of the application. That is a real achievement, but it also exposes an
 imbalance: thousands of lines and a complete mutation campaign protect the save
-protocol while the editor still lacks transactions, undo, recovery, search,
-incremental layout, and release-grade accessibility evidence. Coverage cannot
-compensate for missing product architecture.
+protocol while the transaction and Undo foundation is much newer and the editor
+still lacks recovery, search, deterministic edit coalescing, incremental layout,
+and release-grade accessibility evidence. Coverage cannot compensate for
+missing product architecture.
 
 ## 2. Current assessment
 
@@ -39,23 +40,32 @@ accessibility, Markdown conformance, installation, or updates because the
 corresponding designs are not yet implemented and falsified on supported
 systems.
 
-The next investment must move from proving more variants of the already strong
-save kernel to building the shared editor and lifecycle foundations on which
-both Text Mode and Markdown Mode depend.
+The next investment remains the shared editor and lifecycle foundations on
+which both Text Mode and Markdown Mode depend. The transaction authority is a
+meaningful start, not evidence that the production editor contract is complete.
 
 ## 3. Ranked A+ program
 
 ### 1. Establish one transaction-based source authority
 
-**Evidence:** `NoterApp` holds both a mutable contiguous `String` and a
-`Document`; the framework editors mutate the string and then call
-`Document::replace_text`. `MarkdownEditor` also owns an active block draft.
-`src/core/edit.rs` and `src/core/undo.rs`, named by the target architecture, do
-not exist.
+**Evidence:** `src/core/edit.rs` now validates revision, ordered UTF-8 ranges,
+exact expected removals, directional before and after selections, and the
+resulting selection before atomically replacing `Document` content. It returns
+an exact inverse. `src/core/undo.rs` bounds history by count and retained bytes,
+rejects unexpected revisions, and maintains monotonic revisions. Both framework
+editing modes route changes through this authority. Three fixed-seed 512-case
+properties compare single, ordered multi-edit, and Undo and Redo sequences to a
+`String` model.
 
-**Risk:** selection intent, coalescing, undo, stale work, and source-range
-mapping have no common model. A failed synchronization can make displayed text
-and save authority diverge unless every adapter path repairs it correctly.
+`NoterApp` still uses a mutable contiguous `String` as the framework adapter,
+and `MarkdownEditor` still owns one active block draft. Direct input is not yet
+fully classified into typing, deletion, and paste, and deterministic coalescing
+is not implemented.
+
+**Risk:** the common model now protects source mutation, inverse history, saved
+content identity, and selection direction. The remaining adapter copy and
+missing intent and coalescing policy can still produce unintuitive Undo steps or
+performance costs until the production editor gate is complete.
 
 **A+ bar:** implement a revision-checked `EditTransaction` with validated UTF-8
 boundaries, exact inverse operations, before and after selections, origin, and
@@ -120,8 +130,8 @@ Windows, macOS, X11, and Wayland.
 **Evidence:** the current projection reconstructs block ranges around
 `pulldown-cmark` events, reparses individual blocks for presentation decisions,
 and supports eight local formatting commands plus four diagnostics. It has no
-shared undo transaction, complete CommonMark or GFM corpus, whole-document
-formatter, or semantic-equivalence proof.
+complete CommonMark or GFM corpus, whole-document formatter, or
+semantic-equivalence proof.
 
 **Risk:** ad hoc source transformations can change meaning or damage unsupported
 syntax while appearing visually correct.
@@ -251,9 +261,10 @@ insertion rules, and explicit undoable conversion.
 **Finding:** Coalescing examples did not prove that edits, selections, and
 inverse operations preserve information.
 
-**Disposition:** Accepted. M3 now requires revision-tagged edit transactions,
-exact inverses, a bounded history, a simple reference model, and property tests
-after every undo and redo.
+**Disposition:** Partially implemented. Revision-tagged transactions, exact
+inverses, bounded history, directional selections, and reference-model
+properties now exist. M3 remains open for deterministic coalescing rules and
+their boundary properties.
 
 ### R-06 Large-file claims were technically unsupported
 

@@ -1,10 +1,15 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use eframe::egui;
 use noter::core::document::{Document, PreparedSaveAs};
+use noter::core::edit::{
+    AppliedTransaction, EditError, EditOrigin, EditTimestamp, EditTransaction, Selection,
+};
 use noter::core::markdown::count_markdown_diagnostics;
 use noter::core::revision::Revision;
 use noter::core::save::SaveOutcome;
+use noter::core::undo::{HistoryApplyOutcome, HistoryRecordOutcome, UndoHistory};
 use noter::error::NoterError;
 
 use crate::markdown_ui::{MarkdownEditor, MarkdownProjectionLimit, markdown_projection_limit};
@@ -107,6 +112,52 @@ impl FileCommand {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EditCommand {
+    Undo,
+    Redo,
+}
+
+impl EditCommand {
+    const INPUT_SHORTCUTS_IN_PRECEDENCE_ORDER: [(Self, egui::KeyboardShortcut); 3] = [
+        (
+            Self::Redo,
+            egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                egui::Key::Z,
+            ),
+        ),
+        (
+            Self::Redo,
+            egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y),
+        ),
+        (
+            Self::Undo,
+            egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z),
+        ),
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+        }
+    }
+
+    const fn menu_shortcut(
+        self,
+        operating_system: egui::os::OperatingSystem,
+    ) -> egui::KeyboardShortcut {
+        match (self, operating_system) {
+            (Self::Redo, egui::os::OperatingSystem::Mac) => {
+                Self::INPUT_SHORTCUTS_IN_PRECEDENCE_ORDER[0].1
+            }
+            (Self::Redo, _) => Self::INPUT_SHORTCUTS_IN_PRECEDENCE_ORDER[1].1,
+            (Self::Undo, _) => Self::INPUT_SHORTCUTS_IN_PRECEDENCE_ORDER[2].1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PendingAbandonAction {
     New,
     Open,
@@ -118,6 +169,14 @@ struct MarkdownIssueCache {
     document_serial: u64,
     revision: Revision,
     issue_count: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EditorFrameOutcome {
+    changed: bool,
+    selection: Selection,
+    origin: EditOrigin,
+    observed_at: EditTimestamp,
 }
 
 impl PendingAbandonAction {
@@ -152,6 +211,10 @@ impl PendingHardLinkSave {
 pub struct NoterApp {
     text: String,
     document: Document,
+    history: UndoHistory,
+    selection: Selection,
+    pending_selection_restore: Option<Selection>,
+    pending_document_view: Option<DocumentView>,
     view: DocumentView,
     theme: AppTheme,
     markdown_editor: MarkdownEditor,
@@ -173,6 +236,10 @@ impl Default for NoterApp {
         Self {
             text: String::new(),
             document: Document::new(),
+            history: UndoHistory::default(),
+            selection: Selection::caret(0),
+            pending_selection_restore: None,
+            pending_document_view: None,
             view: DocumentView::Text,
             theme: AppTheme::System,
             markdown_editor: MarkdownEditor::default(),
@@ -207,7 +274,7 @@ impl NoterApp {
         if let Some(path) = options.initial_path {
             app.open_path(&path, options.view);
         } else if let Some(view) = options.view {
-            app.view = view;
+            app.select_document_view(view);
         }
 
         #[cfg(feature = "screenshot-qa")]
@@ -232,6 +299,9 @@ impl NoterApp {
             Ok(document) => {
                 self.text = String::from(document.rope());
                 self.document = document;
+                self.history.reset(self.document.revision());
+                self.selection = Selection::caret(0);
+                self.pending_selection_restore = Some(self.selection);
                 self.advance_document_editor();
                 self.markdown_editor.reset();
                 self.markdown_issue_cache = None;
@@ -377,6 +447,9 @@ impl NoterApp {
     fn start_new_document_unchecked(&mut self) {
         self.text.clear();
         self.document = Document::new();
+        self.history.reset(self.document.revision());
+        self.selection = Selection::caret(0);
+        self.pending_selection_restore = Some(self.selection);
         self.view = DocumentView::Text;
         self.advance_document_editor();
         self.markdown_editor.reset();
@@ -477,6 +550,19 @@ impl NoterApp {
         command
     }
 
+    fn collect_edit_shortcut(ui: &egui::Ui) -> Option<EditCommand> {
+        let mut command = None;
+        ui.input_mut(|input| {
+            for (candidate, shortcut) in EditCommand::INPUT_SHORTCUTS_IN_PRECEDENCE_ORDER {
+                if input.consume_shortcut(&shortcut) {
+                    command = Some(candidate);
+                    break;
+                }
+            }
+        });
+        command
+    }
+
     fn execute_file_command(&mut self, command: FileCommand, ctx: &egui::Context) {
         match command {
             FileCommand::New => self.request_new_document(),
@@ -484,6 +570,36 @@ impl NoterApp {
             FileCommand::Save => self.do_save(),
             FileCommand::SaveAs => self.do_save_as(),
             FileCommand::Quit => self.request_close(ctx),
+        }
+    }
+
+    fn execute_edit_command(&mut self, command: EditCommand) {
+        let result = match command {
+            EditCommand::Undo => self.history.undo(&mut self.document),
+            EditCommand::Redo => self.history.redo(&mut self.document),
+        };
+        match result {
+            Ok(Some(outcome)) => self.synchronize_after_history(outcome),
+            Ok(None) => {}
+            Err(error) => {
+                self.restore_editor_after_failed_change(&error);
+                self.history.reset(self.document.revision());
+            }
+        }
+    }
+
+    fn synchronize_after_history(&mut self, outcome: HistoryApplyOutcome) {
+        debug_assert_eq!(outcome.revision(), self.document.revision());
+        self.text = String::from(self.document.rope());
+        self.selection = outcome.selection();
+        self.markdown_editor.reset();
+        self.pending_selection_restore = Some(self.selection);
+        self.markdown_issue_cache = None;
+        if self.view == DocumentView::Markdown
+            && let Some(limit) = markdown_projection_limit(&self.text)
+        {
+            self.view = DocumentView::Text;
+            self.error_msg = Some(markdown_limit_message(self.text.len(), limit));
         }
     }
 
@@ -499,7 +615,12 @@ impl NoterApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
 
-    fn show_menu(&mut self, ui: &mut egui::Ui, command: &mut Option<FileCommand>) {
+    fn show_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        file_command: &mut Option<FileCommand>,
+        edit_command: &mut Option<EditCommand>,
+    ) {
         egui::Panel::top("menu_bar")
             .exact_size(MENU_BAR_HEIGHT)
             .show(ui, |ui| {
@@ -524,8 +645,11 @@ impl NoterApp {
                 );
                 menu_ui.spacing_mut().item_spacing.x = 2.0;
                 egui::MenuBar::new().ui(&mut menu_ui, |ui| {
-                    ui.menu_button("File", |ui| Self::show_file_menu(ui, command));
-                    ui.menu_button("View", |ui| self.show_view_menu(ui));
+                    ui.menu_button("File", |ui| Self::show_file_menu(ui, file_command));
+                    ui.menu_button("Edit", |ui| self.show_edit_menu(ui, edit_command));
+                    if expanded {
+                        ui.menu_button("View", |ui| self.show_view_menu(ui));
+                    }
                     ui.menu_button("Help", |ui| self.show_help_menu(ui));
                 });
 
@@ -542,7 +666,7 @@ impl NoterApp {
         ui.spacing_mut().item_spacing.x = 4.0;
         if !expanded {
             self.show_document_mode_menu_button(ui);
-            let theme_label = format!("Theme: {}", self.theme.label());
+            let theme_label = format!("Theme: {}", self.theme.compact_label());
             self.show_theme_menu_button(ui, &theme_label);
             return;
         }
@@ -567,7 +691,7 @@ impl NoterApp {
                 )
             });
             if response.clicked() {
-                self.select_document_view(view);
+                self.request_document_view(view);
             }
         }
         ui.separator();
@@ -576,7 +700,7 @@ impl NoterApp {
                 .text_style(egui::TextStyle::Button)
                 .weak(),
         );
-        self.show_theme_menu_button(ui, self.theme.label());
+        self.show_theme_menu_button(ui, self.theme.compact_label());
     }
 
     fn show_document_mode_menu_button(&mut self, ui: &mut egui::Ui) {
@@ -631,6 +755,22 @@ impl NoterApp {
         }
     }
 
+    fn show_edit_menu(&self, ui: &mut egui::Ui, command: &mut Option<EditCommand>) {
+        for candidate in [EditCommand::Undo, EditCommand::Redo] {
+            let enabled = match candidate {
+                EditCommand::Undo => self.history.can_undo(),
+                EditCommand::Redo => self.history.can_redo(),
+            };
+            let shortcut = candidate.menu_shortcut(ui.ctx().os());
+            let button = egui::Button::new(candidate.label())
+                .shortcut_text(ui.ctx().format_shortcut(&shortcut));
+            if ui.add_enabled(enabled, button).clicked() {
+                command.get_or_insert(candidate);
+                ui.close();
+            }
+        }
+    }
+
     fn show_view_menu(&mut self, ui: &mut egui::Ui) {
         ui.label("Mode");
         self.show_document_mode_choices(ui);
@@ -645,7 +785,7 @@ impl NoterApp {
                 .selectable_label(self.view == view, view.label())
                 .clicked()
             {
-                self.select_document_view(view);
+                self.request_document_view(view);
                 ui.close();
             }
         }
@@ -664,6 +804,7 @@ impl NoterApp {
     }
 
     fn select_document_view(&mut self, view: DocumentView) {
+        self.pending_document_view = None;
         if view == DocumentView::Markdown
             && let Some(limit) = markdown_projection_limit(&self.text)
         {
@@ -673,6 +814,17 @@ impl NoterApp {
         if self.view != view {
             self.view = view;
             self.markdown_editor.reset();
+            self.pending_selection_restore = Some(self.selection);
+        }
+    }
+
+    fn request_document_view(&mut self, view: DocumentView) {
+        self.pending_document_view = (self.view != view).then_some(view);
+    }
+
+    fn apply_pending_document_view(&mut self) {
+        if let Some(view) = self.pending_document_view.take() {
+            self.select_document_view(view);
         }
     }
 
@@ -958,51 +1110,103 @@ impl NoterApp {
                     .inner_margin(egui::Margin::same(12)),
             )
             .show(ui, |ui| {
-                let changed = match self.view {
+                let outcome = match self.view {
                     DocumentView::Text => self.show_text_editor(ui),
                     DocumentView::Markdown => self.show_markdown_editor(ui),
                 };
-                if changed {
-                    self.record_editor_change();
+                if outcome.changed {
+                    self.record_editor_change(outcome);
+                } else {
+                    self.selection = valid_selection_or_end(&self.text, outcome.selection);
                 }
             });
     }
 
-    fn record_editor_change(&mut self) {
-        self.record_editor_change_with(Document::replace_text);
-    }
-
-    fn record_editor_change_with(
-        &mut self,
-        record: impl FnOnce(&mut Document, &str) -> Result<bool, NoterError>,
-    ) {
-        let result = record(&mut self.document, &self.text);
-        match result {
-            Ok(_) if self.view == DocumentView::Markdown => {
-                let Some(limit) = markdown_projection_limit(&self.text) else {
-                    return;
-                };
-                self.view = DocumentView::Text;
-                self.markdown_editor.reset();
-                self.error_msg = Some(markdown_limit_message(self.text.len(), limit));
+    fn record_editor_change(&mut self, outcome: EditorFrameOutcome) {
+        let before = String::from(self.document.rope());
+        let transaction = EditTransaction::between(
+            self.document.revision(),
+            &before,
+            &self.text,
+            self.selection,
+            outcome.selection,
+            outcome.origin,
+            outcome.observed_at,
+        );
+        match transaction {
+            Ok(Some(transaction)) => {
+                self.record_editor_change_with(&transaction, Document::apply_transaction);
             }
-            Ok(_) => {}
+            Ok(None) => self.selection = outcome.selection,
             Err(error) => self.restore_editor_after_failed_change(&error),
         }
     }
 
-    fn restore_editor_after_failed_change(&mut self, error: &NoterError) {
+    fn record_editor_change_with(
+        &mut self,
+        transaction: &EditTransaction,
+        record: impl FnOnce(&mut Document, &EditTransaction) -> Result<AppliedTransaction, EditError>,
+    ) {
+        match record(&mut self.document, transaction) {
+            Ok(applied) => {
+                self.selection = applied.selection();
+                let history_outcome = self.history.record(applied);
+                self.text = String::from(self.document.rope());
+                self.markdown_issue_cache = None;
+                if history_outcome == HistoryRecordOutcome::ClearedForOversizedTransaction {
+                    self.error_msg = Some(format!(
+                        "The edit was applied, but its {}-byte inverse exceeded the bounded undo history and older history was cleared.",
+                        transaction.retained_bytes()
+                    ));
+                }
+            }
+            Err(error) => {
+                self.restore_editor_after_failed_change(&error);
+                return;
+            }
+        }
+        if self.view == DocumentView::Markdown {
+            let Some(limit) = markdown_projection_limit(&self.text) else {
+                return;
+            };
+            self.view = DocumentView::Text;
+            self.markdown_editor.reset();
+            self.pending_selection_restore = Some(self.selection);
+            self.error_msg = Some(markdown_limit_message(self.text.len(), limit));
+        }
+    }
+
+    fn restore_editor_after_failed_change(&mut self, error: &dyn std::fmt::Display) {
         self.text = String::from(self.document.rope());
         self.advance_document_editor();
         self.markdown_editor.reset();
+        self.pending_selection_restore = Some(self.selection);
         self.error_msg = Some(format!(
             "Failed to record edit. The editor was restored to the last authoritative text: {error}"
         ));
     }
 
-    fn show_text_editor(&mut self, ui: &mut egui::Ui) -> bool {
+    fn show_text_editor(&mut self, ui: &mut egui::Ui) -> EditorFrameOutcome {
+        let observed_at = edit_timestamp(ui);
         let editor_id = self.editor_id();
-        egui::ScrollArea::vertical()
+        let restored_selection = self
+            .pending_selection_restore
+            .take()
+            .map(|pending| valid_selection_or_end(&self.text, pending));
+        let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
+        if let Some(selection) = restored_selection {
+            if let Some(cursor_range) = cursor_range_from_selection(&self.text, selection) {
+                state.cursor.set_char_range(Some(cursor_range));
+            }
+            // Install the restored selection and focus before TextEdit consumes
+            // this frame, so the first keystroke after Undo or a mode change
+            // applies at the visible selection.
+            ui.memory_mut(|memory| memory.request_focus(editor_id));
+        }
+        state.clear_undoer();
+        egui::TextEdit::store_state(ui.ctx(), editor_id, state);
+
+        let response = egui::ScrollArea::vertical()
             .show(ui, |ui| {
                 ui.add_sized(
                     ui.available_size(),
@@ -1013,12 +1217,40 @@ impl NoterApp {
                         .frame(egui::Frame::NONE)
                         .lock_focus(true),
                 )
-                .changed()
             })
-            .inner
+            .inner;
+        if restored_selection.is_some() {
+            // A mode/menu pointer click can surrender focus during TextEdit's
+            // interaction pass. Reassert it after the widget as well.
+            response.request_focus();
+        }
+        let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
+        let selection = state.cursor.char_range().map_or_else(
+            || {
+                restored_selection
+                    .unwrap_or_else(|| valid_selection_or_end(&self.text, self.selection))
+            },
+            |range| selection_from_cursor_range(&self.text, range),
+        );
+        // Shared document history owns Undo and Redo. Discard egui's whole-string
+        // snapshots so they cannot retain a second, separately bounded history.
+        state.clear_undoer();
+        egui::TextEdit::store_state(ui.ctx(), editor_id, state);
+        EditorFrameOutcome {
+            changed: response.changed(),
+            selection,
+            origin: EditOrigin::TextInput,
+            observed_at,
+        }
     }
 
-    fn show_markdown_editor(&mut self, ui: &mut egui::Ui) -> bool {
+    fn show_markdown_editor(&mut self, ui: &mut egui::Ui) -> EditorFrameOutcome {
+        let observed_at = edit_timestamp(ui);
+        if let Some(pending) = self.pending_selection_restore.take() {
+            let _ = self
+                .markdown_editor
+                .restore_source_selection(&self.text, pending);
+        }
         let outcome = egui::ScrollArea::vertical()
             .show(ui, |ui| {
                 let content_width = ui.available_width().min(840.0);
@@ -1034,24 +1266,46 @@ impl NoterApp {
                 .inner
             })
             .inner;
+        let selection = self
+            .markdown_editor
+            .source_selection()
+            .unwrap_or_else(|| valid_selection_or_end(&self.text, self.selection));
         if let Some(limit) = outcome.projection_limit() {
             self.view = DocumentView::Text;
             self.markdown_editor.reset();
+            self.pending_selection_restore = Some(selection);
             self.error_msg = Some(markdown_limit_message(self.text.len(), limit));
         }
-        outcome.changed()
+        EditorFrameOutcome {
+            changed: outcome.changed(),
+            selection,
+            origin: outcome.origin().unwrap_or(EditOrigin::MarkdownInput),
+            observed_at,
+        }
     }
 
     fn render_frame(&mut self, ui: &mut egui::Ui) {
-        let mut command = Self::collect_shortcut(ui);
-        self.show_menu(ui, &mut command);
+        let mut file_command = Self::collect_shortcut(ui);
+        let mut edit_command = Self::collect_edit_shortcut(ui);
+        self.show_menu(ui, &mut file_command, &mut edit_command);
         self.show_error(ui);
+        let commands_enabled =
+            self.pending_hard_link_save.is_none() && self.pending_abandon.is_none();
+        let edit_executed = if commands_enabled {
+            edit_command.take().is_some_and(|command| {
+                self.execute_edit_command(command);
+                true
+            })
+        } else {
+            false
+        };
         self.show_format_toolbar(ui);
         self.show_status(ui);
         self.show_editor(ui);
-        if let Some(command) = command
-            && self.pending_hard_link_save.is_none()
-            && self.pending_abandon.is_none()
+        self.apply_pending_document_view();
+        if commands_enabled
+            && !edit_executed
+            && let Some(command) = file_command
         {
             self.execute_file_command(command, ui.ctx());
         }
@@ -1076,6 +1330,7 @@ impl NoterApp {
 
     #[cfg(feature = "screenshot-qa")]
     fn advance_screenshot_capture(&mut self, ctx: &egui::Context) {
+        self.markdown_editor.suppress_capture_focus(ctx);
         let completed = ctx.input(|input| {
             input.events.iter().find_map(|event| {
                 let egui::Event::Screenshot {
@@ -1131,6 +1386,56 @@ fn preferred_view_for_path(path: &std::path::Path) -> DocumentView {
     } else {
         DocumentView::Text
     }
+}
+
+fn edit_timestamp(ui: &egui::Ui) -> EditTimestamp {
+    let seconds = ui.input(|input| input.time);
+    let elapsed = Duration::try_from_secs_f64(seconds).unwrap_or_default();
+    EditTimestamp::new(elapsed)
+}
+
+fn char_index_to_byte(source: &str, character: usize) -> usize {
+    source
+        .char_indices()
+        .nth(character)
+        .map_or(source.len(), |(offset, _)| offset)
+}
+
+fn selection_from_cursor_range(source: &str, range: egui::text::CCursorRange) -> Selection {
+    Selection::new(
+        char_index_to_byte(source, range.secondary.index.into()),
+        char_index_to_byte(source, range.primary.index.into()),
+    )
+}
+
+fn cursor_range_from_selection(
+    source: &str,
+    selection: Selection,
+) -> Option<egui::text::CCursorRange> {
+    if !selection_is_valid(source, selection) {
+        return None;
+    }
+    let anchor = source[..selection.anchor()].chars().count();
+    let active = source[..selection.active()].chars().count();
+    Some(egui::text::CCursorRange::two(
+        egui::text::CCursor::new(anchor),
+        egui::text::CCursor::new(active),
+    ))
+}
+
+const fn valid_selection_or_end(source: &str, selection: Selection) -> Selection {
+    if selection_is_valid(source, selection) {
+        selection
+    } else {
+        Selection::caret(source.len())
+    }
+}
+
+const fn selection_is_valid(source: &str, selection: Selection) -> bool {
+    selection.anchor() <= source.len()
+        && selection.active() <= source.len()
+        && source.is_char_boundary(selection.anchor())
+        && source.is_char_boundary(selection.active())
 }
 
 fn markdown_limit_message(byte_len: usize, limit: MarkdownProjectionLimit) -> String {
@@ -1361,15 +1666,34 @@ mod tests {
         command
     }
 
+    fn collect_edit_shortcut_from_input(input: egui::RawInput) -> Option<EditCommand> {
+        let context = egui::Context::default();
+        let mut command = None;
+        let _ = context.run_ui(input, |ui| command = NoterApp::collect_edit_shortcut(ui));
+        command
+    }
+
     fn show_menu_frame(
         app: &mut NoterApp,
         context: &egui::Context,
         input: egui::RawInput,
     ) -> egui::FullOutput {
         context.run_ui(input, |ui| {
-            let mut command = None;
-            app.show_menu(ui, &mut command);
+            let mut file_command = None;
+            let mut edit_command = None;
+            app.show_menu(ui, &mut file_command, &mut edit_command);
+            app.apply_pending_document_view();
         })
+    }
+
+    fn record_test_editor_change(app: &mut NoterApp, origin: EditOrigin) {
+        let selection = Selection::caret(app.text.len());
+        app.record_editor_change(EditorFrameOutcome {
+            changed: true,
+            selection,
+            origin,
+            observed_at: EditTimestamp::default(),
+        });
     }
 
     fn app_with_dismissed_uncertain_save() -> NoterApp {
@@ -1515,6 +1839,192 @@ mod tests {
     }
 
     #[test]
+    fn undo_and_redo_shortcuts_accept_platform_command_conventions() {
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+        let shifted_command = command.plus(egui::Modifiers::SHIFT);
+
+        assert_eq!(
+            collect_edit_shortcut_from_input(shortcut_input(command, egui::Key::Z)),
+            Some(EditCommand::Undo)
+        );
+        assert_eq!(
+            collect_edit_shortcut_from_input(shortcut_input(command, egui::Key::Y)),
+            Some(EditCommand::Redo)
+        );
+        assert_eq!(
+            collect_edit_shortcut_from_input(shortcut_input(shifted_command, egui::Key::Z)),
+            Some(EditCommand::Redo)
+        );
+    }
+
+    #[test]
+    fn edit_menu_uses_platform_labels_and_history_enabled_state() {
+        for (operating_system, undo_label, redo_label) in [
+            (egui::os::OperatingSystem::Windows, "Ctrl+Z", "Ctrl+Y"),
+            (egui::os::OperatingSystem::Mac, "Cmd+Z", "Shift+Cmd+Z"),
+        ] {
+            let context = egui::Context::default();
+            context.set_os(operating_system);
+            let mut app = NoterApp::default();
+            let mut command = None;
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(240.0);
+                app.show_edit_menu(ui, &mut command);
+            });
+            let labels = rendered_text(&output)
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect::<Vec<_>>();
+            assert!(labels.contains(&"Undo".to_owned()));
+            assert!(labels.contains(&"Redo".to_owned()));
+            assert!(labels.contains(&undo_label.to_owned()));
+            assert!(labels.contains(&redo_label.to_owned()));
+            assert!(command.is_none());
+
+            app.text = "x".to_owned();
+            record_test_editor_change(&mut app, EditOrigin::TextInput);
+            assert!(app.history.can_undo());
+            assert!(!app.history.can_redo());
+        }
+    }
+
+    #[test]
+    fn app_undo_and_redo_restore_authority_selection_and_dirty_state() {
+        let document = Document::from_bytes(b"abc").expect("fixture should load");
+        let mut app = NoterApp {
+            text: "abc".to_owned(),
+            document,
+            selection: Selection::new(2, 1),
+            ..NoterApp::default()
+        };
+        app.text = "aBc".to_owned();
+        app.record_editor_change(EditorFrameOutcome {
+            changed: true,
+            selection: Selection::new(1, 2),
+            origin: EditOrigin::TextInput,
+            observed_at: EditTimestamp::default(),
+        });
+
+        assert_eq!(String::from(app.document.rope()), "aBc");
+        assert!(app.document.is_dirty());
+        assert!(app.history.can_undo());
+
+        app.execute_edit_command(EditCommand::Undo);
+        assert_eq!(app.text, "abc");
+        assert_eq!(String::from(app.document.rope()), "abc");
+        assert_eq!(app.selection, Selection::new(2, 1));
+        assert!(!app.document.is_dirty());
+        assert!(app.history.can_redo());
+
+        app.execute_edit_command(EditCommand::Redo);
+        assert_eq!(app.text, "aBc");
+        assert_eq!(String::from(app.document.rope()), "aBc");
+        assert_eq!(app.selection, Selection::new(1, 2));
+        assert!(app.document.is_dirty());
+        assert!(app.history.can_undo());
+    }
+
+    #[test]
+    fn rendered_undo_shortcut_uses_shared_history_instead_of_widget_history() {
+        let mut app = NoterApp {
+            text: "recorded".to_owned(),
+            ..NoterApp::default()
+        };
+        record_test_editor_change(&mut app, EditOrigin::TextInput);
+        assert!(app.history.can_undo());
+        let context = egui::Context::default();
+        let modifiers = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+
+        let _ = context.run_ui(shortcut_input(modifiers, egui::Key::Z), |ui| {
+            app.render_frame(ui);
+        });
+
+        assert!(app.text.is_empty());
+        assert_eq!(app.document.rope().len_bytes(), 0);
+        assert!(!app.document.is_dirty());
+        assert!(app.history.can_redo());
+    }
+
+    #[test]
+    fn text_editor_discards_widget_local_undo_snapshots() {
+        let context = egui::Context::default();
+        let mut app = NoterApp {
+            text: "bounded history".to_owned(),
+            pending_selection_restore: Some(Selection::caret("bounded history".len())),
+            ..NoterApp::default()
+        };
+        let editor_id = app.editor_id();
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(640.0);
+            let _ = app.show_text_editor(ui);
+        });
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Text("!".to_owned()));
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(640.0);
+            let outcome = app.show_text_editor(ui);
+            assert!(outcome.changed);
+        });
+        assert_eq!(app.text, "bounded history!");
+
+        let state = egui::TextEdit::load_state(&context, editor_id)
+            .expect("the rendered editor should persist its state");
+        let cursor = state
+            .cursor
+            .char_range()
+            .unwrap_or_else(|| egui::text::CCursorRange::one(egui::text::CCursor::new(0)));
+        let current = (cursor, app.text);
+        assert!(!state.undoer().has_undo(&current));
+        assert!(!state.undoer().has_redo(&current));
+    }
+
+    #[test]
+    fn first_keystroke_after_text_undo_replaces_the_restored_selection() {
+        let document = Document::from_bytes(b"abc").expect("fixture should load");
+        let mut app = NoterApp {
+            text: "abc".to_owned(),
+            document,
+            selection: Selection::new(1, 2),
+            ..NoterApp::default()
+        };
+        app.text = "aBc".to_owned();
+        app.record_editor_change(EditorFrameOutcome {
+            changed: true,
+            selection: Selection::caret(2),
+            origin: EditOrigin::TextInput,
+            observed_at: EditTimestamp::default(),
+        });
+        let editor_id = app.editor_id();
+        let context = egui::Context::default();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+
+        app.execute_edit_command(EditCommand::Undo);
+        assert_eq!(app.editor_id(), editor_id);
+        assert_eq!(app.pending_selection_restore, Some(Selection::new(1, 2)));
+
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Text("X".to_owned()));
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(900.0);
+            app.render_frame(ui);
+        });
+
+        assert_eq!(app.text, "aXc");
+        assert_eq!(app.document.rope().to_string(), "aXc");
+        assert!(app.history.can_undo());
+        assert!(!app.history.can_redo());
+    }
+
+    #[test]
     fn failed_editor_change_restores_the_authoritative_document() {
         let mut app = NoterApp::default();
         app.document
@@ -1524,7 +2034,19 @@ mod tests {
         app.markdown_editor.activate_first_block(&app.text);
         let previous_editor_serial = app.document_editor_serial;
 
-        app.record_editor_change_with(|_, _| Err(NoterError::RevisionExhausted));
+        let before = String::from(app.document.rope());
+        let transaction = EditTransaction::between(
+            app.document.revision(),
+            &before,
+            &app.text,
+            Selection::caret(0),
+            Selection::caret(app.text.len()),
+            EditOrigin::TextInput,
+            EditTimestamp::default(),
+        )
+        .expect("fixture selections should be valid")
+        .expect("fixture text should differ");
+        app.record_editor_change_with(&transaction, |_, _| Err(EditError::RevisionExhausted));
 
         assert_eq!(app.text, "authoritative text");
         assert_eq!(
@@ -1564,6 +2086,8 @@ mod tests {
         let output = show_menu_frame(&mut app, &context, ui_input(1_200.0, 760.0, 0.0));
         let text = rendered_text(&output);
         let file = text_position(&text, "File");
+        let edit = text_position(&text, "Edit");
+        let view = text_position(&text, "View");
         let help = text_position(&text, "Help");
         let mode = text_position(&text, "Mode");
         let plain_text = text_position(&text, "Text");
@@ -1572,7 +2096,9 @@ mod tests {
         let system = text_position(&text, "System");
         let theme_bounds = accesskit_bounds(&output, "Theme: System");
 
-        assert!(file.x < help.x);
+        assert!(file.x < edit.x);
+        assert!(edit.x < view.x);
+        assert!(view.x < help.x);
         assert!(help.x < mode.x);
         assert!(mode.x < plain_text.x);
         assert!(plain_text.x < markdown.x);
@@ -1583,7 +2109,7 @@ mod tests {
             theme_bounds.x1 <= 1_200.0,
             "Theme extends beyond the viewport: {theme_bounds:?}"
         );
-        for position in [help, mode, plain_text, markdown, theme, system] {
+        for position in [edit, view, help, mode, plain_text, markdown, theme, system] {
             assert!((file.y - position.y).abs() <= 2.0);
         }
     }
@@ -1605,11 +2131,13 @@ mod tests {
             ..Default::default()
         };
         let output = context.run_ui(input, |ui| {
-            let mut command = None;
-            app.show_menu(ui, &mut command);
+            let mut file_command = None;
+            let mut edit_command = None;
+            app.show_menu(ui, &mut file_command, &mut edit_command);
         });
         let text = rendered_text(&output);
         let file = text_position(&text, "File");
+        let edit = text_position(&text, "Edit");
         let help = text_position(&text, "Help");
         let mode = text_position(&text, "Mode: Markdown");
         let theme = text_position(&text, "Theme: System");
@@ -1617,7 +2145,8 @@ mod tests {
         let mode_bounds = accesskit_bounds(&output, "Mode: Markdown");
         let theme_bounds = accesskit_bounds(&output, "Theme: System");
 
-        assert!(file.x < help.x);
+        assert!(file.x < edit.x);
+        assert!(edit.x < help.x);
         assert!(help.x < mode.x);
         assert!(mode.x < theme.x);
         assert!(
@@ -1632,10 +2161,83 @@ mod tests {
             theme_bounds.x1 <= 420.0,
             "Theme extends beyond the minimum viewport: {theme_bounds:?}"
         );
-        for position in [help, mode, theme] {
+        for position in [edit, help, mode, theme] {
             assert!((file.y - position.y).abs() <= 2.0);
         }
+        assert!(!text.iter().any(|(label, _)| label == "View"));
         assert!(!text.iter().any(|(label, _)| label == "Text"));
+    }
+
+    #[test]
+    fn narrow_top_controls_keep_specialty_theme_labels_inside_the_viewport() {
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            theme: AppTheme::AmberScreen,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::configure_styles(&context);
+        AppTheme::AmberScreen.apply(&context);
+
+        let output = show_menu_frame(&mut app, &context, ui_input(420.0, 300.0, 0.0));
+        let text = rendered_text(&output);
+        let mode_bounds = accesskit_bounds(&output, "Mode: Markdown");
+        let theme_bounds = accesskit_bounds(&output, "Theme: Amber Screen");
+
+        assert!(text.iter().any(|(label, _)| label == "Theme: Amber"));
+        assert!(mode_bounds.x1 <= theme_bounds.x0);
+        assert!(theme_bounds.x1 <= 420.0);
+    }
+
+    #[test]
+    fn switching_modes_carries_the_directional_source_selection() {
+        let source = "# heading\n\nParagraph";
+        let selection = Selection::new(9, 2);
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection,
+            ..NoterApp::default()
+        };
+
+        app.select_document_view(DocumentView::Markdown);
+        assert_eq!(app.view, DocumentView::Markdown);
+        assert_eq!(app.pending_selection_restore, Some(selection));
+
+        app.pending_selection_restore = None;
+        app.select_document_view(DocumentView::Text);
+        assert_eq!(app.view, DocumentView::Text);
+        assert_eq!(app.pending_selection_restore, Some(selection));
+    }
+
+    #[test]
+    fn requested_mode_change_commits_same_frame_markdown_input_before_reset() {
+        let source = "# A";
+        let selection = Selection::new(0, source.len());
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection,
+            pending_selection_restore: Some(selection),
+            view: DocumentView::Markdown,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| app.render_frame(ui));
+        app.request_document_view(DocumentView::Text);
+        let mut input = ui_input(1_200.0, 760.0, 0.1);
+        input.events.push(egui::Event::Text("x".to_owned()));
+
+        let _ = context.run_ui(input, |ui| app.render_frame(ui));
+
+        assert_eq!(app.view, DocumentView::Text);
+        assert_eq!(app.text, "x");
+        assert_eq!(String::from(app.document.rope()), "x");
+        assert!(app.document.is_dirty());
+        assert!(app.history.can_undo());
     }
 
     #[test]
@@ -1668,7 +2270,18 @@ mod tests {
             click_input(1_200.0, 760.0, 0.2, light_button),
         );
         let theme_menu = show_menu_frame(&mut app, &context, ui_input(1_200.0, 760.0, 0.25));
-        let dark_choice = text_position(&rendered_text(&theme_menu), "Dark") + egui::vec2(4.0, 4.0);
+        let theme_choices = rendered_text(&theme_menu);
+        assert!(
+            theme_choices
+                .iter()
+                .any(|(label, _)| label == "Green Screen")
+        );
+        assert!(
+            theme_choices
+                .iter()
+                .any(|(label, _)| label == "Amber Screen")
+        );
+        let dark_choice = text_position(&theme_choices, "Dark") + egui::vec2(4.0, 4.0);
         show_menu_frame(
             &mut app,
             &context,
@@ -1693,6 +2306,7 @@ mod tests {
         let output = show_menu_frame(&mut app, &context, ui_input(1_200.0, 760.0, 0.0));
         let expected = [
             "File",
+            "Edit",
             "View",
             "Help",
             "Text Mode",
@@ -1810,11 +2424,12 @@ mod tests {
             ..NoterApp::default()
         };
 
-        app.record_editor_change();
+        record_test_editor_change(&mut app, EditOrigin::MarkdownInput);
 
         assert_eq!(app.view, DocumentView::Text);
         assert_eq!(app.document.to_bytes(), app.text.as_bytes());
         assert!(!app.markdown_editor.is_editing());
+        assert_eq!(app.pending_selection_restore, Some(app.selection));
         assert!(app.error_msg.is_some());
     }
 
@@ -1831,7 +2446,7 @@ mod tests {
             .expect("the in-budget fixture should advance the revision");
         app.text.push_str("# x\n\n");
 
-        app.record_editor_change();
+        record_test_editor_change(&mut app, EditOrigin::MarkdownInput);
 
         assert_eq!(app.view, DocumentView::Text);
         assert_eq!(app.document.to_bytes(), app.text.as_bytes());

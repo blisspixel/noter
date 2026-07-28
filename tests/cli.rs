@@ -15,7 +15,7 @@ fn invalid_arguments_exit_unsuccessfully_with_actionable_guidance() {
 
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8(output.stderr).expect("stderr should be valid UTF-8");
-    assert!(stderr.contains("unknown theme `blue`; expected system, light, or dark"));
+    assert!(stderr.contains("unknown theme `blue`; expected system, light, dark, green, or amber"));
     assert!(stderr.contains("Usage:"));
 }
 
@@ -26,6 +26,7 @@ fn help_and_version_exit_successfully_without_starting_the_gui() {
     assert!(help.stderr.is_empty());
     let help_text = String::from_utf8(help.stdout).expect("help should be valid UTF-8");
     assert!(help_text.contains("noter [OPTIONS] [--] [FILE]"));
+    assert!(help_text.contains("--theme system|light|dark|green|amber"));
 
     let version = run_noter(&["--version"]);
     assert!(version.status.success());

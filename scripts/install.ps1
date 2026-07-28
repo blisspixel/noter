@@ -126,7 +126,7 @@ $invalidResult = Invoke-NoterCli -Binary $installedBinary -Arguments @('--theme'
 if (
     $invalidResult.ExitCode -ne 2 -or
     -not [string]::IsNullOrEmpty($invalidResult.StdOut) -or
-    -not $invalidResult.StdErr.Contains('unknown theme `invalid`; expected system, light, or dark') -or
+    -not $invalidResult.StdErr.Contains('unknown theme `invalid`; expected system, light, dark, green, or amber') -or
     -not $invalidResult.StdErr.Contains('Usage:')
 ) {
     throw 'The installed executable did not preserve the release command-line error contract.'

@@ -3,12 +3,16 @@ use std::path::{Path, PathBuf};
 
 use crate::error::NoterError;
 
+use super::edit::{
+    AppliedTransaction, EditError, EditOrigin, EditTimestamp, EditTransaction, Selection,
+};
 use super::file_observation::{inspect_target, read_regular_file};
 use super::fs_storage::FilesystemStorage;
 use super::line_endings::LineEndingProfile;
 use super::revision::Revision;
 use super::save::{
-    SaveOutcome, SaveSnapshot, SaveStage, TargetExpectation, TargetState, save_snapshot,
+    ContentFingerprint, SaveOutcome, SaveSnapshot, SaveStage, TargetExpectation, TargetState,
+    save_snapshot,
 };
 use super::text_format::{Bom, Encoding};
 
@@ -25,7 +29,8 @@ pub struct Document {
     /// Optional on-disk UTF-8 byte-order mark.
     bom: Bom,
     revision: Revision,
-    saved_revision: Revision,
+    content_fingerprint: ContentFingerprint,
+    saved_content_fingerprint: ContentFingerprint,
     saved_target: Option<TargetExpectation>,
 }
 
@@ -56,6 +61,7 @@ impl PreparedSaveAs {
 impl Document {
     /// Creates an empty, clean, untitled document using the platform convention.
     pub fn new() -> Self {
+        let fingerprint = ContentFingerprint::from_bytes(b"");
         Self {
             rope: Rope::new(),
             path: None,
@@ -63,7 +69,8 @@ impl Document {
             encoding: Encoding::Utf8,
             bom: Bom::Absent,
             revision: Revision::INITIAL,
-            saved_revision: Revision::INITIAL,
+            content_fingerprint: fingerprint,
+            saved_content_fingerprint: fingerprint,
             saved_target: None,
         }
     }
@@ -95,6 +102,7 @@ impl Document {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, NoterError> {
         let (bom, content) = Bom::split_utf8(bytes);
         let text = std::str::from_utf8(content)?;
+        let fingerprint = ContentFingerprint::from_bytes(bytes);
 
         Ok(Self {
             rope: Rope::from_str(text),
@@ -103,7 +111,8 @@ impl Document {
             encoding: Encoding::Utf8,
             bom,
             revision: Revision::INITIAL,
-            saved_revision: Revision::INITIAL,
+            content_fingerprint: fingerprint,
+            saved_content_fingerprint: fingerprint,
             saved_target: None,
         })
     }
@@ -153,9 +162,12 @@ impl Document {
         self.revision
     }
 
-    /// Returns whether the current revision differs from the last committed revision.
+    /// Returns whether serialized content differs from the last committed snapshot.
+    ///
+    /// Revisions remain monotonic through Undo and Redo, so dirty identity is
+    /// tracked independently from revision identity.
     pub fn is_dirty(&self) -> bool {
-        self.revision != self.saved_revision
+        self.content_fingerprint != self.saved_content_fingerprint
     }
 
     /// Replaces authoritative text and advances the revision exactly once when changed.
@@ -165,23 +177,56 @@ impl Document {
     /// Returns [`NoterError::RevisionExhausted`] if the monotonic counter cannot
     /// advance without wrapping.
     pub fn replace_text(&mut self, text: &str) -> Result<bool, NoterError> {
-        let replacement = Rope::from_str(text);
-        if replacement == self.rope {
+        let before = self.rope.to_string();
+        let Some(transaction) = EditTransaction::between(
+            self.revision,
+            &before,
+            text,
+            Selection::caret(before.len()),
+            Selection::caret(text.len()),
+            EditOrigin::Programmatic,
+            EditTimestamp::default(),
+        )?
+        else {
             return Ok(false);
+        };
+        match self.apply_transaction(&transaction) {
+            Ok(_) => Ok(true),
+            Err(EditError::RevisionExhausted) => Err(NoterError::RevisionExhausted),
+            Err(error) => Err(error.into()),
         }
-        self.revision = self
-            .revision
-            .checked_next()
-            .ok_or(NoterError::RevisionExhausted)?;
+    }
+
+    /// Applies one validated source transaction atomically.
+    ///
+    /// The base revision, ordered UTF-8 byte ranges, expected removed text, and
+    /// before and after selections are all validated against cloned content
+    /// before the authoritative rope or revision changes. Success returns the
+    /// exact inverse required for Undo.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EditError`] for a stale revision, invalid boundary, overlapping
+    /// edit, removed-text mismatch, invalid selection, or exhausted revision.
+    pub fn apply_transaction(
+        &mut self,
+        transaction: &EditTransaction,
+    ) -> Result<AppliedTransaction, EditError> {
+        let (replacement, applied) = transaction.apply_to(&self.rope, self.revision)?;
+        let replacement_text = replacement.to_string();
+        let replacement_line_endings = LineEndingProfile::detect(&replacement_text);
         self.rope = replacement;
-        self.line_endings = LineEndingProfile::detect(text);
-        Ok(true)
+        self.line_endings = replacement_line_endings;
+        self.revision = applied.revision();
+        self.content_fingerprint = serialized_fingerprint(self.bom, &self.rope);
+        Ok(applied)
     }
 
     /// Saves the current revision to its trusted existing path.
     ///
-    /// Dirty state clears only when the exact current revision commits. Conflict,
-    /// proven failure, and unknown commit state remain explicit outcomes.
+    /// Dirty state updates only when the exact current revision commits. Undo or
+    /// Redo can later return to those saved bytes without reusing a revision.
+    /// Conflict, proven failure, and unknown commit state remain explicit.
     ///
     /// # Errors
     ///
@@ -319,7 +364,7 @@ impl Document {
         } = &outcome
             && *revision == self.revision
         {
-            self.saved_revision = *revision;
+            self.saved_content_fingerprint = self.content_fingerprint;
             self.saved_target = Some(TargetExpectation::Existing(*observation));
             if adopt_path {
                 self.path = Some(path);
@@ -327,6 +372,15 @@ impl Document {
         }
         outcome
     }
+}
+
+fn serialized_fingerprint(bom: Bom, rope: &Rope) -> ContentFingerprint {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(bom.as_bytes());
+    for chunk in rope.chunks() {
+        hasher.update(chunk.as_bytes());
+    }
+    ContentFingerprint::new(*hasher.finalize().as_bytes())
 }
 
 const fn require_hard_link_confirmation(

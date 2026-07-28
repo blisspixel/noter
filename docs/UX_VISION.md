@@ -28,7 +28,8 @@ legible:
 - a crisp default monospace stack with tested fallbacks;
 - comfortable line height and margins;
 - obvious caret, selection, focus, modified, error, and conflict states;
-- System, Light, and Dark themes with measured contrast;
+- five restrained built-in themes with measured contrast, including Green
+  Screen and Amber Screen specialty palettes;
 - stable layout while menus, find, recovery, and errors appear;
 - no decorative animation that delays input or hides state.
 

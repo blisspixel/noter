@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use crate::core::edit::EditError;
 use crate::core::save::StorageError;
 
 /// Errors that can occur while loading, editing, or saving a document.
@@ -38,4 +39,8 @@ pub enum NoterError {
     /// The monotonic revision counter reached its representable limit.
     #[error("The document revision counter is exhausted")]
     RevisionExhausted,
+
+    /// A proposed edit transaction failed validation before mutation.
+    #[error("Edit error: {0}")]
+    Edit(#[from] EditError),
 }

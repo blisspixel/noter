@@ -7,8 +7,9 @@ release, so current work remains under Unreleased.
 
 ### Added
 
-- Add persisted System, Light, and Dark themes with deliberate document
-  typography.
+- Add persisted System, Light, Dark, Green Screen, and Amber Screen themes with
+  deliberate document typography. The specialty palettes retain native text
+  shaping and enforce enhanced text, selection, and control contrast in tests.
 - Add an early native Markdown Mode with source-backed formatted editing, H1,
   H2, Bold, Italic, Link, Code, List, and Quote actions, plus four conservative
   source diagnostics. Supported heading and inline delimiters remain hidden in
@@ -22,7 +23,13 @@ release, so current work remains under Unreleased.
 - Add deterministic native Light and Dark README screenshot generation and
   validation using a polished non-sensitive Markdown demo document. The capture
   keeps formatted content active so the direct editor and formatting controls
-  are visible together.
+  are visible together while suppressing transient focus pixels.
+- Add revision-checked edit transactions with exact UTF-8 source expectations,
+  exact inverses, directional selections, operation origin, and adapter-supplied
+  monotonic timestamps.
+- Add Edit-menu Undo and Redo with Ctrl+Z, Ctrl+Y, Cmd+Z, and Shift+Cmd+Z paths.
+  History is shared by Text and Markdown modes and bounded by both transaction
+  count and retained source bytes.
 
 ### Changed
 
@@ -30,6 +37,16 @@ release, so current work remains under Unreleased.
   menu on the upper-right of the application menu row. The second toolbar now
   appears only in Markdown Mode and contains formatting actions only. Visual,
   keyboard, and accessibility-tree order follow the same left-to-right sequence.
+- Preserve the current directional source selection across Undo, Redo, editing
+  mode switches, and safe fallback from an over-budget Markdown projection.
+- Map click-and-drag selection in inactive formatted Markdown back to complete
+  source spans, including hidden delimiters, escapes, and parser-decoded
+  character references, so formatting commands operate on the text the user
+  selected. Synthesized text that cannot be mapped without invention remains
+  visibly editable as source.
+- Commit focused Markdown input before activating another block, finishing the
+  active edit, or applying a requested mode change, including when multiple
+  input events arrive in one native frame.
 - Verify version output and invalid-argument status, standard output, and
   standard error against the installed release executable in both source
   installers.
@@ -69,6 +86,8 @@ release, so current work remains under Unreleased.
   output or error pipe no longer panics the Windows release process.
 - Restore the last authoritative document text and reset editor-local state if
   an in-memory edit cannot advance the document revision.
+- Track dirty state against the last saved serialized-content fingerprint so
+  Undo and Redo can return to clean saved bytes while revisions remain monotonic.
 - Bound the synchronous pre-alpha Markdown projection by source bytes, logical
   lines, line length, block count, block span, and parser events. Over-budget
   files remain unchanged in Text Mode, and Markdown diagnostic counts are
@@ -108,8 +127,22 @@ release, so current work remains under Unreleased.
   the final handoff, and classify postcommit mismatch as indeterminate.
 - Make About Noter open a truthful project dialog and state the exact limits of
   the current Markdown implementation.
+- Preserve editor focus and the exact source selection when switching from Text
+  Mode to Markdown Mode or invoking a formatting control. A first click or drag
+  on formatted content now activates that range in the same frame.
 
 ### Engineering
+
+- Route plain-text input, direct formatted Markdown input, and Markdown
+  formatting through the same atomic document mutation boundary. Add fixed-seed
+  512-case reference-model properties for single replacements, ordered
+  multi-edit transactions, and arbitrary Undo and Redo sequences.
+- Close a focused 118-candidate mutation campaign for the transaction and
+  history modules with 95 caught and 23 validated compiler rejections. The
+  infrastructure validator reports no miss, timeout, or hidden tool failure.
+- Raise measured Windows-local line coverage to 94.59 percent for the trust
+  kernel and 92.56 percent for the complete workspace. The new transaction and
+  history modules measure 97.30 and 97.61 percent respectively.
 
 - Upgrade eframe and egui to 0.35 while retaining restricted features and
   enabling current shaping, hinting, theme-aware font transfer, and subpixel

@@ -2,7 +2,7 @@
 
 **Version:** 0.3
 
-**Reviewed:** 2026-07-26
+**Reviewed:** 2026-07-28
 
 **Status:** Active architecture contract
 
@@ -13,7 +13,7 @@ records own narrow irreversible choices.
 
 ## 1. Current implementation checkpoint
 
-The current M1 worktree has:
+The current pre-alpha checkpoint has:
 
 - a binary crate containing the egui shell;
 - a library crate containing the UI-independent document module;
@@ -48,13 +48,20 @@ The current M1 worktree has:
   commit;
 - strict refusal for final links, read-only destinations, and unconfirmed
   hard-link separation;
-- persisted System, Light, and Dark themes plus a source-backed native Markdown
-  slice with formatted direct editing and conservative diagnostics;
+- persisted System, Light, Dark, Green Screen, and Amber Screen themes plus a
+  source-backed native Markdown slice with formatted direct editing and
+  conservative diagnostics;
+- one revision-checked edit authority for Text Mode and Markdown Mode, exact
+  inverse transactions, directional selections, content-identity dirty state,
+  and Undo and Redo history bounded to 1,024 entries and 32 MiB by default;
 - a UI-level Save, Discard Changes, and Cancel decision for dirty New, Open,
   Close, and Quit requests;
-- 208 Windows-local workspace tests, 93.73 percent line coverage across the
-  expanded workspace trust kernel, and 89.49 percent whole-workspace line
-  coverage; and
+- 279 Windows-local Rust tests, 94.59 percent trust-kernel line coverage, and
+  92.56 percent whole-workspace line coverage against respective 90 and 80
+  percent gates; and
+- a focused 118-candidate transaction and history mutation campaign with 95
+  caught and 23 validated compiler rejections, with no miss, timeout, or
+  infrastructure failure; and
 - a 418-mutant Windows core campaign classified as 270 caught and 148 unviable,
   plus a clean 58-mutant Windows native-adapter pass classified as 40 caught
   and 18 unviable. Exact-commit run 30221793209 passes the settled 741-candidate
@@ -63,10 +70,12 @@ The current M1 worktree has:
 
 The current production-adapter checkpoint passes exact-commit Windows, macOS,
 and Linux CI. It still requires the manual metadata and weaker-filesystem
-evidence named by ADR-003 plus the reproducible benchmark baseline. Noter does
-not yet have the edit transaction model, complete pure lifecycle state machine,
-Reload handling, recovery, complete commands, configuration, accessibility
-evidence, or release performance evidence. M1 therefore remains In Progress.
+evidence named by ADR-003 plus the reproducible benchmark baseline. The edit
+foundation still requires deterministic coalescing, complete input-intent
+classification, the remaining commands, and platform evidence. Noter also does
+not yet have the complete pure lifecycle state machine, Reload handling,
+recovery, configuration, accessibility evidence, or release performance
+evidence. M1 and M3 therefore remain In Progress.
 
 ## 2. Architectural principles
 
@@ -132,7 +141,9 @@ struct Document {
     id: DocumentId,
     content: Rope,
     revision: Revision,
-    saved_revision: Option<Revision>,
+    saved_revision: Revision,
+    content_fingerprint: ContentFingerprint,
+    saved_content_fingerprint: ContentFingerprint,
     source: Option<FileSource>,
     encoding: Encoding,
     eol: LineEndingProfile,
@@ -146,9 +157,11 @@ struct FileSource {
 }
 ```
 
-Every content mutation increments `revision`. A document is dirty when its
-current revision or serialized bytes differ from the last committed snapshot.
-Path selection alone does not make content clean.
+Every content mutation, including Undo and Redo, increments `revision`. A
+document is dirty when its current serialized-content fingerprint differs from
+the last committed fingerprint. `saved_revision` accepts a save result only for
+the exact snapshot that initiated it; it is not dirty identity. Path selection
+alone does not make content clean.
 
 `DocumentId` and recovery instance IDs use collision-resistant random values.
 The implementation may use a narrowly configured UUID crate or an equivalent
@@ -156,9 +169,11 @@ OS random source after dependency review.
 
 ### 4.2 Positions and selections
 
-Core positions use rope character indexes with validated UTF-8 boundaries.
-Public editor commands use a strong `TextPosition` type instead of mixing byte,
-character, grapheme, line, and visual-column indexes.
+Current source transactions and directional selections use validated UTF-8 byte
+offsets because the parser and UI adapters map exact source ranges. The
+production editor contract still requires a strong `TextPosition` type at its
+public navigation boundary instead of mixing byte, character, grapheme, line,
+and visual-column indexes.
 
 ```rust
 struct TextPosition {
@@ -167,8 +182,8 @@ struct TextPosition {
 }
 
 struct Selection {
-    anchor: TextPosition,
-    head: TextPosition,
+    anchor: usize,
+    active: usize,
 }
 ```
 
@@ -240,15 +255,13 @@ struct EditTransaction {
     selection_before: Selection,
     selection_after: Selection,
     origin: EditOrigin,
-    timestamp: MonotonicInstant,
+    observed_at: EditTimestamp,
 }
 
-enum TextEdit {
-    Replace {
-        range: TextRange,
-        inserted: RopeSliceOwned,
-        removed: RopeSliceOwned,
-    },
+struct TextEdit {
+    range: TextRange,
+    inserted: String,
+    removed: String,
 }
 ```
 
@@ -256,14 +269,21 @@ The transaction validator rejects stale revisions, invalid ranges, overlap, and
 non-boundary positions before mutating content. Applying a transaction returns
 its exact inverse.
 
-Undo history is bounded by both transaction count and retained byte cost.
-Coalescing is a pure policy over origin, time, adjacency, selection, and edit
-shape. Paste, Replace All, EOL conversion, recovery acceptance, and Markdown
-formatting never coalesce with ordinary typing.
+Undo history is bounded by both transaction count and retained byte cost. The
+current defaults are 1,024 transactions and 32 MiB across Undo and Redo. A new
+branch clears Redo, an edit larger than the byte ceiling clears history that
+could no longer apply, and an unexpected revision rejects Undo without changing
+the document.
 
-A simple reference model based on `String` is used in property tests. Random
-valid edit sequences must produce identical content and selection in the
-reference and rope implementations, including after every undo and redo.
+Coalescing is the next M3 slice, not current behavior. It will be a pure policy
+over origin, time, adjacency, selection, and edit shape. Paste, Replace All,
+EOL conversion, recovery acceptance, and Markdown formatting must never
+coalesce with ordinary typing.
+
+Fixed-seed, 512-case `String` reference properties cover arbitrary single
+replacements, ordered disjoint multi-edit transactions, and edit sequences.
+They compare content and directional selection after apply and exact inverse,
+and compare every retained state after Undo and Redo.
 
 ## 6. Durable file I/O
 
@@ -618,7 +638,10 @@ Unknown fields are preserved where practical; invalid values are diagnosed and
 replaced individually rather than discarding the whole file. Config and recent
 files use the durable state-file writer. Recovery content never enters config.
 
-Theme preference is System, Light, or Dark. System changes are delivered by
+Theme preference is System, Light, Dark, Green Screen, or Amber Screen. The two
+specialty palettes use the dark rendering path without changing font shaping or
+document semantics. Returning to Dark or System reconstructs the standard
+palette instead of retaining specialty colors. System changes are delivered by
 platform events where available and checked on focus elsewhere. Contrast,
 selection, focus, disabled state, and error state are tested, not selected only
 for appearance.
@@ -629,6 +652,17 @@ Markdown Mode and Text Mode share one authoritative Markdown source. Text Mode
 shows the exact source. Markdown Mode projects source ranges into native
 formatted blocks and maps direct edits back to the smallest practical source
 range. Switching modes does not modify bytes.
+
+Rendered characters retain complete UTF-8 source spans. Pointer carets and
+drag selections map through those spans, absorbing syntax that is intentionally
+hidden from the projection, including supported delimiters, escapes, and
+parser-decoded character references. A non-bijective parser event owns its
+complete source range only when the displayed characters match a source
+substring; otherwise the complete raw source remains visible and directly
+editable. This prevents hidden syntax from being split without inventing a
+mapping. A mode switch restores the directional source selection before the
+destination editor accepts input, and both adapters discard widget-local undo
+snapshots after committing to the shared bounded history.
 
 The current M2 slice is deliberately bounded. It parses through
 `pulldown-cmark` and builds restricted native egui layout jobs before shaping.

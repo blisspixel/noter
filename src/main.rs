@@ -14,7 +14,8 @@ use std::path::PathBuf;
 use app::{DocumentView, LaunchOptions, NoterApp};
 use theme::AppTheme;
 
-const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --theme system|light|dark\n  --view text|markdown\n  -h, --help\n  -V, --version";
+const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --theme system|light|dark|green|amber\n  --view text|markdown\n  -h, --help\n  -V, --version";
+const THEME_ERROR_VALUES: &str = "system, light, dark, green, or amber";
 
 fn main() -> eframe::Result {
     let request = match parse_launch_request(std::env::args().skip(1)) {
@@ -100,7 +101,7 @@ fn parse_launch_request(args: impl IntoIterator<Item = String>) -> Result<Launch
             "--theme" if !options_finished => {
                 let value = args
                     .next()
-                    .ok_or_else(|| "`--theme` requires system, light, or dark".to_owned())?;
+                    .ok_or_else(|| format!("`--theme` requires {THEME_ERROR_VALUES}"))?;
                 options.theme = Some(parse_theme(&value)?);
             }
             "--view" if !options_finished => {
@@ -134,7 +135,7 @@ fn parse_launch_request(args: impl IntoIterator<Item = String>) -> Result<Launch
 
 fn parse_theme(value: &str) -> Result<AppTheme, String> {
     AppTheme::from_storage_value(value)
-        .ok_or_else(|| format!("unknown theme `{value}`; expected system, light, or dark"))
+        .ok_or_else(|| format!("unknown theme `{value}`; expected {THEME_ERROR_VALUES}"))
 }
 
 fn parse_view(value: &str) -> Result<DocumentView, String> {
@@ -179,6 +180,21 @@ mod tests {
         assert_eq!(options.theme, Some(AppTheme::Light));
         assert_eq!(options.view, Some(DocumentView::Markdown));
         assert_eq!(options.initial_path, Some(PathBuf::from("guide.md")));
+    }
+
+    #[test]
+    fn specialty_themes_are_available_from_the_command_line() {
+        for (value, expected) in [
+            ("green", AppTheme::GreenScreen),
+            ("amber", AppTheme::AmberScreen),
+        ] {
+            let LaunchRequest::Run(options) =
+                parse(&["--theme", value]).expect("specialty theme should parse")
+            else {
+                panic!("the arguments should launch the application");
+            };
+            assert_eq!(options.theme, Some(expected));
+        }
     }
 
     #[test]

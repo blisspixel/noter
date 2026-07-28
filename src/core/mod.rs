@@ -2,6 +2,8 @@
 
 /// Plain-text document loading, representation, and saving.
 pub mod document;
+/// Revision-checked, reversible source transactions.
+pub mod edit;
 /// Stable destination classification, identity, and content observations.
 pub mod file_observation;
 /// Production filesystem storage primitives.
@@ -16,3 +18,5 @@ pub mod revision;
 pub mod save;
 /// Explicit text encoding and byte-order-mark metadata.
 pub mod text_format;
+/// Bounded, revision-aware undo and redo history.
+pub mod undo;

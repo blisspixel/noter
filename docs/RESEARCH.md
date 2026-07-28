@@ -440,6 +440,13 @@ direction:
   on a dark background. Noter uses the matching eframe and egui versions, keeps
   global hinting and subpixel binning enabled, and preserves the matching
   coverage transfer for each theme.
+- [WCAG 2.2](https://www.w3.org/TR/WCAG22/) requires at least 4.5:1 contrast for
+  ordinary text, while its
+  [non-text contrast guidance](https://www.w3.org/WAI/WCAG22/understanding/non-text-contrast.html)
+  requires 3:1 for visual information needed to identify controls and states.
+  Green Screen and Amber Screen enforce 7:1 primary text, 4.5:1 weak and
+  selected text, and 3:1 control outlines against their adjacent backgrounds in
+  deterministic palette tests.
 - Noter bundles the variable Inter typeface for proportional document text and
   requests explicit weight-axis values for body text, headings, and strong
   emphasis. This avoids simulated bold and makes the formatted editor more

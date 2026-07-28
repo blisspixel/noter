@@ -152,8 +152,10 @@ Feature presence alone is not verification.
 
 - **FR-030 Status:** Show path or Untitled, modified state, one-based logical line
   and column, selection size, encoding, BOM, and EOL classification.
-- **FR-031 Theme:** Provide System, Light, and Dark through a visible top-level
-  selector. Persist the choice and follow system changes when System is selected.
+- **FR-031 Theme:** Provide System, Light, Dark, Green Screen, and Amber Screen
+  through a visible top-level selector. Persist the choice and follow system
+  changes when System is selected. Specialty themes must retain the same text
+  shaping and accessibility behavior as the core themes.
 - **FR-032 Zoom:** Provide keyboard and menu zoom with a readable bounded range.
 - **FR-033 Window state:** Restore valid size, position, and maximized state
   without placing a window entirely off screen.
@@ -371,7 +373,7 @@ Noter v0.1 is releasable only when:
 - AI features
 - Background networking, remote Markdown assets, or automatic telemetry
 - Non-UTF-8 save encodings
-- Arbitrary themes or a font marketplace
+- User-authored themes or a font marketplace
 - 500 MB editable-file guarantees
 
 ## 7. Traceability

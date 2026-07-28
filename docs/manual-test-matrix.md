@@ -122,6 +122,10 @@ Record kill method, recovery revisions, timing, and recovery directory:
 
 ## 5. Editing, undo, find, and replace
 
+The transaction and history model has automated inverse, UTF-8 boundary,
+directional-selection, saved-content identity, stale-revision, count-limit, and
+byte-limit coverage. These checks do not replace the manual platform rows.
+
 - [ ] EDT-01 Character, word, line, page, and document movement follows platform
   conventions.
 - [ ] EDT-02 Shift variants extend and shrink selection predictably.
@@ -131,7 +135,9 @@ Record kill method, recovery revisions, timing, and recovery directory:
 - [ ] EDT-06 Backspace and forward delete coalesce independently.
 - [ ] EDT-07 Paste, Replace All, EOL conversion, and formatting are distinct
   one-step undo transactions.
-- [ ] EDT-08 Undo and Redo restore content, caret, and selection.
+- [ ] EDT-08 Edit-menu Undo and Redo plus Ctrl+Z, Ctrl+Y, Cmd+Z, and
+  Shift+Cmd+Z restore content, caret, directional selection, and saved-content
+  state.
 - [ ] EDT-09 Find next, previous, wrap, case toggle, count, and no-match state work.
 - [ ] EDT-10 Replace respects selection or whole-document scope.
 - [ ] EDT-11 Go To Line validates bounds and reaches the expected logical line.
@@ -171,7 +177,8 @@ Required real readers:
 
 ## 8. Theme, display, and window behavior
 
-- [ ] UI-01 System, Light, and Dark work and persist.
+- [ ] UI-01 System, Light, Dark, Green Screen, and Amber Screen work and
+  persist. Returning from a specialty theme restores the standard palette.
 - [ ] UI-02 System theme changes are followed according to the platform contract.
 - [ ] UI-03 Selection, caret, focus, disabled controls, links, errors, and
   conflicts meet contrast expectations.
@@ -242,8 +249,11 @@ Attach the reproducible benchmark report rather than estimating subjectively.
 
 - [ ] MD-01 Text Mode schedules no Markdown work and exposes exact source.
 - [ ] MD-02 Switching between Text Mode and Markdown Mode changes no bytes.
-- [ ] MD-03 Selecting formatted content activates the matching source range,
-  keeps supported syntax visually formatted, and updates only that range.
+- [ ] MD-03 Clicking or dragging formatted content activates the matching
+  complete source range, keeps supported syntax visually formatted, and
+  updates only that range. Hidden delimiters, escapes, and character references
+  are never split by a visual caret or selection; unsafe synthesis falls back
+  to visible source.
 - [ ] MD-04 Each formatting action and safe fix is one minimal undo transaction.
 - [ ] MD-05 Diagnostics are revision-tagged, non-mutating, and accessible.
 - [ ] MD-06 Format shows an accurate diff and requires confirmation.
@@ -252,7 +262,7 @@ Attach the reproducible benchmark report rather than estimating subjectively.
 - [ ] MD-08 Remote images and HTML cause no network or execution; links require
   an explicit external-open action.
 - [ ] MD-09 Stale parser results never appear on a newer revision.
-- [ ] MD-10 Keyboard selection, IME, screen readers, high DPI, and both themes
+- [ ] MD-10 Keyboard selection, IME, screen readers, high DPI, and all themes
   pass the same document-editing expectations as Text Mode.
 - [ ] MD-11 Active and inactive Markdown use real heading and strong-emphasis
   font weights. Supported punctuation stays hidden, while a selected link

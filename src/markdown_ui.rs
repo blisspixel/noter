@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use eframe::egui;
+use noter::core::edit::{EditOrigin, Selection};
 use noter::core::line_endings::logical_lines;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag};
 
@@ -30,8 +31,11 @@ pub enum MarkdownProjectionLimit {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkdownShowOutcome {
     Unchanged,
-    Changed,
-    ProjectionLimitExceeded(MarkdownProjectionLimit),
+    Changed(EditOrigin),
+    ProjectionLimitExceeded {
+        limit: MarkdownProjectionLimit,
+        origin: EditOrigin,
+    },
 }
 
 impl MarkdownShowOutcome {
@@ -41,8 +45,15 @@ impl MarkdownShowOutcome {
 
     pub const fn projection_limit(self) -> Option<MarkdownProjectionLimit> {
         match self {
-            Self::ProjectionLimitExceeded(limit) => Some(limit),
-            Self::Unchanged | Self::Changed => None,
+            Self::ProjectionLimitExceeded { limit, .. } => Some(limit),
+            Self::Unchanged | Self::Changed(_) => None,
+        }
+    }
+
+    pub const fn origin(self) -> Option<EditOrigin> {
+        match self {
+            Self::Changed(origin) | Self::ProjectionLimitExceeded { origin, .. } => Some(origin),
+            Self::Unchanged => None,
         }
     }
 }
@@ -222,9 +233,10 @@ impl MarkdownCommand {
 struct ActiveBlock {
     source_range: Range<usize>,
     draft: String,
-    selection: Range<usize>,
+    selection: CharSelection,
     editor_serial: u64,
     dirty: bool,
+    pending_origin: Option<EditOrigin>,
     request_focus: bool,
 }
 
@@ -234,9 +246,10 @@ impl ActiveBlock {
         Self {
             source_range,
             draft,
-            selection: end..end,
+            selection: CharSelection::caret(end),
             editor_serial,
             dirty: false,
+            pending_origin: None,
             request_focus: true,
         }
     }
@@ -246,11 +259,102 @@ impl ActiveBlock {
     }
 
     fn apply(&mut self, command: MarkdownCommand) {
-        let result = apply_markdown_command(&self.draft, self.selection.clone(), command);
+        let result = apply_markdown_command(&self.draft, self.selection.ordered_range(), command);
         self.draft = result.text;
-        self.selection = result.selection;
+        self.selection = CharSelection::new(result.selection.start, result.selection.end);
         self.dirty = true;
+        self.pending_origin = Some(EditOrigin::MarkdownFormatting);
         self.request_focus = true;
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct CharSelection {
+    anchor: usize,
+    active: usize,
+}
+
+impl CharSelection {
+    const fn new(anchor: usize, active: usize) -> Self {
+        Self { anchor, active }
+    }
+
+    const fn caret(position: usize) -> Self {
+        Self::new(position, position)
+    }
+
+    fn ordered_range(self) -> Range<usize> {
+        self.anchor.min(self.active)..self.anchor.max(self.active)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct RenderedDragSelection {
+    widget_id: egui::Id,
+    anchor: usize,
+}
+
+struct RenderedActivation {
+    source_range: Range<usize>,
+    selection: CharSelection,
+}
+
+#[derive(Debug)]
+struct RenderedSourceMap {
+    source_span_for_rendered_character: Vec<Range<usize>>,
+}
+
+impl RenderedSourceMap {
+    fn source_selection(&self, rendered: CharSelection) -> CharSelection {
+        let rendered_count = self.source_span_for_rendered_character.len();
+        let anchor = rendered.anchor.min(rendered_count);
+        let active = rendered.active.min(rendered_count);
+        match anchor.cmp(&active) {
+            std::cmp::Ordering::Less => {
+                CharSelection::new(self.start_boundary(anchor), self.end_boundary(active))
+            }
+            std::cmp::Ordering::Equal => CharSelection::caret(self.start_boundary(anchor)),
+            std::cmp::Ordering::Greater => {
+                CharSelection::new(self.end_boundary(anchor), self.start_boundary(active))
+            }
+        }
+    }
+
+    fn start_boundary(&self, rendered_cursor: usize) -> usize {
+        self.source_span_for_rendered_character
+            .get(rendered_cursor)
+            .map(|span| span.start)
+            .or_else(|| {
+                self.source_span_for_rendered_character
+                    .last()
+                    .map(|span| span.end)
+            })
+            .unwrap_or(0)
+    }
+
+    fn end_boundary(&self, rendered_cursor: usize) -> usize {
+        rendered_cursor
+            .checked_sub(1)
+            .and_then(|index| self.source_span_for_rendered_character.get(index))
+            .map_or_else(|| self.start_boundary(0), |span| span.end)
+    }
+}
+
+struct MarkdownRenderProjection {
+    job: egui::text::LayoutJob,
+    source_map: RenderedSourceMap,
+}
+
+struct RenderedBlockLabel {
+    response: egui::Response,
+    galley: std::sync::Arc<egui::Galley>,
+    source_map: RenderedSourceMap,
+}
+
+impl RenderedBlockLabel {
+    fn cursor_at(&self, position: egui::Pos2) -> usize {
+        let local_position = position - self.response.rect.left_top();
+        self.galley.cursor_from_pos(local_position).index.into()
     }
 }
 
@@ -258,11 +362,15 @@ impl ActiveBlock {
 pub struct MarkdownEditor {
     active: Option<ActiveBlock>,
     next_editor_serial: u64,
+    rendered_drag: Option<RenderedDragSelection>,
+    finish_requested: bool,
 }
 
 impl MarkdownEditor {
     pub fn reset(&mut self) {
         self.active = None;
+        self.rendered_drag = None;
+        self.finish_requested = false;
         self.next_editor_serial = self.next_editor_serial.wrapping_add(1);
     }
 
@@ -301,7 +409,7 @@ impl MarkdownEditor {
                 .on_hover_text("Finish editing the active content")
                 .clicked()
             {
-                self.active = None;
+                self.finish_requested = true;
             }
         }
     }
@@ -323,7 +431,7 @@ impl MarkdownEditor {
                     }
                     ui.separator();
                     if ui.button("Done editing").clicked() {
-                        self.active = None;
+                        self.finish_requested = true;
                         ui.close();
                     }
                 });
@@ -342,11 +450,28 @@ impl MarkdownEditor {
 
     fn activate(&mut self, source_range: Range<usize>, draft: String) {
         self.next_editor_serial = self.next_editor_serial.wrapping_add(1);
+        self.rendered_drag = None;
         self.active = Some(ActiveBlock::new(
             source_range,
             draft,
             self.next_editor_serial,
         ));
+    }
+
+    fn activate_with_selection(
+        &mut self,
+        source_range: Range<usize>,
+        draft: String,
+        selection: CharSelection,
+    ) {
+        let character_count = draft.chars().count();
+        self.activate(source_range, draft);
+        if let Some(active) = self.active.as_mut() {
+            active.selection = CharSelection::new(
+                selection.anchor.min(character_count),
+                selection.active.min(character_count),
+            );
+        }
     }
 
     #[cfg(any(test, feature = "screenshot-qa"))]
@@ -359,16 +484,65 @@ impl MarkdownEditor {
             return;
         };
         self.activate(range, block.to_owned());
+        if let Some(active) = self.active.as_mut() {
+            active.request_focus = false;
+        }
+    }
+
+    #[cfg(feature = "screenshot-qa")]
+    pub(crate) fn suppress_capture_focus(&self, context: &egui::Context) {
+        if let Some(active) = self.active.as_ref() {
+            context.memory_mut(|memory| memory.surrender_focus(active.editor_id()));
+        }
     }
 
     pub const fn is_editing(&self) -> bool {
         self.active.is_some()
     }
 
+    pub fn source_selection(&self) -> Option<Selection> {
+        let active = self.active.as_ref()?;
+        let anchor = active
+            .source_range
+            .start
+            .checked_add(char_index_to_byte(&active.draft, active.selection.anchor))?;
+        let caret = active
+            .source_range
+            .start
+            .checked_add(char_index_to_byte(&active.draft, active.selection.active))?;
+        Some(Selection::new(anchor, caret))
+    }
+
+    pub fn restore_source_selection(&mut self, source: &str, selection: Selection) -> bool {
+        let ordered = selection.ordered_range();
+        let Some(range) = markdown_block_ranges(source).into_iter().find(|range| {
+            range.start <= ordered.start()
+                && ordered.end() <= range.end
+                && source.is_char_boundary(selection.anchor())
+                && source.is_char_boundary(selection.active())
+        }) else {
+            return false;
+        };
+        let Some(block) = source.get(range.clone()) else {
+            return false;
+        };
+        let anchor_byte = selection.anchor() - range.start;
+        let active_byte = selection.active() - range.start;
+        let anchor = block[..anchor_byte].chars().count();
+        let active = block[..active_byte].chars().count();
+        self.activate(range, block.to_owned());
+        if let Some(block) = self.active.as_mut() {
+            block.selection = CharSelection::new(anchor, active);
+        }
+        true
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, source: &mut String) -> MarkdownShowOutcome {
-        let mut changed = self.sync_pending_command(source);
-        if changed && let Some(limit) = markdown_projection_limit(source) {
-            return MarkdownShowOutcome::ProjectionLimitExceeded(limit);
+        let mut changed_origin = self.sync_pending_command(source);
+        if let Some(origin) = changed_origin
+            && let Some(limit) = markdown_projection_limit(source)
+        {
+            return MarkdownShowOutcome::ProjectionLimitExceeded { limit, origin };
         }
         let ranges = markdown_block_ranges(source);
 
@@ -376,18 +550,17 @@ impl MarkdownEditor {
             if self.active.is_none() {
                 self.activate(0..0, String::new());
             }
-            if self.show_active_editor(ui) {
-                let synchronized = self.sync_pending_command(source);
-                changed |= synchronized;
-                if synchronized && let Some(limit) = markdown_projection_limit(source) {
-                    return MarkdownShowOutcome::ProjectionLimitExceeded(limit);
+            if self.show_active_editor(ui)
+                && let Some(origin) = self.sync_pending_command(source)
+            {
+                changed_origin.get_or_insert(origin);
+                if let Some(limit) = markdown_projection_limit(source) {
+                    return MarkdownShowOutcome::ProjectionLimitExceeded { limit, origin };
                 }
             }
-            return if changed {
-                MarkdownShowOutcome::Changed
-            } else {
-                MarkdownShowOutcome::Unchanged
-            };
+            self.finish_active_if_requested();
+            return changed_origin
+                .map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed);
         }
 
         let active_range = self
@@ -395,6 +568,7 @@ impl MarkdownEditor {
             .as_ref()
             .map(|active| active.source_range.clone());
         let mut active_shown = false;
+        let mut pending_activation = None;
 
         for range in ranges {
             let overlaps_active = active_range
@@ -402,89 +576,161 @@ impl MarkdownEditor {
                 .is_some_and(|active| ranges_overlap(active, &range));
             if overlaps_active {
                 if !active_shown {
-                    changed |= self.show_active_editor(ui);
+                    let _ = self.show_active_editor(ui);
                     active_shown = true;
                 }
                 continue;
             }
-            self.show_rendered_block(ui, source, range);
-        }
-
-        if self.active.is_some() && !active_shown {
-            self.active = None;
-        }
-        if self.active.as_ref().is_some_and(|active| active.dirty) {
-            let synchronized = self.sync_pending_command(source);
-            changed |= synchronized;
-            if synchronized && let Some(limit) = markdown_projection_limit(source) {
-                return MarkdownShowOutcome::ProjectionLimitExceeded(limit);
+            if let Some(activation) = self.show_rendered_block(ui, source, range) {
+                // The newly activated range was rendered as formatted content
+                // this pass and becomes its TextEdit on the next pass.
+                pending_activation = Some(activation);
             }
         }
-        if changed {
-            MarkdownShowOutcome::Changed
-        } else {
-            MarkdownShowOutcome::Unchanged
+        if ui.input(|input| input.pointer.any_released()) {
+            self.rendered_drag = None;
+        }
+
+        if self.active.is_some() && !active_shown && pending_activation.is_none() {
+            self.active = None;
+        }
+        let pending_replacement = self.active.as_ref().and_then(|active| {
+            active
+                .dirty
+                .then(|| (active.source_range.clone(), active.draft.len()))
+        });
+        let synchronized = self.sync_pending_command(source);
+        if let Some(origin) = synchronized {
+            changed_origin.get_or_insert(origin);
+            if let Some(limit) = markdown_projection_limit(source) {
+                return MarkdownShowOutcome::ProjectionLimitExceeded { limit, origin };
+            }
+        }
+        if let Some(activation) = pending_activation {
+            let source_range = if synchronized.is_some() {
+                pending_replacement.map_or_else(
+                    || activation.source_range.clone(),
+                    |(replaced, replacement_len)| {
+                        remap_disjoint_range(
+                            activation.source_range.clone(),
+                            &replaced,
+                            replacement_len,
+                        )
+                    },
+                )
+            } else {
+                activation.source_range
+            };
+            if let Some(block) = source.get(source_range.clone()) {
+                self.activate_with_selection(source_range, block.to_owned(), activation.selection);
+            }
+        }
+        self.finish_active_if_requested();
+        changed_origin.map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed)
+    }
+
+    fn finish_active_if_requested(&mut self) {
+        if self.finish_requested {
+            self.active = None;
+            self.rendered_drag = None;
+            self.finish_requested = false;
         }
     }
 
-    fn sync_pending_command(&mut self, source: &mut String) -> bool {
-        let Some(active) = self.active.as_mut().filter(|active| active.dirty) else {
-            return false;
-        };
+    fn sync_pending_command(&mut self, source: &mut String) -> Option<EditOrigin> {
+        let active = self.active.as_mut().filter(|active| active.dirty)?;
         if active.source_range.end > source.len()
             || !source.is_char_boundary(active.source_range.start)
             || !source.is_char_boundary(active.source_range.end)
         {
             self.active = None;
-            return false;
+            return None;
         }
         source.replace_range(active.source_range.clone(), &active.draft);
         active.source_range.end = active.source_range.start + active.draft.len();
         active.dirty = false;
-        true
+        Some(
+            active
+                .pending_origin
+                .take()
+                .unwrap_or(EditOrigin::MarkdownInput),
+        )
     }
 
-    fn show_rendered_block(&mut self, ui: &mut egui::Ui, source: &str, range: Range<usize>) {
+    fn show_rendered_block(
+        &mut self,
+        ui: &mut egui::Ui,
+        source: &str,
+        range: Range<usize>,
+    ) -> Option<RenderedActivation> {
         let block = &source[range.clone()];
         let frame = egui::Frame::NONE
             .inner_margin(egui::Margin::symmetric(8, 2))
             .corner_radius(4);
-        let response = frame
+        let label = frame
             .show(ui, |ui| {
-                if is_reference_definition(block) {
-                    ui.label(egui::RichText::new(block).monospace());
+                let projection = if is_reference_definition(block) {
+                    reference_definition_projection(block, ui.style())
                 } else {
-                    let mut job = markdown_render_layout(block, ui.style());
-                    job.wrap.max_width = ui.available_width();
-                    let label = egui::Label::new(job).wrap().sense(egui::Sense::click());
-                    if is_block_quote(block) {
-                        let response = ui
-                            .horizontal_top(|ui| {
-                                ui.add_space(12.0);
-                                ui.add(label)
-                            })
-                            .inner;
-                        ui.painter().vline(
-                            response.rect.left() - 8.0,
-                            response.rect.y_range(),
-                            egui::Stroke::new(2.0, ui.visuals().weak_text_color()),
-                        );
-                    } else {
-                        ui.add(label);
-                    }
+                    markdown_render_projection(block, ui.style())
+                };
+                if is_block_quote(block) {
+                    let label = ui
+                        .horizontal_top(|ui| {
+                            ui.add_space(12.0);
+                            show_rendered_projection(ui, projection)
+                        })
+                        .inner;
+                    ui.painter().vline(
+                        label.response.rect.left() - 8.0,
+                        label.response.rect.y_range(),
+                        egui::Stroke::new(2.0, ui.visuals().weak_text_color()),
+                    );
+                    label
+                } else {
+                    show_rendered_projection(ui, projection)
                 }
             })
-            .response
-            .interact(egui::Sense::click());
+            .inner;
 
-        response
+        label
+            .response
             .clone()
             .on_hover_cursor(egui::CursorIcon::Text)
-            .on_hover_text("Click to edit this formatted content");
-        if response.clicked() {
-            self.activate(range, block.to_owned());
+            .on_hover_text("Drag to select or click to edit this formatted content");
+
+        if label.response.drag_started_by(egui::PointerButton::Primary)
+            && let Some(position) = ui.input(|input| input.pointer.press_origin())
+        {
+            self.rendered_drag = Some(RenderedDragSelection {
+                widget_id: label.response.id,
+                anchor: label.cursor_at(position),
+            });
         }
+        let rendered_selection = if label.response.drag_stopped_by(egui::PointerButton::Primary) {
+            let drag = self.rendered_drag.take();
+            let position = ui.input(|input| input.pointer.latest_pos());
+            drag.filter(|drag| drag.widget_id == label.response.id)
+                .zip(position)
+                .map(|(drag, position)| CharSelection::new(drag.anchor, label.cursor_at(position)))
+        } else if label.response.clicked_by(egui::PointerButton::Primary) {
+            label
+                .response
+                .interact_pointer_pos()
+                .map(|position| CharSelection::caret(label.cursor_at(position)))
+        } else {
+            None
+        };
+        let activation = rendered_selection.map(|selection| {
+            let source_selection = label.source_map.source_selection(selection);
+            RenderedActivation {
+                source_range: range,
+                selection: source_selection,
+            }
+        });
+
         ui.add_space(2.0);
+        activation
     }
 
     fn show_active_editor(&mut self, ui: &mut egui::Ui) -> bool {
@@ -493,7 +739,21 @@ impl MarkdownEditor {
         };
         let rows = logical_lines(&active.draft).count().max(1) + 1;
         let editor_id = active.editor_id();
-        let selection = active.selection.clone();
+        let selection = active.selection.ordered_range();
+        let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
+        let restore_focus = active.request_focus;
+        if restore_focus {
+            let anchor = egui::text::CCursor::new(active.selection.anchor);
+            let caret = egui::text::CCursor::new(active.selection.active);
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(anchor, caret)));
+            ui.memory_mut(|memory| memory.request_focus(editor_id));
+            active.request_focus = false;
+        }
+        state.clear_undoer();
+        state.store(ui.ctx(), editor_id);
+
         let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
             let source = buffer.as_str();
             let selection =
@@ -512,27 +772,29 @@ impl MarkdownEditor {
             .margin(egui::Margin::symmetric(8, 2))
             .layouter(&mut layouter);
         let mut output = editor.show(ui);
-
-        if active.request_focus {
+        if restore_focus {
+            // Toolbar and mode clicks can surrender the focus requested before
+            // TextEdit processes input. Reassert it after that pointer pass.
             output.response.request_focus();
-            let start = egui::text::CCursor::new(active.selection.start);
-            let end = egui::text::CCursor::new(active.selection.end);
-            output
-                .state
-                .cursor
-                .set_char_range(Some(egui::text::CCursorRange::two(start, end)));
-            output.state.store(ui.ctx(), output.response.id);
-            active.request_focus = false;
         }
         if let Some(cursor_range) = output.cursor_range {
-            let range = cursor_range.as_sorted_char_range();
-            active.selection = range.start.0..range.end.0;
+            active.selection = CharSelection::new(
+                cursor_range.secondary.index.into(),
+                cursor_range.primary.index.into(),
+            );
         }
 
         let changed = output.response.changed();
         if changed {
             active.dirty = true;
+            active
+                .pending_origin
+                .get_or_insert(EditOrigin::MarkdownInput);
         }
+        // Shared document history owns Undo and Redo. Discard egui's whole-string
+        // snapshots so an active block cannot retain an independent history.
+        output.state.clear_undoer();
+        output.state.store(ui.ctx(), output.response.id);
         changed
     }
 }
@@ -541,6 +803,16 @@ impl MarkdownEditor {
 struct MarkdownSourceStyle {
     flags: u8,
     heading_level: u8,
+}
+
+struct SynthesizedTextSpan {
+    source_bytes: Range<usize>,
+    rendered: String,
+}
+
+struct MarkdownSourceAnalysis {
+    styles: Vec<MarkdownSourceStyle>,
+    synthesized_text: Vec<SynthesizedTextSpan>,
 }
 
 const STYLE_VISIBLE: u8 = 1 << 0;
@@ -606,14 +878,21 @@ fn markdown_edit_layout(
     job
 }
 
+#[cfg(test)]
 fn markdown_render_layout(source: &str, style: &egui::Style) -> egui::text::LayoutJob {
-    let source_styles = markdown_source_styles(source);
+    markdown_render_projection(source, style).job
+}
+
+fn markdown_render_projection(source: &str, style: &egui::Style) -> MarkdownRenderProjection {
+    let analysis = markdown_source_analysis(source);
+    let source_styles = analysis.styles;
     let mut job = egui::text::LayoutJob::default();
     let mut run = String::new();
     let mut run_style = None;
     let mut suppress_quote_space = false;
+    let mut source_span_for_rendered_character = Vec::new();
 
-    for (index, character) in source.char_indices() {
+    for (source_character, (index, character)) in source.char_indices().enumerate() {
         let source_style = source_styles[index];
         if !source_style.has(STYLE_VISIBLE) {
             append_render_run(&mut job, &mut run, run_style.take(), style);
@@ -632,9 +911,112 @@ fn markdown_render_layout(source: &str, style: &egui::Style) -> egui::text::Layo
         }
         run_style = Some(source_style);
         run.push(formatted_block_marker(source, index, character));
+        source_span_for_rendered_character.push(source_character..source_character + 1);
     }
     append_render_run(&mut job, &mut run, run_style, style);
-    job
+    extend_synthesized_source_spans(
+        source,
+        &mut source_span_for_rendered_character,
+        &analysis.synthesized_text,
+    );
+    debug_assert_eq!(
+        job.text.chars().count(),
+        source_span_for_rendered_character.len()
+    );
+    MarkdownRenderProjection {
+        job,
+        source_map: RenderedSourceMap {
+            source_span_for_rendered_character,
+        },
+    }
+}
+
+fn reference_definition_projection(source: &str, style: &egui::Style) -> MarkdownRenderProjection {
+    let mut job = egui::text::LayoutJob::default();
+    let format = egui::TextFormat {
+        font_id: style.text_styles[&egui::TextStyle::Monospace].clone(),
+        color: style.visuals.text_color(),
+        ..Default::default()
+    };
+    job.append(source, 0.0, format);
+    MarkdownRenderProjection {
+        job,
+        source_map: RenderedSourceMap {
+            source_span_for_rendered_character: (0..source.chars().count())
+                .map(|character| character..character + 1)
+                .collect(),
+        },
+    }
+}
+
+fn extend_synthesized_source_spans(
+    source: &str,
+    spans: &mut [Range<usize>],
+    synthesized_text: &[SynthesizedTextSpan],
+) {
+    let characters = source.chars().collect::<Vec<_>>();
+    let source_boundaries = source
+        .char_indices()
+        .map(|(byte, _)| byte)
+        .chain(std::iter::once(source.len()))
+        .collect::<Vec<_>>();
+    let mut visible = vec![false; characters.len()];
+    for span in spans.iter() {
+        if let Some(is_visible) = visible.get_mut(span.start) {
+            *is_visible = true;
+        }
+    }
+
+    for synthesized in synthesized_text {
+        let (Ok(source_start), Ok(source_end)) = (
+            source_boundaries.binary_search(&synthesized.source_bytes.start),
+            source_boundaries.binary_search(&synthesized.source_bytes.end),
+        ) else {
+            continue;
+        };
+        let rendered_start = spans.partition_point(|span| span.start < source_start);
+        let rendered_end = spans.partition_point(|span| span.start < source_end);
+        let projected = spans[rendered_start..rendered_end]
+            .iter()
+            .filter_map(|span| characters.get(span.start))
+            .collect::<String>();
+        if projected == synthesized.rendered.as_str() {
+            for span in &mut spans[rendered_start..rendered_end] {
+                *span = source_start..source_end;
+            }
+        }
+    }
+
+    for span in spans {
+        if span.start > 0
+            && characters.get(span.start - 1) == Some(&'\\')
+            && !visible[span.start - 1]
+        {
+            span.start -= 1;
+        }
+    }
+}
+
+fn show_rendered_projection(
+    ui: &mut egui::Ui,
+    projection: MarkdownRenderProjection,
+) -> RenderedBlockLabel {
+    let MarkdownRenderProjection {
+        mut job,
+        source_map,
+    } = projection;
+    job.wrap.max_width = ui.available_width();
+    let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+    let response = ui.add(
+        egui::Label::new(galley.clone())
+            .selectable(true)
+            .sense(egui::Sense::click_and_drag()),
+    );
+    RenderedBlockLabel {
+        response,
+        galley,
+        source_map,
+    }
 }
 
 fn append_render_run(
@@ -711,7 +1093,12 @@ fn semantic_target_at_selection(source: &str, selection: &Range<usize>) -> Optio
 }
 
 fn markdown_source_styles(source: &str) -> Vec<MarkdownSourceStyle> {
+    markdown_source_analysis(source).styles
+}
+
+fn markdown_source_analysis(source: &str) -> MarkdownSourceAnalysis {
     let mut styles = vec![MarkdownSourceStyle::default(); source.len()];
+    let mut synthesized_text = Vec::new();
     let mut current = MarkdownSourceStyle::default();
     let mut stack = Vec::new();
 
@@ -728,6 +1115,15 @@ fn markdown_source_styles(source: &str) -> Vec<MarkdownSourceStyle> {
                 current = stack.pop().unwrap_or_default();
             }
             Event::Text(text) => {
+                if source
+                    .get(range.clone())
+                    .is_some_and(|raw| raw != text.as_ref())
+                {
+                    synthesized_text.push(SynthesizedTextSpan {
+                        source_bytes: range.clone(),
+                        rendered: text.to_string(),
+                    });
+                }
                 reveal_event_text(source, &mut styles, range, text.as_ref(), current);
             }
             Event::Code(code) => {
@@ -741,7 +1137,10 @@ fn markdown_source_styles(source: &str) -> Vec<MarkdownSourceStyle> {
             _ => {}
         }
     }
-    styles
+    MarkdownSourceAnalysis {
+        styles,
+        synthesized_text,
+    }
 }
 
 const fn apply_markdown_tag(style: &mut MarkdownSourceStyle, tag: &Tag<'_>) {
@@ -1086,18 +1485,74 @@ fn bounded_char_range(source: &str, range: Range<usize>) -> Range<usize> {
 }
 
 fn char_range_to_byte_range(source: &str, range: Range<usize>) -> Range<usize> {
-    fn byte_index(source: &str, char_index: usize) -> usize {
-        source
-            .char_indices()
-            .nth(char_index)
-            .map_or(source.len(), |(index, _)| index)
+    char_index_to_byte(source, range.start)..char_index_to_byte(source, range.end)
+}
+
+fn char_index_to_byte(source: &str, char_index: usize) -> usize {
+    source
+        .char_indices()
+        .nth(char_index)
+        .map_or(source.len(), |(index, _)| index)
+}
+
+fn remap_disjoint_range(
+    range: Range<usize>,
+    replaced: &Range<usize>,
+    replacement_len: usize,
+) -> Range<usize> {
+    if range.end <= replaced.start {
+        return range;
     }
-    byte_index(source, range.start)..byte_index(source, range.end)
+    if replaced.end <= range.start {
+        let removed_len = replaced.end - replaced.start;
+        if replacement_len >= removed_len {
+            let shift = replacement_len - removed_len;
+            return (range.start + shift)..(range.end + shift);
+        }
+        let shift = removed_len - replacement_len;
+        return (range.start - shift)..(range.end - shift);
+    }
+
+    debug_assert!(
+        false,
+        "rendered activation must not overlap the active block"
+    );
+    range
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn first_text_rect(shape: &egui::Shape) -> Option<egui::Rect> {
+        match shape {
+            egui::Shape::Text(text) => Some(text.visual_bounding_rect()),
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(first_text_rect),
+            _ => None,
+        }
+    }
+
+    fn text_rect(shape: &egui::Shape, expected: &str) -> Option<egui::Rect> {
+        match shape {
+            egui::Shape::Text(text) if text.galley.job.text == expected => {
+                Some(text.visual_bounding_rect())
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| text_rect(shape, expected)),
+            _ => None,
+        }
+    }
+
+    fn append_primary_click(input: &mut egui::RawInput, position: egui::Pos2) {
+        input.events.push(egui::Event::PointerMoved(position));
+        for pressed in [true, false] {
+            input.events.push(egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+    }
 
     #[test]
     fn parser_groups_nested_list_as_one_editable_block() {
@@ -1357,6 +1812,297 @@ mod tests {
         assert_eq!(source, original);
         assert!(!editor.is_editing());
         assert!(!output.shapes.is_empty());
+    }
+
+    #[test]
+    fn clicking_formatted_content_keeps_its_editor_active() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "Select this text".to_owned();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            assert!(!editor.show(ui, &mut source).changed());
+        });
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|shape| first_text_rect(&shape.shape))
+            .expect("formatted content should emit a text shape")
+            .center();
+
+        let mut press = egui::RawInput::default();
+        press.events.push(egui::Event::PointerMoved(position));
+        press.events.push(egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = context.run_ui(press, |ui| {
+            ui.set_width(800.0);
+            let _ = editor.show(ui, &mut source);
+        });
+
+        let mut release = egui::RawInput::default();
+        release.events.push(egui::Event::PointerMoved(position));
+        release.events.push(egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = context.run_ui(release, |ui| {
+            ui.set_width(800.0);
+            let _ = editor.show(ui, &mut source);
+        });
+
+        assert!(editor.is_editing());
+        assert_eq!(source, "Select this text");
+    }
+
+    #[test]
+    fn first_drag_on_formatted_content_becomes_an_actionable_source_selection() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "Select this text directly".to_owned();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            assert!(!editor.show(ui, &mut source).changed());
+        });
+        let rect = output
+            .shapes
+            .iter()
+            .find_map(|shape| first_text_rect(&shape.shape))
+            .expect("formatted content should emit a text shape");
+        let start = egui::pos2(rect.width().mul_add(0.30, rect.left()), rect.center().y);
+        let end = egui::pos2(rect.width().mul_add(0.72, rect.left()), rect.center().y);
+
+        let mut press = egui::RawInput::default();
+        press.events.push(egui::Event::PointerMoved(start));
+        press.events.push(egui::Event::PointerButton {
+            pos: start,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = context.run_ui(press, |ui| {
+            ui.set_width(800.0);
+            let _ = editor.show(ui, &mut source);
+        });
+
+        let mut drag = egui::RawInput::default();
+        drag.events.push(egui::Event::PointerMoved(end));
+        let _ = context.run_ui(drag, |ui| {
+            ui.set_width(800.0);
+            let _ = editor.show(ui, &mut source);
+        });
+
+        let mut release = egui::RawInput::default();
+        release.events.push(egui::Event::PointerMoved(end));
+        release.events.push(egui::Event::PointerButton {
+            pos: end,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = context.run_ui(release, |ui| {
+            ui.set_width(800.0);
+            let _ = editor.show(ui, &mut source);
+        });
+
+        let selection = editor
+            .source_selection()
+            .expect("releasing the drag should activate its source range");
+        assert_ne!(selection.anchor(), selection.active());
+        assert!(selection.anchor() <= source.len());
+        assert!(selection.active() <= source.len());
+
+        editor.apply_command(MarkdownCommand::Bold);
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            assert_eq!(
+                editor.show(ui, &mut source),
+                MarkdownShowOutcome::Changed(EditOrigin::MarkdownFormatting)
+            );
+        });
+        assert_eq!(source.matches("**").count(), 2);
+    }
+
+    #[test]
+    fn rendered_selection_mapping_excludes_hidden_markdown_delimiters() {
+        let projection = markdown_render_projection("Make **this** bold", &egui::Style::default());
+        assert_eq!(projection.job.text, "Make this bold");
+        assert_eq!(
+            projection
+                .source_map
+                .source_selection(CharSelection::new(9, 5)),
+            CharSelection::new(11, 7)
+        );
+    }
+
+    #[test]
+    fn rendered_entity_mapping_never_places_a_caret_inside_source_syntax() {
+        for (source, rendered) in [
+            ("&amp;", "&"),
+            ("&#38;", "&"),
+            ("&#x26;", "&"),
+            ("&semi;", ";"),
+            ("&fjlig;", "fj"),
+            ("&#53;", "5"),
+            ("&#x35;", "5"),
+        ] {
+            let projection = markdown_render_projection(source, &egui::Style::default());
+            assert_eq!(projection.job.text, rendered);
+            let source_end = source.chars().count();
+            let rendered_end = rendered.chars().count();
+            assert_eq!(
+                projection
+                    .source_map
+                    .source_selection(CharSelection::caret(rendered_end)),
+                CharSelection::caret(source_end)
+            );
+            for rendered_character in 0..rendered_end {
+                assert_eq!(
+                    projection.source_map.source_selection(CharSelection::new(
+                        rendered_character,
+                        rendered_character + 1,
+                    )),
+                    CharSelection::new(0, source_end)
+                );
+            }
+            for rendered_cursor in 0..=rendered_end {
+                let source_cursor = projection
+                    .source_map
+                    .source_selection(CharSelection::caret(rendered_cursor))
+                    .active;
+                assert!(matches!(source_cursor, 0) || source_cursor == source_end);
+            }
+        }
+
+        let source = "A &semi; &fjlig; &#53; Z";
+        let projection = markdown_render_projection(source, &egui::Style::default());
+        assert_eq!(projection.job.text, "A ; fj 5 Z");
+        for (entity, rendered) in [("&semi;", ";"), ("&fjlig;", "fj"), ("&#53;", "5")] {
+            let source_byte = source.find(entity).expect("fixture entity should exist");
+            let source_start = source[..source_byte].chars().count();
+            let source_end = source_start + entity.chars().count();
+            let rendered_byte = projection
+                .job
+                .text
+                .find(rendered)
+                .expect("rendered entity should exist");
+            let rendered_start = projection.job.text[..rendered_byte].chars().count();
+            let rendered_end = rendered_start + rendered.chars().count();
+            assert_eq!(
+                projection
+                    .source_map
+                    .source_selection(CharSelection::new(rendered_start, rendered_end)),
+                CharSelection::new(source_start, source_end)
+            );
+        }
+    }
+
+    #[test]
+    fn synthesized_text_without_a_source_substring_remains_visible_and_editable_as_source() {
+        let source = "&copy;";
+        let projection = markdown_render_projection(source, &egui::Style::default());
+
+        assert_eq!(projection.job.text, source);
+        assert_eq!(
+            projection
+                .source_map
+                .source_selection(CharSelection::new(1, 5)),
+            CharSelection::new(1, 5)
+        );
+    }
+
+    #[test]
+    fn formatting_a_rendered_entity_wraps_the_complete_source_entity() {
+        let context = egui::Context::default();
+        for (entity, rendered) in [
+            ("&amp;", "&"),
+            ("&semi;", ";"),
+            ("&fjlig;", "fj"),
+            ("&#53;", "5"),
+            ("&#x35;", "5"),
+        ] {
+            let mut editor = MarkdownEditor::default();
+            let mut source = entity.to_owned();
+            let projection = markdown_render_projection(&source, &egui::Style::default());
+            let selection = projection
+                .source_map
+                .source_selection(CharSelection::new(0, rendered.chars().count()));
+            editor.activate_with_selection(0..source.len(), source.clone(), selection);
+            editor.apply_command(MarkdownCommand::Bold);
+
+            let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(800.0);
+                assert_eq!(
+                    editor.show(ui, &mut source),
+                    MarkdownShowOutcome::Changed(EditOrigin::MarkdownFormatting)
+                );
+            });
+
+            assert_eq!(source, format!("**{entity}**"));
+        }
+    }
+
+    #[test]
+    fn typing_after_a_rendered_entity_inserts_after_its_complete_source() {
+        let context = egui::Context::default();
+        for (entity, rendered) in [
+            ("&amp;", "&"),
+            ("&semi;", ";"),
+            ("&fjlig;", "fj"),
+            ("&#53;", "5"),
+            ("&#x35;", "5"),
+        ] {
+            let mut editor = MarkdownEditor::default();
+            let mut source = entity.to_owned();
+            let projection = markdown_render_projection(&source, &egui::Style::default());
+            let selection = projection
+                .source_map
+                .source_selection(CharSelection::caret(rendered.chars().count()));
+            editor.activate_with_selection(0..source.len(), source.clone(), selection);
+
+            let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(800.0);
+                assert!(!editor.show(ui, &mut source).changed());
+            });
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::Text("X".to_owned()));
+            let _ = context.run_ui(input, |ui| {
+                ui.set_width(800.0);
+                assert_eq!(
+                    editor.show(ui, &mut source),
+                    MarkdownShowOutcome::Changed(EditOrigin::MarkdownInput)
+                );
+            });
+
+            assert_eq!(source, format!("{entity}X"));
+        }
+    }
+
+    #[test]
+    fn text_selection_transferred_to_markdown_can_be_made_bold() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "Make this bold".to_owned();
+        let selected = Selection::new(5, 9);
+        assert!(editor.restore_source_selection(&source, selected));
+
+        editor.apply_command(MarkdownCommand::Bold);
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            assert_eq!(
+                editor.show(ui, &mut source),
+                MarkdownShowOutcome::Changed(EditOrigin::MarkdownFormatting)
+            );
+        });
+
+        assert!(!output.shapes.is_empty());
+        assert_eq!(source, "Make **this** bold");
+        assert_eq!(editor.source_selection(), Some(Selection::new(7, 11)));
     }
 
     #[test]
@@ -1662,29 +2408,52 @@ mod tests {
             .expect("first block should be active");
         assert_eq!(active.source_range, 0..9);
         assert_eq!(active.draft, "# Heading");
+        assert!(!active.request_focus);
+
+        let context = egui::Context::default();
+        let editor_id = active.editor_id();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        assert!(context.memory(|memory| memory.has_focus(editor_id)));
+        editor.suppress_capture_focus(&context);
+        assert!(!context.memory(|memory| memory.has_focus(editor_id)));
     }
 
     #[test]
     fn active_block_command_updates_source_and_renders_editor() {
         let context = egui::Context::default();
         let mut active = ActiveBlock::new(0..4, "text".to_owned(), 1);
-        active.selection = 0..4;
+        active.selection = CharSelection::new(0, 4);
         active.apply(MarkdownCommand::Bold);
         let mut editor = MarkdownEditor {
             active: Some(active),
             next_editor_serial: 1,
+            rendered_drag: None,
+            finish_requested: false,
         };
         let mut source = "text".to_owned();
 
+        let mut outcome = MarkdownShowOutcome::Unchanged;
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(800.0);
             editor.toolbar(ui);
-            assert!(editor.show(ui, &mut source).changed());
+            outcome = editor.show(ui, &mut source);
         });
 
         assert_eq!(source, "**text**");
+        assert_eq!(outcome.origin(), Some(EditOrigin::MarkdownFormatting));
         assert!(editor.is_editing());
         assert!(!output.shapes.is_empty());
+    }
+
+    #[test]
+    fn source_selection_restoration_preserves_unicode_boundaries_and_direction() {
+        let source = "# é\n\nParagraph";
+        let selection = Selection::new(4, 2);
+        let mut editor = MarkdownEditor::default();
+
+        assert!(editor.restore_source_selection(source, selection));
+        assert_eq!(editor.source_selection(), Some(selection));
+        assert!(editor.is_editing());
     }
 
     #[test]
@@ -1692,11 +2461,13 @@ mod tests {
         let mut source = format!("{}\n", "x".repeat(1_023)).repeat(63) + &"x".repeat(1_024);
         assert_eq!(markdown_projection_limit(&source), None);
         let mut active = ActiveBlock::new(0..source.len(), source.clone(), 1);
-        active.selection = 0..source.len();
+        active.selection = CharSelection::new(0, source.len());
         active.apply(MarkdownCommand::Quote);
         let mut editor = MarkdownEditor {
             active: Some(active),
             next_editor_serial: 1,
+            rendered_drag: None,
+            finish_requested: false,
         };
         let context = egui::Context::default();
         let mut outcome = MarkdownShowOutcome::Unchanged;
@@ -1708,7 +2479,10 @@ mod tests {
 
         assert_eq!(
             outcome,
-            MarkdownShowOutcome::ProjectionLimitExceeded(MarkdownProjectionLimit::BlockBytes)
+            MarkdownShowOutcome::ProjectionLimitExceeded {
+                limit: MarkdownProjectionLimit::BlockBytes,
+                origin: EditOrigin::MarkdownFormatting,
+            }
         );
         assert_eq!(
             markdown_projection_limit(&source),
@@ -1720,10 +2494,12 @@ mod tests {
     fn direct_edit_of_an_early_block_commits_after_later_blocks_render() {
         let context = egui::Context::default();
         let mut active = ActiveBlock::new(0..3, "# A".to_owned(), 1);
-        active.selection = 0..3;
+        active.selection = CharSelection::new(0, 3);
         let mut editor = MarkdownEditor {
             active: Some(active),
             next_editor_serial: 1,
+            rendered_drag: None,
+            finish_requested: false,
         };
         let mut source = "# A\n\nParagraph\n".to_owned();
 
@@ -1744,6 +2520,135 @@ mod tests {
     }
 
     #[test]
+    fn same_frame_input_commits_before_a_later_rendered_block_activates() {
+        let context = egui::Context::default();
+        let mut active = ActiveBlock::new(0..3, "# A".to_owned(), 1);
+        active.selection = CharSelection::new(0, 3);
+        let mut editor = MarkdownEditor {
+            active: Some(active),
+            next_editor_serial: 1,
+            rendered_drag: None,
+            finish_requested: false,
+        };
+        let mut source = "# A\n\nParagraph\n".to_owned();
+
+        let initial = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
+        });
+        let paragraph = initial
+            .shapes
+            .iter()
+            .find_map(|shape| text_rect(&shape.shape, "Paragraph"))
+            .expect("the later rendered block should have a text shape")
+            .center();
+
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Text("x".to_owned()));
+        append_primary_click(&mut input, paragraph);
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(800.0);
+            assert_eq!(
+                editor.show(ui, &mut source),
+                MarkdownShowOutcome::Changed(EditOrigin::MarkdownInput)
+            );
+        });
+
+        assert_eq!(source, "x\n\nParagraph\n");
+        let active = editor
+            .active
+            .as_ref()
+            .expect("the clicked rendered block should become active");
+        assert_eq!(active.source_range, 3..12);
+        assert_eq!(active.draft, "Paragraph");
+    }
+
+    #[test]
+    fn same_frame_input_commits_before_an_earlier_rendered_block_activates() {
+        let context = egui::Context::default();
+        let mut active = ActiveBlock::new(11..14, "# A".to_owned(), 1);
+        active.selection = CharSelection::new(0, 3);
+        let mut editor = MarkdownEditor {
+            active: Some(active),
+            next_editor_serial: 1,
+            rendered_drag: None,
+            finish_requested: false,
+        };
+        let mut source = "Paragraph\n\n# A".to_owned();
+
+        let initial = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
+        });
+        let paragraph = initial
+            .shapes
+            .iter()
+            .find_map(|shape| text_rect(&shape.shape, "Paragraph"))
+            .expect("the earlier rendered block should have a text shape")
+            .center();
+
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Text("x".to_owned()));
+        append_primary_click(&mut input, paragraph);
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(800.0);
+            assert_eq!(
+                editor.show(ui, &mut source),
+                MarkdownShowOutcome::Changed(EditOrigin::MarkdownInput)
+            );
+        });
+
+        assert_eq!(source, "Paragraph\n\nx");
+        let active = editor
+            .active
+            .as_ref()
+            .expect("the clicked rendered block should become active");
+        assert_eq!(active.source_range, 0..9);
+        assert_eq!(active.draft, "Paragraph");
+    }
+
+    #[test]
+    fn same_frame_input_commits_before_done_finishes_editing() {
+        let context = egui::Context::default();
+        let mut active = ActiveBlock::new(0..3, "# A".to_owned(), 1);
+        active.selection = CharSelection::new(0, 3);
+        let mut editor = MarkdownEditor {
+            active: Some(active),
+            next_editor_serial: 1,
+            rendered_drag: None,
+            finish_requested: false,
+        };
+        let mut source = "# A".to_owned();
+
+        let initial = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            editor.toolbar(ui);
+            assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
+        });
+        let done = initial
+            .shapes
+            .iter()
+            .find_map(|shape| text_rect(&shape.shape, "Done"))
+            .expect("the expanded toolbar should have a Done button")
+            .center();
+
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Text("x".to_owned()));
+        append_primary_click(&mut input, done);
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(800.0);
+            editor.toolbar(ui);
+            assert_eq!(
+                editor.show(ui, &mut source),
+                MarkdownShowOutcome::Changed(EditOrigin::MarkdownInput)
+            );
+        });
+
+        assert_eq!(source, "x");
+        assert!(!editor.is_editing());
+    }
+
+    #[test]
     fn each_activated_block_gets_an_isolated_undo_identity() {
         let mut editor = MarkdownEditor::default();
         editor.activate(0..3, "one".to_owned());
@@ -1761,5 +2666,40 @@ mod tests {
             .editor_id();
 
         assert_ne!(first_id, second_id);
+    }
+
+    #[test]
+    fn active_editor_discards_widget_local_undo_snapshots() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        editor.activate(0..7, "bounded".to_owned());
+        let editor_id = editor
+            .active
+            .as_ref()
+            .expect("the fixture should have an active block")
+            .editor_id();
+        let mut source = "bounded".to_owned();
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(640.0);
+            let _ = editor.show(ui, &mut source);
+        });
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Text("!".to_owned()));
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(640.0);
+            assert!(editor.show(ui, &mut source).changed());
+        });
+        assert_eq!(source, "bounded!");
+
+        let state = egui::TextEdit::load_state(&context, editor_id)
+            .expect("the rendered editor should persist its state");
+        let cursor = state
+            .cursor
+            .char_range()
+            .unwrap_or_else(|| egui::text::CCursorRange::one(egui::text::CCursor::new(0)));
+        let current = (cursor, source);
+        assert!(!state.undoer().has_undo(&current));
+        assert!(!state.undoer().has_redo(&current));
     }
 }

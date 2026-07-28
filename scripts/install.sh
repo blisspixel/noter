@@ -107,7 +107,7 @@ else
 fi
 [ "$invalid_status" -eq 2 ] &&
     [ ! -s "$invalid_stdout" ] &&
-    grep -F 'unknown theme `invalid`; expected system, light, or dark' "$invalid_stderr" >/dev/null &&
+    grep -F 'unknown theme `invalid`; expected system, light, dark, green, or amber' "$invalid_stderr" >/dev/null &&
     grep -F 'Usage:' "$invalid_stderr" >/dev/null || {
     echo "The installed executable did not preserve the release command-line error contract." >&2
     exit 1

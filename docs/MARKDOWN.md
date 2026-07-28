@@ -24,6 +24,11 @@ authoritative. Changing modes never rewrites a file.
   visually formatted while editing the exact backing source range. Markdown
   delimiters remain in the edit buffer and on disk even when they are not
   painted.
+- Clicking or dragging directly over inactive formatted content activates the
+  corresponding source caret or selection. The mapping includes complete
+  hidden delimiter, escape, and parser-decoded character-reference spans so an
+  edit cannot split their source syntax. Synthesized text without a safe source
+  substring remains visible and editable as raw source.
 - A selected link destination is temporarily revealed and underlined while it
   is edited, then hidden again after the caret leaves that target.
 - H1, H2, Bold, Italic, Link, Code, List, and Quote actions update the selected
@@ -34,7 +39,8 @@ authoritative. Changing modes never rewrites a file.
 - Source diagnostics currently report skipped heading levels, unsafe trailing
   spaces, repeated blank lines, and a missing final newline with stable rule
   identifiers.
-- System, Light, and Dark themes share the same document model.
+- System, Light, Dark, Green Screen, and Amber Screen themes share the same
+  document model.
 - Remote images are not loaded, raw HTML is not executed, and no content is
   fetched in the background. Markdown-link opening is not implemented in this
   bounded slice; the final command requires an explicit user action.
@@ -51,8 +57,10 @@ complete.
 - Tables, images, nested structures, reference resolution, and other complex
   constructs do not yet have complete native layout or editing behavior.
 - Cross-block Markdown references may not resolve in every rendered fragment.
-- Undo transactions, parser workers, stale-revision rejection, and complete
-  keyboard selection semantics are not implemented.
+- Direct edits and formatting actions use the shared revision-checked
+  transaction and bounded Undo and Redo history. Deterministic coalescing,
+  complete operation classification, parser workers, and complete keyboard
+  selection semantics are not implemented.
 - GFM and CommonMark conformance, malformed-input behavior, IME, screen-reader,
   high-DPI, and large-file requirements still require release evidence.
 - The synchronous prototype accepts at most 1 MiB of source, 8,192 logical

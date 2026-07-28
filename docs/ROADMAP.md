@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-07-27
+**Updated:** 2026-07-28
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -21,7 +21,7 @@ mutation, benchmark, and release records.
 | M0 | Truthful, reproducible engineering foundation | Verified |
 | M1 | Document and durable I/O trust kernel | In progress |
 | M2 | Usable prototype shell, themes, and update entry points | In progress |
-| M3 | Editing transactions, undo, search, and text commands | Planned |
+| M3 | Editing transactions, undo, search, and text commands | In progress |
 | M4 | Lifecycle, recovery, and external-change handling | In progress |
 | M5 | Production editor, accessibility, and performance | Planned |
 | M6 | Native Markdown editor and quality engine | In progress |
@@ -39,7 +39,8 @@ not verification.
   hidden document transformation.
 - Native Markdown views are projections of source, not a proprietary rich-text
   model.
-- System, Light, and Dark are the supported theme set for the first release.
+- System, Light, Dark, Green Screen, and Amber Screen are the supported built-in
+  theme set for the first release.
 - Update networking is explicit, release-only, and carries no document data or
   persistent identifier.
 
@@ -115,7 +116,8 @@ work continues.
 
 ### Scope
 
-- System, Light, and Dark themes with a persisted override;
+- System, Light, Dark, Green Screen, and Amber Screen themes with a persisted
+  override;
 - a readable classic-notepad layout with deliberate typography and spacing;
 - working Help > About Noter and Help > Check for Updates actions;
 - clear pre-release update status when no release is available;
@@ -129,16 +131,17 @@ that a release exists when the repository has no published artifact.
 
 ### Current state
 
-System, Light, and Dark themes, working About and update-status dialogs, source
-install helpers, a responsive upper-right Mode control and Theme menu, a
-contextual Markdown format bar, a bundled variable document typeface, and
-deterministic native README screenshots are implemented locally. Hinting,
-subpixel positioning, real heading and emphasis weights, and theme-correct text
-coverage transfer are verified explicitly rather than assumed from toolkit
-defaults. The early source-backed Markdown slice is visible for product
-evaluation but remains governed by M6. M2 still needs installed-app semantic
-automation, cross-platform visual and persistence evidence, and disposable
-clean-user installer tests before verification.
+System, Light, Dark, Green Screen, and Amber Screen themes, working About and
+update-status dialogs, source install helpers, a responsive upper-right Mode
+control and Theme menu, a contextual Markdown format bar, a bundled variable
+document typeface, and deterministic native README screenshots are implemented
+locally. Specialty palettes have deterministic enhanced-contrast checks.
+Hinting, subpixel positioning, real heading and emphasis weights, and
+theme-correct text coverage transfer are verified explicitly rather than
+assumed from toolkit defaults. The early source-backed Markdown slice is visible
+for product evaluation but remains governed by M6. M2 still needs installed-app
+semantic automation, cross-platform visual and persistence evidence, and
+disposable clean-user installer tests before verification.
 
 ### Exit criteria
 
@@ -172,6 +175,29 @@ predictable classic editor behavior.
 - Keyboard behavior is tested on Windows, macOS, and Linux.
 - Long operations cannot apply stale results.
 - Memory use remains bounded under long editing sessions.
+
+### Current state
+
+The first M3 foundation is implemented. `Document` accepts one atomic,
+revision-checked `EditTransaction` authority with ordered UTF-8 byte ranges,
+exact expected removals, exact inverses, directional before and after
+selections, origin, and adapter-supplied monotonic time. Text Mode, direct
+Markdown edits, and Markdown formatting actions route through that authority.
+Undo and Redo are available from the Edit menu and platform keyboard paths.
+History is bounded to 1,024 transactions and 32 MiB of retained source by
+default, clears stale branches defensively, and restores saved-content identity
+without reusing revisions.
+
+Deterministic 512-case properties cover single replacements, ordered disjoint
+multi-edit transactions, and arbitrary edit sequences against `String`
+reference models. A focused 118-candidate transaction and history mutation
+campaign closes with 95 caught and 23 validated compiler rejections, with no
+miss, timeout, or infrastructure failure. Windows-local line coverage measures
+97.30 percent for transactions, 97.61 percent for history, 94.59 percent for the
+trust kernel, and 92.56 percent across the workspace. This is not M3 completion.
+Intent classification and coalescing, clipboard and navigation policy, search
+and replace, remaining text commands, status details, cross-platform manual
+evidence, and the long-session memory fixture remain open.
 
 ## M4: Lifecycle, Recovery, and Conflicts
 
@@ -267,11 +293,14 @@ The current vertical slice builds a borderless native layout before shaping,
 uses real body, heading, and strong-emphasis weights in inactive and active
 content, activates one source range for direct editing without exposing
 supported delimiters, and maps eight formatting actions back to ordinary
-Markdown source. A link target is revealed while it is edited and hidden again
-after the caret leaves it. Text Mode always exposes exact source. Continuous
-whole-document editing, shared undo transactions, complete complex-block
-layout, full syntax conformance, accessibility, asynchronous parsing, and the
-quality engine remain open.
+Markdown source. Click-and-drag selection maps rendered characters to complete
+source spans, including hidden delimiters, escapes, and supported character
+references; synthesis without a safe mapping falls back to visible source. A
+link target is revealed while it is edited and hidden again
+after the caret leaves it. Text Mode always exposes exact source. Shared bounded
+Undo and Redo are implemented. Deterministic intent coalescing, continuous
+whole-document editing, complete complex-block layout, full syntax conformance,
+accessibility, asynchronous parsing, and the quality engine remain open.
 
 The current synchronous formatted slice enforces explicit source-byte, line,
 line-length, block-count, block-span, and parser-event ceilings. Over-budget
@@ -333,7 +362,8 @@ contract.
    filesystem fixtures.
 3. Complete M2 evidence for installed About and update actions, theme
    persistence, cross-platform visual behavior, and disposable source installs.
-4. Begin the M3 transaction and undo model.
+4. Continue M3 with explicit input intent and deterministic coalescing atop the
+   implemented transaction, inverse, selection, and bounded-history foundation.
 5. Execute the M5 editor feasibility gate, including native typography, IME,
    accessibility, display-scale, and large-file evidence. Keep the early
    block-focused Markdown slice bounded until the transaction, lifecycle, and
