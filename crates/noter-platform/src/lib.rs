@@ -1787,7 +1787,7 @@ mod imp {
 
         #[cfg(target_os = "macos")]
         #[test]
-        fn private_creation_suppresses_an_inheritable_parent_acl() -> io::Result<()> {
+        fn private_creation_and_owner_restriction_remove_inherited_acl() -> io::Result<()> {
             const PRIVATE_MODE: u32 = 0o600;
             const PERMISSION_BITS: u32 = 0o7777;
 
@@ -1843,6 +1843,16 @@ mod imp {
                 MacosAclSnapshot::Absent
             );
             assert_eq!(protected.metadata()?.len(), 0);
+
+            let mut inherited_permissions = inherited.metadata()?.permissions();
+            inherited_permissions.set_mode(0o644);
+            inherited.set_permissions(inherited_permissions)?;
+            macos_finalize_private_creation(&inherited)?;
+            assert_eq!(inherited.metadata()?.mode() & PERMISSION_BITS, PRIVATE_MODE);
+            assert_eq!(
+                read_macos_acl_snapshot(&inherited)?,
+                MacosAclSnapshot::Absent
+            );
             Ok(())
         }
 
