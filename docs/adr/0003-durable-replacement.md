@@ -104,8 +104,10 @@ I/O error is never interpreted as non-commit.
    match. Atomic exchange can change the displaced inode's `ctime`, so ratify a
    stable post-exchange token together with native identity, link count, content
    fingerprint, and length without using live post-commit metadata as the
-   transfer source. Sync the committed metadata. Failure or a final-window
-   metadata mismatch is committed with a warning and retains private defaults.
+    transfer source. Restrict the exact verified displaced object through its
+    open handle to owner-only access before retention, then sync the committed
+    metadata. Failure or a final-window metadata mismatch is committed with a
+    warning and never produces a false privacy guarantee.
 11. Reconcile documented ambiguous platform results before assigning commit
    state.
 12. Sync the containing directory or request the strongest supported equivalent.
@@ -124,9 +126,9 @@ durability policy.
 | --- | --- | --- | --- |
 | Windows, existing file | `ReplaceFileW` with a unique backup sibling and no ignore-merge flags; reconcile destination, replacement, and backup on documented partial failures | Native merge preserves the documented DACL, encryption, compression, creation, identifier, and named-stream properties; any merge failure is not ignored | Flush sibling before commit; because `REPLACEFILE_WRITE_THROUGH` is unsupported and no supported parent-directory barrier is documented, report at most `FileSynced` unless platform tests prove more |
 | Windows, absent file | `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`, without replace or cross-volume copy flags | Protected DACL grants full control only to object owner and SYSTEM; no parent entries are inherited | Refuse a newly appeared destination; report the barrier strength demonstrated by platform tests |
-| Linux, existing file | Same-directory atomic exchange; retain the displaced destination because portable unlink cannot target a verified handle | Capture and revalidate an immutable ownership, mode, ACL, extended-attribute, security-context, and capability snapshot before commit; bound xattrs by count and aggregate bytes before allocation; keep staging mode 0600 through exchange; verify the displaced original and apply the snapshot only if its stable metadata payload still matches; a failure is committed with a warning | `fsync` sibling, exchange, finalize and resync metadata, then `fsync` opened parent directory |
+| Linux, existing file | Same-directory atomic exchange; retain the displaced destination because portable unlink cannot target a verified handle | Capture and revalidate an immutable ownership, mode, ACL, extended-attribute, security-context, and capability snapshot before commit; bound xattrs by count and aggregate bytes before allocation; keep staging mode 0600 through exchange; verify the displaced original and apply the snapshot only if its stable metadata payload still matches; restrict the exact verified displaced handle to mode 0600 before retention; a failure is committed with a warning | `fsync` sibling, exchange, finalize and resync metadata, then `fsync` opened parent directory |
 | Linux, absent file | No-replace rename where supported, otherwise create a no-overwrite hard link and retain the temporary name | Owner-only mode 0600 | Same file and parent barriers as existing replacement; retained fallback names are explicit cleanup warnings |
-| macOS, existing file | Same-directory atomic exchange through an opened parent; retain the displaced destination because portable unlink cannot target a verified handle | Atomically request staging mode 0600 with a zero-entry `no_inherit` ACL, verify the kernel's resulting ACL absence before writing, and serialize the destination ACL plus ownership, mode, and a count-and-byte-bounded immutable xattr snapshot before commit; replay the ACL through the destination descriptor with no temporary pathname; resource forks use the same xattr budget; keep staging private through exchange; verify the displaced original and apply the snapshot only if its stable metadata payload still matches; saving intentionally advances modification time | Request `F_FULLFSYNC` for the sibling, exchange, finalize and resync metadata, then synchronize the parent where supported |
+| macOS, existing file | Same-directory atomic exchange through an opened parent; retain the displaced destination because portable unlink cannot target a verified handle | Atomically request staging mode 0600 with a zero-entry `no_inherit` ACL, verify the kernel's resulting ACL absence before writing, and serialize the destination ACL plus ownership, mode, and a count-and-byte-bounded immutable xattr snapshot before commit; replay the ACL through the destination descriptor with no temporary pathname; resource forks use the same xattr budget; keep staging private through exchange; verify the displaced original and apply the snapshot only if its stable metadata payload still matches; restrict the exact verified displaced handle to mode 0600 with verified ACL absence before retention; saving intentionally advances modification time | Request `F_FULLFSYNC` for the sibling, exchange, finalize and resync metadata, then synchronize the parent where supported |
 | macOS, absent file | No-replace rename where supported, otherwise create a no-overwrite hard link and retain the temporary name | Mode 0600 with atomic inheritance suppression and verified ACL absence before writing | Same barriers as existing replacement; retained fallback names are explicit cleanup warnings |
 | Network, cloud, removable, or unknown filesystem | Use the platform path only when same-filesystem commit prerequisites hold | Never silently discard known metadata | Return `BestEffort` or `FileSynced` according to demonstrated capability; never advertise full durability from filesystem name alone |
 
@@ -230,7 +232,8 @@ The adapter uses native Windows and Unix commit primitives, reconciles documente
 partial states, verifies exact committed identity and bytes, reports cleanup and
 durability independently, and is integrated with the sealed revision-aware
 Document API.
-Windows cleanup is handle-bound; Unix cleanup is conservatively retained. The
+Windows cleanup is handle-bound; Unix cleanup is conservatively retained after
+the exact verified displaced handle is restricted to owner-only access. The
 historical Windows core campaign and the focused Windows native-adapter campaign
 have zero missed mutants and zero timeouts, as recorded in
 [M1 Mutation Evidence](../M1_MUTATION_EVIDENCE.md). A pinned three-platform CI

@@ -6,6 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod idle_screen;
 mod markdown_ui;
 mod theme;
 
@@ -121,8 +122,17 @@ fn parse_launch_request(args: impl IntoIterator<Item = String>) -> Result<Launch
                     .ok_or_else(|| "`--screenshot` requires an output path".to_owned())?;
                 options.screenshot_path = Some(PathBuf::from(value));
             }
+            "--screenshot-idle" if !options_finished => {
+                if !cfg!(feature = "screenshot-qa") {
+                    return Err(
+                        "`--screenshot-idle` requires a build with feature `screenshot-qa`"
+                            .to_owned(),
+                    );
+                }
+                options.screenshot_idle = true;
+            }
             _ if !options_finished && argument.starts_with('-') => {
-                return Err(format!("unknown option `{argument}`"));
+                return Err(format!("unknown option `{}`", escaped_cli_value(&argument)));
             }
             _ if options.initial_path.is_none() => {
                 options.initial_path = Some(PathBuf::from(argument));
@@ -130,12 +140,19 @@ fn parse_launch_request(args: impl IntoIterator<Item = String>) -> Result<Launch
             _ => return Err("only one document path may be opened at startup".to_owned()),
         }
     }
+    if options.screenshot_idle && options.screenshot_path.is_none() {
+        return Err("`--screenshot-idle` requires `--screenshot PATH`".to_owned());
+    }
     Ok(LaunchRequest::Run(options))
 }
 
 fn parse_theme(value: &str) -> Result<AppTheme, String> {
-    AppTheme::from_storage_value(value)
-        .ok_or_else(|| format!("unknown theme `{value}`; expected {THEME_ERROR_VALUES}"))
+    AppTheme::from_storage_value(value).ok_or_else(|| {
+        format!(
+            "unknown theme `{}`; expected {THEME_ERROR_VALUES}",
+            escaped_cli_value(value)
+        )
+    })
 }
 
 fn parse_view(value: &str) -> Result<DocumentView, String> {
@@ -143,9 +160,14 @@ fn parse_view(value: &str) -> Result<DocumentView, String> {
         "text" => Ok(DocumentView::Text),
         "markdown" => Ok(DocumentView::Markdown),
         _ => Err(format!(
-            "unknown document view `{value}`; expected text or markdown"
+            "unknown document view `{}`; expected text or markdown",
+            escaped_cli_value(value)
         )),
     }
+}
+
+fn escaped_cli_value(value: &str) -> String {
+    value.escape_debug().collect()
 }
 
 #[cfg(test)]
@@ -216,6 +238,30 @@ mod tests {
     }
 
     #[test]
+    fn invalid_values_cannot_inject_terminal_control_characters() {
+        for arguments in [
+            ["--theme", "bad\n\u{1b}[31m"],
+            ["--view", "bad\r\u{7}"],
+            ["-bad\n\u{1b}[2J", ""],
+        ] {
+            let arguments = if arguments[1].is_empty() {
+                &arguments[..1]
+            } else {
+                &arguments[..]
+            };
+            let error = parse(arguments).expect_err("control-bearing values must be rejected");
+
+            assert!(!error.contains(['\n', '\r', '\u{1b}', '\u{7}']));
+            assert!(error.contains('\\'));
+        }
+        assert!(
+            parse(&["--theme", "grün"])
+                .expect_err("an unknown Unicode theme must be rejected")
+                .contains("grün")
+        );
+    }
+
+    #[test]
     fn help_and_version_exit_without_opening_a_window() {
         assert!(matches!(parse(&["--help"]), Ok(LaunchRequest::Help)));
         assert!(matches!(parse(&["--version"]), Ok(LaunchRequest::Version)));
@@ -238,5 +284,25 @@ mod tests {
             options.initial_path,
             Some(PathBuf::from("-meeting-notes.md"))
         );
+    }
+
+    #[cfg(feature = "screenshot-qa")]
+    #[test]
+    fn idle_screenshot_is_an_explicit_test_only_capture_mode() {
+        assert!(parse(&["--screenshot-idle"]).is_err());
+        let LaunchRequest::Run(options) = parse(&[
+            "--theme",
+            "green",
+            "--screenshot",
+            "idle.png",
+            "--screenshot-idle",
+        ])
+        .expect("complete idle screenshot arguments should parse") else {
+            panic!("the capture arguments should launch the application");
+        };
+
+        assert_eq!(options.theme, Some(AppTheme::GreenScreen));
+        assert_eq!(options.screenshot_path, Some(PathBuf::from("idle.png")));
+        assert!(options.screenshot_idle);
     }
 }

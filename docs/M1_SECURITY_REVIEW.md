@@ -106,8 +106,12 @@ bypass the ceiling. Errors are typed, stage-specific, and path-redacted.
   Linux and macOS matrix must exercise the complete protocol.
   Portable Unix deletion cannot bind unlink to the verified object, so the
   displaced original and failed-save siblings are retained with explicit
-  warnings instead of risking a pathname cleanup race. Each warning names only
-  the random sibling basename and gives inspection and removal guidance.
+  warnings instead of risking a pathname cleanup race. After exact displaced
+  identity, content, and metadata validation, Noter restricts that same open
+  object to mode 0600 before retention. macOS also removes the ACL and verifies
+  its absence. A restriction failure remains a committed cleanup warning and is
+  never reported as owner-only success. Each warning names only the random
+  sibling basename and gives inspection and removal guidance.
 - Unix metadata capture now queries each xattr size before allocating its value,
   limits the snapshot to 4,096 entries and 64 MiB of aggregate names and values,
   and retries size races only three times. This closes a later review finding

@@ -155,7 +155,9 @@ Feature presence alone is not verification.
 - **FR-031 Theme:** Provide System, Light, Dark, Green Screen, and Amber Screen
   through a visible top-level selector. Persist the choice and follow system
   changes when System is selected. Specialty themes must retain the same text
-  shaping and accessibility behavior as the core themes.
+  shaping and accessibility behavior as the core themes. Custom palettes are
+  declarative, size-bounded, and fail closed through the same contrast
+  validator; they cannot execute code or reference external assets.
 - **FR-032 Zoom:** Provide keyboard and menu zoom with a readable bounded range.
 - **FR-033 Window state:** Restore valid size, position, and maximized state
   without placing a window entirely off screen.
@@ -373,7 +375,8 @@ Noter v0.1 is releasable only when:
 - AI features
 - Background networking, remote Markdown assets, or automatic telemetry
 - Non-UTF-8 save encodings
-- User-authored themes or a font marketplace
+- Executable theme plugins, remote theme galleries, arbitrary theme fonts, or a
+  font marketplace
 - 500 MB editable-file guarantees
 
 ## 7. Traceability

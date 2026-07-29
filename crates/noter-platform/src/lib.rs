@@ -18,6 +18,7 @@ use imp::{
     unix_open_for_cleanup as platform_open_for_cleanup,
     unix_replace_existing as platform_replace_existing,
     unix_required_metadata_matches_source as platform_required_metadata_matches_source,
+    unix_restrict_open_file_to_owner as platform_restrict_open_file_to_owner,
     unix_sync_file as platform_sync_file, unix_sync_parent as platform_sync_parent,
 };
 
@@ -284,6 +285,21 @@ pub fn open_for_cleanup(path: &Path) -> io::Result<File> {
 /// the deletion request fails.
 pub fn delete_open_file(file: &File) -> io::Result<()> {
     platform_delete_open_file(file)
+}
+
+/// Restricts an exact open Unix file object to owner-only access.
+///
+/// This operation changes the mode through the live descriptor. On macOS it
+/// also removes and verifies the absence of extended access-control entries.
+/// It is used for recovery artifacts that cannot be deleted safely by path.
+///
+/// # Errors
+///
+/// Returns an operating-system error if the mode or access-control list cannot
+/// be applied and verified on the open object.
+#[cfg(unix)]
+pub fn unix_restrict_open_file_to_owner(file: &File) -> io::Result<()> {
+    platform_restrict_open_file_to_owner(file)
 }
 
 /// Captures required existing-file metadata from an open regular file.
@@ -717,6 +733,10 @@ mod imp {
 
     #[cfg(target_os = "macos")]
     fn macos_finalize_private_creation(file: &File) -> io::Result<()> {
+        unix_restrict_open_file_to_owner(file)
+    }
+
+    pub fn unix_restrict_open_file_to_owner(file: &File) -> io::Result<()> {
         const PRIVATE_MODE: u32 = 0o600;
         const PERMISSION_BITS: u32 = 0o7777;
 
@@ -724,14 +744,21 @@ mod imp {
         if file.metadata()?.mode() & PERMISSION_BITS != PRIVATE_MODE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "private file mode differs after creation",
+                "private file mode differs after owner-only restriction",
             ));
         }
+        #[cfg(target_os = "macos")]
+        macos_restrict_open_file_acl_to_owner(file)?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_restrict_open_file_acl_to_owner(file: &File) -> io::Result<()> {
         remove_macos_acl(file)?;
         if read_macos_acl_snapshot(file)? != MacosAclSnapshot::Absent {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "private file retains its bootstrap access control list",
+                "private file retains an access control list after owner-only restriction",
             ));
         }
         Ok(())
@@ -2904,7 +2931,7 @@ mod tests {
     use std::fs::{self, File, hard_link};
     use std::io::{self, Read, Write};
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     use tempfile::tempdir;
@@ -2916,7 +2943,7 @@ mod tests {
     use super::sync_file;
     use super::{FileChangeToken, FileIdentity, IdentityQuality, file_facts};
     #[cfg(unix)]
-    use super::{ReplaceExistingOutcome, replace_existing};
+    use super::{ReplaceExistingOutcome, replace_existing, unix_restrict_open_file_to_owner};
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::{
         apply_required_metadata, capture_required_metadata, required_metadata_matches_source,
@@ -3073,6 +3100,23 @@ mod tests {
         assert_eq!(outcome, ReplaceExistingOutcome::DisplacedDestination);
         assert_eq!(fs::read(&destination)?, b"new bytes");
         assert_eq!(fs::read(&temporary)?, b"old bytes");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_file_can_be_restricted_to_owner_only_access() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("recovery.txt");
+        fs::write(&path, b"private recovery bytes")?;
+        let mut permissions = fs::metadata(&path)?.permissions();
+        permissions.set_mode(0o664);
+        fs::set_permissions(&path, permissions)?;
+        let file = File::open(&path)?;
+
+        unix_restrict_open_file_to_owner(&file)?;
+
+        assert_eq!(file.metadata()?.permissions().mode() & 0o7777, 0o600);
         Ok(())
     }
 

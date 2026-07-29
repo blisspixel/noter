@@ -36,9 +36,13 @@ authoritative. Changing modes never rewrites a file.
 - The primary Text and Markdown switch remains in the upper-right application
   row. The contextual formatting bar appears only in Markdown Mode.
 - Switching to Text Mode exposes the exact source produced by those edits.
-- Source diagnostics currently report skipped heading levels, unsafe trailing
-  spaces, repeated blank lines, and a missing final newline with stable rule
-  identifiers.
+- Source diagnostics currently report skipped heading levels, spaces that
+  prevent portable emphasis, unsafe trailing spaces, repeated blank lines, and
+  a missing final newline with stable rule identifiers.
+- A conservative line-wide `*text *`, `**text **`, `_text _`, or `__text __`
+  mistake is displayed with the intended emphasis in Markdown Mode while
+  MD037 reports the non-portable source. Merely changing or viewing modes never
+  rewrites the spacing.
 - System, Light, Dark, Green Screen, and Amber Screen themes share the same
   document model.
 - Remote images are not loaded, raw HTML is not executed, and no content is

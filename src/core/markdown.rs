@@ -1,5 +1,7 @@
 //! Conservative Markdown diagnostics that never mutate document source.
 
+use std::ops::Range;
+
 use super::line_endings::logical_lines;
 
 /// One source-based Markdown diagnostic.
@@ -8,6 +10,20 @@ pub struct MarkdownDiagnostic {
     code: &'static str,
     line: usize,
     message: &'static str,
+}
+
+/// One narrowly recoverable emphasis span whose closing marker is separated
+/// from its content by horizontal whitespace.
+///
+/// `CommonMark` does not treat this shape as emphasis. Markdown Mode may still
+/// project the intended line-wide emphasis while the diagnostic engine reports
+/// `MD037`; merely viewing the document never changes these source ranges.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RecoverableEmphasis {
+    opening: Range<usize>,
+    content: Range<usize>,
+    closing: Range<usize>,
+    strong: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,12 +56,58 @@ impl MarkdownDiagnostic {
     }
 }
 
+impl RecoverableEmphasis {
+    /// Returns the opening delimiter byte range.
+    pub const fn opening(&self) -> &Range<usize> {
+        &self.opening
+    }
+
+    /// Returns the non-whitespace content byte range.
+    pub const fn content(&self) -> &Range<usize> {
+        &self.content
+    }
+
+    /// Returns the closing delimiter byte range.
+    pub const fn closing(&self) -> &Range<usize> {
+        &self.closing
+    }
+
+    /// Returns whether the delimiter requests strong rather than italic text.
+    pub const fn is_strong(&self) -> bool {
+        self.strong
+    }
+}
+
+/// Finds conservative, line-wide emphasis spacing mistakes for formatted
+/// projection and diagnostics.
+///
+/// This intentionally recognizes only an opening `*`, `**`, `_`, or `__` at
+/// the first non-indented byte, a non-empty body without another delimiter of
+/// the same kind, horizontal whitespace before the matching final delimiter,
+/// and at most three leading spaces. Wider malformed-input recovery would risk
+/// presenting punctuation with a meaning that portable Markdown does not have.
+#[must_use]
+pub fn recoverable_emphasis_spans(source: &str) -> Vec<RecoverableEmphasis> {
+    let mut spans = Vec::new();
+    let mut line_offset = 0_usize;
+    for segment in logical_lines(source) {
+        if let Some(span) = recoverable_emphasis_on_line(segment.content(), line_offset) {
+            spans.push(span);
+        }
+        line_offset = line_offset
+            .saturating_add(segment.content().len())
+            .saturating_add(segment.ending().map_or(0, |ending| ending.as_str().len()));
+    }
+    spans
+}
+
 /// Analyzes Markdown source with a deliberately small, deterministic rule set.
 ///
-/// The initial rules report skipped ATX heading levels, trailing spaces that are
-/// neither absent nor the two-space hard-break form, repeated blank lines, and
-/// a missing final newline. Fenced code is excluded from whitespace and heading
-/// checks because those bytes may be intentional.
+/// The initial rules report skipped ATX heading levels, spacing that prevents
+/// line-wide emphasis, trailing spaces that are neither absent nor the
+/// two-space hard-break form, repeated blank lines, and a missing final newline.
+/// Fenced code is excluded from whitespace and heading checks because those
+/// bytes may be intentional.
 #[must_use]
 pub fn analyze_markdown(source: &str) -> Vec<MarkdownDiagnostic> {
     let mut diagnostics = Vec::new();
@@ -90,6 +152,14 @@ fn visit_markdown_diagnostics(source: &str, mut emit: impl FnMut(MarkdownDiagnos
 
         if fence.is_some() {
             continue;
+        }
+
+        if recoverable_emphasis_on_line(line, 0).is_some() {
+            emit(MarkdownDiagnostic {
+                code: "MD037",
+                line: line_number,
+                message: "Spaces inside emphasis markers prevent portable formatting",
+            });
         }
 
         let trailing_spaces = line.len() - line.trim_end_matches(' ').len();
@@ -138,6 +208,59 @@ fn visit_markdown_diagnostics(source: &str, mut emit: impl FnMut(MarkdownDiagnos
             message: "File should end with a newline",
         });
     }
+}
+
+fn recoverable_emphasis_on_line(line: &str, line_offset: usize) -> Option<RecoverableEmphasis> {
+    let content_start = line.len() - line.trim_start_matches(' ').len();
+    if content_start > 3 {
+        return None;
+    }
+    let candidate = &line[content_start..];
+    let (marker, marker_length) = if candidate.starts_with("**") {
+        ('*', 2)
+    } else if candidate.starts_with("__") {
+        ('_', 2)
+    } else if candidate.starts_with('*') {
+        ('*', 1)
+    } else if candidate.starts_with('_') {
+        ('_', 1)
+    } else {
+        return None;
+    };
+    let after_opening = candidate.get(marker_length..)?;
+    if after_opening.chars().next().is_none_or(char::is_whitespace) {
+        return None;
+    }
+
+    let without_outer_whitespace = candidate.trim_end_matches([' ', '\t']);
+    let closing_text = if marker_length == 2 {
+        match marker {
+            '*' => "**",
+            '_' => "__",
+            _ => return None,
+        }
+    } else {
+        match marker {
+            '*' => "*",
+            '_' => "_",
+            _ => return None,
+        }
+    };
+    let without_closing = without_outer_whitespace.strip_suffix(closing_text)?;
+    let closing_start = content_start + without_closing.len();
+    let interior_start = content_start + marker_length;
+    let interior = without_closing.get(marker_length..)?;
+    let content = interior.trim_end_matches([' ', '\t']);
+    if content.is_empty() || content.len() == interior.len() || content.contains(marker) {
+        return None;
+    }
+    let content_end = interior_start + content.len();
+    Some(RecoverableEmphasis {
+        opening: line_offset + content_start..line_offset + interior_start,
+        content: line_offset + interior_start..line_offset + content_end,
+        closing: line_offset + closing_start..line_offset + closing_start + marker_length,
+        strong: marker_length == 2,
+    })
 }
 
 fn fence_marker(line: &str) -> Option<FenceMarker> {
@@ -191,6 +314,63 @@ mod tests {
             "# Noter\n\nA focused **Markdown** editor.\n\n## Details\n\n- Fast\n- Private\n";
 
         assert!(analyze_markdown(source).is_empty());
+    }
+
+    #[test]
+    fn line_wide_emphasis_spacing_has_exact_recovery_ranges_and_diagnostic() {
+        let source = "Hello World.\n*The sum of the square root of any two sides. *\n";
+
+        let spans = recoverable_emphasis_spans(source);
+
+        assert_eq!(spans.len(), 1);
+        let span = &spans[0];
+        assert_eq!(&source[span.opening().clone()], "*");
+        assert_eq!(
+            &source[span.content().clone()],
+            "The sum of the square root of any two sides."
+        );
+        assert_eq!(&source[span.closing().clone()], "*");
+        assert!(!span.is_strong());
+        assert_eq!(
+            analyze_markdown(source)
+                .iter()
+                .map(|diagnostic| (diagnostic.code(), diagnostic.line()))
+                .collect::<Vec<_>>(),
+            vec![("MD037", 2)]
+        );
+    }
+
+    #[test]
+    fn strong_and_underscore_spacing_are_recoverable_without_guessing_broadly() {
+        let source = "**strong **\r\n   _italic _\r__strong __";
+        let spans = recoverable_emphasis_spans(source);
+
+        assert_eq!(spans.len(), 3);
+        assert!(spans[0].is_strong());
+        assert!(!spans[1].is_strong());
+        assert!(spans[2].is_strong());
+        assert_eq!(&source[spans[1].opening().clone()], "_");
+        assert_eq!(&source[spans[1].content().clone()], "italic");
+        assert_eq!(&source[spans[1].closing().clone()], "_");
+    }
+
+    #[test]
+    fn emphasis_recovery_rejects_ambiguous_or_structural_punctuation() {
+        for source in [
+            "* valid list item *\n",
+            "four * three *\n",
+            "*nested * marker *\n",
+            "    *indented *\n",
+            "*already-valid*\n",
+            "*mismatched _\n",
+            "`*code *`\n",
+            "***\n",
+        ] {
+            assert!(
+                recoverable_emphasis_spans(source).is_empty(),
+                "unexpected recovery for {source:?}"
+            );
+        }
     }
 
     #[test]

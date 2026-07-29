@@ -8,7 +8,7 @@ import unittest
 import zlib
 from pathlib import Path
 
-from check_readme_assets import PNG_SIGNATURE, png_dimensions
+from check_readme_assets import MAX_DECODED_BYTES, PNG_SIGNATURE, png_dimensions
 from update_readme_screenshots import validate_generated_screenshot
 
 
@@ -67,6 +67,21 @@ class PngDimensionsTests(unittest.TestCase):
             path.write_bytes(data)
 
             with self.assertRaisesRegex(ValueError, "checksum"):
+                png_dimensions(path)
+
+    def test_rejects_compressed_data_that_exceeds_the_pixel_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.png"
+            header = struct.pack(">IIBBBBB", 1200, 760, 8, 6, 0, 0, 0)
+            oversized_pixels = zlib.compress(bytes(MAX_DECODED_BYTES + 1))
+            path.write_bytes(
+                PNG_SIGNATURE
+                + png_chunk(b"IHDR", header)
+                + png_chunk(b"IDAT", oversized_pixels)
+                + png_chunk(b"IEND", b"")
+            )
+
+            with self.assertRaisesRegex(ValueError, "decoded PNG pixel budget"):
                 png_dimensions(path)
 
 

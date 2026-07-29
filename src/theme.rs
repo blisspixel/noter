@@ -4,6 +4,16 @@ use std::sync::Arc;
 pub const THEME_STORAGE_KEY: &str = "noter.theme";
 const NOTER_PROPORTIONAL_FONT: &str = "Inter Variable";
 const NOTER_PROPORTIONAL_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/InterVariable.ttf");
+const ENHANCED_TEXT_CONTRAST: f64 = 7.0;
+const TEXT_CONTRAST: f64 = 4.5;
+const CONTROL_CONTRAST: f64 = 3.0;
+
+/// A bounded, local-only idle effect associated with a built-in theme.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ThemeIdleEffect {
+    /// Deterministic green character rain with no document or network access.
+    DigitalRain,
+}
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum AppTheme {
@@ -71,6 +81,14 @@ impl AppTheme {
             .unwrap_or_default()
     }
 
+    /// Returns the optional idle effect owned by this theme.
+    pub const fn idle_effect(self) -> Option<ThemeIdleEffect> {
+        match self {
+            Self::GreenScreen => Some(ThemeIdleEffect::DigitalRain),
+            Self::System | Self::Light | Self::Dark | Self::AmberScreen => None,
+        }
+    }
+
     pub fn apply(self, context: &egui::Context) {
         match self {
             Self::System => {
@@ -133,24 +151,32 @@ pub fn configure_styles(context: &egui::Context) {
 }
 
 fn apply_palette(context: &egui::Context, theme: egui::Theme, palette: VisualPalette) {
-    context.style_mut_of(theme, |style| {
-        let text_options = style.visuals.text_options;
-        style.visuals = match palette {
-            VisualPalette::Light => egui::Visuals::light(),
-            VisualPalette::Dark | VisualPalette::GreenScreen | VisualPalette::AmberScreen => {
-                egui::Visuals::dark()
-            }
-        };
-        style.visuals.text_options = text_options;
-        configure_visual_details(&mut style.visuals);
-
-        match palette {
-            VisualPalette::Light => apply_light_palette(&mut style.visuals),
-            VisualPalette::Dark => apply_dark_palette(&mut style.visuals),
-            VisualPalette::GreenScreen => apply_green_screen_palette(&mut style.visuals),
-            VisualPalette::AmberScreen => apply_amber_screen_palette(&mut style.visuals),
+    context.style_mut_of(theme, |style| match palette {
+        VisualPalette::Light => {
+            reset_visuals(&mut style.visuals, egui::Visuals::light());
+            apply_light_palette(&mut style.visuals);
+        }
+        VisualPalette::Dark => restore_standard_dark_palette(&mut style.visuals),
+        VisualPalette::GreenScreen => {
+            reset_visuals(&mut style.visuals, egui::Visuals::dark());
+            apply_green_screen_palette(&mut style.visuals);
+        }
+        VisualPalette::AmberScreen => {
+            reset_visuals(&mut style.visuals, egui::Visuals::dark());
+            apply_amber_screen_palette(&mut style.visuals);
         }
     });
+}
+
+fn reset_visuals(visuals: &mut egui::Visuals, mut base: egui::Visuals) {
+    base.text_options = visuals.text_options;
+    *visuals = base;
+    configure_visual_details(visuals);
+}
+
+fn restore_standard_dark_palette(visuals: &mut egui::Visuals) {
+    reset_visuals(visuals, egui::Visuals::dark());
+    apply_dark_palette(visuals);
 }
 
 fn configure_visual_details(visuals: &mut egui::Visuals) {
@@ -192,60 +218,14 @@ fn apply_dark_palette(visuals: &mut egui::Visuals) {
 }
 
 fn apply_green_screen_palette(visuals: &mut egui::Visuals) {
-    let text = egui::Color32::from_rgb(174, 255, 181);
-    let weak_text = egui::Color32::from_rgb(113, 191, 121);
-    let panel = egui::Color32::from_rgb(7, 20, 10);
-    let editor = egui::Color32::from_rgb(3, 10, 5);
-    let outline = egui::Color32::from_rgb(77, 190, 91);
-
-    apply_terminal_palette(
-        visuals,
-        TerminalPalette {
-            text,
-            weak_text,
-            panel,
-            window: egui::Color32::from_rgb(5, 16, 8),
-            editor,
-            raised: egui::Color32::from_rgb(12, 38, 18),
-            active: egui::Color32::from_rgb(25, 75, 34),
-            outline,
-            hyperlink: egui::Color32::from_rgb(111, 235, 158),
-            selection: egui::Color32::from_rgb(30, 88, 40),
-            selected_text: egui::Color32::from_rgb(226, 255, 229),
-            warning: egui::Color32::from_rgb(242, 218, 109),
-            error: egui::Color32::from_rgb(255, 135, 123),
-        },
-    );
+    apply_terminal_palette(visuals, green_screen_palette());
 }
 
 fn apply_amber_screen_palette(visuals: &mut egui::Visuals) {
-    let text = egui::Color32::from_rgb(255, 215, 137);
-    let weak_text = egui::Color32::from_rgb(202, 158, 82);
-    let panel = egui::Color32::from_rgb(25, 16, 5);
-    let editor = egui::Color32::from_rgb(14, 9, 2);
-    let outline = egui::Color32::from_rgb(215, 147, 42);
-
-    apply_terminal_palette(
-        visuals,
-        TerminalPalette {
-            text,
-            weak_text,
-            panel,
-            window: egui::Color32::from_rgb(21, 13, 4),
-            editor,
-            raised: egui::Color32::from_rgb(49, 30, 7),
-            active: egui::Color32::from_rgb(92, 57, 11),
-            outline,
-            hyperlink: egui::Color32::from_rgb(255, 225, 132),
-            selection: egui::Color32::from_rgb(105, 65, 10),
-            selected_text: egui::Color32::from_rgb(255, 242, 199),
-            warning: egui::Color32::from_rgb(255, 231, 135),
-            error: egui::Color32::from_rgb(255, 137, 119),
-        },
-    );
+    apply_terminal_palette(visuals, amber_screen_palette());
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct TerminalPalette {
     text: egui::Color32,
     weak_text: egui::Color32,
@@ -262,7 +242,77 @@ struct TerminalPalette {
     error: egui::Color32,
 }
 
+const fn green_screen_palette() -> TerminalPalette {
+    TerminalPalette {
+        text: egui::Color32::from_rgb(174, 255, 181),
+        weak_text: egui::Color32::from_rgb(113, 191, 121),
+        panel: egui::Color32::from_rgb(7, 20, 10),
+        window: egui::Color32::from_rgb(5, 16, 8),
+        editor: egui::Color32::from_rgb(3, 10, 5),
+        raised: egui::Color32::from_rgb(12, 38, 18),
+        active: egui::Color32::from_rgb(25, 75, 34),
+        outline: egui::Color32::from_rgb(77, 190, 91),
+        hyperlink: egui::Color32::from_rgb(111, 235, 158),
+        selection: egui::Color32::from_rgb(30, 88, 40),
+        selected_text: egui::Color32::from_rgb(226, 255, 229),
+        warning: egui::Color32::from_rgb(242, 218, 109),
+        error: egui::Color32::from_rgb(255, 135, 123),
+    }
+}
+
+const fn amber_screen_palette() -> TerminalPalette {
+    TerminalPalette {
+        text: egui::Color32::from_rgb(255, 215, 137),
+        weak_text: egui::Color32::from_rgb(202, 158, 82),
+        panel: egui::Color32::from_rgb(25, 16, 5),
+        window: egui::Color32::from_rgb(21, 13, 4),
+        editor: egui::Color32::from_rgb(14, 9, 2),
+        raised: egui::Color32::from_rgb(49, 30, 7),
+        active: egui::Color32::from_rgb(92, 57, 11),
+        outline: egui::Color32::from_rgb(215, 147, 42),
+        hyperlink: egui::Color32::from_rgb(255, 225, 132),
+        selection: egui::Color32::from_rgb(105, 65, 10),
+        selected_text: egui::Color32::from_rgb(255, 242, 199),
+        warning: egui::Color32::from_rgb(255, 231, 135),
+        error: egui::Color32::from_rgb(255, 137, 119),
+    }
+}
+
+impl TerminalPalette {
+    fn is_valid(self) -> bool {
+        let colors = [
+            self.text,
+            self.weak_text,
+            self.panel,
+            self.window,
+            self.editor,
+            self.raised,
+            self.active,
+            self.outline,
+            self.hyperlink,
+            self.selection,
+            self.selected_text,
+            self.warning,
+            self.error,
+        ];
+        colors.iter().all(egui::Color32::is_opaque)
+            && contrast_ratio(self.text, self.editor) >= ENHANCED_TEXT_CONTRAST
+            && contrast_ratio(self.weak_text, self.editor) >= TEXT_CONTRAST
+            && contrast_ratio(self.hyperlink, self.editor) >= TEXT_CONTRAST
+            && contrast_ratio(self.warning, self.editor) >= TEXT_CONTRAST
+            && contrast_ratio(self.error, self.editor) >= TEXT_CONTRAST
+            && contrast_ratio(self.selected_text, self.selection) >= TEXT_CONTRAST
+            && contrast_ratio(self.outline, self.panel) >= CONTROL_CONTRAST
+            && contrast_ratio(self.text, self.raised) >= TEXT_CONTRAST
+            && contrast_ratio(self.selected_text, self.active) >= TEXT_CONTRAST
+    }
+}
+
 fn apply_terminal_palette(visuals: &mut egui::Visuals, palette: TerminalPalette) {
+    if !palette.is_valid() {
+        restore_standard_dark_palette(visuals);
+        return;
+    }
     visuals.override_text_color = Some(palette.text);
     visuals.weak_text_color = Some(palette.weak_text);
     visuals.panel_fill = palette.panel;
@@ -313,6 +363,29 @@ fn apply_terminal_palette(visuals: &mut egui::Visuals, palette: TerminalPalette)
         palette.outline,
         palette.selected_text,
     );
+}
+
+fn contrast_ratio(first: egui::Color32, second: egui::Color32) -> f64 {
+    let brighter = relative_luminance(first).max(relative_luminance(second));
+    let darker = relative_luminance(first).min(relative_luminance(second));
+    (brighter + 0.05) / (darker + 0.05)
+}
+
+fn relative_luminance(color: egui::Color32) -> f64 {
+    let [red, green, blue, _] = color.to_array();
+    [red, green, blue]
+        .into_iter()
+        .zip([0.2126, 0.7152, 0.0722])
+        .map(|(channel, weight)| {
+            let channel = f64::from(channel) / 255.0;
+            let linear = if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            };
+            linear * weight
+        })
+        .sum()
 }
 
 fn configure_widget(
@@ -377,6 +450,16 @@ mod tests {
     }
 
     #[test]
+    fn only_green_screen_owns_the_digital_rain_idle_effect() {
+        for theme in AppTheme::ALL {
+            assert_eq!(
+                theme.idle_effect(),
+                (theme == AppTheme::GreenScreen).then_some(ThemeIdleEffect::DigitalRain)
+            );
+        }
+    }
+
+    #[test]
     fn specialty_palettes_exceed_text_and_control_contrast_thresholds() {
         let context = egui::Context::default();
         configure_styles(&context);
@@ -399,6 +482,28 @@ mod tests {
             assert!(
                 contrast_ratio(visuals.widgets.inactive.bg_stroke.color, visuals.panel_fill) >= 3.0
             );
+        }
+        assert!(green_screen_palette().is_valid());
+        assert!(amber_screen_palette().is_valid());
+    }
+
+    #[test]
+    fn invalid_extension_palette_fails_closed_from_each_specialty_palette() {
+        let mut expected = egui::Visuals::dark();
+        configure_visual_details(&mut expected);
+        apply_dark_palette(&mut expected);
+        let mut invalid = green_screen_palette();
+        invalid.text = invalid.editor;
+
+        for specialty in [green_screen_palette(), amber_screen_palette()] {
+            let mut visuals = egui::Visuals::dark();
+            configure_visual_details(&mut visuals);
+            apply_terminal_palette(&mut visuals, specialty);
+            assert_ne!(visuals, expected);
+
+            apply_terminal_palette(&mut visuals, invalid);
+
+            assert_eq!(visuals, expected);
         }
     }
 
@@ -474,28 +579,5 @@ mod tests {
 
         assert!(weight.range.min <= 400.0);
         assert!(weight.range.max >= 700.0);
-    }
-
-    fn contrast_ratio(first: egui::Color32, second: egui::Color32) -> f64 {
-        let brighter = relative_luminance(first).max(relative_luminance(second));
-        let darker = relative_luminance(first).min(relative_luminance(second));
-        (brighter + 0.05) / (darker + 0.05)
-    }
-
-    fn relative_luminance(color: egui::Color32) -> f64 {
-        let [red, green, blue, _] = color.to_array();
-        [red, green, blue]
-            .into_iter()
-            .zip([0.2126, 0.7152, 0.0722])
-            .map(|(channel, weight)| {
-                let channel = f64::from(channel) / 255.0;
-                let linear = if channel <= 0.04045 {
-                    channel / 12.92
-                } else {
-                    ((channel + 0.055) / 1.055).powf(2.4)
-                };
-                linear * weight
-            })
-            .sum()
     }
 }

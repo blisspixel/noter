@@ -781,6 +781,45 @@ const fn metadata_source_status(
 }
 
 #[cfg(unix)]
+fn apply_ratified_unix_metadata(
+    temporary: &TemporaryFile,
+    source: &File,
+    source_facts: noter_platform::FileFacts,
+    cleanup_warnings: &mut Vec<StorageError>,
+) {
+    let Some(metadata) = temporary.required_metadata.as_ref() else {
+        cleanup_warnings.push(StorageError::new(
+            SaveStage::ApplyMetadata,
+            "required destination metadata snapshot was unavailable after commit",
+        ));
+        return;
+    };
+
+    match noter_platform::required_metadata_matches_source(metadata, source, source_facts) {
+        Ok(true) => {
+            if let Err(error) = temporary.file().and_then(|destination_file| {
+                noter_platform::apply_required_metadata(metadata, destination_file)
+            }) {
+                cleanup_warnings.push(redacted_io_error(
+                    SaveStage::ApplyMetadata,
+                    "apply ratified committed destination metadata",
+                    &error,
+                ));
+            }
+        }
+        Ok(false) => cleanup_warnings.push(StorageError::new(
+            SaveStage::ApplyMetadata,
+            "previous destination metadata changed before committed metadata finalization",
+        )),
+        Err(error) => cleanup_warnings.push(redacted_io_error(
+            SaveStage::ApplyMetadata,
+            "compare displaced destination with ratified metadata snapshot",
+            &error,
+        )),
+    }
+}
+
+#[cfg(unix)]
 fn finalize_unix_displaced_destination(
     temporary: TemporaryFile,
     destination: &Path,
@@ -791,51 +830,39 @@ fn finalize_unix_displaced_destination(
     let mut durability_warnings = Vec::new();
     match open_verified_cleanup_candidate(temporary.path(), SaveStage::ApplyMetadata) {
         Ok(Some((source, observation))) => match noter_platform::file_facts(&source) {
-            Ok(facts) => match metadata_source_status(
-                replacement_backup_matches(observation, expected),
-                post_exchange_source_facts_match(facts, observation, expected),
-            ) {
-                MetadataSourceStatus::Matches => match temporary.required_metadata.as_ref() {
-                    Some(metadata) => match noter_platform::required_metadata_matches_source(
-                        metadata, &source, facts,
-                    ) {
-                        Ok(true) => {
-                            if let Err(error) = temporary.file().and_then(|destination_file| {
-                                noter_platform::apply_required_metadata(metadata, destination_file)
-                            }) {
-                                cleanup_warnings.push(redacted_io_error(
-                                    SaveStage::ApplyMetadata,
-                                    "apply ratified committed destination metadata",
-                                    &error,
-                                ));
-                            }
-                        }
-                        Ok(false) => cleanup_warnings.push(StorageError::new(
+            Ok(facts) => {
+                let source_status = metadata_source_status(
+                    replacement_backup_matches(observation, expected),
+                    post_exchange_source_facts_match(facts, observation, expected),
+                );
+                match source_status {
+                    MetadataSourceStatus::Matches => apply_ratified_unix_metadata(
+                        &temporary,
+                        &source,
+                        facts,
+                        &mut cleanup_warnings,
+                    ),
+                    MetadataSourceStatus::ObservationChanged => {
+                        cleanup_warnings.push(StorageError::new(
                             SaveStage::ApplyMetadata,
-                            "previous destination metadata changed before committed metadata finalization",
-                        )),
-                        Err(error) => cleanup_warnings.push(redacted_io_error(
-                            SaveStage::ApplyMetadata,
-                            "compare displaced destination with ratified metadata snapshot",
-                            &error,
-                        )),
-                    },
-                    None => cleanup_warnings.push(StorageError::new(
+                            "previous destination identity or content changed before committed metadata finalization",
+                        ));
+                    }
+                    MetadataSourceStatus::FactsChanged => cleanup_warnings.push(StorageError::new(
                         SaveStage::ApplyMetadata,
-                        "required destination metadata snapshot was unavailable after commit",
+                        "previous destination changed before committed metadata finalization",
                     )),
-                },
-                MetadataSourceStatus::ObservationChanged => {
-                    cleanup_warnings.push(StorageError::new(
-                        SaveStage::ApplyMetadata,
-                        "previous destination identity or content changed before committed metadata finalization",
+                }
+                if source_status == MetadataSourceStatus::Matches
+                    && let Err(error) = noter_platform::unix_restrict_open_file_to_owner(&source)
+                {
+                    cleanup_warnings.push(redacted_io_error(
+                        SaveStage::Cleanup,
+                        "restrict displaced destination recovery artifact to owner-only access",
+                        &error,
                     ));
                 }
-                MetadataSourceStatus::FactsChanged => cleanup_warnings.push(StorageError::new(
-                    SaveStage::ApplyMetadata,
-                    "previous destination changed before committed metadata finalization",
-                )),
-            },
+            }
             Err(error) => cleanup_warnings.push(redacted_io_error(
                 SaveStage::ApplyMetadata,
                 "revalidate committed metadata source",
@@ -2908,6 +2935,8 @@ mod tests {
 
     #[cfg(unix)]
     fn remove_private_artifacts(directory: &Path, expected: &[u8]) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
         let mut count = 0;
         for entry in fs::read_dir(directory)? {
             let path = entry?.path();
@@ -2916,6 +2945,11 @@ mod tests {
                 .is_some_and(|name| name.to_string_lossy().starts_with(".noter-"));
             if is_private {
                 assert_eq!(fs::read(&path)?, expected);
+                assert_eq!(
+                    fs::metadata(&path)?.permissions().mode() & 0o7777,
+                    0o600,
+                    "a retained recovery artifact must be owner-only"
+                );
                 fs::remove_file(path)?;
                 count += 1;
             }

@@ -3,6 +3,7 @@ use std::ops::Range;
 use eframe::egui;
 use noter::core::edit::{EditOrigin, Selection};
 use noter::core::line_endings::logical_lines;
+use noter::core::markdown::recoverable_emphasis_spans;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag};
 
 const ACTIVE_EDITOR_ID: &str = "noter-markdown-active-block";
@@ -909,6 +910,9 @@ fn markdown_render_projection(source: &str, style: &egui::Style) -> MarkdownRend
                 continue;
             }
         }
+        if run_style.is_some_and(|current| current != source_style) {
+            append_render_run(&mut job, &mut run, run_style.take(), style);
+        }
         run_style = Some(source_style);
         run.push(formatted_block_marker(source, index, character));
         source_span_for_rendered_character.push(source_character..source_character + 1);
@@ -1137,9 +1141,37 @@ fn markdown_source_analysis(source: &str) -> MarkdownSourceAnalysis {
             _ => {}
         }
     }
+    apply_recoverable_emphasis_styles(source, &mut styles);
     MarkdownSourceAnalysis {
         styles,
         synthesized_text,
+    }
+}
+
+fn apply_recoverable_emphasis_styles(source: &str, styles: &mut [MarkdownSourceStyle]) {
+    for span in recoverable_emphasis_spans(source) {
+        let untouched = span
+            .opening()
+            .clone()
+            .chain(span.content().clone())
+            .chain(span.closing().clone())
+            .all(|index| {
+                styles
+                    .get(index)
+                    .is_some_and(|style| *style == MarkdownSourceStyle::default())
+            });
+        if !untouched {
+            continue;
+        }
+        let mut content_style = MarkdownSourceStyle::default();
+        content_style.add(if span.is_strong() {
+            STYLE_STRONG
+        } else {
+            STYLE_EMPHASIS
+        });
+        set_source_style(styles, span.opening().clone(), hidden_source_style());
+        set_source_style(styles, span.content().clone(), content_style);
+        set_source_style(styles, span.closing().clone(), hidden_source_style());
     }
 }
 
@@ -2263,6 +2295,33 @@ mod tests {
         assert!(italic.italics);
         assert_eq!(link.color, style.visuals.hyperlink_color);
         assert_ne!(link.underline, egui::Stroke::NONE);
+    }
+
+    #[test]
+    fn recoverable_emphasis_spacing_projects_as_formatted_text_in_both_states() {
+        let style = egui::Style::default();
+        let source = "*The sum of the square root of any two sides. *";
+
+        let rendered = markdown_render_layout(source, &style);
+        let active = markdown_edit_layout(source, &style, None);
+
+        assert_eq!(
+            rendered.text,
+            "The sum of the square root of any two sides. "
+        );
+        assert!(rendered.format_at_byte(egui::text::ByteIndex(0)).italics);
+        assert_eq!(active.text, source);
+        assert_eq!(
+            active.format_at_byte(egui::text::ByteIndex(0)).color,
+            egui::Color32::TRANSPARENT
+        );
+        assert!(active.format_at_byte(egui::text::ByteIndex(1)).italics);
+        assert_eq!(
+            active
+                .format_at_byte(egui::text::ByteIndex(source.len() - 1))
+                .color,
+            egui::Color32::TRANSPARENT
+        );
     }
 
     #[test]

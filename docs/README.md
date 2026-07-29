@@ -9,6 +9,7 @@ needed to verify the work.
 - [ROADMAP.md](ROADMAP.md): milestone status, order, and exit evidence
 - [REQUIREMENTS.md](REQUIREMENTS.md): testable product and release requirements
 - [MARKDOWN.md](MARKDOWN.md): native Markdown Mode contract and current limits
+- [THEMES.md](THEMES.md): built-in palettes and the safe extension boundary
 - [INSTALLATION.md](INSTALLATION.md): current source install and release updater contract
 - [PRIVACY.md](PRIVACY.md): local-first data and network policy
 - [UX_VISION.md](UX_VISION.md): focused interaction principles

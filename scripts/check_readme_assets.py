@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 import struct
 import zlib
 from pathlib import Path
@@ -15,6 +17,8 @@ SCREENSHOTS = (
     Path("docs/assets/noter-dark.png"),
 )
 EXPECTED_SIZE = (1200, 760)
+MAX_PNG_BYTES = 2 * 1024 * 1024
+MAX_DECODED_BYTES = (1 + EXPECTED_SIZE[0] * 4) * EXPECTED_SIZE[1]
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 EXPECTED_SHA256 = {
     Path(
@@ -26,10 +30,28 @@ EXPECTED_SHA256 = {
 }
 
 
+def read_bounded_regular_file(path: Path) -> bytes:
+    """Read one regular file without following repository symlinks."""
+
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"{path} is not a regular file")
+    if metadata.st_size > MAX_PNG_BYTES:
+        raise ValueError(f"{path} exceeds the PNG file-size limit")
+
+    with path.open("rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError(f"{path} is not a regular file")
+        data = stream.read(MAX_PNG_BYTES + 1)
+    if len(data) > MAX_PNG_BYTES:
+        raise ValueError(f"{path} exceeds the PNG file-size limit")
+    return data
+
+
 def png_dimensions(path: Path) -> tuple[int, int]:
     """Fully validate an 8-bit RGBA PNG and return its dimensions."""
 
-    data = path.read_bytes()
+    data = read_bounded_regular_file(path)
     if not data.startswith(PNG_SIGNATURE):
         raise ValueError(f"{path} is not a valid PNG")
 
@@ -69,6 +91,8 @@ def png_dimensions(path: Path) -> tuple[int, int]:
                 raise ValueError(f"{path} is not a supported 8-bit RGBA PNG")
             dimensions = (width, height)
         elif chunk_type == b"IDAT":
+            if len(compressed) + len(payload) > MAX_PNG_BYTES:
+                raise ValueError(f"{path} exceeds the compressed PNG data limit")
             compressed.extend(payload)
         elif chunk_type == b"IEND":
             if length != 0:
@@ -83,14 +107,19 @@ def png_dimensions(path: Path) -> tuple[int, int]:
 
     decompressor = zlib.decompressobj()
     try:
-        pixels = decompressor.decompress(bytes(compressed)) + decompressor.flush()
+        pixels = decompressor.decompress(bytes(compressed), MAX_DECODED_BYTES + 1)
     except zlib.error as error:
         raise ValueError(f"{path} has invalid compressed PNG data") from error
-    if not decompressor.eof or decompressor.unused_data or decompressor.unconsumed_tail:
+    if len(pixels) > MAX_DECODED_BYTES or decompressor.unconsumed_tail:
+        raise ValueError(f"{path} exceeds the decoded PNG pixel budget")
+    if not decompressor.eof or decompressor.unused_data:
         raise ValueError(f"{path} has invalid trailing PNG image data")
     width, height = dimensions
     row_length = 1 + width * 4
-    if len(pixels) != row_length * height:
+    expected_decoded_bytes = row_length * height
+    if expected_decoded_bytes > MAX_DECODED_BYTES:
+        raise ValueError(f"{path} exceeds the decoded PNG pixel budget")
+    if len(pixels) != expected_decoded_bytes:
         raise ValueError(f"{path} has an invalid RGBA pixel count")
     if any(pixels[row * row_length] > 4 for row in range(height)):
         raise ValueError(f"{path} uses an invalid PNG row filter")
@@ -120,7 +149,7 @@ def validate(*, check_hashes: bool = True) -> None:
         if path.stat().st_size < 20_000:
             failures.append(f"{relative_path.as_posix()} is implausibly small")
         if check_hashes:
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            digest = hashlib.sha256(read_bounded_regular_file(path)).hexdigest()
             if digest != EXPECTED_SHA256[relative_path]:
                 failures.append(
                     f"{relative_path.as_posix()} does not match its approved SHA-256"

@@ -57,6 +57,13 @@ inheritance during creation and verifies the finalized ACL before writing.
 Windows creates a protected DACL granting full control only to the owner and
 SYSTEM.
 
+When Unix replacement must retain a displaced original, Noter first validates
+its identity, content, and metadata through the open object. An exact match is
+restricted through that handle to mode 0600 before retention. macOS also removes
+the ACL and verifies its absence. If validation or restriction fails, Noter
+reports the retained artifact and does not claim that owner-only access was
+established.
+
 ## 5. Diagnostics
 
 Default diagnostics do not contain:

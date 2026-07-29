@@ -75,9 +75,11 @@ defined in the
 - [Roadmap and current status](docs/ROADMAP.md)
 - [Product requirements](docs/REQUIREMENTS.md)
 - [Native Markdown contract](docs/MARKDOWN.md)
+- [Theme and safe extension contract](docs/THEMES.md)
 - [Installation and updates](docs/INSTALLATION.md)
 - [Technical design](docs/DESIGN.md)
 - [Privacy contract](docs/PRIVACY.md)
+- [Security policy](SECURITY.md)
 - [Engineering baseline](docs/BASELINE.md)
 - [Changelog](CHANGELOG.md)
 

@@ -7,11 +7,16 @@ release, so current work remains under Unreleased.
 
 ### Added
 
+- Add a public vulnerability-reporting policy with a private-reporting path and
+  guidance that keeps sensitive details and real documents out of public issues.
 - Add persisted System, Light, Dark, Green Screen, and Amber Screen themes with
   deliberate document typography. The specialty palettes retain native text
   shaping and enforce enhanced text, selection, and control contrast in tests.
+- Add a fail-closed specialty-palette validator that reconstructs the complete
+  standard Dark state after invalid input, and document the safe declarative
+  custom-theme boundary.
 - Add an early native Markdown Mode with source-backed formatted editing, H1,
-  H2, Bold, Italic, Link, Code, List, and Quote actions, plus four conservative
+  H2, Bold, Italic, Link, Code, List, and Quote actions, plus five conservative
   source diagnostics. Supported heading and inline delimiters remain hidden in
   the active editor while the file stays ordinary Markdown on disk.
 - Bundle the variable Inter typeface under the SIL Open Font License so headings
@@ -53,6 +58,17 @@ release, so current work remains under Unreleased.
 
 ### Security
 
+- Restrict any race-safe Unix displaced-document recovery artifact to
+  owner-only mode through its verified open handle. On macOS, remove and verify
+  the absence of extended access-control entries before retaining it.
+- Bound PNG validation by regular-file type, repository symlink policy, encoded
+  size, decoded size, and exact RGBA dimensions. Markdown link checking now
+  verifies one opened file identity, refuses path swaps and symlinks, reads
+  through that descriptor with an exact size ceiling, and rejects invalid UTF-8
+  so untrusted pull requests cannot turn CI validation into an unbounded read or
+  decompression operation.
+- Escape control characters in rejected command-line values before writing
+  diagnostics to a terminal.
 - Bind every document observation and reopen to a native no-follow handle. Unix
   uses `O_NOFOLLOW`; Windows opens the final entry with
   `FILE_FLAG_OPEN_REPARSE_POINT`, preserves ordinary sharing, and rejects link
@@ -78,6 +94,10 @@ release, so current work remains under Unreleased.
 
 ### Fixed
 
+- Render conservative line-wide emphasis-spacing mistakes such as `*text *` as
+  intended in Markdown Mode while reporting MD037 and preserving exact source
+  until an explicit correction. Flush inactive render runs whenever visible
+  style changes so trailing punctuation or whitespace cannot erase emphasis.
 - Check the more specific Save As shortcut before Save, use Command on macOS
   and Control on Windows and Linux, and derive displayed shortcut text from the
   same command metadata.

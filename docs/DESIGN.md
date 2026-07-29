@@ -355,7 +355,8 @@ never infers commit state from a generic I/O error.
 10. On Unix existing-file commits, verify the displaced original after exchange,
     compare its stable ownership, mode, ACL, and extended attributes with the
     immutable metadata snapshot ratified before commit, apply the snapshot only
-    on an exact match, then sync again.
+    on an exact match, restrict that same open displaced object to owner-only
+    access before retaining it, then sync again.
 11. Reconcile platform results whose documented failure may have side effects.
 12. Sync the parent directory where the platform provides a meaningful operation.
 13. Report the exact outcome and either clean by handle or retain the artifact
@@ -372,7 +373,10 @@ so the post-exchange observation ratifies the new token without treating it as
 the source of metadata to apply. The displaced file's stable metadata payload
 must still equal the immutable snapshot captured and revalidated before commit.
 A mismatch leaves the committed file private and reports a warning instead of
-restoring stale permissions. Portable Unix APIs cannot tie
+restoring stale permissions. After an exact match, the verified displaced object
+is restricted through its live descriptor to mode 0600. macOS also removes the
+access-control list and verifies its absence. Restriction failure is a committed
+cleanup warning, never a false owner-only claim. Portable Unix APIs cannot tie
 deletion atomically to that verified open object, so the artifact is retained
 with a warning that names only the random sibling basename and gives inspection
 and removal guidance. Absent-file installation uses `RENAME_NOREPLACE` where
@@ -454,9 +458,11 @@ Windows replacements still receive the destination metadata merged by
 the adapter captures required metadata into an immutable snapshot before commit,
 verifies the displaced original after exchange, compares its stable metadata
 payload with that snapshot, then applies the snapshot to the committed open
-handle only on an exact match. A metadata-finalization failure or final-window
-metadata change is a committed warning and leaves the destination at the safest
-access state reached, never a false not-committed result.
+handle only on an exact match. It then restricts the verified displaced object
+through its open handle to mode 0600 and, on macOS, verified ACL absence. A
+metadata-finalization, artifact-restriction, or final-window metadata failure is
+a committed warning and leaves the destination at the safest access state
+reached, never a false not-committed result or false privacy guarantee.
 Extended-attribute capture is limited to 4,096 entries and 64 MiB of aggregate
 names and values. Native size queries enforce the limit before value allocation
 and retry only within a fixed bound when metadata changes. macOS resource forks
@@ -646,6 +652,13 @@ platform events where available and checked on focus elsewhere. Contrast,
 selection, focus, disabled state, and error state are tested, not selected only
 for appearance.
 
+Specialty palettes are complete data values passed through one runtime
+validator. Primary, secondary, link, warning, error, selection, active-control,
+and outline contrast have explicit thresholds; every color must be opaque. A
+rejected extension reconstructs standard Dark visuals instead of applying a
+partial or unreadable palette. The future custom-theme loader is declarative
+and accepts no scripts, shaders, assets, URLs, commands, or behavior overrides.
+
 ## 12. Native Markdown architecture
 
 Markdown Mode and Text Mode share one authoritative Markdown source. Text Mode
@@ -674,9 +687,12 @@ back to ordinary Markdown. The responsive top row keeps the primary Mode and
 Theme controls opposite the application menus, while the separate format bar
 exists only in Markdown Mode. The top-row construction order matches its visual
 order so keyboard focus and accessibility-tree traversal do not reverse the
-right-aligned controls. Text Mode exposes every delimiter, and four conservative
-diagnostics operate directly on source. This establishes the interaction
-direction but does not satisfy M6.
+right-aligned controls. Text Mode exposes every delimiter, and five conservative
+diagnostics operate directly on source. A narrowly recoverable line-wide
+emphasis spacing mistake is projected with the intended style while MD037
+reports that portable Markdown requires moving the whitespace outside the
+closing marker. Viewing never changes those source bytes. This establishes the
+interaction direction but does not satisfy M6.
 
 Because the current slice discovers and renders the complete block set
 synchronously, it enforces prototype ceilings of 1 MiB of source, 8,192 logical

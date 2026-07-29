@@ -118,6 +118,7 @@ work continues.
 
 - System, Light, Dark, Green Screen, and Amber Screen themes with a persisted
   override;
+- a fail-closed declarative theme extension boundary;
 - a readable classic-notepad layout with deliberate typography and spacing;
 - working Help > About Noter and Help > Check for Updates actions;
 - clear pre-release update status when no release is available;
@@ -136,6 +137,9 @@ update-status dialogs, source install helpers, a responsive upper-right Mode
 control and Theme menu, a contextual Markdown format bar, a bundled variable
 document typeface, and deterministic native README screenshots are implemented
 locally. Specialty palettes have deterministic enhanced-contrast checks.
+Built-in palette extension is data-driven and invalid palettes fail closed to
+Dark. The safe custom-theme contract is documented;
+runtime theme-file loading, persistence, and error UX remain open work.
 Hinting, subpixel positioning, real heading and emphasis weights, and
 theme-correct text coverage transfer are verified explicitly rather than
 assumed from toolkit defaults. The early source-backed Markdown slice is visible
@@ -147,6 +151,8 @@ disposable clean-user installer tests before verification.
 
 - Theme behavior passes visual, high-contrast, persistence, and system-change
   tests on all target platforms.
+- Declarative custom-theme rejection passes malformed-data and external-access
+  tests.
 - About and update actions are verified through semantic UI automation and the
   installed application, not only state-unit tests.
 - Source install helpers are idempotent, path-safe, and tested in disposable

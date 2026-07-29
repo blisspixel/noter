@@ -12,6 +12,7 @@ use noter::core::save::SaveOutcome;
 use noter::core::undo::{HistoryApplyOutcome, HistoryRecordOutcome, UndoHistory};
 use noter::error::NoterError;
 
+use crate::idle_screen::IdleScreen;
 use crate::markdown_ui::{MarkdownEditor, MarkdownProjectionLimit, markdown_projection_limit};
 use crate::theme::{self, AppTheme, THEME_STORAGE_KEY};
 
@@ -60,6 +61,7 @@ pub struct LaunchOptions {
     pub view: Option<DocumentView>,
     pub show_updates: bool,
     pub screenshot_path: Option<PathBuf>,
+    pub screenshot_idle: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -217,6 +219,7 @@ pub struct NoterApp {
     pending_document_view: Option<DocumentView>,
     view: DocumentView,
     theme: AppTheme,
+    idle_screen: IdleScreen,
     markdown_editor: MarkdownEditor,
     document_editor_serial: u64,
     markdown_issue_cache: Option<MarkdownIssueCache>,
@@ -242,6 +245,7 @@ impl Default for NoterApp {
             pending_document_view: None,
             view: DocumentView::Text,
             theme: AppTheme::System,
+            idle_screen: IdleScreen::default(),
             markdown_editor: MarkdownEditor::default(),
             document_editor_serial: 0,
             markdown_issue_cache: None,
@@ -281,6 +285,9 @@ impl NoterApp {
         if let Some(path) = options.screenshot_path {
             if app.view == DocumentView::Markdown {
                 app.markdown_editor.activate_first_block(&app.text);
+            }
+            if options.screenshot_idle {
+                app.idle_screen.force_active_for_capture();
             }
             app.screenshot = Some(ScreenshotCapture::new(path));
         }
@@ -1511,7 +1518,9 @@ fn append_cleanup_error(
 
 impl eframe::App for NoterApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.render_frame(ui);
+        if !self.idle_screen.show(ui.ctx(), self.theme.idle_effect()) {
+            self.render_frame(ui);
+        }
         #[cfg(feature = "screenshot-qa")]
         self.advance_screenshot_capture(ui.ctx());
     }

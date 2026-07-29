@@ -77,10 +77,13 @@ unit tests, and coverage cannot prove.
 - [ ] IO-19 Linux replacement preserves exact mode, attainable ownership, ACLs,
   visible extended attributes, SELinux context, and capabilities. A post-commit
   metadata failure retains the displaced revision and reports the safest state
-  reached without claiming the save did not commit.
+  reached without claiming the save did not commit. An exactly validated
+  retained artifact is mode 0600; a restriction failure is explicit.
 - [ ] IO-20 macOS replacement preserves mode, attainable ownership, ACLs,
   extended attributes, resource forks, and quarantine data; modification time
-  advances according to policy, and BSD file-flag behavior is recorded.
+  advances according to policy, and BSD file-flag behavior is recorded. An
+  exactly validated retained artifact is mode 0600 with no ACL; a restriction
+  failure is explicit.
 - [ ] IO-21 Cleanup and every file or parent durability warning remain distinct,
   and none is reported as a failed or uncommitted save. A file-barrier failure
   reports Best Effort even if the parent barrier succeeds.
@@ -202,6 +205,8 @@ Required real readers:
   mode and theme menus remain visible without overlap. The formatting row is
   absent in Text Mode. Keyboard focus and screen-reader traversal follow the
   same left-to-right sequence as the visible controls.
+- [ ] UI-13 Invalid declarative custom themes fail closed to Dark with an
+  actionable explanation and no partially applied colors or external access.
 
 ## 9. Performance and resources
 

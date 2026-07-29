@@ -355,7 +355,11 @@ entry. Portable Unix unlink cannot express the same object-bound condition, so
 Noter retains uncommitted siblings and displaced originals with explicit cleanup
 warnings. Unix replacement uses an atomic exchange, and siblings remain mode
 0600 until their bytes have committed. An absent Unix destination keeps that
-owner-only mode as the intentional v0.1 new-file policy. On macOS, mode 0600
+owner-only mode as the intentional v0.1 new-file policy. After exact displaced
+identity, content, and metadata validation, Noter restricts that same open object
+to mode 0600 before retaining it. macOS also removes the ACL and verifies its
+absence. A failure remains an explicit cleanup warning rather than a false
+privacy guarantee. On macOS, mode 0600
 alone does not suppress inherited ACL entries. Noter therefore passes a
 zero-entry ACL with the global `no_inherit` flag and mode 0600 to `openx_np`
 atomically. Exact-commit native execution proves that a control file inherits
