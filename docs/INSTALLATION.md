@@ -1,54 +1,94 @@
 # Installation and Updates
 
-**Status:** Source installation is available. Noter has not published a binary
-release, signed package, or self-updating release channel.
+**Reviewed:** 2026-07-30
 
-## Install the current source build
+**Current availability:** Source installation is supported for development and
+evaluation. Noter has not published a signed binary release, native package, or
+self-updating release channel.
 
-The source installers validate the locked workspace, build with the pinned Rust
-toolchain, replace an existing Cargo installation, and verify the resulting
-release binary's version and invalid-argument exit contract. They do not fetch
-Noter source or require administrator access. On a machine without the pinned
-toolchain or locked crates in its local cache, rustup and Cargo may download
-those build inputs from their configured sources.
+## Prerequisites
+
+Install the following before using the source installer:
+
+- [Git](https://git-scm.com/)
+- [Rust through rustup](https://rustup.rs/)
+- Windows, macOS, or Linux on a machine able to build a native Rust application
+
+The repository pins Rust in `rust-toolchain.toml`. Rustup and Cargo may download
+that toolchain and locked dependencies from their configured sources during the
+first build.
+
+## Quick install
 
 Windows PowerShell:
 
 ```powershell
-git clone https://github.com/blisspixel/noter
+git clone https://github.com/blisspixel/noter.git
 cd noter
-./scripts/install.ps1
+.\scripts\install.ps1
 ```
 
 macOS or Linux:
 
-```bash
-git clone https://github.com/blisspixel/noter
+```sh
+git clone https://github.com/blisspixel/noter.git
 cd noter
 sh scripts/install.sh
 ```
 
-Rust must already be installed through [rustup](https://rustup.rs). The
-repository pins its toolchain in `rust-toolchain.toml`. Cargo installs to its
-normal per-user binary directory unless a different root is supplied.
+The installer:
+
+1. validates the local locked Cargo workspace;
+2. builds the release executable with the repository's pinned toolchain;
+3. replaces an older Cargo-installed Noter build at the selected install root;
+4. verifies `noter --version`; and
+5. verifies the installed command-line error and exit-status contract.
+
+It does not fetch Noter source, modify shell startup files, or request
+administrator access. It prints the exact installed executable path when it
+finishes.
+
+## Start and verify
+
+Open a new terminal after the first Rust installation, then run:
+
+```sh
+noter --version
+noter
+```
+
+Pass an existing document path to open it directly, for example
+`noter README.md` from the repository checkout.
+
+If `noter` is not found, use the exact path printed by the installer or add its
+parent `bin` directory to `PATH`. The default is Cargo's per-user binary
+directory, normally `%USERPROFILE%\.cargo\bin` on Windows and `$HOME/.cargo/bin`
+on macOS and Linux.
+
+Noter is pre-alpha. Keep backups and do not use it as the only editor for
+important files.
 
 ## Update a source installation
 
-Update the checkout through an explicit Git operation, review the incoming
-revision, then rerun the same installer:
+Review and fast-forward the existing checkout, then rerun its installer.
 
-```bash
+Windows PowerShell:
+
+```powershell
+git pull --ff-only
+.\scripts\install.ps1
+```
+
+macOS or Linux:
+
+```sh
 git pull --ff-only
 sh scripts/install.sh
 ```
 
-```powershell
-git pull --ff-only
-./scripts/install.ps1
-```
-
-The scripts pass `--locked` and `--force` to Cargo, so the lockfile is honored
-and the existing source-installed binary is replaced.
+`--ff-only` refuses an implicit merge when local history has diverged. The
+installer passes `--locked` and `--force` to Cargo, so it honors the committed
+lockfile and replaces the existing source-installed executable.
 
 ## Installer options
 
@@ -61,49 +101,105 @@ and the existing source-installed binary is replaced.
 Examples:
 
 ```powershell
-./scripts/install.ps1 -Check
-./scripts/install.ps1 -InstallRoot "$env:LOCALAPPDATA\Noter"
+.\scripts\install.ps1 -Check
+.\scripts\install.ps1 -InstallRoot "$env:LOCALAPPDATA\Noter"
 ```
 
-```bash
+```sh
 sh scripts/install.sh --check
 sh scripts/install.sh --root "$HOME/.local"
 ```
 
-The explicit install-root option takes precedence. Without it, the scripts use
-`CARGO_INSTALL_ROOT` when set, then `CARGO_HOME`, then the standard per-user
-Cargo directory. The scripts pass that absolute root to Cargo so a repository
-or user Cargo configuration cannot silently redirect the executable elsewhere.
+An explicit install root takes precedence. Without it, the scripts use
+`CARGO_INSTALL_ROOT` when set, then `CARGO_HOME`, then Cargo's standard per-user
+directory. The scripts pass the resulting absolute path to Cargo so repository
+or user configuration cannot silently redirect the executable.
+
+## Uninstall a source build
+
+For an installation in Cargo's default root:
+
+```sh
+cargo uninstall noter
+```
+
+For a custom root, use the same root supplied during installation. For example:
+
+```powershell
+cargo uninstall noter --root "$env:LOCALAPPDATA\Noter"
+```
+
+```sh
+cargo uninstall noter --root "$HOME/.local"
+```
+
+Cargo removes the executable and its install record. It does not remove the Git
+checkout or Noter's per-user framework state. The current build stores its
+selected theme in `app.ron` under the following directory:
+
+| Platform | State directory |
+| --- | --- |
+| Windows | `%APPDATA%\Noter\data` |
+| macOS | `~/Library/Application Support/Noter` |
+| Linux | `$XDG_DATA_HOME/noter`, or `~/.local/share/noter` when unset |
+
+Inspect that directory before deleting it. The current build does not yet create
+the planned recovery store; releases that do will distinguish preferences from
+recovery data in their uninstall instructions.
+
+## Troubleshooting
+
+### Cargo is not found
+
+Install Rust through rustup, allow it to configure the Cargo binary directory,
+open a new terminal, and rerun the installer.
+
+### The pinned toolchain cannot be downloaded
+
+Confirm that rustup can reach its configured distribution server, then run
+`rustup show` in the checkout. The installer does not bypass the pinned
+toolchain or substitute an unverified compiler.
+
+### The install succeeds but `noter` is not found
+
+Use the exact executable path printed at the end of installation. Add that
+path's parent `bin` directory to `PATH` if the command should be available in
+future terminals.
+
+### A custom installation root behaves unexpectedly
+
+Run the installer with `-Check` or `--check`, then pass an explicit absolute
+root. Use that same root for future updates and uninstallation.
 
 ## Current update actions
 
-`Help > Check for Updates` and `noter update` open the same local update-status
-dialog. In the current pre-alpha build, that dialog states that no verified
-release exists and offers an explicit link to the GitHub releases page. It does
-not query an API, download an artifact, or replace the application.
+`Help > Check for Updates` and `noter update` open the same local status dialog.
+The current dialog explains that no verified release exists and can open the
+GitHub releases page only after an explicit user action. It does not query an
+API, download an artifact, or replace the application.
 
-This limitation is intentional. A self-updater is unsafe until release assets,
-manifests, checksums, provenance, rollback behavior, and clean-machine tests
-exist.
+This boundary avoids presenting a source checkout as a secure release channel.
+Documentation will not recommend piping a script from a mutable branch into a
+shell. A remote one-line installer becomes appropriate only after immutable,
+versioned artifacts and authenticated release metadata exist.
 
 ## First-release contract
 
 The first supported binary release must provide:
 
-- portable archives for every supported operating-system and architecture pair;
+- portable archives for each supported operating-system and architecture pair;
 - a PowerShell installer for Windows and a POSIX installer for macOS and Linux;
 - an MSI or similarly native Windows package;
 - a Homebrew formula for macOS;
 - per-user installation without elevation by default;
-- one shared release-manifest and artifact-verification policy for the GUI,
+- one release-manifest and artifact-verification policy shared by the GUI,
   command, and installers;
 - safe reinstall, upgrade, rollback, and uninstall behavior; and
-- clear disclosure when platform signing is not yet available.
+- clear disclosure when platform signing is unavailable.
 
-Release bootstrap instructions must download an installer from an immutable
-versioned release asset, verify it against authenticated release metadata, and
-leave the script inspectable before execution. Documentation will not recommend
-executing a script from a mutable branch.
+Release bootstrap instructions must use a stable official endpoint, resolve an
+immutable versioned artifact, verify authenticated metadata, and leave the
+installer inspectable before execution.
 
 ## Update safety requirements
 
@@ -135,7 +231,7 @@ Installers fail closed on a missing asset, unsupported platform, malformed
 manifest, incomplete download, digest mismatch, or unapproved downgrade. They
 never fall back to building a mutable branch.
 
-## Verification matrix
+## Release verification matrix
 
 Release evidence must cover clean install, reinstall, upgrade, downgrade,
 rollback, and uninstall on Windows, Intel and Apple Silicon macOS, X11, and

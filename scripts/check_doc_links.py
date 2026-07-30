@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a Markdown inline link points to a missing local path."""
+"""Fail when a Markdown inline link points to a missing local path or heading."""
 
 from __future__ import annotations
 
@@ -12,7 +12,8 @@ from urllib.parse import unquote, urlsplit
 
 
 LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
-IGNORED_DIRECTORIES = {".git", "target"}
+HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
+IGNORED_DIRECTORIES = {".agent", ".git", "logs", "target"}
 MAX_MARKDOWN_BYTES = 2 * 1024 * 1024
 
 
@@ -73,17 +74,69 @@ def read_markdown(document: Path) -> str:
         raise ValueError("Markdown input is not valid UTF-8") from error
 
 
+def heading_slug(heading: str) -> str:
+    """Return the GitHub-style fragment used by the repository's headings."""
+    normalized = heading.casefold()
+    supported = "".join(
+        character
+        for character in normalized
+        if character.isalnum() or character in {" ", "\t", "-", "_"}
+    )
+    return re.sub(r"[ \t]+", "-", supported).strip("-")
+
+
+def heading_anchors(content: str) -> set[str]:
+    """Collect GitHub-style anchors, including deterministic duplicate suffixes."""
+    anchors: set[str] = set()
+    occurrences: dict[str, int] = {}
+    in_fence = False
+    for line in content.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+
+        match = HEADING.match(line)
+        if match is None:
+            continue
+        base = heading_slug(match.group(1))
+        if not base:
+            continue
+        duplicate = occurrences.get(base, 0)
+        occurrences[base] = duplicate + 1
+        anchors.add(base if duplicate == 0 else f"{base}-{duplicate}")
+    return anchors
+
+
+def normalized_path(path: Path) -> Path:
+    """Normalize lexical path segments without resolving a possible symlink."""
+    return Path(os.path.abspath(path))
+
+
 def missing_links(root: Path) -> list[str]:
-    """Return diagnostics for missing local inline-link targets."""
+    """Return diagnostics for missing local inline-link paths and fragments."""
     diagnostics: list[str] = []
+    repository_root = normalized_path(root)
+    contents: dict[Path, str] = {}
 
     for document in markdown_files(root):
         relative = document.relative_to(root)
         try:
             content = read_markdown(document)
         except (OSError, ValueError) as error:
-            diagnostics.append(f"{relative}: {error}")
+            diagnostics.append(f"{relative.as_posix()}: {error}")
             continue
+        contents[normalized_path(document)] = content
+
+    anchors = {
+        document: heading_anchors(content) for document, content in contents.items()
+    }
+
+    for document_path, content in contents.items():
+        document = Path(document_path)
+        relative = document.relative_to(repository_root).as_posix()
         in_fence = False
         for line_number, line in enumerate(content.splitlines(), start=1):
             stripped = line.lstrip()
@@ -96,20 +149,41 @@ def missing_links(root: Path) -> list[str]:
             for match in LINK.finditer(line):
                 target = target_from(match.group(1))
                 parsed = urlsplit(target)
-                if parsed.scheme or target.startswith(("#", "//")):
+                if parsed.scheme or target.startswith("//"):
                     continue
 
                 decoded_path = unquote(parsed.path)
                 if not decoded_path:
-                    continue
-
-                if decoded_path.startswith("/"):
+                    destination = document
+                elif decoded_path.startswith("/"):
                     destination = root / decoded_path.lstrip("/")
                 else:
                     destination = document.parent / decoded_path
+                destination = normalized_path(destination)
+
+                try:
+                    destination.relative_to(repository_root)
+                except ValueError:
+                    diagnostics.append(
+                        f"{relative}:{line_number}: local link leaves repository: {target}"
+                    )
+                    continue
 
                 if not destination.exists():
                     diagnostics.append(f"{relative}:{line_number}: missing {target}")
+                    continue
+
+                fragment = unquote(parsed.fragment)
+                if (
+                    fragment
+                    and destination.suffix.casefold() == ".md"
+                    and destination in anchors
+                    and fragment not in anchors[destination]
+                ):
+                    diagnostics.append(
+                        f"{relative}:{line_number}: missing heading #{fragment} in "
+                        f"{destination.relative_to(repository_root).as_posix()}"
+                    )
 
     return diagnostics
 

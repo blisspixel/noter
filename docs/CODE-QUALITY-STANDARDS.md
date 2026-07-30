@@ -1,5 +1,9 @@
 # Code Quality Standards
 
+**Reviewed:** 2026-07-30
+
+**Status:** Repository merge contract
+
 These standards are the merge contract for Noter. They apply to production code, tests, documentation, scripts, platform adapters, and CI. A roadmap checkbox cannot weaken them.
 
 ## 1. Correctness before features

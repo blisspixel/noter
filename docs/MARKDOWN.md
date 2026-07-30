@@ -1,5 +1,7 @@
 # Native Markdown Mode
 
+**Reviewed:** 2026-07-30
+
 **Status:** Early source-backed formatted editing is available. The complete
 contract below remains in progress.
 

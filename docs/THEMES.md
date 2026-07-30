@@ -1,5 +1,7 @@
 # Theme Contract
 
+**Reviewed:** 2026-07-30
+
 **Status:** Five built-in themes and the validated contributor extension path
 are implemented. Loading user-authored theme files at runtime remains planned.
 

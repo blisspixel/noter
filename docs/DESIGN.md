@@ -2,7 +2,7 @@
 
 **Version:** 0.3
 
-**Reviewed:** 2026-07-28
+**Reviewed:** 2026-07-30
 
 **Status:** Active architecture contract
 
@@ -56,26 +56,26 @@ The current pre-alpha checkpoint has:
   and Undo and Redo history bounded to 1,024 entries and 32 MiB by default;
 - a UI-level Save, Discard Changes, and Cancel decision for dirty New, Open,
   Close, and Quit requests;
-- 279 Windows-local Rust tests, 94.59 percent trust-kernel line coverage, and
-  92.56 percent whole-workspace line coverage against respective 90 and 80
-  percent gates; and
+- 302 Rust tests in the latest hosted Linux suite, 93.57 percent trust-kernel
+  line coverage, and 92.19 percent whole-workspace line coverage against
+  respective 90 and 80 percent gates;
 - a focused 118-candidate transaction and history mutation campaign with 95
   caught and 23 validated compiler rejections, with no miss, timeout, or
-  infrastructure failure; and
-- a 418-mutant Windows core campaign classified as 270 caught and 148 unviable,
-  plus a clean 58-mutant Windows native-adapter pass classified as 40 caught
-  and 18 unviable. Exact-commit run 30221793209 passes the settled 741-candidate
-  three-platform union with no miss, timeout, infrastructure error, or scope
-  gap.
+  infrastructure failure;
+- a historical 741-candidate supported-platform mutation union with no miss,
+  timeout, infrastructure error, or scope gap; and current exact-commit scopes
+  of 817 Linux, 751 Windows, and 47 macOS candidates with no miss, timeout, or
+  recognized infrastructure failure.
 
-The current production-adapter checkpoint passes exact-commit Windows, macOS,
-and Linux CI. It still requires the manual metadata and weaker-filesystem
-evidence named by ADR-003 plus the reproducible benchmark baseline. The edit
-foundation still requires deterministic coalescing, complete input-intent
-classification, the remaining commands, and platform evidence. Noter also does
-not yet have the complete pure lifecycle state machine, Reload handling,
-recovery, configuration, accessibility evidence, or release performance
-evidence. M1 and M3 therefore remain In Progress.
+The current production-adapter checkpoint passes all eight jobs in exact-commit
+run [30415383710](https://github.com/blisspixel/noter/actions/runs/30415383710)
+for commit `efb8675`. It still requires the manual metadata and
+weaker-filesystem evidence named by ADR-003 plus the reproducible benchmark
+baseline. The edit foundation still requires deterministic coalescing, complete
+input-intent classification, the remaining commands, and platform evidence.
+Noter also does not yet have the complete pure lifecycle state machine, Reload
+handling, recovery, configuration, accessibility evidence, or release
+performance evidence. M1 and M3 therefore remain In Progress.
 
 ## 2. Architectural principles
 

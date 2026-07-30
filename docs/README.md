@@ -1,34 +1,57 @@
 # Noter Documentation
 
-The root [README](../README.md) is the concise project introduction. This
-directory contains the product contracts, engineering decisions, and evidence
-needed to verify the work.
+The root [README](../README.md) is the short project introduction. This index
+routes users, contributors, and reviewers to the detailed source of truth for
+each topic.
+
+## Start here
+
+| Goal | Document |
+| --- | --- |
+| Install, update, or remove Noter | [Installation and updates](INSTALLATION.md) |
+| Understand Text Mode and Markdown Mode | [Native Markdown Mode](MARKDOWN.md) |
+| See current work and release gates | [Roadmap](ROADMAP.md) |
+| Build, test, or update screenshots | [Development guide](DEVELOPMENT.md) |
+| Contribute a change | [Contributing guide](../CONTRIBUTING.md) |
+| Review local-data and network behavior | [Privacy contract](PRIVACY.md) |
+| Report a vulnerability | [Security policy](../SECURITY.md) |
 
 ## Product contracts
 
-- [ROADMAP.md](ROADMAP.md): milestone status, order, and exit evidence
-- [REQUIREMENTS.md](REQUIREMENTS.md): testable product and release requirements
-- [MARKDOWN.md](MARKDOWN.md): native Markdown Mode contract and current limits
-- [THEMES.md](THEMES.md): built-in palettes and the safe extension boundary
-- [INSTALLATION.md](INSTALLATION.md): current source install and release updater contract
-- [PRIVACY.md](PRIVACY.md): local-first data and network policy
-- [UX_VISION.md](UX_VISION.md): focused interaction principles
+- [Product requirements](REQUIREMENTS.md) define testable behavior for the
+  first public-quality release.
+- [UX direction](UX_VISION.md) defines the intended interaction and visual
+  principles.
+- [Native Markdown Mode](MARKDOWN.md) defines source authority, formatted
+  editing, diagnostics, and completion evidence.
+- [Theme contract](THEMES.md) defines the built-in palettes and safe extension
+  boundary.
+- [Privacy contract](PRIVACY.md) defines file, state, diagnostic, and network
+  behavior.
 
 ## Engineering contracts
 
-- [DESIGN.md](DESIGN.md): active architecture and failure analysis
-- [CODE-QUALITY-STANDARDS.md](CODE-QUALITY-STANDARDS.md): implementation and merge gates
-- [manual-test-matrix.md](manual-test-matrix.md): platform release checklist
-- [adr/](adr/): accepted architecture decisions
+- [Technical design](DESIGN.md) defines architecture, failure modes, and
+  verification layers.
+- [Code quality standards](CODE-QUALITY-STANDARDS.md) define the merge gates.
+- [Architecture decisions](adr/README.md) record accepted, costly-to-reverse
+  choices.
+- [Manual platform matrix](manual-test-matrix.md) defines release checks that
+  automation cannot establish alone.
 
-## Evidence and review
+## Planning and evidence
 
-- [RESEARCH.md](RESEARCH.md): dated primary-source research and decisions
-- [BASELINE.md](BASELINE.md): measured repository baseline
-- [M1_SECURITY_REVIEW.md](M1_SECURITY_REVIEW.md): durable-save security review
-- [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md): mutation-test evidence
-- [RIGOROUS_REVIEW.md](RIGOROUS_REVIEW.md): critical design review and dispositions
+- [Roadmap](ROADMAP.md) owns milestone order, status, and exit criteria.
+- [Research](RESEARCH.md) records dated primary-source findings behind product
+  and engineering decisions.
+- [Engineering baseline](BASELINE.md) records measured checkpoints and known
+  gaps.
+- [M1 security review](M1_SECURITY_REVIEW.md) and
+  [mutation evidence](M1_MUTATION_EVIDENCE.md) record durable-save review
+  results.
+- [Architecture and product review](RIGOROUS_REVIEW.md) tracks the highest-risk
+  remaining work and historical dispositions.
+- The root [changelog](../CHANGELOG.md) records notable implementation changes.
 
-Release evidence is added only after the stated command and platform checks have
-run on the cited commit. Planned documents remain in the
-[roadmap](ROADMAP.md), not in the root README.
+Public claims are updated only when the cited command, platform, and commit
+evidence exist. Future scope belongs in the roadmap rather than the root README.

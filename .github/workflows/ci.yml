@@ -195,6 +195,7 @@ jobs:
       - name: Check that key planning documents exist and are not empty
         run: |
           test -s README.md
+          test -s CONTRIBUTING.md
           test -s CHANGELOG.md
           test -s LICENSE
           test -s docs/RESEARCH.md
@@ -205,6 +206,7 @@ jobs:
           test -s docs/DESIGN.md
           test -s docs/ROADMAP.md
           test -s docs/INSTALLATION.md
+          test -s docs/DEVELOPMENT.md
           test -s docs/MARKDOWN.md
           test -s docs/PRIVACY.md
           test -s docs/adr/0001-egui-and-editor-gate.md

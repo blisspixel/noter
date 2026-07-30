@@ -2,7 +2,7 @@
 
 **Version:** 0.4
 
-**Reviewed:** 2026-07-26
+**Reviewed:** 2026-07-30
 
 **Status:** Ratified contract for the first public-quality release
 
@@ -232,9 +232,10 @@ The complete release and verification contract is in
   or make a network request.
 - **FR-107 Conformance:** Supported syntax is ratified against CommonMark plus an
   explicitly listed subset of GitHub Flavored Markdown, if any.
-- **FR-108 Views:** Provide Text Mode and Markdown Mode, with optional
-  reading-focused and synchronized split layouts. Both editable modes operate on
-  one source revision; switching modes never changes document bytes.
+- **FR-108 Views:** Provide Text Mode and Markdown Mode as the required editing
+  surfaces. Both operate on one source revision, and switching modes never
+  changes document bytes. A later reading-focused or synchronized split layout
+  is an optional addition, not the definition of Markdown support.
 - **FR-109 Formatting controls:** Provide selection-aware Bold, Italic,
   Strikethrough, Inline Code, Link, Heading, Quote, List, Task List, and Code
   Fence commands through accessible menus and documented keyboard paths. Each

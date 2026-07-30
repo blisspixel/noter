@@ -16,7 +16,14 @@
 # Python bytecode produced by repository validation tests
 __pycache__/
 *.py[cod]
+/.venv/
+/venv/
 /.ruff_cache/
+/.pytest_cache/
+/.mypy_cache/
+/.coverage
+/.coverage.*
+/htmlcov/
 
 # Autosave and recovery artifacts
 *.noter-autosave
@@ -24,16 +31,12 @@ __pycache__/
 noter-autosave-*
 noter-recovery-*
 *.tmp-noter
+.noter-save-*.tmp
+.noter-backup-*.bak
 
 # Temporary files created during atomic saves
 *.txt.tmp
 *.md.tmp
-
-# =============================================================================
-# Synchronized-folder development artifacts
-# =============================================================================
-# Build outputs are excluded because synchronized folders and antivirus tools can
-# contend with Cargo's large collection of short-lived files.
 
 # =============================================================================
 # IDEs and editors
@@ -79,6 +82,7 @@ desktop.ini
 # =============================================================================
 /coverage/
 /lcov.info
+coverage.xml
 *.profraw
 cobertura.xml
 tarpaulin-report.html
@@ -89,6 +93,7 @@ tarpaulin-report.html
 # =============================================================================
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 secrets/

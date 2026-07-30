@@ -2,10 +2,35 @@
 
 **M0 measured:** 2026-07-26
 
-**Current checkpoint refreshed:** 2026-07-27
+**Latest implementation checkpoint:** 2026-07-28
 
-**Source state:** M0 evidence commit `7512534` after dependency cleanup. These
+**M0 source state:** Evidence commit `7512534` after dependency cleanup. These
 measurements are a development baseline, not release evidence.
+
+## Latest exact implementation checkpoint
+
+Commit `efb8675` is the latest implementation checkpoint before the 2026-07-30
+documentation review. Exact-commit run
+[30415383710](https://github.com/blisspixel/noter/actions/runs/30415383710)
+completed all eight required jobs successfully.
+
+| Measure | Result |
+| --- | --- |
+| Hosted Linux Rust tests | 302 passed, 0 failed |
+| Whole-workspace line coverage | 92.19 percent, 11,044 of 11,979 lines |
+| Trust-kernel line coverage | 93.57 percent, 6,612 of 7,066 lines |
+| Linux mutation scope | 817 total, 586 caught, 231 unviable, 0 missed, 0 timed out |
+| Windows mutation scope | 751 total, 524 caught, 227 unviable, 0 missed, 0 timed out |
+| macOS mutation scope | 47 total, 41 caught, 6 unviable, 0 missed, 0 timed out |
+| Mutation infrastructure validation | Pass in all three jobs; no recognized compiler, linker, process, storage, or tool failure hidden as unviable |
+| Source installers | Pass on Windows, macOS, and Linux using custom roots containing spaces |
+| Formatting, Clippy, rustdoc, dependency audit and policy | Pass |
+| Documentation, validation-script lint, and validation-script tests | Pass |
+
+Platform mutation scopes overlap and are not added into a synthetic unique
+total. The historical union below remains the evidence for the earlier declared
+scope; the current counts show that the required per-platform gates continued to
+evolve with implementation.
 
 ## Reference environment
 
@@ -50,7 +75,7 @@ semantic UI and manual platform tests.
 - Duplicate target-specific dependency families remain in the GUI stack and
   require a release audit.
 
-## Current engineering checkpoint
+## 2026-07-27 engineering checkpoint
 
 This checkpoint measures the current pre-alpha implementation after the M1
 storage adapter, M2 shell work, and early M6 Markdown slice became reachable
@@ -108,8 +133,9 @@ duplicate, license, source, and capability audit.
 The lifecycle result was produced from the settled `src/app.rs` scope with:
 
 ```powershell
-$env:CARGO_TARGET_DIR='D:\noter-target-cycle0-final'
-$env:CARGO_MUTANTS_OUTPUT='D:\noter-mutants-lifecycle-cycle6-settled-v3'
+$mutationRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'noter-mutation-evidence'
+$env:CARGO_TARGET_DIR = Join-Path $mutationRoot 'target'
+$env:CARGO_MUTANTS_OUTPUT = Join-Path $mutationRoot 'lifecycle'
 $env:CARGO_INCREMENTAL='0'
 cargo mutants --in-place --no-config --workspace --all-features --colors never --minimum-test-timeout 60 -f src/app.rs --re 'NoterApp::(request_open|request_new_document|request_close|protect_native_close|begin_pending_abandon|cancel_pending_abandon|discard_pending_abandon|save_pending_abandon|continue_pending_abandon_if_clean|execute_abandon_action|restore_save_recovery_message|do_save|do_save_as_to|handle_save_result)\b'
 ```
@@ -117,8 +143,9 @@ cargo mutants --in-place --no-config --workspace --all-features --colors never -
 The final Markdown result used cargo-mutants' isolated source copy:
 
 ```powershell
-$env:CARGO_TARGET_DIR='D:\noter-target-cycle0-final'
-$env:CARGO_MUTANTS_OUTPUT='D:\noter-mutants-markdown-cycle6-settled-v3'
+$mutationRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'noter-mutation-evidence'
+$env:CARGO_TARGET_DIR = Join-Path $mutationRoot 'target'
+$env:CARGO_MUTANTS_OUTPUT = Join-Path $mutationRoot 'markdown'
 $env:CARGO_INCREMENTAL='0'
 cargo mutants --no-config --workspace --all-features --colors never --minimum-test-timeout 60 -f src/markdown_ui.rs --re '(markdown_edit_layout|markdown_render_layout|markdown_source_styles|semantic_target_at_selection|apply_markdown_tag|tag_hides_source_markup|reveal_event_text|markdown_text_format|formatted_block_marker|is_quote_marker|is_block_quote|insert_link)'
 ```

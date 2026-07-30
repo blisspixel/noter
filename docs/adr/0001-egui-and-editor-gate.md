@@ -21,7 +21,7 @@ Keep egui and eframe as the application shell through the M4 correctness alpha.
 Describe the UI as system-integrated and consistent, not native-looking.
 
 Use the built-in `TextEdit` only as a bounded correctness adapter. Before
-building a production custom editor, run the M5A vertical slice defined in the
+building a production custom editor, run the M5 feasibility work defined in the
 roadmap. It must prove:
 
 - correct rope edits, selection, caret, and hit testing;
@@ -44,5 +44,5 @@ another GUI and text stack.
 ## Evidence
 
 - [Research record](../RESEARCH.md#gui-and-editor-architecture)
-- [Roadmap M5](../ROADMAP.md#m5-custom-editor-feasibility-gate-and-production-engine)
+- [Roadmap M5](../ROADMAP.md#m5-production-editor-accessibility-and-performance)
 - [Technical design, GUI strategy](../DESIGN.md#9-gui-and-editor-strategy)

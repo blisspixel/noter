@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.1" # Verified and pinned by rust-toolchain.toml and CI.
 authors = ["Nick"]
-description = "A focused, private text and Markdown editor in Rust."
+description = "A focused, private text and Markdown editor for Windows, macOS, and Linux."
 readme = "README.md"
 license = "Apache-2.0"
 repository = "https://github.com/blisspixel/noter"
-keywords = ["notepad", "text-editor", "plain-text", "egui", "cross-platform", "rust"]
+keywords = ["notepad", "text-editor", "plain-text", "markdown", "cross-platform"]
 categories = ["gui", "text-editors"]
 
 [workspace]

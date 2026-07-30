@@ -1,14 +1,14 @@
-# Noter Structured Adversarial Review
+# Noter Architecture and Product Review
 
 **Original review:** June 2026
 
-**Disposition reviewed:** 2026-07-28
+**Disposition reviewed:** 2026-07-30
 
 **Status:** Current ranked review plus historical findings
 
 This document preserves the useful challenges from the first adversarial review
-without treating a persona or prose critique as evidence. Current requirements,
-design, roadmap gates, tests, benchmarks, and release records are authoritative.
+and tracks their current disposition. Requirements, design, roadmap gates,
+tests, benchmarks, and release records remain authoritative.
 
 ## 1. Executive finding
 
@@ -22,29 +22,27 @@ The central corrective action is:
 > Every trust or performance claim must identify an invariant, implementation
 > boundary, failure case, and artifact that can falsify it.
 
-The durable-save trust kernel and its evidence are substantially stronger than
-the rest of the application. That is a real achievement, but it also exposes an
-imbalance: thousands of lines and a complete mutation campaign protect the save
-protocol while the transaction and Undo foundation is much newer and the editor
-still lacks recovery, search, deterministic edit coalescing, incremental layout,
-and release-grade accessibility evidence. Coverage cannot compensate for
-missing product architecture.
+The durable-save trust kernel currently has substantially more evidence than
+the rest of the application. That imbalance matters: a complete mutation
+campaign protects the save protocol while the transaction and Undo foundation
+is newer, and the editor still lacks recovery, search, deterministic edit
+coalescing, incremental layout, and release-grade accessibility evidence.
+Coverage cannot compensate for missing product architecture.
 
 ## 2. Current assessment
 
-Noter is a strong pre-alpha engineering foundation, not yet an exceptional text
-editor. The repository currently earns high marks for explicit failure states,
-native save semantics, dependency controls, and honest documentation. It does
-not earn release-level marks for editing, lifecycle, performance,
-accessibility, Markdown conformance, installation, or updates because the
-corresponding designs are not yet implemented and falsified on supported
-systems.
+Noter is a pre-alpha engineering foundation, not a public-quality text editor.
+The strongest current evidence covers explicit save failure states, native save
+semantics, and dependency controls. Editing, lifecycle, performance,
+accessibility, Markdown conformance, installation, and updates remain below the
+release bar because their contracts are not yet fully implemented and tested on
+supported systems.
 
 The next investment remains the shared editor and lifecycle foundations on
 which both Text Mode and Markdown Mode depend. The transaction authority is a
 meaningful start, not evidence that the production editor contract is complete.
 
-## 3. Ranked A+ program
+## 3. Ranked improvement program
 
 ### 1. Establish one transaction-based source authority
 
@@ -67,11 +65,11 @@ content identity, and selection direction. The remaining adapter copy and
 missing intent and coalescing policy can still produce unintuitive Undo steps or
 performance costs until the production editor gate is complete.
 
-**A+ bar:** implement a revision-checked `EditTransaction` with validated UTF-8
-boundaries, exact inverse operations, before and after selections, origin, and
-bounded byte cost. Route typing, deletion, paste, replace, EOL conversion, and
-Markdown commands through it. Prove inverse and coalescing properties against a
-simple reference model.
+**Completion standard:** Implement a revision-checked `EditTransaction` with
+validated UTF-8 boundaries, exact inverse operations, before and after
+selections, origin, and bounded byte cost. Route typing, deletion, paste,
+replace, EOL conversion, and Markdown commands through it. Prove inverse and
+coalescing properties against a simple reference model.
 
 ### 2. Replace lifecycle flags with a pure state machine and recovery protocol
 
@@ -83,9 +81,10 @@ versioned recovery records are absent.
 **Risk:** adding Reload, external changes, recovery, or asynchronous work to the
 current flag combination will multiply invalid and untested states.
 
-**A+ bar:** introduce a total reducer with explicit states and correlation IDs,
-model every save outcome and repeated event, then implement private checksummed
-recovery records, startup review, quarantine, and crash-fault tests.
+**Completion standard:** Introduce a total reducer with explicit states and
+correlation IDs, model every save outcome and repeated event, then implement
+private checksummed recovery records, startup review, quarantine, and
+crash-fault tests.
 
 ### 3. Pass the production-editor feasibility gate before expanding features
 
@@ -104,10 +103,10 @@ parser-event ceilings, while leaving the authoritative source available in Text
 Mode. This bounds known synchronous work but does not satisfy the feasibility
 gate.
 
-**A+ bar:** time-box the documented editor spike. Demonstrate rope-backed edits,
-visible-row layout, bounded caches, long-line behavior, hit testing, selection,
-IME pre-edit, candidate placement, and AccessKit actions. Retain the framework
-adapter until measured parity exists.
+**Completion standard:** Time-box the documented editor spike. Demonstrate
+rope-backed edits, visible-row layout, bounded caches, long-line behavior, hit
+testing, selection, IME pre-edit, candidate placement, and AccessKit actions.
+Retain the framework adapter until measured parity exists.
 
 ### 4. Make Unicode, IME, and accessibility executable contracts
 
@@ -120,10 +119,10 @@ VoiceOver, Orca, and CJK input.
 composition, splits user-perceived characters, or is unusable without sight or
 a mouse.
 
-**A+ bar:** define navigation and deletion against a declared Unicode text
-segmentation profile, add generated conformance data, expose editable text and
-selection actions semantically, and pass real IME and screen-reader matrices on
-Windows, macOS, X11, and Wayland.
+**Completion standard:** Define navigation and deletion against a declared
+Unicode text segmentation profile, add generated conformance data, expose
+editable text and selection actions semantically, and pass real IME and
+screen-reader matrices on Windows, macOS, X11, and Wayland.
 
 ### 5. Replace the Markdown slice with a conformance-driven semantic model
 
@@ -136,10 +135,10 @@ semantic-equivalence proof.
 **Risk:** ad hoc source transformations can change meaning or damage unsupported
 syntax while appearing visually correct.
 
-**A+ bar:** ratify the dialect, run the complete applicable conformance corpus,
-map semantic nodes to stable source ranges, preserve unsupported constructs, and
-make Format explicit, idempotent, diff-reviewed, byte-policy-preserving, and
-equivalent under the supported parser model.
+**Completion standard:** Ratify the dialect, run the complete applicable
+conformance corpus, map semantic nodes to stable source ranges, preserve
+unsupported constructs, and make Format explicit, idempotent, diff-reviewed,
+byte-policy-preserving, and equivalent under the supported parser model.
 
 ### 6. Build reproducible performance evidence, not performance adjectives
 
@@ -150,9 +149,9 @@ published raw benchmark report. M1 remains open for this reason.
 **Risk:** current full-document copies, parsing, diagnostics, and layout can
 regress without a gate even while all functional tests pass.
 
-**A+ bar:** add the stable deterministic harness already specified in the
-design, publish corpus checksums and raw samples, name reference hardware, gate
-like-for-like regressions, and include adversarial long-line and malformed
+**Completion standard:** Add the stable deterministic harness already specified
+in the design, publish corpus checksums and raw samples, name reference hardware,
+gate like-for-like regressions, and include adversarial long-line and malformed
 Markdown cases.
 
 ### 7. Centralize commands, effects, enabled state, and shortcuts
@@ -166,9 +165,10 @@ large test host instead of the target `src/ui/` and `src/platform/` boundaries.
 state, and help text can drift. State-dependent commands are difficult to model
 or replay.
 
-**A+ bar:** derive every visible action from one typed command descriptor and
-pure reducer, keep native effects behind narrow adapters, then split UI modules
-along those proven boundaries rather than by arbitrary file size.
+**Completion standard:** Derive every visible action from one typed command
+descriptor and pure reducer, keep native effects behind narrow adapters, then
+split UI modules along those proven boundaries rather than by arbitrary file
+size.
 
 ### 8. Automate the installed product on every supported platform
 
@@ -181,9 +181,9 @@ installer evidence.
 broken focus order, inaccessible dialog, or installer that only works on a
 developer machine.
 
-**A+ bar:** run semantic installed-binary workflows for every visible action on
-Windows, macOS, X11, and Wayland, retain artifacts, and pair them with signed
-manual evidence for behaviors automation cannot establish.
+**Completion standard:** Run semantic installed-binary workflows for every
+visible action on Windows, macOS, X11, and Wayland, retain artifacts, and pair
+them with signed manual evidence for behaviors automation cannot establish.
 
 ### 9. Ship a real distribution and secure update system
 
@@ -195,26 +195,27 @@ protection, SBOM, provenance, or tested uninstall path.
 **Risk:** source installation is high friction, while a naive self-updater would
 create a more serious supply-chain risk than having no updater.
 
-**A+ bar:** produce reproducible prebuilt artifacts and per-user installers,
-publish checksums, SBOMs, attestations, and signatures where available, and use
-one bounded manifest policy for the menu and CLI. Defend artifact authenticity,
-rollback, freeze, mix-and-match, interruption, and package-manager ownership.
+**Completion standard:** Produce reproducible prebuilt artifacts and per-user
+installers, publish checksums, SBOMs, attestations, and signatures where
+available, and use one bounded manifest policy for the menu and CLI. Defend
+artifact authenticity, rollback, freeze, mix-and-match, interruption, and
+package-manager ownership.
 
 ### 10. Close the last evidence gaps and calibrate quality claims
 
 **Evidence:** native CI, coverage, dependency policy, and the mutation union are
-excellent. M1 still lacks weak-filesystem and manual metadata fixtures; release
+extensive. M1 still lacks weak-filesystem and manual metadata fixtures; release
 criteria still require clean systems, multiple platforms, and a 14-day
 multi-user candidate period. Internal rubric scores should not be mistaken for
 release evidence.
 
-**Risk:** excellent automated evidence for selected properties can create false
+**Risk:** strong automated evidence for selected properties can create false
 confidence about properties that were never exercised.
 
-**A+ bar:** maintain a requirement-to-evidence ledger on the exact commit,
-record residual risks, complete native filesystem and clean-machine matrices,
-reproduce releases, and require the stated dogfood period before calling v0.1
-public-quality.
+**Completion standard:** Maintain a requirement-to-evidence ledger on the exact
+commit, record residual risks, complete native filesystem and clean-machine
+matrices, reproduce releases, and require the stated dogfood period before
+calling v0.1 public-quality.
 
 ## 4. Historical findings and current disposition
 
@@ -224,28 +225,30 @@ public-quality.
 metadata, symlinks, platform replacement, parent-directory durability, or a
 post-commit sync failure.
 
-**Disposition:** Accepted. [ADR-0003](adr/0003-durable-replacement.md) now
-requires an injected storage boundary, explicit commit outcomes, pre-commit
-revalidation, platform semantics, and fault evidence. It remains Proposed until
-those questions close.
+**Disposition:** Accepted and substantially implemented.
+[ADR-0003](adr/0003-durable-replacement.md) requires an injected storage
+boundary, explicit commit outcomes, pre-commit revalidation, platform semantics,
+and fault evidence. Its remaining manual filesystem and benchmark evidence is
+tracked under M1.
 
 ### R-02 Recovery was not a protocol
 
 **Finding:** A temporary file and timer did not define ownership, schema,
 integrity, retention, multiple instances, corruption, or failure behavior.
 
-**Disposition:** Accepted. Recovery now uses private per-user application state,
-versioned records, random identities, revisions, checksums, atomic manifests,
-bounded scheduling, quarantine, and a controlled crash harness.
+**Disposition:** Accepted in design, not implemented. The recovery contract
+requires private per-user application state, versioned records, random
+identities, revisions, checksums, atomic manifests, bounded scheduling,
+quarantine, and a controlled crash harness under M4.
 
 ### R-03 Close behavior contradicted the classic mental model
 
 **Finding:** Frictionless close backed only by recovery made Save ambiguous and
 could turn cache retention into hidden document storage.
 
-**Disposition:** Accepted. Every destructive action uses one
-Save / Discard / Cancel state machine. Recovery is independent and never
-authorizes silent close.
+**Disposition:** Partially implemented. Dirty New, Open, Close, and Quit use one
+Save / Discard / Cancel decision path. Reload and the pure lifecycle reducer
+remain M4 work. Recovery remains independent and cannot authorize silent close.
 
 ### R-04 Encoding and EOL fidelity lacked a mixed-file model
 
@@ -329,7 +332,7 @@ green commit.
 **Finding:** A decade-trust product needs reproducibility, ownership transfer,
 end-of-life criteria, and a small confidence suite for future maintainers.
 
-**Disposition:** Accepted for M6. Stewardship, release reproduction, known
+**Disposition:** Accepted for M7. Stewardship, release reproduction, known
 platform assumptions, and an unmaintained-state policy remain required release
 documents.
 

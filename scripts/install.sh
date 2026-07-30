@@ -79,7 +79,7 @@ expected_version=$(printf '%s\n' "$metadata" | sed -n 's/.*"name":"noter","versi
 }
 
 if [ "$check_only" = true ]; then
-    printf "Validated Noter source at '%s'.\n" "$source_dir"
+    printf "Validated Noter %s at '%s'.\n" "$expected_version" "$source_dir"
     exit 0
 fi
 
@@ -112,4 +112,4 @@ fi
     echo "The installed executable did not preserve the release command-line error contract." >&2
     exit 1
 }
-printf "Installed Noter at '%s'.\n" "$installed_binary"
+printf "Installed Noter %s at '%s'.\n" "$expected_version" "$installed_binary"

@@ -2,7 +2,7 @@
 
 **Initial research:** 2026-07-25
 
-**Updated:** 2026-07-27
+**Updated:** 2026-07-30
 
 This document records the evidence behind the roadmap. It is intentionally
 separate from the product requirements so that claims can be revised when the
@@ -10,10 +10,9 @@ toolchain, operating systems, or editor ecosystem changes.
 
 ## Executive conclusion
 
-Noter's opportunity is real, but the winning product is not the editor with the
-largest performance claim or the longest feature list. It is the editor whose
-behavior is easy to predict and whose reliability claims are backed by visible
-evidence.
+The comparative evidence favors predictable behavior over a long feature list
+or unsupported performance claims. Noter's reliability claims therefore need
+visible, reproducible evidence.
 
 The immediate priority is therefore the trust kernel, not the custom renderer:
 
@@ -479,6 +478,31 @@ control metrics, an 840-point reading measure, theme-specific contrast, and
 deterministic Light and Dark captures from the native release renderer. Low-level
 rasterization preferences are not exposed as feature clutter until native
 platform testing demonstrates a user benefit.
+
+## 2026-07-30 installation and documentation update
+
+Current official command-line projects place a short product statement and
+copy-ready installation path before architecture or contributor detail. The
+[Codex README](https://github.com/openai/codex/blob/main/README.md) provides
+PowerShell and POSIX quick-install commands near the top, backed by dedicated
+[PowerShell](https://github.com/openai/codex/blob/main/scripts/install/install.ps1)
+and [POSIX](https://github.com/openai/codex/blob/main/scripts/install/install.sh)
+installers that resolve published artifacts and verify their integrity. The
+[Grok CLI repository](https://github.com/xai-org/grok-build) follows the same
+general onboarding shape and provides a dedicated update command.
+
+Product decision:
+
+- Keep the root README focused on the product promise, interface, current
+  install path, release status, and a small documentation map.
+- Put installation options, troubleshooting, uninstallation, update security,
+  and release verification in [INSTALLATION.md](INSTALLATION.md).
+- While Noter has no published binary release, use explicit clone-and-run source
+  installers. Do not recommend executing a script from a mutable branch through
+  a shell pipeline.
+- M7 may introduce stable one-line endpoints only when they resolve immutable,
+  versioned artifacts through authenticated metadata and have clean-machine,
+  rollback, and uninstall evidence.
 
 ## 2026-07-27 architecture review update
 

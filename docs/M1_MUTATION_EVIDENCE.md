@@ -2,6 +2,8 @@
 
 **Executed:** 2026-07-26
 
+**Latest hosted continuation:** 2026-07-28
+
 **Scope:** `src/core/*.rs` and `crates/noter-platform/src/*.rs`, the document,
 durable I/O, and native adapter trust kernel
 
@@ -340,6 +342,17 @@ metadata preservation, crash durability, weak-filesystem behavior, GUI
 semantics, or performance. Those remain separate M1 and later milestone gates in
 [ROADMAP.md](ROADMAP.md) and [manual-test-matrix.md](manual-test-matrix.md).
 
-The expanded counts are hosted exact-commit evidence at `97371d8`. Run
+The deduplicated 741-candidate union is hosted exact-commit evidence at
+`97371d8`. Run
 [30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209)
-is the current CI baseline for the complete supported-platform mutation union.
+remains the baseline for that explicitly reconciled union.
+
+Later implementation increased the configured scopes. At commit `efb8675`,
+exact-commit run
+[30415383710](https://github.com/blisspixel/noter/actions/runs/30415383710)
+reports 817 Linux candidates with 586 caught and 231 unviable, 751 Windows
+candidates with 524 caught and 227 unviable, and 47 macOS candidates with 41
+caught and 6 unviable. Every scope has zero missed and zero timed out, and the
+strengthened infrastructure validator reports no recognized failure hidden as
+unviable. These overlapping per-platform results are not presented as a new
+deduplicated union without a matching reconciliation artifact.

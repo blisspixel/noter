@@ -1619,6 +1619,33 @@ mod tests {
     }
 
     #[test]
+    fn reference_definitions_use_explicit_source_typography_and_color() {
+        let mut style = egui::Style::default();
+        style.text_styles.insert(
+            egui::TextStyle::Monospace,
+            egui::FontId::new(17.0, egui::FontFamily::Monospace),
+        );
+        style.visuals.override_text_color = Some(egui::Color32::from_rgb(23, 47, 89));
+        let source = "[Noter]: https://github.com/blisspixel/noter";
+
+        let projection = reference_definition_projection(source, &style);
+        let format = projection.job.format_at_byte(egui::text::ByteIndex(0));
+
+        assert_eq!(projection.job.text, source);
+        assert_eq!(
+            format.font_id,
+            style.text_styles[&egui::TextStyle::Monospace]
+        );
+        assert_eq!(format.color, style.visuals.text_color());
+        assert_eq!(
+            projection
+                .source_map
+                .source_selection(CharSelection::new(0, source.chars().count())),
+            CharSelection::new(0, source.chars().count())
+        );
+    }
+
+    #[test]
     fn narrow_toolbars_use_the_compact_format_menu() {
         for (width, expected) in [(420.0, false), (800.0, true)] {
             assert_eq!(expanded_toolbar_fits(std::hint::black_box(width)), expected);
@@ -2513,6 +2540,33 @@ mod tests {
         assert!(editor.restore_source_selection(source, selection));
         assert_eq!(editor.source_selection(), Some(selection));
         assert!(editor.is_editing());
+    }
+
+    #[test]
+    fn source_selection_restoration_rejects_cross_block_and_invalid_utf8_ranges() {
+        let source = "# First\n\nSecond é block";
+        let second_start = source
+            .find("Second")
+            .expect("fixture contains a second block");
+        let unicode_start = source
+            .find('é')
+            .expect("fixture contains a multibyte character");
+        let unicode_end = unicode_start + 'é'.len_utf8();
+        let mut editor = MarkdownEditor::default();
+
+        let selected = Selection::new(unicode_end, unicode_start);
+        assert!(editor.restore_source_selection(source, selected));
+        assert_eq!(editor.source_selection(), Some(selected));
+
+        for invalid in [
+            Selection::new(0, second_start + 1),
+            Selection::new(unicode_start, unicode_start + 1),
+            Selection::new(unicode_start + 1, unicode_end),
+        ] {
+            editor.reset();
+            assert!(!editor.restore_source_selection(source, invalid));
+            assert!(!editor.is_editing());
+        }
     }
 
     #[test]

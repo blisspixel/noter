@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-07-28
+**Updated:** 2026-07-30
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -82,12 +82,20 @@ original or staged recovery information.
 Most automated trust-kernel behavior is implemented. Native macOS evidence
 exposed ACL-absence handling and inherited-ACL staging risk, while hosted
 mutation evidence exposed repeated native decisions plus mutable line-scanner
-progress arithmetic. Each defect has a focused regression. Exact-commit run
-[30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209)
-passes native Windows, macOS, and Linux tests, both coverage gates, dependency
-policy, and the complete 741-candidate supported-platform mutation union with no
-miss, timeout, infrastructure misclassification, or scope gap. The reproducible
-benchmark harness and required manual filesystem fixtures remain open.
+progress arithmetic. Each defect has a focused regression. The historical
+741-candidate supported-platform union is recorded in
+[M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md).
+
+The latest implementation checkpoint is commit `efb8675`. Exact-commit run
+[30415383710](https://github.com/blisspixel/noter/actions/runs/30415383710)
+passes all eight Windows, macOS, Linux, documentation, dependency, coverage, and
+mutation jobs. Hosted line coverage is 92.19 percent for the workspace and
+93.57 percent for the trust kernel. The current platform mutation scopes report
+817 Linux candidates, 751 Windows candidates, and 47 macOS candidates, with no
+miss or timeout; the infrastructure validator reports no recognized tool,
+compiler, linker, process, or storage failure hidden as unviable. The
+reproducible benchmark harness and required manual filesystem fixtures remain
+open.
 
 Current detailed evidence and known gaps are maintained in:
 
@@ -198,12 +206,13 @@ Deterministic 512-case properties cover single replacements, ordered disjoint
 multi-edit transactions, and arbitrary edit sequences against `String`
 reference models. A focused 118-candidate transaction and history mutation
 campaign closes with 95 caught and 23 validated compiler rejections, with no
-miss, timeout, or infrastructure failure. Windows-local line coverage measures
-97.30 percent for transactions, 97.61 percent for history, 94.59 percent for the
-trust kernel, and 92.56 percent across the workspace. This is not M3 completion.
-Intent classification and coalescing, clipboard and navigation policy, search
-and replace, remaining text commands, status details, cross-platform manual
-evidence, and the long-session memory fixture remain open.
+miss, timeout, or infrastructure failure. The focused implementation checkpoint
+measured 97.30 percent line coverage for transactions and 97.61 percent for
+history; the latest hosted complete-workspace and trust-kernel percentages are
+recorded under M1 above. This is not M3 completion. Intent classification and
+coalescing, clipboard and navigation policy, search and replace, remaining text
+commands, status details, cross-platform manual evidence, and the long-session
+memory fixture remain open.
 
 ## M4: Lifecycle, Recovery, and Conflicts
 
@@ -276,7 +285,7 @@ without hidden rewrites.
 ### Scope
 
 - Text Mode for exact source and Markdown Mode for directly editable formatted
-  content, plus reading-focused and synchronized split layouts;
+  content as the required editing surfaces;
 - direct editing of supported formatted blocks and inline constructs;
 - minimal deterministic mapping from Markdown Mode operations to source
   transactions;

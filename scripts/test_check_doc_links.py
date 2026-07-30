@@ -94,6 +94,67 @@ class MarkdownInputTests(unittest.TestCase):
                 ["linked.md: symbolic Markdown links are not allowed"],
             )
 
+    def test_checks_local_heading_fragments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "README.md").write_text(
+                "# Project\n\n[valid](docs/guide.md#quick-start)\n"
+                "[missing](docs/guide.md#removed-section)\n",
+                encoding="utf-8",
+            )
+            docs = root / "docs"
+            docs.mkdir()
+            (docs / "guide.md").write_text(
+                "# Guide\n\n## Quick Start\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                missing_links(root),
+                ["README.md:4: missing heading #removed-section in docs/guide.md"],
+            )
+
+    def test_checks_same_document_and_duplicate_heading_fragments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "README.md").write_text(
+                "# Project\n\n"
+                "## Repeated Name\n\n"
+                "## Repeated Name\n\n"
+                "[first](#repeated-name)\n"
+                "[second](#repeated-name-1)\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(missing_links(root), [])
+
+    def test_rejects_a_local_link_outside_the_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repository"
+            root.mkdir()
+            outside = root.parent / "outside.md"
+            outside.write_text("# Outside\n", encoding="utf-8")
+            (root / "README.md").write_text(
+                "[outside](../outside.md)\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                missing_links(root),
+                ["README.md:1: local link leaves repository: ../outside.md"],
+            )
+
+    def test_ignores_local_working_and_generated_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "README.md").write_text("# Project\n", encoding="utf-8")
+            for ignored in (".agent", "logs", "target"):
+                ignored_directory = root / ignored
+                ignored_directory.mkdir()
+                (ignored_directory / "notes.md").write_text(
+                    "[missing](missing.md)\n", encoding="utf-8"
+                )
+
+            self.assertEqual(missing_links(root), [])
+
 
 if __name__ == "__main__":
     unittest.main()

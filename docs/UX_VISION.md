@@ -1,6 +1,6 @@
 # Noter UX Direction
 
-**Reviewed:** 2026-07-26
+**Reviewed:** 2026-07-30
 
 This is the experiential direction. [REQUIREMENTS.md](REQUIREMENTS.md) owns
 behavior and [ROADMAP.md](ROADMAP.md) owns measurable delivery gates.
@@ -25,7 +25,8 @@ that behavior rather than compensating for ambiguity.
 The editing surface receives most of the window. Chrome is compact, calm, and
 legible:
 
-- a crisp default monospace stack with tested fallbacks;
+- a tested monospace stack for exact source and a bundled document face with
+  real weights for formatted Markdown;
 - comfortable line height and margins;
 - obvious caret, selection, focus, modified, error, and conflict states;
 - five restrained built-in themes with measured contrast, including Green

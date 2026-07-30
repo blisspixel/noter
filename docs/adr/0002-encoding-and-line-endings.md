@@ -35,7 +35,7 @@ transaction.
 
 ## Consequences
 
-- The current `LineEnding` field must become a profile with counts and insertion
+- The document model uses a line-ending profile with counts and insertion
   policy.
 - Round-trip and edit-locality property tests are mandatory.
 - Status can accurately report Mixed rather than pretending one convention.
@@ -48,3 +48,12 @@ transaction.
 - Property tests proving untouched byte round-trip.
 - Property tests proving edits do not alter bytes outside their intended range.
 - UI tests for explicit EOL conversion, status, error, and undo behavior.
+
+## Implementation status
+
+Strict UTF-8 loading, BOM fidelity, complete existing-newline preservation, the
+mixed-EOL profile, deterministic insertion policy, golden fixtures, and
+fixed-seed round-trip properties are implemented. The explicit conversion
+command and its complete UI, status, and Undo evidence remain M3 work. This ADR
+therefore governs implemented storage behavior without claiming the full user
+workflow is verified.

@@ -6,6 +6,8 @@
 
 **Date:** 2026-07-25
 
+**Latest evidence:** 2026-07-28
+
 ## Context
 
 The prototype creates a predictable sibling, syncs it, and calls
@@ -241,3 +243,10 @@ gate passes the expanded 741-candidate union at `97371d8` with zero misses,
 timeouts, infrastructure misclassifications, or scope gaps. The manual platform
 and weak-filesystem matrix plus the reproducible benchmark baseline remain
 required before M1 is Verified.
+
+The latest implementation follow-up, commit `efb8675`, adds native proof that
+macOS retained-recovery ACL removal produces verified ACL absence. Exact-commit
+[run 30415383710](https://github.com/blisspixel/noter/actions/runs/30415383710)
+passes all eight required jobs and the expanded per-platform mutation gates with
+no miss, timeout, or recognized infrastructure failure. This does not close the
+remaining manual and benchmark requirements above.

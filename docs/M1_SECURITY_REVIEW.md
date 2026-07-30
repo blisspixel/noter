@@ -1,11 +1,14 @@
 # M1 Security Review
 
-**Reviewed revision:** `3830cdd6e487a35bdd2adeecb3d45bb080ade114`
+**Initial reviewed revision:** `3830cdd6e487a35bdd2adeecb3d45bb080ade114`
+
+**Latest follow-up revision:** `efb8675994a4fbb11893ff7c0ab721b8d702c397`
 
 **Review date:** 2026-07-25
 
 **Follow-ups:** 2026-07-26 macOS staging review and remediation; 2026-07-27
-repository-wide review and final-entry race hardening
+repository-wide review and final-entry race hardening; 2026-07-28 macOS
+retained-recovery ACL verification
 
 **Coverage:** Partial repository review with full-file inspection of the runtime
 document, observation, save, platform, GUI lifecycle, dependency, and CI paths.
@@ -193,3 +196,11 @@ run [30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209)
 passes the complete matrix. Linux classifies 438 caught and 179 unviable,
 Windows 381 caught and 176 unviable, and macOS 43 caught and 6 unviable. Every
 scope has zero missed and zero timed out, and infrastructure validation passes.
+
+Commit `efb8675` adds a native macOS regression proving that a retained displaced
+document has its access ACL removed and verified absent before the application
+reports owner-only recovery access. Exact-commit run
+[30415383710](https://github.com/blisspixel/noter/actions/runs/30415383710)
+passes all eight required jobs, including the expanded per-platform mutation
+scopes and infrastructure validation. The manual filesystem and crash-persistence
+gaps above remain open.

@@ -38,6 +38,15 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
+- Refocus the root README on the product promise, native Markdown interaction,
+  screenshots, source installation, release status, and a small documentation
+  map. Move contributor workflow and detailed install, update, uninstall, and
+  troubleshooting guidance into dedicated documents.
+- Refresh the roadmap, design, baseline, mutation evidence, security review,
+  UX direction, privacy title, and architecture review so current evidence,
+  document ownership, public package metadata, and remaining work agree.
+- Make the POSIX source installer report the validated and installed version in
+  the same form as the PowerShell installer.
 - Place the responsive Text and Markdown mode control and the current Theme
   menu on the upper-right of the application menu row. The second toolbar now
   appears only in Markdown Mode and contains formatting actions only. Visual,
@@ -55,6 +64,10 @@ release, so current work remains under Unreleased.
 - Verify version output and invalid-argument status, standard output, and
   standard error against the installed release executable in both source
   installers.
+- Strengthen Help, About, update-status, and modal-close regression coverage
+  with pointer, accessibility-tree, and exhaustive state tests. Add adversarial
+  Markdown selection tests for cross-block ranges, invalid UTF-8 boundaries,
+  non-first-block offsets, and explicit reference-definition styling.
 
 ### Security
 
@@ -69,6 +82,9 @@ release, so current work remains under Unreleased.
   decompression operation.
 - Escape control characters in rejected command-line values before writing
   diagnostics to a terminal.
+- Ignore Noter's actual private save and backup recovery siblings, together
+  with standard local Python test and coverage caches, so failed-save content
+  and generated tooling output cannot be committed accidentally.
 - Bind every document observation and reopen to a native no-follow handle. Unix
   uses `O_NOFOLLOW`; Windows opens the final entry with
   `FILE_FLAG_OPEN_REPARSE_POINT`, preserves ordinary sharing, and rejects link
@@ -153,6 +169,10 @@ release, so current work remains under Unreleased.
 
 ### Engineering
 
+- Add public contribution and development guides and require them in the CI
+  documentation inventory. Local documentation validation now checks
+  GitHub-style heading fragments and rejects links that escape the repository
+  as well as missing paths.
 - Route plain-text input, direct formatted Markdown input, and Markdown
   formatting through the same atomic document mutation boundary. Add fixed-seed
   512-case reference-model properties for single replacements, ordered

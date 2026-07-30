@@ -885,7 +885,7 @@ impl NoterApp {
                     close = true;
                 }
             });
-        self.about_open = open && !close;
+        self.about_open = dialog_remains_open(open, close);
     }
 
     fn show_updates(&mut self, ctx: &egui::Context) {
@@ -910,7 +910,7 @@ impl NoterApp {
                     close = true;
                 }
             });
-        self.updates_open = open && !close;
+        self.updates_open = dialog_remains_open(open, close);
     }
 
     fn show_unsaved_changes_confirmation(&mut self, ctx: &egui::Context) {
@@ -1516,6 +1516,10 @@ fn append_cleanup_error(
     }
 }
 
+const fn dialog_remains_open(window_open: bool, close_clicked: bool) -> bool {
+    window_open && !close_clicked
+}
+
 impl eframe::App for NoterApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if !self.idle_screen.show(ui.ctx(), self.theme.idle_effect()) {
@@ -1755,6 +1759,60 @@ mod tests {
             "https://github.com/blisspixel/noter"
         );
         assert!(app.about_open);
+    }
+
+    #[test]
+    fn update_action_opens_and_renders_the_release_status() {
+        let mut app = NoterApp::default();
+        app.open_updates();
+
+        assert!(app.updates_open);
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let output = context.run_ui(egui::RawInput::default(), |ui| app.show_updates(ui.ctx()));
+        let rendered = accesskit_labels(&output);
+
+        for expected in ["Noter Updates", "Open Noter releases", "Close"] {
+            assert!(
+                rendered.iter().any(|text| text == expected),
+                "expected the update dialog to render {expected:?} among {rendered:?}"
+            );
+        }
+        assert_eq!(
+            UPDATE_STATUS,
+            "No Noter release has been published yet. This source build cannot safely self-update without verified release artifacts."
+        );
+        assert!(app.updates_open);
+    }
+
+    #[test]
+    fn help_menu_actions_open_their_dialogs_from_pointer_clicks() {
+        let mut app = NoterApp::default();
+        let context = egui::Context::default();
+        let initial = context.run_ui(ui_input(600.0, 300.0, 0.0), |ui| app.show_help_menu(ui));
+        let text = rendered_text(&initial);
+        let updates = text_position(&text, "Check for Updates...") + egui::vec2(4.0, 4.0);
+        let about = text_position(&text, "About Noter") + egui::vec2(4.0, 4.0);
+
+        let _ = context.run_ui(click_input(600.0, 300.0, 0.1, updates), |ui| {
+            app.show_help_menu(ui);
+        });
+        assert!(app.updates_open);
+        assert!(!app.about_open);
+
+        let _ = context.run_ui(click_input(600.0, 300.0, 0.2, about), |ui| {
+            app.show_help_menu(ui);
+        });
+        assert!(app.updates_open);
+        assert!(app.about_open);
+    }
+
+    #[test]
+    fn dialog_state_closes_for_either_native_or_button_request() {
+        assert!(dialog_remains_open(true, false));
+        assert!(!dialog_remains_open(false, false));
+        assert!(!dialog_remains_open(true, true));
+        assert!(!dialog_remains_open(false, true));
     }
 
     #[test]

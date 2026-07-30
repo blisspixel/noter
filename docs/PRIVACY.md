@@ -1,4 +1,4 @@
-# Noter Data Bill of Rights
+# Privacy Contract
 
 **Effective for release candidates:** July 2026
 
