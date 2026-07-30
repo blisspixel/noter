@@ -50,7 +50,8 @@ release, so current work remains under Unreleased.
 - Add Text Mode Select All and a validated Go To Line dialog that navigates LF,
   CRLF, CR, and mixed files without allocating a line index.
 - Add persistent Text Mode word wrap and editor-only zoom from 50 to 300 percent
-  with View-menu controls, standard zoom shortcuts, and a status indication.
+  with View-menu controls, standard zoom shortcuts, supported pointer
+  magnification over the document surface, and a status indication.
 
 ### Changed
 
@@ -67,6 +68,8 @@ release, so current work remains under Unreleased.
   menu on the upper-right of the application menu row. The second toolbar now
   appears only in Markdown Mode and contains formatting actions only. Visual,
   keyboard, and accessibility-tree order follow the same left-to-right sequence.
+- Keep Edit, View, and Help pointer reachable through a compact More menu at the
+  420-pixel minimum viewport width.
 - Preserve the current directional source selection across Undo, Redo, editing
   mode switches, and safe fallback from an over-budget Markdown projection.
 - Map click-and-drag selection in inactive formatted Markdown back to complete
@@ -88,6 +91,8 @@ release, so current work remains under Unreleased.
   selection size in the responsive status bar.
 - Scale native Markdown headings with editor zoom while leaving menus, dialogs,
   toolbars, and status controls at the configured application size.
+- Bound Go To Line text, paste, and IME input before the focused widget can
+  normalize or retain an oversized payload.
 
 ### Security
 
@@ -212,8 +217,8 @@ release, so current work remains under Unreleased.
   authority, calculate bounded results before allocation, and compare literal
   search plus lifecycle command sequences with fixed-seed reference models.
 - Measure the current Windows-local source checkpoint at 95.57 percent line
-  coverage for the UI-independent trust kernel and 92.20 percent for the
-  complete workspace. The 376-test suite includes 100 percent line coverage for
+  coverage for the UI-independent trust kernel and 92.85 percent for the
+  complete workspace. The 380-test suite includes 100 percent line coverage for
   lifecycle and logical-line navigation, 99.15 percent for transactions, 98.83
   percent for history, and 97.29 percent for literal search.
 - Record a complete 256-candidate mutation campaign for the M3 transaction,

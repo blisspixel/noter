@@ -18,7 +18,8 @@ use noter::core::undo::{HistoryApplyOutcome, HistoryRecordOutcome, UndoHistory};
 use noter::error::NoterError;
 
 use crate::editor_settings::{
-    EditorZoom, TextWrap, WORD_WRAP_STORAGE_KEY, ZOOM_STORAGE_KEY, apply_editor_zoom,
+    EditorZoom, PointerZoomAccumulator, TextWrap, WORD_WRAP_STORAGE_KEY, ZOOM_STORAGE_KEY,
+    apply_editor_zoom,
 };
 use crate::find_ui::{FindBar, FindBarAction, ReplaceScope};
 use crate::go_to_line_ui::{GoToLineAction, GoToLineDialog};
@@ -288,6 +289,7 @@ pub struct NoterApp {
     theme: AppTheme,
     text_wrap: TextWrap,
     editor_zoom: EditorZoom,
+    pointer_zoom: PointerZoomAccumulator,
     find_bar: FindBar,
     go_to_line: GoToLineDialog,
     idle_screen: IdleScreen,
@@ -319,6 +321,7 @@ impl Default for NoterApp {
             theme: AppTheme::System,
             text_wrap: TextWrap::default(),
             editor_zoom: EditorZoom::default(),
+            pointer_zoom: PointerZoomAccumulator::default(),
             find_bar: FindBar::default(),
             go_to_line: GoToLineDialog::default(),
             idle_screen: IdleScreen::default(),
@@ -1058,13 +1061,21 @@ impl NoterApp {
                 menu_ui.spacing_mut().item_spacing.x = 2.0;
                 egui::MenuBar::new().ui(&mut menu_ui, |ui| {
                     ui.menu_button("File", |ui| Self::show_file_menu(ui, file_command));
-                    ui.menu_button("Edit", |ui| self.show_edit_menu(ui, edit_command));
                     if expanded {
+                        ui.menu_button("Edit", |ui| self.show_edit_menu(ui, edit_command));
                         ui.menu_button("View", |ui| {
                             self.show_view_menu(ui, view_command);
                         });
+                        ui.menu_button("Help", |ui| self.show_help_menu(ui));
+                    } else {
+                        ui.menu_button("More", |ui| {
+                            ui.menu_button("Edit", |ui| self.show_edit_menu(ui, edit_command));
+                            ui.menu_button("View", |ui| {
+                                self.show_view_preferences(ui, view_command);
+                            });
+                            ui.menu_button("Help", |ui| self.show_help_menu(ui));
+                        });
                     }
-                    ui.menu_button("Help", |ui| self.show_help_menu(ui));
                 });
 
                 let mut controls_ui = ui.new_child(
@@ -1225,6 +1236,10 @@ impl NoterApp {
         ui.label("Theme");
         self.show_theme_choices(ui);
         ui.separator();
+        self.show_view_preferences(ui, command);
+    }
+
+    fn show_view_preferences(&self, ui: &mut egui::Ui, command: &mut Option<ViewCommand>) {
         let wrap = ui.add_enabled(
             self.view == DocumentView::Text,
             egui::Button::selectable(
@@ -1683,6 +1698,16 @@ impl NoterApp {
                     .inner_margin(egui::Margin::same(12)),
             )
             .show(ui, |ui| {
+                let pointer_over_document = ui.rect_contains_pointer(ui.max_rect());
+                if pointer_over_document {
+                    let delta = ui.input(egui::InputState::zoom_delta);
+                    if self.pointer_zoom.apply(delta, &mut self.editor_zoom) {
+                        self.pending_selection_restore = Some(self.selection);
+                        self.preserve_focus_on_selection_restore = false;
+                    }
+                } else {
+                    self.pointer_zoom.reset();
+                }
                 apply_editor_zoom(ui.style_mut(), self.editor_zoom);
                 let outcome = match self.view {
                     DocumentView::Text => self.show_text_editor(ui),
@@ -2243,6 +2268,29 @@ mod tests {
         text
     }
 
+    fn text_shape_font_size(shape: &egui::Shape, label: &str) -> Option<f32> {
+        match shape {
+            egui::Shape::Text(text_shape) if text_shape.galley.job.text == label => text_shape
+                .galley
+                .job
+                .sections
+                .first()
+                .map(|section| section.format.font_id.size),
+            egui::Shape::Vec(shapes) => shapes
+                .iter()
+                .find_map(|shape| text_shape_font_size(shape, label)),
+            _ => None,
+        }
+    }
+
+    fn rendered_font_size(output: &egui::FullOutput, label: &str) -> f32 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| text_shape_font_size(&shape.shape, label))
+            .unwrap_or_else(|| panic!("expected rendered text `{label}` with a font section"))
+    }
+
     fn accesskit_labels(output: &egui::FullOutput) -> Vec<String> {
         fn visit(
             id: egui::accesskit::NodeId,
@@ -2416,8 +2464,41 @@ mod tests {
             let mut edit_command = None;
             let mut view_command = None;
             app.show_menu(ui, &mut file_command, &mut edit_command, &mut view_command);
+            if let Some(command) = view_command {
+                app.execute_view_command(command);
+            }
             app.apply_pending_document_view();
         })
+    }
+
+    fn click_menu_label(
+        app: &mut NoterApp,
+        context: &egui::Context,
+        output: &egui::FullOutput,
+        label: &str,
+        viewport: egui::Vec2,
+        time: f64,
+    ) -> egui::FullOutput {
+        let position = text_position(&rendered_text(output), label) + egui::vec2(4.0, 4.0);
+        show_menu_frame(
+            app,
+            context,
+            click_input(viewport.x, viewport.y, time, position),
+        )
+    }
+
+    fn hover_menu_label(
+        app: &mut NoterApp,
+        context: &egui::Context,
+        output: &egui::FullOutput,
+        label: &str,
+        viewport: egui::Vec2,
+        time: f64,
+    ) -> egui::FullOutput {
+        let position = text_position(&rendered_text(output), label) + egui::vec2(4.0, 4.0);
+        let mut input = ui_input(viewport.x, viewport.y, time);
+        input.events.push(egui::Event::PointerMoved(position));
+        show_menu_frame(app, context, input)
     }
 
     fn record_test_editor_change(app: &mut NoterApp, origin: EditOrigin) {
@@ -2799,6 +2880,47 @@ mod tests {
                 Some(expected)
             );
         }
+    }
+
+    #[test]
+    fn pointer_zoom_applies_only_over_the_document_and_preserves_control_type() {
+        let source = "zoom sample";
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            ..NoterApp::default()
+        };
+        let revision = app.document.revision();
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+
+        let initial = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| app.render_frame(ui));
+        let initial_menu_size = rendered_font_size(&initial, "File");
+        let initial_document_size = rendered_font_size(&initial, source);
+
+        let mut menu_zoom = ui_input(800.0, 600.0, 0.1);
+        menu_zoom.events.extend([
+            egui::Event::PointerMoved(egui::pos2(20.0, 15.0)),
+            egui::Event::Zoom(1.1),
+        ]);
+        let _ = context.run_ui(menu_zoom, |ui| app.render_frame(ui));
+        assert_eq!(app.editor_zoom.percent(), 100);
+
+        let mut document_zoom = ui_input(800.0, 600.0, 0.2);
+        document_zoom.events.extend([
+            egui::Event::PointerMoved(egui::pos2(400.0, 300.0)),
+            egui::Event::Zoom(1.1),
+        ]);
+        let zoomed = context.run_ui(document_zoom, |ui| app.render_frame(ui));
+
+        assert_eq!(app.editor_zoom.percent(), 110);
+        assert_eq!(
+            rendered_font_size(&zoomed, "File").to_bits(),
+            initial_menu_size.to_bits()
+        );
+        assert!(rendered_font_size(&zoomed, source) > initial_document_size);
+        assert_eq!(app.document.revision(), revision);
+        assert_eq!(String::from(app.document.rope()), source);
     }
 
     #[test]
@@ -3297,35 +3419,83 @@ mod tests {
         });
         let text = rendered_text(&output);
         let file = text_position(&text, "File");
-        let edit = text_position(&text, "Edit");
-        let help = text_position(&text, "Help");
-        let mode = text_position(&text, "Mode: Markdown");
+        let more_menu_position = text_position(&text, "More");
+        let mode_control_position = text_position(&text, "Mode: Markdown");
         let theme = text_position(&text, "Theme: System");
-        let help_bounds = accesskit_bounds(&output, "Help");
-        let mode_bounds = accesskit_bounds(&output, "Mode: Markdown");
+        let more_menu_bounds = accesskit_bounds(&output, "More");
+        let mode_control_bounds = accesskit_bounds(&output, "Mode: Markdown");
         let theme_bounds = accesskit_bounds(&output, "Theme: System");
 
-        assert!(file.x < edit.x);
-        assert!(edit.x < help.x);
-        assert!(help.x < mode.x);
-        assert!(mode.x < theme.x);
+        assert!(file.x < more_menu_position.x);
+        assert!(more_menu_position.x < mode_control_position.x);
+        assert!(mode_control_position.x < theme.x);
         assert!(
-            help_bounds.x1 <= mode_bounds.x0,
-            "Help and Mode overlap: {help_bounds:?}, {mode_bounds:?}"
+            more_menu_bounds.x1 <= mode_control_bounds.x0,
+            "More and Mode overlap: {more_menu_bounds:?}, {mode_control_bounds:?}"
         );
         assert!(
-            mode_bounds.x1 <= theme_bounds.x0,
-            "Mode and Theme overlap: {mode_bounds:?}, {theme_bounds:?}"
+            mode_control_bounds.x1 <= theme_bounds.x0,
+            "Mode and Theme overlap: {mode_control_bounds:?}, {theme_bounds:?}"
         );
         assert!(
             theme_bounds.x1 <= 420.0,
             "Theme extends beyond the minimum viewport: {theme_bounds:?}"
         );
-        for position in [edit, help, mode, theme] {
+        for position in [more_menu_position, mode_control_position, theme] {
             assert!((file.y - position.y).abs() <= 2.0);
         }
         assert!(!text.iter().any(|(label, _)| label == "View"));
         assert!(!text.iter().any(|(label, _)| label == "Text"));
+    }
+
+    #[test]
+    fn compact_more_menu_keeps_wrap_and_zoom_pointer_reachable() {
+        let mut app = NoterApp::default();
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+        let viewport = egui::vec2(420.0, 300.0);
+        let mut time = 0.0;
+
+        let mut output =
+            show_menu_frame(&mut app, &context, ui_input(viewport.x, viewport.y, time));
+        time += 0.1;
+        let _ = click_menu_label(&mut app, &context, &output, "More", viewport, time);
+        time += 0.05;
+        output = show_menu_frame(&mut app, &context, ui_input(viewport.x, viewport.y, time));
+        time += 0.1;
+        let _ = hover_menu_label(&mut app, &context, &output, "View", viewport, time);
+        time += 0.5;
+        output = show_menu_frame(&mut app, &context, ui_input(viewport.x, viewport.y, time));
+        let labels = rendered_text(&output)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect::<Vec<_>>();
+        assert!(
+            labels.iter().any(|label| label == "Word Wrap"),
+            "{labels:?}"
+        );
+        time += 0.1;
+        let _ = click_menu_label(&mut app, &context, &output, "Word Wrap", viewport, time);
+        assert_eq!(app.text_wrap, TextWrap::Unwrapped);
+
+        time += 0.05;
+        output = show_menu_frame(&mut app, &context, ui_input(viewport.x, viewport.y, time));
+        time += 0.1;
+        let _ = click_menu_label(&mut app, &context, &output, "More", viewport, time);
+        time += 0.05;
+        output = show_menu_frame(&mut app, &context, ui_input(viewport.x, viewport.y, time));
+        time += 0.1;
+        let _ = hover_menu_label(&mut app, &context, &output, "View", viewport, time);
+        time += 0.5;
+        output = show_menu_frame(&mut app, &context, ui_input(viewport.x, viewport.y, time));
+        time += 0.1;
+        let _ = hover_menu_label(&mut app, &context, &output, "Zoom: 100%", viewport, time);
+        time += 0.5;
+        output = show_menu_frame(&mut app, &context, ui_input(viewport.x, viewport.y, time));
+        time += 0.1;
+        let _ = click_menu_label(&mut app, &context, &output, "Zoom In", viewport, time);
+
+        assert_eq!(app.editor_zoom.percent(), 110);
     }
 
     #[test]

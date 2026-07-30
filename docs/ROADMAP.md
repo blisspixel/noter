@@ -242,16 +242,19 @@ The status bar reports modified state, one-based logical line and Unicode-scalar
 column, and selection size from a revision-and-selection keyed cache.
 
 Text Mode now includes Select All, validated allocation-free Go To Line across
-LF, CRLF, CR, and mixed files, and persistent word wrap. Editor-only zoom is
-available in both modes from 50 to 300 percent without scaling application
-controls or changing source bytes. Markdown Mode keeps formatted content
-wrapped by design. Document-wide Markdown selection and the remaining clipboard
-and navigation parity are still open.
+LF, CRLF, CR, and mixed files, and persistent word wrap. Go To Line input is
+bounded before widget processing. Document-only zoom is available in both modes
+from 50 to 300 percent through keyboard, menu, and supported pointer gestures
+without scaling application controls or changing source bytes. At the 420-pixel
+minimum width, a compact More menu keeps Edit, View, and Help commands pointer
+reachable. Markdown Mode keeps formatted content wrapped by design.
+Document-wide Markdown selection and the remaining clipboard and navigation
+parity are still open.
 
 Deterministic 512-case properties cover single replacements, ordered disjoint
 multi-edit transactions, arbitrary edit sequences, literal search, and
 lifecycle decisions against independent reference models. The current local
-source checkpoint has 376 Rust tests, 92.20 percent whole-workspace line
+source checkpoint has 380 Rust tests, 92.85 percent whole-workspace line
 coverage, and 95.57 percent UI-independent trust-kernel line coverage. Its
 [exact-commit M3 editing record](M3_EDITING_EVIDENCE.md) reports 256 generated
 mutations: 216 caught, 40 compiler-unviable, zero missed, and zero timed out,
@@ -428,9 +431,9 @@ contract.
    filesystem fixtures.
 3. Complete M2 evidence for installed About and update actions, theme
    persistence, cross-platform visual behavior, and disposable source installs.
-4. Complete the remaining M3 navigation, clipboard, Go To Line, wrap, zoom,
-   background-work, and long-session requirements atop the implemented Undo and
-   literal Find and Replace foundation.
+4. Complete the remaining M3 navigation, clipboard, Markdown document-selection,
+   background-work, cross-platform keyboard, and long-session requirements atop
+   the implemented Undo, Find and Replace, Go To Line, wrap, and zoom foundation.
 5. Complete M4 recovery records and external-change decisions through the pure
    lifecycle reducer, including fault and stale-effect evidence.
 6. Execute the M5 editor feasibility gate, including native typography, IME,

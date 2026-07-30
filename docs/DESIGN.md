@@ -62,12 +62,13 @@ The current development checkpoint has:
   next, previous, wrap reporting, match counts, explicit selection or document
   replacement scope, and revision-keyed bounded caching;
 - Text Mode Select All, allocation-free mixed-EOL Go To Line, persistent word
-  wrap, and editor-only zoom bounded from 50 to 300 percent;
+  wrap, and document-only keyboard, menu, and pointer zoom bounded from 50 to
+  300 percent;
 - one pure lifecycle reducer used by dirty New, Open, Reload, Close, and Quit,
   with Save, Discard, and Cancel effects shared by menu and native-close paths
   and correlated to the exact document revision that authorized them;
-- 376 Rust tests in the current local suite, 95.57 percent UI-independent
-  trust-kernel line coverage, and 92.20 percent whole-workspace line coverage
+- 380 Rust tests in the current local suite, 95.57 percent UI-independent
+  trust-kernel line coverage, and 92.85 percent whole-workspace line coverage
   against respective 90 and 80 percent gates;
 - a 256-candidate exact-commit M3 editing-core mutation campaign with 216
   caught, 40 compiler-unviable, zero missed, zero timed out, and no recognized
@@ -90,7 +91,7 @@ configuration, accessibility evidence, and release performance evidence also
 remain open. M1 through M4 therefore remain In Progress even where their
 current implementation slices are substantial.
 
-The 376-test and coverage measurements above describe the current local source
+The 380-test and coverage measurements above describe the current local source
 checkpoint, not hosted release evidence. The M1 paragraph identifies the latest
 immutable commit whose complete hosted matrix is verified.
 
@@ -309,8 +310,9 @@ directional selection after apply and exact inverse, and compare every retained
 state after Undo and Redo.
 
 Literal search escapes all regex metacharacters before using the linear-time
-regex engine. Queries and replacements are each capped at 16 KiB before the
-focused widget receives text, paste, or IME commit events. Match counting
+regex engine. A shared UI adapter caps focused text, paste, and IME events
+before `TextEdit` normalizes or retains their complete payload. Queries and
+replacements are each capped at 16 KiB. Match counting
 retains no document-sized range vector, and the UI cache is keyed by document
 revision, query, and case policy. Unicode-insensitive matching uses the engine's
 simple case folding and returns source byte ranges. Replace and Replace All use
@@ -318,14 +320,16 @@ literal replacement text, reject invalid UTF-8 scopes, calculate the result
 length before allocation, enforce the BOM-aware 64 MiB serialized-document
 ceiling, and enter the same transaction history with explicit Replace intent.
 
-Go To Line scans source bytes without allocation and treats LF, CRLF, CR, and
-mixed files exactly. An empty document has one addressable line and a final
-terminator starts a trailing empty line. Text Mode Select All and Go To Line
-restore the exact source selection through the same editor-state boundary used
-by Undo and Find. Word wrap changes only Text Mode layout. Zoom scales document
-type, including native Markdown headings, from 50 to 300 percent without
-changing menus, status controls, source bytes, or revision identity. Wrap and
-zoom preferences accept only canonical bounded persisted values.
+Go To Line caps its focused input at 20 UTF-8 bytes before widget processing,
+then scans source bytes without allocation and treats LF, CRLF, CR, and mixed
+files exactly. An empty document has one addressable line and a final terminator
+starts a trailing empty line. Text Mode Select All and Go To Line restore the
+exact source selection through the same editor-state boundary used by Undo and
+Find. Word wrap changes only Text Mode layout. Keyboard, menu, and supported
+pointer magnification over the document surface scale document type, including
+native Markdown headings, from 50 to 300 percent without changing menus, status
+controls, source bytes, or revision identity. Wrap and zoom preferences accept
+only canonical bounded persisted values.
 
 ## 6. Durable file I/O
 

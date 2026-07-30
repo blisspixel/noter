@@ -68,7 +68,7 @@ ruff check scripts
 ruff format --check scripts
 python -m unittest discover -s scripts -p 'test_*.py'
 cargo llvm-cov --locked --all-targets --all-features --workspace --fail-under-lines 80
-cargo llvm-cov --locked --all-targets --all-features --workspace --ignore-filename-regex 'src[/\\](app|editor_settings|find_ui|go_to_line_ui|idle_screen|main|markdown_ui|theme)\.rs$' --fail-under-lines 90
+cargo llvm-cov --locked --all-targets --all-features --workspace --ignore-filename-regex 'src[/\\](app|bounded_text_input|editor_settings|find_ui|go_to_line_ui|idle_screen|main|markdown_ui|theme)\.rs$' --fail-under-lines 90
 ```
 
 The excluded binary modules are immediate-mode GUI, presentation, and local

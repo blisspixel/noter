@@ -111,7 +111,7 @@ jobs:
         run: >
           cargo llvm-cov --locked --all-targets --all-features --workspace
           --ignore-filename-regex
-          'src[/\\](app|editor_settings|find_ui|go_to_line_ui|idle_screen|main|markdown_ui|theme)\.rs$'
+          'src[/\\](app|bounded_text_input|editor_settings|find_ui|go_to_line_ui|idle_screen|main|markdown_ui|theme)\.rs$'
           --fail-under-lines 90
           --summary-only
       - name: Upload coverage artifact

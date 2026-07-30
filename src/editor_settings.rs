@@ -7,6 +7,10 @@ const DEFAULT_ZOOM_PERCENT: u16 = 100;
 const MINIMUM_ZOOM_PERCENT: u16 = 50;
 const MAXIMUM_ZOOM_PERCENT: u16 = 300;
 const ZOOM_STEP_PERCENT: u16 = 10;
+const POINTER_ZOOM_STEP_FACTOR: f32 = 1.1;
+const MINIMUM_ACCUMULATED_POINTER_FACTOR: f32 = 0.25;
+const MAXIMUM_ACCUMULATED_POINTER_FACTOR: f32 = 4.0;
+const MAXIMUM_POINTER_ZOOM_STEPS_PER_EVENT: usize = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EditorZoom(u16);
@@ -62,6 +66,61 @@ impl EditorZoom {
 
     pub fn storage_value(self) -> String {
         self.0.to_string()
+    }
+}
+
+/// Accumulates smooth pointer magnification into the same discrete, bounded
+/// steps used by menu and keyboard zoom.
+#[derive(Clone, Copy, Debug)]
+pub struct PointerZoomAccumulator(f32);
+
+impl Default for PointerZoomAccumulator {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
+impl PointerZoomAccumulator {
+    pub fn apply(&mut self, delta: f32, zoom: &mut EditorZoom) -> bool {
+        if !delta.is_finite() || delta <= 0.0 {
+            self.reset();
+            return false;
+        }
+
+        self.0 = (self.0 * delta).clamp(
+            MINIMUM_ACCUMULATED_POINTER_FACTOR,
+            MAXIMUM_ACCUMULATED_POINTER_FACTOR,
+        );
+        let mut changed = false;
+        for _ in 0..MAXIMUM_POINTER_ZOOM_STEPS_PER_EVENT {
+            if self.0 < POINTER_ZOOM_STEP_FACTOR {
+                break;
+            }
+            if !zoom.zoom_in() {
+                self.reset();
+                return changed;
+            }
+            self.0 /= POINTER_ZOOM_STEP_FACTOR;
+            changed = true;
+        }
+
+        let zoom_out_threshold = POINTER_ZOOM_STEP_FACTOR.recip();
+        for _ in 0..MAXIMUM_POINTER_ZOOM_STEPS_PER_EVENT {
+            if self.0 > zoom_out_threshold {
+                break;
+            }
+            if !zoom.zoom_out() {
+                self.reset();
+                return changed;
+            }
+            self.0 *= POINTER_ZOOM_STEP_FACTOR;
+            changed = true;
+        }
+        changed
+    }
+
+    pub const fn reset(&mut self) {
+        self.0 = 1.0;
     }
 }
 
@@ -190,5 +249,25 @@ mod tests {
             style.text_styles[&egui::TextStyle::Button].size.to_bits(),
             button.to_bits()
         );
+    }
+
+    #[test]
+    fn smooth_pointer_zoom_accumulates_into_bounded_discrete_steps() {
+        let mut accumulator = PointerZoomAccumulator::default();
+        let mut zoom = EditorZoom::default();
+
+        assert!(!accumulator.apply(1.05, &mut zoom));
+        assert!(accumulator.apply(1.05, &mut zoom));
+        assert_eq!(zoom.percent(), 110);
+        accumulator.reset();
+        assert!(accumulator.apply(POINTER_ZOOM_STEP_FACTOR.recip(), &mut zoom));
+        assert_eq!(zoom.percent(), 100);
+
+        assert!(!accumulator.apply(f32::NAN, &mut zoom));
+        for _ in 0..100 {
+            let _ = accumulator.apply(2.0, &mut zoom);
+        }
+        assert_eq!(zoom.percent(), MAXIMUM_ZOOM_PERCENT);
+        assert!(!accumulator.apply(2.0, &mut zoom));
     }
 }

@@ -158,7 +158,9 @@ Feature presence alone is not verification.
   shaping and accessibility behavior as the core themes. Custom palettes are
   declarative, size-bounded, and fail closed through the same contrast
   validator; they cannot execute code or reference external assets.
-- **FR-032 Zoom:** Provide keyboard and menu zoom with a readable bounded range.
+- **FR-032 Zoom:** Provide keyboard, menu, and supported pointer-gesture zoom
+  over the document surface with a readable bounded range. Zoom does not scale
+  application controls.
 - **FR-033 Window state:** Restore valid size, position, and maximized state
   without placing a window entirely off screen.
 - **FR-034 Commands:** Every visible command either works, is visibly disabled

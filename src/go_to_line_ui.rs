@@ -1,8 +1,10 @@
 use eframe::egui;
 use noter::core::navigation::line_start_offset;
 
+use crate::bounded_text_input::{sanitize_bounded_text_events, truncate_to_utf8_byte_limit};
+
 const LINE_INPUT_ID: &str = "noter-go-to-line-input";
-const MAX_LINE_NUMBER_CHARACTERS: usize = 20;
+const MAX_LINE_NUMBER_BYTES: usize = 20;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GoToLineAction {
@@ -48,18 +50,29 @@ impl GoToLineDialog {
             .resizable(false)
             .show(context, |ui| {
                 ui.label("Line number");
+                let id = egui::Id::new(LINE_INPUT_ID);
+                let stored_input_was_clamped =
+                    truncate_to_utf8_byte_limit(&mut self.input, MAX_LINE_NUMBER_BYTES);
+                let accepts_input = self.request_focus || ui.memory(|memory| memory.has_focus(id));
+                let event_was_clamped = accepts_input
+                    && sanitize_bounded_text_events(ui, id, &self.input, MAX_LINE_NUMBER_BYTES);
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut self.input)
-                        .id(egui::Id::new(LINE_INPUT_ID))
-                        .char_limit(MAX_LINE_NUMBER_CHARACTERS)
+                        .id(id)
+                        .char_limit(MAX_LINE_NUMBER_BYTES)
                         .desired_width(220.0),
                 );
                 if self.request_focus {
                     response.request_focus();
                     self.request_focus = false;
                 }
-                if response.changed() {
+                let result_was_clamped =
+                    truncate_to_utf8_byte_limit(&mut self.input, MAX_LINE_NUMBER_BYTES);
+                if response.changed() || stored_input_was_clamped {
                     self.validation = None;
+                }
+                if event_was_clamped || result_was_clamped {
+                    self.validation = Some("Line number input was limited to 20 bytes.".to_owned());
                 }
                 submit =
                     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
@@ -172,5 +185,29 @@ mod tests {
         assert!(dialog.owns_text_focus(&context));
         context.memory_mut(|memory| memory.surrender_focus(egui::Id::new(LINE_INPUT_ID)));
         assert!(!dialog.owns_text_focus(&context));
+    }
+
+    #[test]
+    fn oversized_paste_is_bounded_before_single_line_normalization() {
+        let context = egui::Context::default();
+        let mut dialog = GoToLineDialog::default();
+        dialog.open(1);
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            let _ = dialog.show(ui.ctx(), "one");
+        });
+        let mut input = egui::RawInput::default();
+        input
+            .events
+            .push(egui::Event::Paste("9".repeat(1024 * 1024)));
+
+        let _ = context.run_ui(input, |ui| {
+            let _ = dialog.show(ui.ctx(), "one");
+        });
+
+        assert_eq!(dialog.input.len(), MAX_LINE_NUMBER_BYTES);
+        assert_eq!(
+            dialog.validation.as_deref(),
+            Some("Line number input was limited to 20 bytes.")
+        );
     }
 }

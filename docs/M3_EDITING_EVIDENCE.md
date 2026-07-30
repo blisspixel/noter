@@ -19,8 +19,8 @@ remain open in the [roadmap](ROADMAP.md).
 - Mutation runner: `cargo-mutants 27.1.0`
 - Coverage runner: `cargo-llvm-cov 0.8.7`
 
-The subject revision is a clean committed source tree. Later documentation-only
-commits do not alter the measured Rust source.
+The subject revision is a clean committed source tree. The five settled core
+modules named in the campaign are unchanged by later UI-adapter corrections.
 
 ## Mutation campaign
 
@@ -79,10 +79,9 @@ is:
 | Whole workspace | 13,506 | 14,648 | 92.20% |
 | UI-independent trust kernel | 6,843 | 7,160 | 95.57% |
 
-The trust-kernel exclusion is the exact regular expression in
-[CODE-QUALITY-STANDARDS.md](CODE-QUALITY-STANDARDS.md) and CI. Coverage remains
-a supporting measure; the reference-model properties and mutation result carry
-the stronger decision-path evidence for this scope.
+The trust-kernel result uses the UI-adapter exclusions declared for the subject
+revision. Coverage remains a supporting measure; the reference-model properties
+and mutation result carry the stronger decision-path evidence for this scope.
 
 ## Limits of this record
 

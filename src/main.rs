@@ -6,6 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod bounded_text_input;
 mod editor_settings;
 mod find_ui;
 mod go_to_line_ui;
