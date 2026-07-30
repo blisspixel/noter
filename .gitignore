@@ -7,7 +7,7 @@
 # =============================================================================
 # Noter specific artifacts
 # =============================================================================
-# Agent loop state is local working memory, never a canonical project artifact.
+# Local automation state is working data, never a canonical project artifact.
 /.agent/
 
 # Runtime and diagnostic logs stay out of the source tree history.

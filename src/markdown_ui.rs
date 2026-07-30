@@ -12,6 +12,14 @@ const MARKER_FONT_SIZE: f32 = 0.1;
 const BODY_WEIGHT: f32 = 400.0;
 const HEADING_WEIGHT: f32 = 600.0;
 const STRONG_WEIGHT: f32 = 700.0;
+const HEADING_SIZE_RATIOS: [f32; 6] = [
+    28.0 / 15.0,
+    24.0 / 15.0,
+    21.0 / 15.0,
+    18.0 / 15.0,
+    16.0 / 15.0,
+    1.0,
+];
 pub const PROTOTYPE_MARKDOWN_MAX_BYTES: usize = 1024 * 1024;
 const PROTOTYPE_MARKDOWN_MAX_LOGICAL_LINES: usize = 8192;
 const PROTOTYPE_MARKDOWN_MAX_LINE_BYTES: usize = 64 * 1024;
@@ -74,6 +82,20 @@ impl MarkdownProjectionLimit {
 
 fn expanded_toolbar_fits(available_width: f32) -> bool {
     available_width >= EXPANDED_FORMAT_MIN_WIDTH
+}
+
+fn direct_input_origin(ui: &egui::Ui) -> EditOrigin {
+    ui.input(|input| {
+        if input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Paste(_)))
+        {
+            EditOrigin::Paste
+        } else {
+            EditOrigin::MarkdownInput
+        }
+    })
 }
 
 fn markdown_parser_options() -> Options {
@@ -514,7 +536,16 @@ impl MarkdownEditor {
         Some(Selection::new(anchor, caret))
     }
 
-    pub fn restore_source_selection(&mut self, source: &str, selection: Selection) -> bool {
+    /// Restores a source-backed selection and optionally focuses its editor.
+    ///
+    /// Non-modal controls use `request_focus = false` so their keyboard input
+    /// remains active while the selected document match stays visible.
+    pub fn restore_source_selection_with_focus(
+        &mut self,
+        source: &str,
+        selection: Selection,
+        request_focus: bool,
+    ) -> bool {
         let ordered = selection.ordered_range();
         let Some(range) = markdown_block_ranges(source).into_iter().find(|range| {
             range.start <= ordered.start()
@@ -534,6 +565,7 @@ impl MarkdownEditor {
         self.activate(range, block.to_owned());
         if let Some(block) = self.active.as_mut() {
             block.selection = CharSelection::new(anchor, active);
+            block.request_focus = request_focus;
         }
         true
     }
@@ -739,6 +771,7 @@ impl MarkdownEditor {
             return false;
         };
         let rows = logical_lines(&active.draft).count().max(1) + 1;
+        let input_origin = direct_input_origin(ui);
         let editor_id = active.editor_id();
         let selection = active.selection.ordered_range();
         let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
@@ -788,9 +821,7 @@ impl MarkdownEditor {
         let changed = output.response.changed();
         if changed {
             active.dirty = true;
-            active
-                .pending_origin
-                .get_or_insert(EditOrigin::MarkdownInput);
+            active.pending_origin.get_or_insert(input_origin);
         }
         // Shared document history owns Undo and Redo. Discard egui's whole-string
         // snapshots so an active block cannot retain an independent history.
@@ -1262,14 +1293,11 @@ fn markdown_text_format(
 
     let mut font_id = style.text_styles[&egui::TextStyle::Body].clone();
     let heading_weight = if source_style.heading_level > 0 {
-        font_id.size = match source_style.heading_level {
-            1 => 28.0,
-            2 => 24.0,
-            3 => 21.0,
-            4 => 18.0,
-            5 => 16.0,
-            _ => 15.0,
-        };
+        let ratio = HEADING_SIZE_RATIOS
+            .get(usize::from(source_style.heading_level.saturating_sub(1)))
+            .copied()
+            .unwrap_or(1.0);
+        font_id.size *= ratio;
         HEADING_WEIGHT
     } else {
         BODY_WEIGHT
@@ -1584,6 +1612,24 @@ mod tests {
                 modifiers: egui::Modifiers::NONE,
             });
         }
+    }
+
+    fn origin_from_input(input: egui::RawInput) -> EditOrigin {
+        let context = egui::Context::default();
+        let mut origin = EditOrigin::MarkdownInput;
+        let _ = context.run_ui(input, |ui| origin = direct_input_origin(ui));
+        origin
+    }
+
+    #[test]
+    fn markdown_paste_is_an_explicit_non_coalescing_origin() {
+        let mut paste = egui::RawInput::default();
+        paste.events.push(egui::Event::Paste("content".to_owned()));
+        assert_eq!(origin_from_input(paste), EditOrigin::Paste);
+
+        let mut text = egui::RawInput::default();
+        text.events.push(egui::Event::Text("x".to_owned()));
+        assert_eq!(origin_from_input(text), EditOrigin::MarkdownInput);
     }
 
     #[test]
@@ -2148,7 +2194,7 @@ mod tests {
         let mut editor = MarkdownEditor::default();
         let mut source = "Make this bold".to_owned();
         let selected = Selection::new(5, 9);
-        assert!(editor.restore_source_selection(&source, selected));
+        assert!(editor.restore_source_selection_with_focus(&source, selected, true));
 
         editor.apply_command(MarkdownCommand::Bold);
         let output = context.run_ui(egui::RawInput::default(), |ui| {
@@ -2447,7 +2493,8 @@ mod tests {
     #[test]
     fn every_heading_level_has_a_deliberate_type_size() {
         let style = egui::Style::default();
-        let expected_sizes = [28.0_f32, 24.0, 21.0, 18.0, 16.0, 15.0];
+        let body_size = style.text_styles[&egui::TextStyle::Body].size;
+        let expected_sizes = HEADING_SIZE_RATIOS.map(|ratio| body_size * ratio);
 
         for (level, expected_size) in (1..=6).zip(expected_sizes) {
             let source = format!("{} Heading", "#".repeat(level));
@@ -2537,9 +2584,19 @@ mod tests {
         let selection = Selection::new(4, 2);
         let mut editor = MarkdownEditor::default();
 
-        assert!(editor.restore_source_selection(source, selection));
+        assert!(editor.restore_source_selection_with_focus(source, selection, true));
         assert_eq!(editor.source_selection(), Some(selection));
         assert!(editor.is_editing());
+
+        editor.reset();
+        assert!(editor.restore_source_selection_with_focus(source, selection, false));
+        assert_eq!(editor.source_selection(), Some(selection));
+        assert!(
+            editor
+                .active
+                .as_ref()
+                .is_some_and(|active| !active.request_focus)
+        );
     }
 
     #[test]
@@ -2555,7 +2612,7 @@ mod tests {
         let mut editor = MarkdownEditor::default();
 
         let selected = Selection::new(unicode_end, unicode_start);
-        assert!(editor.restore_source_selection(source, selected));
+        assert!(editor.restore_source_selection_with_focus(source, selected, true));
         assert_eq!(editor.source_selection(), Some(selected));
 
         for invalid in [
@@ -2564,7 +2621,7 @@ mod tests {
             Selection::new(unicode_start + 1, unicode_end),
         ] {
             editor.reset();
-            assert!(!editor.restore_source_selection(source, invalid));
+            assert!(!editor.restore_source_selection_with_focus(source, invalid, true));
             assert!(!editor.is_editing());
         }
     }

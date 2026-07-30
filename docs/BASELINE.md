@@ -2,22 +2,22 @@
 
 **M0 measured:** 2026-07-26
 
-**Latest implementation checkpoint:** 2026-07-28
+**Latest verified implementation checkpoint:** 2026-07-30
 
 **M0 source state:** Evidence commit `7512534` after dependency cleanup. These
 measurements are a development baseline, not release evidence.
 
 ## Latest exact implementation checkpoint
 
-Commit `efb8675` is the latest implementation checkpoint before the 2026-07-30
-documentation review. Exact-commit run
-[30415383710](https://github.com/blisspixel/noter/actions/runs/30415383710)
+Commit `d77460c` is the latest verified implementation checkpoint before the
+current correctness-alpha work. Exact-commit run
+[30558477309](https://github.com/blisspixel/noter/actions/runs/30558477309)
 completed all eight required jobs successfully.
 
 | Measure | Result |
 | --- | --- |
-| Hosted Linux Rust tests | 302 passed, 0 failed |
-| Whole-workspace line coverage | 92.19 percent, 11,044 of 11,979 lines |
+| Hosted Linux Rust tests | 307 passed, 0 failed |
+| Whole-workspace line coverage | 92.65 percent, 11,179 of 12,066 lines |
 | Trust-kernel line coverage | 93.57 percent, 6,612 of 7,066 lines |
 | Linux mutation scope | 817 total, 586 caught, 231 unviable, 0 missed, 0 timed out |
 | Windows mutation scope | 751 total, 524 caught, 227 unviable, 0 missed, 0 timed out |
@@ -77,7 +77,7 @@ semantic UI and manual platform tests.
 
 ## 2026-07-27 engineering checkpoint
 
-This checkpoint measures the current pre-alpha implementation after the M1
+This checkpoint measures the development implementation after the M1
 storage adapter, M2 shell work, and early M6 Markdown slice became reachable
 from the GUI. It does not replace or reinterpret the M0 evidence above, and it
 is not yet a milestone sign-off.

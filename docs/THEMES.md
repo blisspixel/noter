@@ -53,6 +53,6 @@ contain or reference:
 - URLs, network requests, document paths, or environment variables;
 - commands, key bindings, editor behavior, or accessibility overrides.
 
-Theme files are not loaded by the current pre-alpha build. This keeps the
+Theme files are not loaded by the current development build. This keeps the
 extension surface honest while the schema, path rules, persistence behavior,
 error UX, and cross-platform evidence are completed under M2.

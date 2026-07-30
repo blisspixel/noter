@@ -68,16 +68,17 @@ ruff check scripts
 ruff format --check scripts
 python -m unittest discover -s scripts -p 'test_*.py'
 cargo llvm-cov --locked --all-targets --all-features --workspace --fail-under-lines 80
-cargo llvm-cov --locked --all-targets --all-features --workspace --ignore-filename-regex 'src[/\\](app|main|markdown_ui)\.rs$' --fail-under-lines 90
+cargo llvm-cov --locked --all-targets --all-features --workspace --ignore-filename-regex 'src[/\\](app|editor_settings|find_ui|go_to_line_ui|idle_screen|main|markdown_ui|theme)\.rs$' --fail-under-lines 90
 ```
 
-`app.rs`, `main.rs`, and `markdown_ui.rs` are immediate-mode GUI adapters. They
-remain inside the 80 percent whole-workspace gate. They are excluded only from
-the separate 90 percent trust-kernel percentage and additionally require state
-tests, native-render smoke tests, deterministic screenshot checks, semantic UI
-automation, and the manual platform matrix. CI also runs the platform matrix,
-documentation-link checks, and the declared trust-kernel mutation matrix. A
-local pass does not replace exact-commit CI evidence.
+The excluded binary modules are immediate-mode GUI, presentation, and local
+preference adapters. They remain inside the 80 percent whole-workspace gate.
+They are excluded only from the separate 90 percent UI-independent trust-kernel
+percentage and additionally require state tests, native-render smoke tests,
+deterministic screenshot checks, semantic UI automation, and the manual
+platform matrix. CI also runs the platform matrix, documentation-link checks,
+and the declared trust-kernel mutation matrix. A local pass does not replace
+exact-commit CI evidence.
 
 ## 7. Dependencies and supply chain
 

@@ -65,8 +65,9 @@ parent `bin` directory to `PATH`. The default is Cargo's per-user binary
 directory, normally `%USERPROFILE%\.cargo\bin` on Windows and `$HOME/.cargo/bin`
 on macOS and Linux.
 
-Noter is pre-alpha. Keep backups and do not use it as the only editor for
-important files.
+Noter remains under active development. Keep backups and do not use it as the
+only editor for important files until the release evidence in the roadmap is
+complete.
 
 ## Update a source installation
 
@@ -135,7 +136,8 @@ cargo uninstall noter --root "$HOME/.local"
 
 Cargo removes the executable and its install record. It does not remove the Git
 checkout or Noter's per-user framework state. The current build stores its
-selected theme in `app.ron` under the following directory:
+selected theme, Text Mode word-wrap preference, and editor zoom in `app.ron`
+under the following directory:
 
 | Platform | State directory |
 | --- | --- |

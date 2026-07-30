@@ -481,15 +481,18 @@ platform testing demonstrates a user benefit.
 
 ## 2026-07-30 installation and documentation update
 
-Current official command-line projects place a short product statement and
-copy-ready installation path before architecture or contributor detail. The
-[Codex README](https://github.com/openai/codex/blob/main/README.md) provides
-PowerShell and POSIX quick-install commands near the top, backed by dedicated
-[PowerShell](https://github.com/openai/codex/blob/main/scripts/install/install.ps1)
-and [POSIX](https://github.com/openai/codex/blob/main/scripts/install/install.sh)
-installers that resolve published artifacts and verify their integrity. The
-[Grok CLI repository](https://github.com/xai-org/grok-build) follows the same
-general onboarding shape and provides a dedicated update command.
+The official [rustup installation guide](https://rust-lang.github.io/rustup/installation/)
+documents one cross-platform toolchain entry point and the predictable
+per-user Cargo binary directory used by `cargo install`. The official
+[dist installer documentation](https://axodotdev.github.io/cargo-dist/book/install.html)
+provides separate POSIX and PowerShell bootstrap paths over prebuilt release
+artifacts, while its
+[installer configuration](https://axodotdev.github.io/cargo-dist/book/reference/config.html)
+covers shell, PowerShell, Homebrew, and MSI outputs. GitHub's
+[artifact-attestation guidance](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
+defines verifiable build provenance and SBOM attestations for public release
+artifacts. Together these primary sources support a short README install path,
+platform-native scripts, per-user defaults, and authenticated release evidence.
 
 Product decision:
 

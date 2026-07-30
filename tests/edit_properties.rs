@@ -1,5 +1,7 @@
 //! Generated edit, inverse, undo, and redo invariants.
 
+use std::time::Duration;
+
 use noter::core::document::Document;
 use noter::core::edit::{
     EditOrigin, EditTimestamp, EditTransaction, Selection, TextEdit, TextRange,
@@ -213,7 +215,7 @@ proptest! {
                         &next,
                         Selection::caret(range.start()),
                         Selection::caret(range.start() + inserted.len()),
-                        EditOrigin::TextInput,
+                        EditOrigin::Programmatic,
                         EditTimestamp::default(),
                     )
                     .expect("generated selections should be valid")
@@ -257,5 +259,61 @@ proptest! {
             prop_assert_eq!(history.can_redo(), !redo_states.is_empty());
             prop_assert_eq!(document.is_dirty(), expected != initial);
         }
+    }
+
+    #[test]
+    fn coalesced_unicode_typing_round_trips_as_one_history_step(
+        characters in proptest::collection::vec(any::<char>(), 1..64),
+    ) {
+        prop_assume!(characters.first() != Some(&'\u{feff}'));
+        let expected = characters.iter().collect::<String>();
+        let mut document = Document::new();
+        let mut history = UndoHistory::default();
+        let mut source = String::new();
+
+        for (index, character) in characters.into_iter().enumerate() {
+            let inserted = character.to_string();
+            let start = source.len();
+            let mut next = source.clone();
+            next.push(character);
+            let transaction = EditTransaction::between(
+                document.revision(),
+                &source,
+                &next,
+                Selection::caret(start),
+                Selection::caret(next.len()),
+                EditOrigin::TextInput,
+                EditTimestamp::new(Duration::from_millis(index as u64)),
+            )
+            .expect("generated selections should be valid")
+            .expect("one inserted scalar should produce a transaction");
+            let applied = document
+                .apply_transaction(&transaction)
+                .expect("generated insertion should apply");
+            let record = history.record(applied);
+            prop_assert_eq!(
+                record,
+                if index == 0 {
+                    HistoryRecordOutcome::Stored
+                } else {
+                    HistoryRecordOutcome::Coalesced
+                }
+            );
+            source = next;
+            prop_assert_eq!(inserted.len(), character.len_utf8());
+        }
+
+        prop_assert_eq!(document.rope().to_string(), expected.as_str());
+        prop_assert_eq!(history.len(), 1);
+        let undone = history
+            .undo(&mut document)
+            .expect("coalesced generated typing should undo");
+        prop_assert!(undone.is_some());
+        prop_assert_eq!(document.rope().to_string(), "");
+        let redone = history
+            .redo(&mut document)
+            .expect("coalesced generated typing should redo");
+        prop_assert!(redone.is_some());
+        prop_assert_eq!(document.rope().to_string(), expected);
     }
 }

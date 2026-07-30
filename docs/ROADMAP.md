@@ -31,6 +31,26 @@ mutation, benchmark, and release records.
 documentation artifact exist on the same green commit. Local implementation is
 not verification.
 
+## Next checkpoint: correctness alpha
+
+The next product checkpoint is a dogfoodable correctness alpha, not a relabeling
+of incomplete work. It requires the remaining M1 benchmark and filesystem
+evidence, installed-product M2 checks, completion of the ordinary M3 text
+commands, and the M4 recovery and external-change safety path. M5 through M7
+remain first-release work after that checkpoint.
+
+The current implementation closes three earlier blockers: deterministic Undo
+coalescing, bounded literal Find and Replace, and the pure destructive-action
+lifecycle reducer. The shortest path to correctness alpha is now:
+
+1. finish the reproducible M1 benchmark and manual filesystem fixtures;
+2. prove About, updates, themes, and source installation in installed builds;
+3. finish cross-platform navigation and clipboard policy, Markdown
+   document-selection parity, and long-session M3 evidence;
+4. implement private recovery records and external-change decisions through the
+   M4 reducer; and
+5. run the cross-platform correctness matrix on one immutable green commit.
+
 ## Product boundaries
 
 - One document per window.
@@ -86,10 +106,11 @@ progress arithmetic. Each defect has a focused regression. The historical
 741-candidate supported-platform union is recorded in
 [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md).
 
-The latest implementation checkpoint is commit `efb8675`. Exact-commit run
-[30415383710](https://github.com/blisspixel/noter/actions/runs/30415383710)
+The latest verified implementation checkpoint is commit `d77460c`.
+Exact-commit run
+[30558477309](https://github.com/blisspixel/noter/actions/runs/30558477309)
 passes all eight Windows, macOS, Linux, documentation, dependency, coverage, and
-mutation jobs. Hosted line coverage is 92.19 percent for the workspace and
+mutation jobs. Hosted line coverage is 92.65 percent for the workspace and
 93.57 percent for the trust kernel. The current platform mutation scopes report
 817 Linux candidates, 751 Windows candidates, and 47 macOS candidates, with no
 miss or timeout; the infrastructure validator reports no recognized tool,
@@ -202,16 +223,40 @@ History is bounded to 1,024 transactions and 32 MiB of retained source by
 default, clears stale branches defensively, and restores saved-content identity
 without reusing revisions.
 
+Direct edits now carry conservative Insert, Backspace, Delete, Replace
+Selection, Paste, Formatting, Replace, conversion, or programmatic intent.
+Adjacent typing, Backspace, and forward Delete coalesce independently inside a
+750 millisecond and 16 KiB boundary; time regression, selection movement,
+origin change, intent change, non-adjacency, paste, formatting, and resource
+ceilings end the group. Text and Markdown adapters identify paste explicitly.
+
+A non-modal Find and Replace bar now provides bounded literal queries, Unicode
+case matching, next and previous navigation, wrap reporting, match counts, and
+explicit selection or whole-document Replace All scope. Query and replacement
+input is bounded before focused widgets receive text, paste, or IME commits.
+Search caches are revision-keyed and retain counts rather than a document-sized
+match vector. Replacement calculates its BOM-aware bounded result before
+allocation and enters shared Undo as one explicit Replace transaction. Find
+field Undo remains local, and closing the bar restores immediate document input.
+The status bar reports modified state, one-based logical line and Unicode-scalar
+column, and selection size from a revision-and-selection keyed cache.
+
+Text Mode now includes Select All, validated allocation-free Go To Line across
+LF, CRLF, CR, and mixed files, and persistent word wrap. Editor-only zoom is
+available in both modes from 50 to 300 percent without scaling application
+controls or changing source bytes. Markdown Mode keeps formatted content
+wrapped by design. Document-wide Markdown selection and the remaining clipboard
+and navigation parity are still open.
+
 Deterministic 512-case properties cover single replacements, ordered disjoint
-multi-edit transactions, and arbitrary edit sequences against `String`
-reference models. A focused 118-candidate transaction and history mutation
-campaign closes with 95 caught and 23 validated compiler rejections, with no
-miss, timeout, or infrastructure failure. The focused implementation checkpoint
-measured 97.30 percent line coverage for transactions and 97.61 percent for
-history; the latest hosted complete-workspace and trust-kernel percentages are
-recorded under M1 above. This is not M3 completion. Intent classification and
-coalescing, clipboard and navigation policy, search and replace, remaining text
-commands, status details, cross-platform manual evidence, and the long-session
+multi-edit transactions, arbitrary edit sequences, literal search, and
+lifecycle decisions against independent reference models. The current local
+tree has 375 Rust tests, 92.16 percent whole-workspace line coverage, and 95.48
+percent UI-independent trust-kernel line coverage. These measurements are not
+hosted release evidence. A reproducible exact-commit focused mutation record is
+required before the new M3 decision core is claimed as mutation-verified. This
+is not M3 completion. Clipboard and complete navigation policy, revision-safe
+background indexing, cross-platform manual evidence, and the long-session
 memory fixture remain open.
 
 ## M4: Lifecycle, Recovery, and Conflicts
@@ -230,14 +275,19 @@ memory fixture remain open.
 
 ### Current state
 
-Dirty New, Open, Quit, and native window-close requests now share one visible
-Save, Discard Changes, and Cancel decision path. Saving continues the requested
-action only after the document is clean; a cancelled or failed save retains both
-the document and decision. Indeterminate-save recovery guidance survives these
-decisions and Cancel, and ordinary Save remains blocked until the state is
-reconciled or the user cancels the decision and chooses Save As. The pure
-lifecycle reducer, Reload, recovery records, external-change handling, and
-crash-fault evidence remain open.
+Dirty New, Open, Reload, Quit, and native window-close requests now share one
+pure `LifecycleState` reducer and one visible Save, Discard Changes, and Cancel
+decision path. Explicit Prompting, Saving, and Closing phases bind every intent,
+save completion, and close authorization to the exact document revision that
+created it. Repeated requests cannot replace the active intent, and stale or
+unsolicited completions cannot authorize destructive work. A cancelled, failed,
+or still-interactive save preserves the document and returns to a safe explicit
+decision. Indeterminate-save recovery guidance survives these decisions and
+Cancel, and ordinary Save remains blocked until the state is reconciled or the
+user chooses Save As. Exhaustive transition tests and a fixed-seed 512-case
+command-sequence property compare the reducer with an independent model.
+Recovery records, external-change handling, and crash-fault evidence remain
+open.
 
 ### Exit criteria
 
@@ -313,7 +363,7 @@ source spans, including hidden delimiters, escapes, and supported character
 references; synthesis without a safe mapping falls back to visible source. A
 link target is revealed while it is edited and hidden again
 after the caret leaves it. Text Mode always exposes exact source. Shared bounded
-Undo and Redo are implemented. Deterministic intent coalescing, continuous
+Undo and Redo use the deterministic intent and coalescing policy. Continuous
 whole-document editing, complete complex-block layout, full syntax conformance,
 accessibility, asynchronous parsing, and the quality engine remain open.
 
@@ -377,9 +427,12 @@ contract.
    filesystem fixtures.
 3. Complete M2 evidence for installed About and update actions, theme
    persistence, cross-platform visual behavior, and disposable source installs.
-4. Continue M3 with explicit input intent and deterministic coalescing atop the
-   implemented transaction, inverse, selection, and bounded-history foundation.
-5. Execute the M5 editor feasibility gate, including native typography, IME,
+4. Complete the remaining M3 navigation, clipboard, Go To Line, wrap, zoom,
+   background-work, and long-session requirements atop the implemented Undo and
+   literal Find and Replace foundation.
+5. Complete M4 recovery records and external-change decisions through the pure
+   lifecycle reducer, including fault and stale-effect evidence.
+6. Execute the M5 editor feasibility gate, including native typography, IME,
    accessibility, display-scale, and large-file evidence. Keep the early
    block-focused Markdown slice bounded until the transaction, lifecycle, and
    production-editor contracts it depends on are stable.

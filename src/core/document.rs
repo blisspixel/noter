@@ -8,6 +8,7 @@ use super::edit::{
 };
 use super::file_observation::{inspect_target, read_regular_file};
 use super::fs_storage::FilesystemStorage;
+use super::limits::MAX_DOCUMENT_BYTES;
 use super::line_endings::LineEndingProfile;
 use super::revision::Revision;
 use super::save::{
@@ -97,9 +98,16 @@ impl Document {
     ///
     /// # Errors
     ///
-    /// Returns [`NoterError::InvalidUtf8`] when the bytes after an optional UTF-8
-    /// byte-order mark are not valid UTF-8.
+    /// Returns [`NoterError::DocumentTooLarge`] when serialized input exceeds
+    /// the shared document ceiling, or [`NoterError::InvalidUtf8`] when bytes
+    /// after an optional UTF-8 byte-order mark are not valid UTF-8.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, NoterError> {
+        if bytes.len() > MAX_DOCUMENT_BYTES {
+            return Err(NoterError::DocumentTooLarge {
+                actual: bytes.len(),
+                maximum: MAX_DOCUMENT_BYTES,
+            });
+        }
         let (bom, content) = Bom::split_utf8(bytes);
         let text = std::str::from_utf8(content)?;
         let fingerprint = ContentFingerprint::from_bytes(bytes);
@@ -142,6 +150,11 @@ impl Document {
         self.bom
     }
 
+    /// Returns the maximum UTF-8 rope length after reserving serialized BOM bytes.
+    pub const fn maximum_text_bytes(&self) -> usize {
+        MAX_DOCUMENT_BYTES - self.bom.as_bytes().len()
+    }
+
     /// Serializes the current UTF-8 text, including the original BOM when present.
     ///
     /// Existing line endings are emitted exactly as stored in the rope. The editing
@@ -175,8 +188,16 @@ impl Document {
     /// # Errors
     ///
     /// Returns [`NoterError::RevisionExhausted`] if the monotonic counter cannot
-    /// advance without wrapping.
+    /// advance without wrapping, or [`NoterError::Edit`] when the replacement
+    /// exceeds the BOM-aware document ceiling.
     pub fn replace_text(&mut self, text: &str) -> Result<bool, NoterError> {
+        let maximum = self.maximum_text_bytes();
+        if text.len() > maximum {
+            return Err(NoterError::Edit(EditError::ResultTooLarge {
+                projected: text.len(),
+                maximum,
+            }));
+        }
         let before = self.rope.to_string();
         let Some(transaction) = EditTransaction::between(
             self.revision,
@@ -212,7 +233,8 @@ impl Document {
         &mut self,
         transaction: &EditTransaction,
     ) -> Result<AppliedTransaction, EditError> {
-        let (replacement, applied) = transaction.apply_to(&self.rope, self.revision)?;
+        let (replacement, applied) =
+            transaction.apply_to(&self.rope, self.revision, self.maximum_text_bytes())?;
         let replacement_text = replacement.to_string();
         let replacement_line_endings = LineEndingProfile::detect(&replacement_text);
         self.rope = replacement;
@@ -408,6 +430,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+    use crate::core::edit::{TextEdit, TextRange};
     use crate::core::line_endings::{LineEnding, LineEndingCounts};
     use tempfile::{NamedTempFile, tempdir};
 
@@ -471,6 +494,92 @@ mod tests {
             .expect("invalid UTF-8 must produce an error");
 
         assert!(matches!(error, NoterError::InvalidUtf8(_)));
+    }
+
+    #[test]
+    fn serialized_document_ceiling_is_exact_and_includes_the_bom() {
+        let exact = vec![b'x'; MAX_DOCUMENT_BYTES];
+        let document = Document::from_bytes(&exact).expect("the exact ceiling should load");
+        assert_eq!(document.rope().len_bytes(), MAX_DOCUMENT_BYTES);
+        assert_eq!(document.to_bytes().len(), MAX_DOCUMENT_BYTES);
+        drop(document);
+        drop(exact);
+
+        let oversized = vec![b'x'; MAX_DOCUMENT_BYTES + 1];
+        assert!(matches!(
+            Document::from_bytes(&oversized),
+            Err(NoterError::DocumentTooLarge {
+                actual,
+                maximum: MAX_DOCUMENT_BYTES,
+            }) if actual == MAX_DOCUMENT_BYTES + 1
+        ));
+
+        let bom_document = Document::from_bytes(b"\xEF\xBB\xBFx").expect("BOM fixture should load");
+        assert_eq!(
+            bom_document.maximum_text_bytes(),
+            MAX_DOCUMENT_BYTES - Bom::Utf8.as_bytes().len()
+        );
+    }
+
+    #[test]
+    fn authoritative_document_edit_rejects_growth_beyond_the_ceiling() {
+        let initial = vec![b'x'; MAX_DOCUMENT_BYTES - 1];
+        let mut document = Document::from_bytes(&initial).expect("bounded fixture should load");
+        let append = EditTransaction::new(
+            document.revision(),
+            vec![TextEdit::replace(
+                TextRange::new(initial.len(), initial.len()),
+                "y",
+                "",
+            )],
+            Selection::caret(initial.len()),
+            Selection::caret(initial.len() + 1),
+            EditOrigin::TextInput,
+            EditTimestamp::default(),
+        );
+        document
+            .apply_transaction(&append)
+            .expect("an edit reaching the exact ceiling should apply");
+        assert_eq!(document.rope().len_bytes(), MAX_DOCUMENT_BYTES);
+
+        let overflow = EditTransaction::new(
+            document.revision(),
+            vec![TextEdit::replace(
+                TextRange::new(MAX_DOCUMENT_BYTES, MAX_DOCUMENT_BYTES),
+                "z",
+                "",
+            )],
+            Selection::caret(MAX_DOCUMENT_BYTES),
+            Selection::caret(MAX_DOCUMENT_BYTES + 1),
+            EditOrigin::Paste,
+            EditTimestamp::default(),
+        );
+        assert!(matches!(
+            document.apply_transaction(&overflow),
+            Err(EditError::ResultTooLarge {
+                projected,
+                maximum: MAX_DOCUMENT_BYTES,
+            }) if projected == MAX_DOCUMENT_BYTES + 1
+        ));
+        assert_eq!(document.rope().len_bytes(), MAX_DOCUMENT_BYTES);
+    }
+
+    #[test]
+    fn whole_text_replacement_rejects_oversized_input_before_diffing() {
+        let mut document = Document::from_bytes(b"unchanged").expect("fixture should load");
+        let revision = document.revision();
+        let oversized = "x".repeat(MAX_DOCUMENT_BYTES + 1);
+
+        assert!(matches!(
+            document.replace_text(&oversized),
+            Err(NoterError::Edit(EditError::ResultTooLarge {
+                projected,
+                maximum: MAX_DOCUMENT_BYTES,
+            })) if projected == MAX_DOCUMENT_BYTES + 1
+        ));
+        assert_eq!(document.rope().to_string(), "unchanged");
+        assert_eq!(document.revision(), revision);
+        assert!(!document.is_dirty());
     }
 
     #[test]

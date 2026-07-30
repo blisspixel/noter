@@ -13,7 +13,7 @@ records own narrow irreversible choices.
 
 ## 1. Current implementation checkpoint
 
-The current pre-alpha checkpoint has:
+The current development checkpoint has:
 
 - a binary crate containing the egui shell;
 - a library crate containing the UI-independent document module;
@@ -51,31 +51,44 @@ The current pre-alpha checkpoint has:
 - persisted System, Light, Dark, Green Screen, and Amber Screen themes plus a
   source-backed native Markdown slice with formatted direct editing and
   conservative diagnostics;
-- one revision-checked edit authority for Text Mode and Markdown Mode, exact
-  inverse transactions, directional selections, content-identity dirty state,
-  and Undo and Redo history bounded to 1,024 entries and 32 MiB by default;
-- a UI-level Save, Discard Changes, and Cancel decision for dirty New, Open,
-  Close, and Quit requests;
-- 302 Rust tests in the latest hosted Linux suite, 93.57 percent trust-kernel
-  line coverage, and 92.19 percent whole-workspace line coverage against
-  respective 90 and 80 percent gates;
-- a focused 118-candidate transaction and history mutation campaign with 95
-  caught and 23 validated compiler rejections, with no miss, timeout, or
-  infrastructure failure;
+- one revision-checked edit authority for Text Mode and Markdown Mode, explicit
+  operation intent, exact inverse transactions, directional selections,
+  content-identity dirty state, and Undo and Redo history bounded to 1,024
+  entries and 32 MiB by default;
+- bounded deterministic coalescing for adjacent typing, Backspace, and forward
+  Delete, with paste, replacement, formatting, and conversion kept as isolated
+  transactions;
+- a non-modal literal Find and Replace surface with Unicode case matching,
+  next, previous, wrap reporting, match counts, explicit selection or document
+  replacement scope, and revision-keyed bounded caching;
+- Text Mode Select All, allocation-free mixed-EOL Go To Line, persistent word
+  wrap, and editor-only zoom bounded from 50 to 300 percent;
+- one pure lifecycle reducer used by dirty New, Open, Reload, Close, and Quit,
+  with Save, Discard, and Cancel effects shared by menu and native-close paths
+  and correlated to the exact document revision that authorized them;
+- 375 Rust tests in the current local suite, 95.48 percent UI-independent
+  trust-kernel line coverage, and 92.16 percent whole-workspace line coverage
+  against respective 90 and 80 percent gates;
 - a historical 741-candidate supported-platform mutation union with no miss,
   timeout, infrastructure error, or scope gap; and current exact-commit scopes
   of 817 Linux, 751 Windows, and 47 macOS candidates with no miss, timeout, or
   recognized infrastructure failure.
 
-The current production-adapter checkpoint passes all eight jobs in exact-commit
-run [30415383710](https://github.com/blisspixel/noter/actions/runs/30415383710)
-for commit `efb8675`. It still requires the manual metadata and
+The latest verified production-adapter checkpoint passes all eight jobs in
+exact-commit run
+[30558477309](https://github.com/blisspixel/noter/actions/runs/30558477309)
+for commit `d77460c`. It still requires the manual metadata and
 weaker-filesystem evidence named by ADR-003 plus the reproducible benchmark
-baseline. The edit foundation still requires deterministic coalescing, complete
-input-intent classification, the remaining commands, and platform evidence.
-Noter also does not yet have the complete pure lifecycle state machine, Reload
-handling, recovery, configuration, accessibility evidence, or release
-performance evidence. M1 and M3 therefore remain In Progress.
+baseline. The edit foundation still requires complete navigation and clipboard
+policy, Markdown parity for document-wide selection, long-session fixtures,
+and cross-platform evidence. Recovery, external-change handling,
+configuration, accessibility evidence, and release performance evidence also
+remain open. M1 through M4 therefore remain In Progress even where their
+current implementation slices are substantial.
+
+The 375-test and coverage measurements above describe the current local tree,
+not hosted release evidence. The M1 paragraph identifies the latest immutable
+commit whose complete hosted matrix is verified.
 
 ## 2. Architectural principles
 
@@ -255,6 +268,7 @@ struct EditTransaction {
     selection_before: Selection,
     selection_after: Selection,
     origin: EditOrigin,
+    intent: EditIntent,
     observed_at: EditTimestamp,
 }
 
@@ -275,15 +289,39 @@ branch clears Redo, an edit larger than the byte ceiling clears history that
 could no longer apply, and an unexpected revision rejects Undo without changing
 the document.
 
-Coalescing is the next M3 slice, not current behavior. It will be a pure policy
-over origin, time, adjacency, selection, and edit shape. Paste, Replace All,
-EOL conversion, recovery acceptance, and Markdown formatting must never
-coalesce with ordinary typing.
+Coalescing is a pure policy over explicit intent, origin, time, adjacency,
+selection continuity, and exact edit shape. Adjacent typing, Backspace, and
+forward Delete coalesce independently inside an inclusive 750 millisecond
+window. A coalesced edit retains at most 16 KiB and can never evade the broader
+history byte ceiling. Clock regression, caret movement, origin change, intent
+change, non-adjacent ranges, and resource ceilings end the group. Paste,
+Replace All, EOL conversion, programmatic replacement, and Markdown formatting
+never coalesce with ordinary typing.
 
 Fixed-seed, 512-case `String` reference properties cover arbitrary single
-replacements, ordered disjoint multi-edit transactions, and edit sequences.
-They compare content and directional selection after apply and exact inverse,
-and compare every retained state after Undo and Redo.
+replacements, ordered disjoint multi-edit transactions, edit sequences, and
+Unicode typing coalesced into one history step. They compare content and
+directional selection after apply and exact inverse, and compare every retained
+state after Undo and Redo.
+
+Literal search escapes all regex metacharacters before using the linear-time
+regex engine. Queries and replacements are each capped at 16 KiB before the
+focused widget receives text, paste, or IME commit events. Match counting
+retains no document-sized range vector, and the UI cache is keyed by document
+revision, query, and case policy. Unicode-insensitive matching uses the engine's
+simple case folding and returns source byte ranges. Replace and Replace All use
+literal replacement text, reject invalid UTF-8 scopes, calculate the result
+length before allocation, enforce the BOM-aware 64 MiB serialized-document
+ceiling, and enter the same transaction history with explicit Replace intent.
+
+Go To Line scans source bytes without allocation and treats LF, CRLF, CR, and
+mixed files exactly. An empty document has one addressable line and a final
+terminator starts a trailing empty line. Text Mode Select All and Go To Line
+restore the exact source selection through the same editor-state boundary used
+by Undo and Find. Word wrap changes only Text Mode layout. Zoom scales document
+type, including native Markdown headings, from 50 to 300 percent without
+changing menus, status controls, source bytes, or revision identity. Wrap and
+zoom preferences accept only canonical bounded persisted values.
 
 ## 6. Durable file I/O
 
@@ -484,10 +522,22 @@ undefined.
 
 ### 7.1 One destructive-action state machine
 
-`New`, `Open`, `Reload`, `Close`, and `Quit` produce a
-`DestructiveIntent`. If the document is dirty, the pure application state emits
-`NeedsDirtyDecision`. Save success continues the original intent, Discard
-continues after explicit confirmation, and Cancel returns to editing.
+`New`, `Open`, `Reload`, and `Quit` produce a `DestructiveIntent`; native Close
+maps to Quit. If the document is dirty, the pure application state emits
+`PromptDirty`. Save success continues the original intent, Discard continues
+after explicit confirmation, and Cancel returns to editing.
+
+The current `LifecycleState::reduce` implementation has explicit Idle,
+Prompting, Saving, and Closing phases. Prompting and Saving retain both the
+destructive intent and the exact document revision that produced it. Repeated
+requests cannot replace a visible decision, unsolicited or stale save
+completions are inert, and a completion for a different revision cannot
+authorize abandonment. Dirty or still-interactive save outcomes return to an
+explicit decision, a clean save with a blocking warning stops for review, and
+only Quit authorizes one native close for the exact saved revision. Exhaustive
+transition tests and a fixed-seed 512-case command-sequence property compare
+the reducer with a separate reference model. Private recovery records and
+external asynchronous effect correlation remain later M4 slices.
 
 Dialogs cannot directly mutate document state. They emit commands to the same
 dispatcher used by keyboard shortcuts and menus. Repeated close events are
@@ -881,26 +931,53 @@ M1 adapter checkpoint to 339 packages. All three are MIT or Apache-family
 licensed, have no application network capability, and build under the pinned
 toolchain. `xattr` does not publish an MSRV, so CI establishes compatibility.
 
+M3 uses [regex 1.13.1](https://crates.io/crates/regex/1.13.1) only to compile
+escaped literal queries, iterate original UTF-8 source ranges, and apply
+Unicode-aware simple case matching with linear-time search guarantees. Default
+features are disabled; `std`, `perf`, and `unicode-case` are enabled for bounded
+compilation, literal acceleration, and the required case policy. Version 1.13.1
+is the current registry release from the maintained
+[rust-lang/regex](https://github.com/rust-lang/regex) project as reviewed on
+2026-07-30. It is MIT or Apache-2.0 licensed, declares Rust 1.65, passes the
+repository's advisory and license policy, and builds under Noter's pinned
+toolchain.
+
+The selected feature path declares no build script or native code and adds no
+application filesystem, process, or network capability. The direct addition
+resolves `regex`, `regex-automata`, and `aho-corasick`; `regex-syntax` and
+`memchr` were already present, and the locked graph contains no second `regex`
+version. The full editing-and-shell slice from exact baseline `d77460c` to the
+current local tree increases the all-feature Windows debug binary from
+14,124,032 to 16,055,808 bytes and the stripped release binary from 8,296,448
+to 9,279,488 bytes. Those conservative increases of 1,931,776 bytes (13.68
+percent) and 983,040 bytes (11.85 percent) include every feature and fix in the
+slice, so they are upper bounds rather than unsupported attribution to `regex`.
+Removal requires an equally bounded literal matcher that returns original byte
+ranges, supports the documented Unicode case behavior, and retains linear
+worst-case matching.
+
 Those statements describe third-party dependency licenses. Noter itself is
 licensed only under Apache-2.0, as declared by both package manifests and the
 root [LICENSE](../LICENSE).
 
-The current graph contains 413 cross-target packages after the egui 0.35
-upgrade and removal of the redundant secondary Markdown renderer. The normal
-stripped Windows release is 8,075,776 bytes, or 7.70 MiB, compared with the
-4,748,800-byte M0 baseline. The increase includes native metadata preservation,
-cryptographic conflict detection, reconciled commit semantics, current text
-shaping, the bundled variable document font, persisted themes, and the early
-native Markdown surface. Release gates still enforce the 12 MiB ceiling.
+The current graph contains 416 cross-target packages after the egui 0.35
+upgrade, removal of the redundant secondary Markdown renderer, and addition of
+bounded literal search. The current local stripped Windows release is 9,279,488
+bytes, or 8.85 MiB, compared with the 4,748,800-byte M0 baseline. The increase
+includes native metadata preservation, cryptographic conflict detection,
+reconciled commit semantics, current text shaping, the bundled variable
+document font, persisted themes, the early native Markdown surface, and the M3
+editing controls. Release gates still enforce the 12 MiB ceiling.
 The checked-in cargo-deny policy gates licenses, sources, advisories, wildcard
 versions, and duplicate-version visibility; a release capability audit remains
 required.
 
 CI uses the pinned Rust toolchain, locked Cargo graph, immutable action commits,
 minimum permissions, formatting, strict Clippy, cross-platform tests, coverage,
-full trust-kernel mutation testing, and documentation checks. Release work adds
-license and advisory audits, SBOM, provenance, checksums, signatures where
-credentials exist, and cargo-dist artifacts verified on clean systems.
+full trust-kernel mutation testing, documentation checks, license policy, and
+advisory audits. Release work retains those gates and adds an SBOM, provenance,
+checksums, signatures where credentials exist, and cargo-dist artifacts verified
+on clean systems.
 
 ## 17. Failure modes and effects
 

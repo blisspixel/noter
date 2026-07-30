@@ -1,9 +1,8 @@
 # Contributing
 
 Noter welcomes focused bug reports, documentation improvements, tests, and code
-changes. The project is pre-alpha, and changes that touch document bytes,
-filesystem behavior, lifecycle state, or release trust require correspondingly
-strong evidence.
+changes. Changes that touch document bytes, filesystem behavior, lifecycle
+state, or release trust require correspondingly strong evidence.
 
 ## Before making a change
 

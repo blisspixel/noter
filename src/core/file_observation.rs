@@ -7,13 +7,14 @@ use std::time::SystemTime;
 
 use noter_platform::{FileFacts, IdentityQuality as PlatformIdentityQuality};
 
+use super::limits::MAX_DOCUMENT_BYTES;
 use super::save::{
     ContentFingerprint, FileChangeToken, FileIdentity, FileObservation, SaveStage, SpecialFileKind,
     StorageError, TargetState,
 };
 
 const MAX_STABILITY_ATTEMPTS: usize = 3;
-const MAX_SUPPORTED_FILE_BYTES: u64 = 64 << 20;
+const MAX_SUPPORTED_FILE_BYTES: u64 = MAX_DOCUMENT_BYTES as u64;
 const FILE_TOO_LARGE_MESSAGE: &str = "file exceeds the supported 64 MiB document limit";
 
 /// Inspects a final path without following a final link or accepting a torn read.

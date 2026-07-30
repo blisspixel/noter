@@ -1,0 +1,194 @@
+use eframe::egui;
+
+pub const WORD_WRAP_STORAGE_KEY: &str = "noter.word-wrap";
+pub const ZOOM_STORAGE_KEY: &str = "noter.editor-zoom-percent";
+
+const DEFAULT_ZOOM_PERCENT: u16 = 100;
+const MINIMUM_ZOOM_PERCENT: u16 = 50;
+const MAXIMUM_ZOOM_PERCENT: u16 = 300;
+const ZOOM_STEP_PERCENT: u16 = 10;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EditorZoom(u16);
+
+impl Default for EditorZoom {
+    fn default() -> Self {
+        Self(DEFAULT_ZOOM_PERCENT)
+    }
+}
+
+impl EditorZoom {
+    pub fn from_storage(storage: Option<&dyn eframe::Storage>) -> Self {
+        storage
+            .and_then(|storage| storage.get_string(ZOOM_STORAGE_KEY))
+            .as_deref()
+            .and_then(Self::from_storage_value)
+            .unwrap_or_default()
+    }
+
+    fn from_storage_value(value: &str) -> Option<Self> {
+        let percent = value.parse::<u16>().ok()?;
+        ((MINIMUM_ZOOM_PERCENT..=MAXIMUM_ZOOM_PERCENT).contains(&percent)
+            && percent.is_multiple_of(ZOOM_STEP_PERCENT))
+        .then_some(Self(percent))
+    }
+
+    pub const fn percent(self) -> u16 {
+        self.0
+    }
+
+    pub fn scale(self) -> f32 {
+        f32::from(self.0) / 100.0
+    }
+
+    pub fn zoom_in(&mut self) -> bool {
+        self.set(self.0.saturating_add(ZOOM_STEP_PERCENT))
+    }
+
+    pub fn zoom_out(&mut self) -> bool {
+        self.set(self.0.saturating_sub(ZOOM_STEP_PERCENT))
+    }
+
+    pub fn reset(&mut self) -> bool {
+        self.set(DEFAULT_ZOOM_PERCENT)
+    }
+
+    fn set(&mut self, requested: u16) -> bool {
+        let bounded = requested.clamp(MINIMUM_ZOOM_PERCENT, MAXIMUM_ZOOM_PERCENT);
+        let changed = self.0 != bounded;
+        self.0 = bounded;
+        changed
+    }
+
+    pub fn storage_value(self) -> String {
+        self.0.to_string()
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum TextWrap {
+    #[default]
+    Wrapped,
+    Unwrapped,
+}
+
+impl TextWrap {
+    pub fn from_storage(storage: Option<&dyn eframe::Storage>) -> Self {
+        storage
+            .and_then(|storage| storage.get_string(WORD_WRAP_STORAGE_KEY))
+            .as_deref()
+            .and_then(Self::from_storage_value)
+            .unwrap_or_default()
+    }
+
+    fn from_storage_value(value: &str) -> Option<Self> {
+        match value {
+            "true" => Some(Self::Wrapped),
+            "false" => Some(Self::Unwrapped),
+            _ => None,
+        }
+    }
+
+    pub const fn is_wrapped(self) -> bool {
+        matches!(self, Self::Wrapped)
+    }
+
+    pub const fn toggle(&mut self) {
+        *self = match self {
+            Self::Wrapped => Self::Unwrapped,
+            Self::Unwrapped => Self::Wrapped,
+        };
+    }
+
+    pub const fn storage_value(self) -> &'static str {
+        match self {
+            Self::Wrapped => "true",
+            Self::Unwrapped => "false",
+        }
+    }
+}
+
+pub fn apply_editor_zoom(style: &mut egui::Style, zoom: EditorZoom) {
+    let scale = zoom.scale();
+    for text_style in [
+        egui::TextStyle::Body,
+        egui::TextStyle::Monospace,
+        egui::TextStyle::Heading,
+    ] {
+        if let Some(font) = style.text_styles.get_mut(&text_style) {
+            font.size *= scale;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoom_is_bounded_and_resettable() {
+        let mut zoom = EditorZoom::default();
+        assert!(!zoom.reset());
+        for _ in 0..100 {
+            let _ = zoom.zoom_in();
+        }
+        assert_eq!(zoom.percent(), MAXIMUM_ZOOM_PERCENT);
+        assert!(!zoom.zoom_in());
+
+        for _ in 0..100 {
+            let _ = zoom.zoom_out();
+        }
+        assert_eq!(zoom.percent(), MINIMUM_ZOOM_PERCENT);
+        assert!(!zoom.zoom_out());
+        assert!(zoom.reset());
+        assert_eq!(zoom.percent(), DEFAULT_ZOOM_PERCENT);
+    }
+
+    #[test]
+    fn stored_zoom_rejects_malformed_and_out_of_range_values() {
+        assert_eq!(
+            EditorZoom::from_storage_value("50").map(EditorZoom::percent),
+            Some(50)
+        );
+        assert_eq!(
+            EditorZoom::from_storage_value("300").map(EditorZoom::percent),
+            Some(300)
+        );
+        for invalid in ["", "49", "55", "301", "100.0", "lots"] {
+            assert_eq!(EditorZoom::from_storage_value(invalid), None);
+        }
+    }
+
+    #[test]
+    fn stored_word_wrap_accepts_only_canonical_boolean_values() {
+        assert_eq!(
+            TextWrap::from_storage_value("true"),
+            Some(TextWrap::Wrapped)
+        );
+        assert_eq!(
+            TextWrap::from_storage_value("false"),
+            Some(TextWrap::Unwrapped)
+        );
+        for invalid in ["", "TRUE", "0", "yes"] {
+            assert_eq!(TextWrap::from_storage_value(invalid), None);
+        }
+    }
+
+    #[test]
+    fn editor_zoom_scales_document_styles_without_touching_controls() {
+        let mut style = egui::Style::default();
+        let body = style.text_styles[&egui::TextStyle::Body].size;
+        let button = style.text_styles[&egui::TextStyle::Button].size;
+
+        apply_editor_zoom(&mut style, EditorZoom(150));
+
+        assert_eq!(
+            style.text_styles[&egui::TextStyle::Body].size.to_bits(),
+            (body * 1.5).to_bits()
+        );
+        assert_eq!(
+            style.text_styles[&egui::TextStyle::Button].size.to_bits(),
+            button.to_bits()
+        );
+    }
+}

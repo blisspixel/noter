@@ -23,10 +23,10 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 EXPECTED_SHA256 = {
     Path(
         "docs/assets/noter-light.png"
-    ): "bd105e3f50a6a1d48962745b8cf034fe8e3b763f80bcbfcf5d17d26b5a1f6176",
+    ): "4ee22fc916d1eed52a31648745462dc0061c53e817bd5bbdcd1e021f744891d3",
     Path(
         "docs/assets/noter-dark.png"
-    ): "83a5540be26475a43d0bf9beddec6a506bec97da4d846833fcc894e2633dfe18",
+    ): "432cecfef06d0539cb0c2d27658221c32e20236d0d518992a2bcb9feebb1d423",
 }
 
 

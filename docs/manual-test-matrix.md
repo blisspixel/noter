@@ -24,6 +24,10 @@ unit tests, and coverage cannot prove.
 
 ## 1. Launch and basic lifecycle
 
+The pure lifecycle reducer has exhaustive decision and save-continuation unit
+cases plus a fixed-seed 512-case command-sequence model property. Native dialogs,
+filesystem effects, and window-manager behavior still require these rows.
+
 - [ ] LIF-01 Launch without a path shows one clean Untitled document.
 - [ ] LIF-02 Typing marks the title and status as modified.
 - [ ] LIF-03 New on a dirty document exercises Save, Discard, and Cancel.
@@ -125,9 +129,12 @@ Record kill method, recovery revisions, timing, and recovery directory:
 
 ## 5. Editing, undo, find, and replace
 
-The transaction and history model has automated inverse, UTF-8 boundary,
-directional-selection, saved-content identity, stale-revision, count-limit, and
-byte-limit coverage. These checks do not replace the manual platform rows.
+The transaction, history, and literal-search models have automated inverse,
+UTF-8 boundary, directional-selection, saved-content identity, stale-revision,
+count-limit, byte-limit, coalescing-boundary, wrap-navigation, case-policy, and
+replacement-scope coverage. Fixed-seed reference properties cover Unicode
+typing, literal search, and replacement. These checks do not replace the manual
+platform rows.
 
 - [ ] EDT-01 Character, word, line, page, and document movement follows platform
   conventions.

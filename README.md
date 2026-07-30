@@ -24,9 +24,9 @@ show the same local Markdown file in Markdown Mode.
 
 ## Install
 
-Noter is pre-alpha and does not yet have a signed binary release. The current
-installer builds the locked source checkout with the Rust toolchain pinned by
-the repository. Install [Git](https://git-scm.com/) and
+Signed binary releases are not published yet. The current installer builds the
+locked source checkout with the Rust toolchain pinned by the repository.
+Install [Git](https://git-scm.com/) and
 [Rust through rustup](https://rustup.rs/), then run the commands for your
 platform.
 
@@ -53,9 +53,10 @@ contract.
 
 ## Project status
 
-Noter is under active development and should not yet be the only editor used
-for important files. The [roadmap](docs/ROADMAP.md) records what is implemented,
-what remains, and the evidence required for the first public-quality release.
+Noter is under active development. The source build is suitable for evaluation
+and careful dogfooding with backups, but should not yet be the only editor used
+for important files. The [roadmap](docs/ROADMAP.md) separates implemented work
+from the evidence required for the first public-quality release.
 
 ## Documentation
 

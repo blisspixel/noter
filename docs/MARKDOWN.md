@@ -47,6 +47,9 @@ authoritative. Changing modes never rewrites a file.
   rewrites the spacing.
 - System, Light, Dark, Green Screen, and Amber Screen themes share the same
   document model.
+- Editor zoom scales formatted body, heading, emphasis, and code type together
+  from 50 to 300 percent. Formatted content remains wrapped by design; the Text
+  Mode word-wrap preference does not change Markdown source or layout policy.
 - Remote images are not loaded, raw HTML is not executed, and no content is
   fetched in the background. Markdown-link opening is not implemented in this
   bounded slice; the final command requires an explicit user action.
@@ -64,8 +67,9 @@ complete.
   constructs do not yet have complete native layout or editing behavior.
 - Cross-block Markdown references may not resolve in every rendered fragment.
 - Direct edits and formatting actions use the shared revision-checked
-  transaction and bounded Undo and Redo history. Deterministic coalescing,
-  complete operation classification, parser workers, and complete keyboard
+  transaction and bounded Undo and Redo history. Direct input has conservative
+  operation intent, and adjacent typing, Backspace, and forward Delete use the
+  shared bounded coalescing policy. Parser workers and complete keyboard
   selection semantics are not implemented.
 - GFM and CommonMark conformance, malformed-input behavior, IME, screen-reader,
   high-DPI, and large-file requirements still require release evidence.

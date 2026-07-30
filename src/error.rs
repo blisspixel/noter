@@ -18,6 +18,15 @@ pub enum NoterError {
     #[error("The file is not valid UTF-8: {0}")]
     InvalidUtf8(#[from] std::str::Utf8Error),
 
+    /// Input exceeds the shared serialized document ceiling.
+    #[error("The document is {actual} bytes; the maximum is {maximum} bytes")]
+    DocumentTooLarge {
+        /// Serialized byte length presented for loading.
+        actual: usize,
+        /// Maximum supported serialized document length.
+        maximum: usize,
+    },
+
     /// The durable storage adapter could not inspect or prepare the target.
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),

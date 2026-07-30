@@ -1,11 +1,14 @@
 //! Noter, a focused cross-platform text and Markdown editor.
 //!
-//! Noter is pre-alpha. See `README.md` and `docs/ROADMAP.md` for verified
-//! behavior, current limitations, and the release plan.
+//! See `README.md` and `docs/ROADMAP.md` for verified behavior, current
+//! limitations, and the release plan.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod editor_settings;
+mod find_ui;
+mod go_to_line_ui;
 mod idle_screen;
 mod markdown_ui;
 mod theme;

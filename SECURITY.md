@@ -1,8 +1,8 @@
 # Security Policy
 
-Noter is pre-alpha software. Security and privacy defects are treated as product
-defects, but the project does not yet publish a supported stable release.
-Security fixes currently target the latest `main` revision.
+Noter is under active development and does not yet publish a supported stable
+release. Security and privacy defects are treated as product defects, and
+security fixes currently target the latest `main` revision.
 
 ## Reporting a vulnerability
 
@@ -28,4 +28,4 @@ details.
 
 The project will validate reports, communicate confirmed impact as accurately as
 possible, and coordinate remediation before public disclosure. Response timing
-may vary while the project remains pre-alpha.
+may vary until a supported stable release exists.

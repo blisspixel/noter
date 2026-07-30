@@ -1,0 +1,38 @@
+name: Scheduled security audit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 7 * * 1'
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    name: Dependency policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.97.1
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@e62b3bdab54265ba809383c8707cb0600da93f19
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
+      - name: Audit locked dependencies
+        run: cargo audit --deny warnings
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@e62b3bdab54265ba809383c8707cb0600da93f19
+        with:
+          tool: cargo-deny@0.19.8
+          fallback: none
+      - name: Check dependency licenses, sources, and bans
+        run: cargo deny --locked check

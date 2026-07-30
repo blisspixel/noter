@@ -24,23 +24,25 @@ The central corrective action is:
 
 The durable-save trust kernel currently has substantially more evidence than
 the rest of the application. That imbalance matters: a complete mutation
-campaign protects the save protocol while the transaction and Undo foundation
-is newer, and the editor still lacks recovery, search, deterministic edit
-coalescing, incremental layout, and release-grade accessibility evidence.
-Coverage cannot compensate for missing product architecture.
+campaign protects the save protocol while the transaction, Undo, literal
+search, and lifecycle foundations are newer. The editor still lacks recovery,
+external-change handling, incremental layout, and release-grade accessibility
+evidence. Coverage cannot compensate for missing product architecture.
 
 ## 2. Current assessment
 
-Noter is a pre-alpha engineering foundation, not a public-quality text editor.
-The strongest current evidence covers explicit save failure states, native save
-semantics, and dependency controls. Editing, lifecycle, performance,
-accessibility, Markdown conformance, installation, and updates remain below the
-release bar because their contracts are not yet fully implemented and tested on
-supported systems.
+Noter is an active development build, not yet a public-quality release. The
+strongest current evidence covers explicit save failure states, native save
+semantics, dependency controls, reversible editing, deterministic Undo
+coalescing, bounded literal search, and the destructive-action reducer.
+Recovery, external changes, performance, accessibility, Markdown conformance,
+installation, and updates remain below the release bar because their contracts
+are not yet fully implemented and tested on supported systems.
 
-The next investment remains the shared editor and lifecycle foundations on
-which both Text Mode and Markdown Mode depend. The transaction authority is a
-meaningful start, not evidence that the production editor contract is complete.
+The next investment is recovery and external-change safety through the shared
+lifecycle foundation, while completing ordinary text commands and the
+production-editor feasibility evidence. The completed slices are meaningful
+progress, not evidence that the full editor contract is complete.
 
 ## 3. Ranked improvement program
 
@@ -56,14 +58,18 @@ properties compare single, ordered multi-edit, and Undo and Redo sequences to a
 `String` model.
 
 `NoterApp` still uses a mutable contiguous `String` as the framework adapter,
-and `MarkdownEditor` still owns one active block draft. Direct input is not yet
-fully classified into typing, deletion, and paste, and deterministic coalescing
-is not implemented.
+and `MarkdownEditor` still owns one active block draft. Direct input is now
+classified conservatively, paste is explicit, and typing, Backspace, and
+forward Delete coalesce under bounded deterministic rules. Literal Find and
+Replace also enter the same transaction history. Text Mode now has Select All,
+mixed-EOL Go To Line, and byte-preserving word wrap; bounded editor zoom works
+in both modes.
 
 **Risk:** the common model now protects source mutation, inverse history, saved
-content identity, and selection direction. The remaining adapter copy and
-missing intent and coalescing policy can still produce unintuitive Undo steps or
-performance costs until the production editor gate is complete.
+content identity, selection direction, and common edit grouping. The remaining
+adapter copy, navigation and clipboard policy, and synchronous full-source work
+can still produce performance or platform-behavior gaps until the production
+editor gate is complete.
 
 **Completion standard:** Implement a revision-checked `EditTransaction` with
 validated UTF-8 boundaries, exact inverse operations, before and after
@@ -71,19 +77,23 @@ selections, origin, and bounded byte cost. Route typing, deletion, paste,
 replace, EOL conversion, and Markdown commands through it. Prove inverse and
 coalescing properties against a simple reference model.
 
-### 2. Replace lifecycle flags with a pure state machine and recovery protocol
+### 2. Complete recovery and conflict handling through the lifecycle reducer
 
-**Evidence:** close, abandon, hard-link confirmation, uncertain-save guidance,
-and close authorization are represented by several mutable fields in
-`NoterApp`. The designed `AppState::reduce(Command) -> Vec<Effect>` center and
-versioned recovery records are absent.
+**Evidence:** `LifecycleState::reduce` now owns explicit Prompting, Saving, and
+Closing phases for New, Open, Reload, or Quit. Each phase binds its intent,
+completion, and native-close authorization to an exact document revision.
+Save, Discard, Cancel, repeated requests, stale and unsolicited completions,
+dirty save outcomes, pending hard-link confirmation, and blocking post-save
+warnings pass exhaustive unit cases and a fixed-seed 512-case model property.
+Versioned recovery records and external-change effects remain absent.
 
-**Risk:** adding Reload, external changes, recovery, or asynchronous work to the
-current flag combination will multiply invalid and untested states.
+**Risk:** recovery and external observation can still lose coherence if they
+bypass the reducer or accept stale revision effects. The current reducer is a
+safe control point, not the recovery implementation itself.
 
-**Completion standard:** Introduce a total reducer with explicit states and
-correlation IDs, model every save outcome and repeated event, then implement
-private checksummed recovery records, startup review, quarantine, and
+**Completion standard:** Carry revision and operation correlation through every
+recovery and external-observation effect, then implement private checksummed
+recovery records, startup review, quarantine, external-change decisions, and
 crash-fault tests.
 
 ### 3. Pass the production-editor feasibility gate before expanding features
@@ -97,7 +107,7 @@ does not provide incremental display behavior.
 to the complete document on input and paint. More features added to this path
 increase the cost of replacing it.
 
-**Immediate containment:** the pre-alpha projection now rejects work above
+**Immediate containment:** the bounded development projection rejects work above
 explicit source-byte, logical-line, line-length, block-count, block-span, and
 parser-event ceilings, while leaving the authoritative source available in Text
 Mode. This bounds known synchronous work but does not satisfy the feasibility
@@ -246,9 +256,9 @@ quarantine, and a controlled crash harness under M4.
 **Finding:** Frictionless close backed only by recovery made Save ambiguous and
 could turn cache retention into hidden document storage.
 
-**Disposition:** Partially implemented. Dirty New, Open, Close, and Quit use one
-Save / Discard / Cancel decision path. Reload and the pure lifecycle reducer
-remain M4 work. Recovery remains independent and cannot authorize silent close.
+**Disposition:** Partially implemented. Dirty New, Open, Reload, Close, and Quit
+use one pure reducer and one Save / Discard / Cancel decision path. Recovery and
+external-change effects remain M4 work and cannot authorize silent close.
 
 ### R-04 Encoding and EOL fidelity lacked a mixed-file model
 
@@ -265,9 +275,9 @@ insertion rules, and explicit undoable conversion.
 inverse operations preserve information.
 
 **Disposition:** Partially implemented. Revision-tagged transactions, exact
-inverses, bounded history, directional selections, and reference-model
-properties now exist. M3 remains open for deterministic coalescing rules and
-their boundary properties.
+inverses, bounded history, directional selections, deterministic coalescing,
+literal Find and Replace, and reference-model properties now exist. M3 remains
+open for navigation, clipboard, remaining commands, and platform evidence.
 
 ### R-06 Large-file claims were technically unsupported
 

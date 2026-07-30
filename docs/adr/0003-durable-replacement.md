@@ -244,8 +244,9 @@ timeouts, infrastructure misclassifications, or scope gaps. The manual platform
 and weak-filesystem matrix plus the reproducible benchmark baseline remain
 required before M1 is Verified.
 
-The latest implementation follow-up, commit `efb8675`, adds native proof that
-macOS retained-recovery ACL removal produces verified ACL absence. Exact-commit
+The 2026-07-28 implementation follow-up, commit `efb8675`, adds native proof
+that macOS retained-recovery ACL removal produces verified ACL absence. The
+corresponding exact-commit
 [run 30415383710](https://github.com/blisspixel/noter/actions/runs/30415383710)
 passes all eight required jobs and the expanded per-platform mutation gates with
 no miss, timeout, or recognized infrastructure failure. This does not close the

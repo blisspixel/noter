@@ -22,6 +22,7 @@ getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 noter-platform = { version = "=0.1.0", path = "crates/noter-platform" }
 pulldown-cmark = { version = "0.13", default-features = false }
+regex = { version = "1.13", default-features = false, features = ["perf", "std", "unicode-case"] }
 rfd = "0.17"
 thiserror = "2.0"
 ropey = "1.6"

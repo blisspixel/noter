@@ -35,6 +35,22 @@ release, so current work remains under Unreleased.
 - Add Edit-menu Undo and Redo with Ctrl+Z, Ctrl+Y, Cmd+Z, and Shift+Cmd+Z paths.
   History is shared by Text and Markdown modes and bounded by both transaction
   count and retained source bytes.
+- Add explicit edit intent and bounded deterministic Undo coalescing. Adjacent
+  typing, Backspace, and forward Delete group independently; paste, replacement,
+  formatting, conversion, clock regression, selection movement, and resource
+  boundaries end the group.
+- Add a responsive non-modal Find and Replace bar with bounded literal queries,
+  Unicode case matching, next and previous navigation, wrap reporting, match
+  counts, and explicit selection or document Replace All scope. Navigation and
+  replacement keep keyboard focus in the non-modal controls while restoring the
+  visible document selection.
+- Add a pure lifecycle reducer for dirty New, Open, Reload, Quit, and native
+  close requests, backed by exhaustive transition tests and a fixed-seed
+  reference-model property.
+- Add Text Mode Select All and a validated Go To Line dialog that navigates LF,
+  CRLF, CR, and mixed files without allocating a line index.
+- Add persistent Text Mode word wrap and editor-only zoom from 50 to 300 percent
+  with View-menu controls, standard zoom shortcuts, and a status indication.
 
 ### Changed
 
@@ -68,6 +84,10 @@ release, so current work remains under Unreleased.
   with pointer, accessibility-tree, and exhaustive state tests. Add adversarial
   Markdown selection tests for cross-block ranges, invalid UTF-8 boundaries,
   non-first-block offsets, and explicit reference-definition styling.
+- Report modified state, one-based logical line and Unicode-scalar column, and
+  selection size in the responsive status bar.
+- Scale native Markdown headings with editor zoom while leaving menus, dialogs,
+  toolbars, and status controls at the configured application size.
 
 ### Security
 
@@ -103,6 +123,8 @@ release, so current work remains under Unreleased.
   descriptor before writing any document bytes, and report the random zero-byte
   sibling if security finalization fails.
 - Add a pinned RustSec audit gate to CI.
+- Add a pinned weekly and manually dispatchable dependency-security workflow so
+  advisory and license-policy checks also run when application code is idle.
 - Add an explicit cargo-deny policy and pinned CI gate for dependency licenses,
   registry and Git sources, wildcard versions, advisories, and duplicate-version
   visibility.
@@ -124,13 +146,16 @@ release, so current work remains under Unreleased.
   an in-memory edit cannot advance the document revision.
 - Track dirty state against the last saved serialized-content fingerprint so
   Undo and Redo can return to clean saved bytes while revisions remain monotonic.
-- Bound the synchronous pre-alpha Markdown projection by source bytes, logical
+- Bound the synchronous early Markdown projection by source bytes, logical
   lines, line length, block count, block span, and parser events. Over-budget
   files remain unchanged in Text Mode, and Markdown diagnostic counts are
   cached by document generation and revision without retaining a diagnostic
   vector.
 - Replace the dirty-document close trap with a Save, Discard Changes, and Cancel
   decision for New, Open, Quit, and native window close.
+- Correlate destructive intents, save completions, and native-close
+  authorization with the exact document revision. Unsolicited or stale save
+  completions can no longer authorize abandonment.
 - Retain indeterminate-save recovery guidance through every dirty-document
   decision and Cancel path, and block an ordinary Save retry until the user has
   reconciled that state or chosen Save As.
@@ -155,6 +180,12 @@ release, so current work remains under Unreleased.
 - Surface exact save cleanup and durability warnings instead of a generic
   success warning.
 - Process same-frame editor input before file commands and native close checks.
+- Enforce the 64 MiB serialized-document ceiling before load, transaction,
+  whole-text replacement, single Replace, and Replace All allocation, including
+  the UTF-8 BOM boundary.
+- Bound Find and replacement text before focused widgets receive text, paste, or
+  IME commit events. Keep Find-field Undo local and restore document focus when
+  the bar closes.
 - Carry the exact pre-dialog Save As target expectation through hard-link
   confirmation so a rebound destination conflicts instead of being overwritten.
 - Preserve creation-time identity failures and retained-sibling cleanup guidance
@@ -177,12 +208,14 @@ release, so current work remains under Unreleased.
   formatting through the same atomic document mutation boundary. Add fixed-seed
   512-case reference-model properties for single replacements, ordered
   multi-edit transactions, and arbitrary Undo and Redo sequences.
-- Close a focused 118-candidate mutation campaign for the transaction and
-  history modules with 95 caught and 23 validated compiler rejections. The
-  infrastructure validator reports no miss, timeout, or hidden tool failure.
-- Raise measured Windows-local line coverage to 94.59 percent for the trust
-  kernel and 92.56 percent for the complete workspace. The new transaction and
-  history modules measure 97.30 and 97.61 percent respectively.
+- Route Replace and Replace All through the same revision-checked transaction
+  authority, calculate bounded results before allocation, and compare literal
+  search plus lifecycle command sequences with fixed-seed reference models.
+- Measure the current Windows-local tree at 95.48 percent line coverage for the
+  UI-independent trust kernel and 92.16 percent for the complete workspace.
+  The 375-test suite includes 100 percent line coverage for lifecycle and
+  logical-line navigation, 99.15 percent for transactions, 98.83 percent for
+  history, and 95.41 percent for literal search.
 
 - Upgrade eframe and egui to 0.35 while retaining restricted features and
   enabling current shaping, hinting, theme-aware font transfer, and subpixel

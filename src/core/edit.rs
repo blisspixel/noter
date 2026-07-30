@@ -104,14 +104,44 @@ pub enum EditOrigin {
     MarkdownInput,
     /// An explicit Markdown formatting command.
     MarkdownFormatting,
-    /// A future explicit paste command.
+    /// An explicit paste command.
     Paste,
-    /// A future explicit replacement command.
+    /// An explicit replacement command.
     Replace,
-    /// A future explicit line-ending conversion command.
+    /// An explicit line-ending conversion command.
     LineEndingConversion,
     /// A trusted internal content replacement outside an interactive editor.
     Programmatic,
+}
+
+/// The deterministic user intent represented by an edit transaction.
+///
+/// Direct editor adapters provide an operation family through [`EditOrigin`].
+/// The transaction then classifies the exact source delta and directional
+/// selections. Keeping this intent on the transaction lets Undo use one shared,
+/// testable coalescing policy without reading platform input state or a clock.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum EditIntent {
+    /// Insert source at a collapsed caret.
+    Insert,
+    /// Delete source immediately before a collapsed caret.
+    Backspace,
+    /// Delete source immediately after a collapsed caret.
+    Delete,
+    /// Replace or delete an explicit source selection.
+    ReplaceSelection,
+    /// Paste clipboard content.
+    Paste,
+    /// Apply a Markdown formatting command.
+    Formatting,
+    /// Apply an explicit search replacement.
+    Replace,
+    /// Convert line endings explicitly.
+    LineEndingConversion,
+    /// Replace content through trusted application logic.
+    Programmatic,
+    /// A source delta that cannot be classified conservatively.
+    Unclassified,
 }
 
 /// One source replacement within an [`EditTransaction`].
@@ -165,6 +195,7 @@ pub struct EditTransaction {
     selection_before: Selection,
     selection_after: Selection,
     origin: EditOrigin,
+    intent: EditIntent,
     observed_at: EditTimestamp,
 }
 
@@ -173,12 +204,33 @@ impl EditTransaction {
     ///
     /// Content-dependent validation intentionally happens atomically at apply
     /// time so a stale or malformed proposal cannot partially mutate a document.
-    pub const fn new(
+    pub fn new(
         base_revision: Revision,
         edits: Vec<TextEdit>,
         selection_before: Selection,
         selection_after: Selection,
         origin: EditOrigin,
+        observed_at: EditTimestamp,
+    ) -> Self {
+        let intent = classify_edit_intent(&edits, selection_before, selection_after, origin);
+        Self::new_with_intent(
+            base_revision,
+            edits,
+            selection_before,
+            selection_after,
+            origin,
+            intent,
+            observed_at,
+        )
+    }
+
+    pub(crate) const fn new_with_intent(
+        base_revision: Revision,
+        edits: Vec<TextEdit>,
+        selection_before: Selection,
+        selection_after: Selection,
+        origin: EditOrigin,
+        intent: EditIntent,
         observed_at: EditTimestamp,
     ) -> Self {
         Self {
@@ -187,6 +239,7 @@ impl EditTransaction {
             selection_before,
             selection_after,
             origin,
+            intent,
             observed_at,
         }
     }
@@ -270,6 +323,16 @@ impl EditTransaction {
         self.origin
     }
 
+    /// Returns the deterministic user intent represented by this transaction.
+    pub const fn intent(&self) -> EditIntent {
+        self.intent
+    }
+
+    /// Returns the ordered source replacements in base-source coordinates.
+    pub fn edits(&self) -> &[TextEdit] {
+        &self.edits
+    }
+
     /// Returns when the editor adapter observed this transaction.
     pub const fn observed_at(&self) -> EditTimestamp {
         self.observed_at
@@ -292,6 +355,7 @@ impl EditTransaction {
         &self,
         rope: &Rope,
         actual_revision: Revision,
+        maximum_result_bytes: usize,
     ) -> Result<(Rope, AppliedTransaction), EditError> {
         if self.base_revision != actual_revision {
             return Err(EditError::StaleRevision {
@@ -309,20 +373,49 @@ impl EditTransaction {
 
         let source_len = rope.len_bytes();
         let mut previous_end = None;
-        let mut original_cursor = 0usize;
-        let mut result_cursor = 0usize;
         let mut result_len = source_len;
-        let mut inverse_edits = Vec::with_capacity(self.edits.len());
 
         for (index, edit) in self.edits.iter().enumerate() {
             validate_edit(edit, rope, source_len, previous_end, index)?;
+            previous_end = Some(edit.range.end);
+            result_len = result_len
+                .checked_sub(edit.range.len())
+                .and_then(|length| length.checked_add(edit.inserted.len()))
+                .ok_or(EditError::ResultTooLarge {
+                    projected: usize::MAX,
+                    maximum: maximum_result_bytes,
+                })?;
+        }
+        if result_len > maximum_result_bytes {
+            return Err(EditError::ResultTooLarge {
+                projected: result_len,
+                maximum: maximum_result_bytes,
+            });
+        }
+
+        let mut inverse_edits = Vec::new();
+        inverse_edits
+            .try_reserve_exact(self.edits.len())
+            .map_err(|_| EditError::AllocationUnavailable {
+                requested_edits: self.edits.len(),
+            })?;
+        let mut original_cursor = 0usize;
+        let mut result_cursor = 0usize;
+        for edit in &self.edits {
             let unchanged_bytes = edit.range.start - original_cursor;
-            result_cursor = result_cursor
-                .checked_add(unchanged_bytes)
-                .ok_or(EditError::ResultTooLarge)?;
-            let inverse_end = result_cursor
-                .checked_add(edit.inserted.len())
-                .ok_or(EditError::ResultTooLarge)?;
+            result_cursor =
+                result_cursor
+                    .checked_add(unchanged_bytes)
+                    .ok_or(EditError::ResultTooLarge {
+                        projected: usize::MAX,
+                        maximum: maximum_result_bytes,
+                    })?;
+            let inverse_end = result_cursor.checked_add(edit.inserted.len()).ok_or(
+                EditError::ResultTooLarge {
+                    projected: usize::MAX,
+                    maximum: maximum_result_bytes,
+                },
+            )?;
             inverse_edits.push(TextEdit::replace(
                 TextRange::new(result_cursor, inverse_end),
                 edit.removed.clone(),
@@ -330,11 +423,6 @@ impl EditTransaction {
             ));
             result_cursor = inverse_end;
             original_cursor = edit.range.end;
-            previous_end = Some(edit.range.end);
-            result_len = result_len
-                .checked_sub(edit.range.len())
-                .and_then(|length| length.checked_add(edit.inserted.len()))
-                .ok_or(EditError::ResultTooLarge)?;
         }
 
         let mut result = rope.clone();
@@ -347,12 +435,13 @@ impl EditTransaction {
         debug_assert_eq!(result.len_bytes(), result_len);
         validate_selection_rope(self.selection_after, &result, SelectionState::After)?;
 
-        let inverse = Self::new(
+        let inverse = Self::new_with_intent(
             next_revision,
             inverse_edits,
             self.selection_after,
             self.selection_before,
             self.origin,
+            self.intent,
             self.observed_at,
         );
         Ok((
@@ -365,6 +454,53 @@ impl EditTransaction {
             },
         ))
     }
+}
+
+fn classify_edit_intent(
+    edits: &[TextEdit],
+    selection_before: Selection,
+    selection_after: Selection,
+    origin: EditOrigin,
+) -> EditIntent {
+    match origin {
+        EditOrigin::Paste => return EditIntent::Paste,
+        EditOrigin::MarkdownFormatting => return EditIntent::Formatting,
+        EditOrigin::Replace => return EditIntent::Replace,
+        EditOrigin::LineEndingConversion => return EditIntent::LineEndingConversion,
+        EditOrigin::Programmatic => return EditIntent::Programmatic,
+        EditOrigin::TextInput | EditOrigin::MarkdownInput => {}
+    }
+
+    let [edit] = edits else {
+        return EditIntent::Unclassified;
+    };
+    if selection_before.anchor != selection_before.active {
+        return EditIntent::ReplaceSelection;
+    }
+    if selection_after.anchor != selection_after.active {
+        return EditIntent::Unclassified;
+    }
+
+    let before = selection_before.active;
+    let after = selection_after.active;
+    let range = edit.range();
+    if range.start == range.end
+        && edit.removed.is_empty()
+        && !edit.inserted.is_empty()
+        && before == range.start
+        && after == range.start.saturating_add(edit.inserted.len())
+    {
+        return EditIntent::Insert;
+    }
+    if edit.inserted.is_empty() && !edit.removed.is_empty() {
+        if before == range.end && after == range.start {
+            return EditIntent::Backspace;
+        }
+        if before == range.start && after == range.start {
+            return EditIntent::Delete;
+        }
+    }
+    EditIntent::Unclassified
 }
 
 /// Successful transaction evidence, including its exact inverse.
@@ -477,9 +613,20 @@ pub enum EditError {
         /// Corresponding source length in bytes.
         source_len: usize,
     },
-    /// The resulting source length cannot be represented.
-    #[error("the edit result is too large to represent")]
-    ResultTooLarge,
+    /// The resulting source exceeds the caller's authoritative byte ceiling.
+    #[error("the edit would create {projected} bytes; the maximum is {maximum} bytes")]
+    ResultTooLarge {
+        /// Projected result length, or `usize::MAX` after arithmetic overflow.
+        projected: usize,
+        /// Maximum accepted source length.
+        maximum: usize,
+    },
+    /// The inverse-edit index could not reserve its bounded allocation.
+    #[error("the edit could not reserve space for {requested_edits} inverse edits")]
+    AllocationUnavailable {
+        /// Exact number of inverse edits requested.
+        requested_edits: usize,
+    },
 }
 
 fn validate_edit(
@@ -599,6 +746,136 @@ mod tests {
     }
 
     #[test]
+    fn direct_source_deltas_have_conservative_explicit_intents() {
+        let cases = [
+            (
+                TextEdit::replace(TextRange::new(1, 1), "é", ""),
+                Selection::caret(1),
+                Selection::caret(3),
+                EditOrigin::TextInput,
+                EditIntent::Insert,
+            ),
+            (
+                TextEdit::replace(TextRange::new(1, 3), "", "é"),
+                Selection::caret(3),
+                Selection::caret(1),
+                EditOrigin::TextInput,
+                EditIntent::Backspace,
+            ),
+            (
+                TextEdit::replace(TextRange::new(1, 3), "", "é"),
+                Selection::caret(1),
+                Selection::caret(1),
+                EditOrigin::MarkdownInput,
+                EditIntent::Delete,
+            ),
+            (
+                TextEdit::replace(TextRange::new(1, 3), "x", "é"),
+                Selection::new(3, 1),
+                Selection::caret(2),
+                EditOrigin::TextInput,
+                EditIntent::ReplaceSelection,
+            ),
+            (
+                TextEdit::replace(TextRange::new(1, 1), "x", ""),
+                Selection::caret(1),
+                Selection::caret(2),
+                EditOrigin::Paste,
+                EditIntent::Paste,
+            ),
+        ];
+
+        for (edit, before, after, origin, expected) in cases {
+            let transaction = EditTransaction::new(
+                Revision::INITIAL,
+                vec![edit],
+                before,
+                after,
+                origin,
+                EditTimestamp::default(),
+            );
+            assert_eq!(transaction.intent(), expected);
+            assert_eq!(transaction.edits().len(), 1);
+        }
+    }
+
+    #[test]
+    fn direct_intent_classification_rejects_each_near_miss_independently() {
+        let cases = [
+            (
+                TextEdit::replace(TextRange::new(1, 2), "x", ""),
+                Selection::caret(1),
+                Selection::caret(2),
+            ),
+            (
+                TextEdit::replace(TextRange::new(1, 1), "x", "y"),
+                Selection::caret(1),
+                Selection::caret(1),
+            ),
+            (
+                TextEdit::replace(TextRange::new(1, 2), "", "x"),
+                Selection::caret(0),
+                Selection::caret(1),
+            ),
+        ];
+
+        for (edit, before, after) in cases {
+            let transaction = EditTransaction::new(
+                Revision::INITIAL,
+                vec![edit],
+                before,
+                after,
+                EditOrigin::TextInput,
+                EditTimestamp::default(),
+            );
+            assert_eq!(transaction.intent(), EditIntent::Unclassified);
+        }
+    }
+
+    #[test]
+    fn explicit_operation_origins_define_intent_without_shape_guessing() {
+        for (origin, expected) in [
+            (EditOrigin::MarkdownFormatting, EditIntent::Formatting),
+            (EditOrigin::Replace, EditIntent::Replace),
+            (
+                EditOrigin::LineEndingConversion,
+                EditIntent::LineEndingConversion,
+            ),
+            (EditOrigin::Programmatic, EditIntent::Programmatic),
+        ] {
+            let transaction = EditTransaction::new(
+                Revision::INITIAL,
+                vec![TextEdit::replace(TextRange::new(0, 0), "x", "")],
+                Selection::caret(0),
+                Selection::caret(1),
+                origin,
+                EditTimestamp::default(),
+            );
+            assert_eq!(transaction.intent(), expected);
+        }
+    }
+
+    #[test]
+    fn inverse_retains_the_forward_intent() {
+        let source = Rope::from_str("");
+        let transaction = EditTransaction::new(
+            Revision::INITIAL,
+            vec![TextEdit::replace(TextRange::new(0, 0), "x", "")],
+            Selection::caret(0),
+            Selection::caret(1),
+            EditOrigin::TextInput,
+            EditTimestamp::default(),
+        );
+
+        let (_, applied) = transaction
+            .apply_to(&source, Revision::INITIAL, usize::MAX)
+            .expect("insertion should apply");
+
+        assert_eq!(transaction.intent(), EditIntent::Insert);
+        assert_eq!(applied.inverse().intent(), EditIntent::Insert);
+    }
+
+    #[test]
     fn minimal_difference_keeps_shared_unicode_prefix_and_suffix() {
         let edit = EditTransaction::between(
             Revision::INITIAL,
@@ -677,14 +954,14 @@ mod tests {
         );
 
         let (changed, applied) = edit
-            .apply_to(&source, Revision::INITIAL)
+            .apply_to(&source, Revision::INITIAL, usize::MAX)
             .expect("valid edit should apply");
         assert_eq!(changed.to_string(), "alpha BETA gamma");
         assert_eq!(applied.selection(), Selection::new(6, 10));
 
         let (restored, undone) = applied
             .inverse()
-            .apply_to(&changed, applied.revision())
+            .apply_to(&changed, applied.revision(), usize::MAX)
             .expect("exact inverse should apply");
         assert_eq!(restored, source);
         assert_eq!(undone.selection(), Selection::new(10, 6));
@@ -704,7 +981,7 @@ mod tests {
         );
 
         let (changed, applied) = edit
-            .apply_to(&source, Revision::INITIAL)
+            .apply_to(&source, Revision::INITIAL, usize::MAX)
             .expect("disjoint edits should apply atomically");
         assert_eq!(changed.to_string(), "1 two 33333");
         assert_eq!(applied.inverse.edits[0].range, TextRange::new(0, 1));
@@ -712,7 +989,7 @@ mod tests {
 
         let (restored, _) = applied
             .inverse
-            .apply_to(&changed, applied.revision)
+            .apply_to(&changed, applied.revision, usize::MAX)
             .expect("shifted inverse ranges should restore the source");
         assert_eq!(restored, source);
     }
@@ -775,7 +1052,11 @@ mod tests {
 
         for candidate in cases {
             let source = Rope::from_str("abc");
-            assert!(candidate.apply_to(&source, Revision::INITIAL).is_err());
+            assert!(
+                candidate
+                    .apply_to(&source, Revision::INITIAL, usize::MAX)
+                    .is_err()
+            );
             assert_eq!(source.to_string(), "abc");
         }
     }
@@ -791,9 +1072,42 @@ mod tests {
         );
 
         assert_eq!(
-            edit.apply_to(&source, Revision::INITIAL),
+            edit.apply_to(&source, Revision::INITIAL, usize::MAX),
             Err(EditError::InvalidBoundary { offset: 1 })
         );
         assert_eq!(source.to_string(), "é");
+    }
+
+    #[test]
+    fn result_ceiling_is_exact_for_typing_paste_and_replace_origins() {
+        let source = Rope::from_str("abc");
+        for origin in [
+            EditOrigin::TextInput,
+            EditOrigin::Paste,
+            EditOrigin::Replace,
+        ] {
+            let edit = EditTransaction::new(
+                Revision::INITIAL,
+                vec![TextEdit::replace(TextRange::new(3, 3), "d", "")],
+                Selection::caret(3),
+                Selection::caret(4),
+                origin,
+                EditTimestamp::default(),
+            );
+
+            assert!(
+                edit.apply_to(&source, Revision::INITIAL, 4).is_ok(),
+                "{origin:?} should reach the exact result ceiling"
+            );
+            assert_eq!(
+                edit.apply_to(&source, Revision::INITIAL, 3),
+                Err(EditError::ResultTooLarge {
+                    projected: 4,
+                    maximum: 3,
+                }),
+                "{origin:?} must not exceed the result ceiling"
+            );
+            assert_eq!(source.to_string(), "abc");
+        }
     }
 }

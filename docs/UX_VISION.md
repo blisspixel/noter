@@ -32,7 +32,9 @@ legible:
 - five restrained built-in themes with measured contrast, including Green
   Screen and Amber Screen specialty palettes;
 - stable layout while menus, find, recovery, and errors appear;
-- no decorative animation that delays input or hides state.
+- any non-editor visual layer leaves document state unchanged, dismisses on the
+  first activity, and returns immediately to the document without replaying or
+  retaining that dismissal input.
 
 Noter is system-integrated through dialogs, shortcuts, theme preference,
 accessibility, IME, and window behavior. It does not imitate native widget

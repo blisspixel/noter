@@ -1,17 +1,24 @@
 //! Bounded undo and redo history for edit transactions.
 
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use thiserror::Error;
 
 use super::document::Document;
-use super::edit::{AppliedTransaction, EditError, EditTransaction, Selection};
+use super::edit::{
+    AppliedTransaction, EditError, EditIntent, EditTransaction, Selection, TextEdit, TextRange,
+};
 use super::revision::Revision;
 
 /// Default maximum number of retained transactions.
 pub const DEFAULT_MAX_HISTORY_TRANSACTIONS: usize = 1_024;
 /// Default maximum source bytes retained across undo and redo.
 pub const DEFAULT_MAX_HISTORY_BYTES: usize = 32 * 1024 * 1024;
+/// Maximum elapsed time between direct edits in one Undo transaction.
+pub const DEFAULT_EDIT_COALESCING_WINDOW: Duration = Duration::from_millis(750);
+/// Maximum source bytes retained by one coalesced direct-edit transaction.
+pub const DEFAULT_MAX_COALESCED_EDIT_BYTES: usize = 16 * 1024;
 
 /// Independent count and memory ceilings for edit history.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -36,6 +43,8 @@ impl Default for HistoryLimits {
 pub enum HistoryRecordOutcome {
     /// The inverse was retained and can be undone.
     Stored,
+    /// The inverse joined the immediately preceding compatible direct edit.
+    Coalesced,
     /// The transaction exceeded a configured ceiling, so all now-stale history
     /// was cleared instead of retaining an unbounded inverse.
     ClearedForOversizedTransaction,
@@ -150,8 +159,23 @@ impl UndoHistory {
             return HistoryRecordOutcome::ClearedForOversizedTransaction;
         }
 
-        self.retained_bytes = self.retained_bytes.saturating_add(cost);
-        self.undo.push_back(inverse);
+        let max_coalesced_bytes = self.limits.max_bytes.min(DEFAULT_MAX_COALESCED_EDIT_BYTES);
+        let coalesced = self
+            .undo
+            .back()
+            .and_then(|previous| coalesce_inverse(previous, &inverse, max_coalesced_bytes));
+        let outcome = if let (Some(previous), Some(coalesced)) = (self.undo.back_mut(), coalesced) {
+            self.retained_bytes = self
+                .retained_bytes
+                .saturating_sub(previous.retained_bytes())
+                .saturating_add(coalesced.retained_bytes());
+            *previous = coalesced;
+            HistoryRecordOutcome::Coalesced
+        } else {
+            self.retained_bytes = self.retained_bytes.saturating_add(cost);
+            self.undo.push_back(inverse);
+            HistoryRecordOutcome::Stored
+        };
         while self.undo.len() > self.limits.max_transactions
             || self.retained_bytes > self.limits.max_bytes
         {
@@ -161,7 +185,7 @@ impl UndoHistory {
             };
             self.retained_bytes = self.retained_bytes.saturating_sub(evicted.retained_bytes());
         }
-        HistoryRecordOutcome::Stored
+        outcome
     }
 
     /// Applies the newest inverse and moves its exact inverse to Redo.
@@ -247,6 +271,127 @@ impl UndoHistory {
     }
 }
 
+fn coalesce_inverse(
+    previous: &EditTransaction,
+    current: &EditTransaction,
+    max_retained_bytes: usize,
+) -> Option<EditTransaction> {
+    if previous.origin() != current.origin() || previous.intent() != current.intent() {
+        return None;
+    }
+    if current.selection_after() != previous.selection_before() {
+        return None;
+    }
+    let elapsed = current
+        .observed_at()
+        .elapsed()
+        .checked_sub(previous.observed_at().elapsed())?;
+    if elapsed > DEFAULT_EDIT_COALESCING_WINDOW {
+        return None;
+    }
+
+    let [previous_edit] = previous.edits() else {
+        return None;
+    };
+    let [current_edit] = current.edits() else {
+        return None;
+    };
+    let combined_retained_bytes = previous
+        .retained_bytes()
+        .checked_add(current.retained_bytes())?;
+    if combined_retained_bytes > max_retained_bytes {
+        return None;
+    }
+    let edit = match current.intent() {
+        EditIntent::Insert => coalesce_insert_inverse(previous_edit, current_edit)?,
+        EditIntent::Backspace => coalesce_backspace_inverse(previous_edit, current_edit)?,
+        EditIntent::Delete => coalesce_delete_inverse(previous_edit, current_edit)?,
+        EditIntent::ReplaceSelection
+        | EditIntent::Paste
+        | EditIntent::Formatting
+        | EditIntent::Replace
+        | EditIntent::LineEndingConversion
+        | EditIntent::Programmatic
+        | EditIntent::Unclassified => return None,
+    };
+    let coalesced = EditTransaction::new_with_intent(
+        current.base_revision(),
+        vec![edit],
+        current.selection_before(),
+        previous.selection_after(),
+        current.origin(),
+        current.intent(),
+        current.observed_at(),
+    );
+    debug_assert_eq!(coalesced.retained_bytes(), combined_retained_bytes);
+    Some(coalesced)
+}
+
+fn coalesce_insert_inverse(previous: &TextEdit, current: &TextEdit) -> Option<TextEdit> {
+    if !previous.inserted().is_empty()
+        || previous.removed().is_empty()
+        || !current.inserted().is_empty()
+        || current.removed().is_empty()
+        || previous.range().end() != current.range().start()
+    {
+        return None;
+    }
+    Some(TextEdit::replace(
+        TextRange::new(previous.range().start(), current.range().end()),
+        "",
+        concatenate(previous.removed(), current.removed())?,
+    ))
+}
+
+fn coalesce_backspace_inverse(previous: &TextEdit, current: &TextEdit) -> Option<TextEdit> {
+    if previous.inserted().is_empty()
+        || !previous.removed().is_empty()
+        || previous.range().start() != previous.range().end()
+        || current.inserted().is_empty()
+        || !current.removed().is_empty()
+        || current.range().start() != current.range().end()
+        || current
+            .range()
+            .start()
+            .checked_add(current.inserted().len())?
+            != previous.range().start()
+    {
+        return None;
+    }
+    Some(TextEdit::replace(
+        current.range(),
+        concatenate(current.inserted(), previous.inserted())?,
+        "",
+    ))
+}
+
+fn coalesce_delete_inverse(previous: &TextEdit, current: &TextEdit) -> Option<TextEdit> {
+    if previous.inserted().is_empty()
+        || !previous.removed().is_empty()
+        || previous.range().start() != previous.range().end()
+        || current.inserted().is_empty()
+        || !current.removed().is_empty()
+        || current.range().start() != current.range().end()
+        || previous.range().start() != current.range().start()
+    {
+        return None;
+    }
+    Some(TextEdit::replace(
+        current.range(),
+        concatenate(previous.inserted(), current.inserted())?,
+        "",
+    ))
+}
+
+fn concatenate(first: &str, second: &str) -> Option<String> {
+    let capacity = first.len().checked_add(second.len())?;
+    let mut combined = String::new();
+    combined.try_reserve_exact(capacity).ok()?;
+    combined.push_str(first);
+    combined.push_str(second);
+    Some(combined)
+}
+
 impl Default for UndoHistory {
     fn default() -> Self {
         Self::new(HistoryLimits::default(), Revision::INITIAL)
@@ -279,12 +424,38 @@ mod tests {
             vec![TextEdit::replace(range, inserted, removed)],
             before,
             after,
-            EditOrigin::TextInput,
+            EditOrigin::Programmatic,
             EditTimestamp::new(Duration::from_millis(1)),
         );
         let applied = document
             .apply_transaction(&transaction)
             .expect("test transaction should apply");
+        history.record(applied)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_direct_change(
+        document: &mut Document,
+        history: &mut UndoHistory,
+        range: TextRange,
+        inserted: &str,
+        removed: &str,
+        before: Selection,
+        after: Selection,
+        origin: EditOrigin,
+        observed_ms: u64,
+    ) -> HistoryRecordOutcome {
+        let transaction = EditTransaction::new(
+            document.revision(),
+            vec![TextEdit::replace(range, inserted, removed)],
+            before,
+            after,
+            origin,
+            EditTimestamp::new(Duration::from_millis(observed_ms)),
+        );
+        let applied = document
+            .apply_transaction(&transaction)
+            .expect("direct test transaction should apply");
         history.record(applied)
     }
 
@@ -335,6 +506,531 @@ mod tests {
         assert!(!history.is_empty());
         assert_eq!(history.len(), 2);
         assert_eq!(history.retained_bytes(), 2);
+    }
+
+    #[test]
+    fn adjacent_typing_coalesces_with_utf8_and_round_trips_as_one_step() {
+        let mut document = Document::new();
+        let mut history = UndoHistory::default();
+
+        for (range, inserted, before, after, time, expected) in [
+            (
+                TextRange::new(0, 0),
+                "a",
+                Selection::caret(0),
+                Selection::caret(1),
+                0,
+                HistoryRecordOutcome::Stored,
+            ),
+            (
+                TextRange::new(1, 1),
+                "b",
+                Selection::caret(1),
+                Selection::caret(2),
+                100,
+                HistoryRecordOutcome::Coalesced,
+            ),
+            (
+                TextRange::new(2, 2),
+                "é",
+                Selection::caret(2),
+                Selection::caret(4),
+                200,
+                HistoryRecordOutcome::Coalesced,
+            ),
+        ] {
+            assert_eq!(
+                apply_direct_change(
+                    &mut document,
+                    &mut history,
+                    range,
+                    inserted,
+                    "",
+                    before,
+                    after,
+                    EditOrigin::TextInput,
+                    time,
+                ),
+                expected
+            );
+        }
+
+        assert_eq!(document.rope().to_string(), "abé");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.retained_bytes(), 4);
+        let undone = history
+            .undo(&mut document)
+            .expect("coalesced typing should undo")
+            .expect("one coalesced entry should exist");
+        assert_eq!(document.rope().to_string(), "");
+        assert_eq!(undone.selection(), Selection::caret(0));
+        let redone = history
+            .redo(&mut document)
+            .expect("coalesced typing should redo")
+            .expect("one coalesced redo entry should exist");
+        assert_eq!(document.rope().to_string(), "abé");
+        assert_eq!(redone.selection(), Selection::caret(4));
+    }
+
+    #[test]
+    fn backspace_and_forward_delete_coalesce_independently() {
+        let mut backspace_document =
+            Document::from_bytes("abé".as_bytes()).expect("fixture should load");
+        let mut backspace_history =
+            UndoHistory::new(HistoryLimits::default(), backspace_document.revision());
+        assert_eq!(
+            apply_direct_change(
+                &mut backspace_document,
+                &mut backspace_history,
+                TextRange::new(2, 4),
+                "",
+                "é",
+                Selection::caret(4),
+                Selection::caret(2),
+                EditOrigin::TextInput,
+                0,
+            ),
+            HistoryRecordOutcome::Stored
+        );
+        assert_eq!(
+            apply_direct_change(
+                &mut backspace_document,
+                &mut backspace_history,
+                TextRange::new(1, 2),
+                "",
+                "b",
+                Selection::caret(2),
+                Selection::caret(1),
+                EditOrigin::TextInput,
+                100,
+            ),
+            HistoryRecordOutcome::Coalesced
+        );
+        backspace_history
+            .undo(&mut backspace_document)
+            .expect("backspaces should undo together");
+        assert_eq!(backspace_document.rope().to_string(), "abé");
+
+        let mut delete_document = Document::from_bytes(b"abc").expect("fixture should load");
+        let mut delete_history =
+            UndoHistory::new(HistoryLimits::default(), delete_document.revision());
+        assert_eq!(
+            apply_direct_change(
+                &mut delete_document,
+                &mut delete_history,
+                TextRange::new(0, 1),
+                "",
+                "a",
+                Selection::caret(0),
+                Selection::caret(0),
+                EditOrigin::TextInput,
+                0,
+            ),
+            HistoryRecordOutcome::Stored
+        );
+        assert_eq!(
+            apply_direct_change(
+                &mut delete_document,
+                &mut delete_history,
+                TextRange::new(0, 1),
+                "",
+                "b",
+                Selection::caret(0),
+                Selection::caret(0),
+                EditOrigin::TextInput,
+                100,
+            ),
+            HistoryRecordOutcome::Coalesced
+        );
+        delete_history
+            .undo(&mut delete_document)
+            .expect("forward deletes should undo together");
+        assert_eq!(delete_document.rope().to_string(), "abc");
+    }
+
+    #[test]
+    fn coalescing_shape_predicates_have_independent_boundaries() {
+        let valid_insert_previous = TextEdit::replace(TextRange::new(0, 1), "", "a");
+        let valid_insert_current = TextEdit::replace(TextRange::new(1, 2), "", "b");
+        assert!(coalesce_insert_inverse(&valid_insert_previous, &valid_insert_current).is_some());
+        for (previous, current) in [
+            (
+                TextEdit::replace(TextRange::new(0, 1), "x", "a"),
+                valid_insert_current.clone(),
+            ),
+            (
+                TextEdit::replace(TextRange::new(0, 1), "", ""),
+                valid_insert_current,
+            ),
+            (
+                valid_insert_previous.clone(),
+                TextEdit::replace(TextRange::new(1, 2), "x", "b"),
+            ),
+            (
+                valid_insert_previous,
+                TextEdit::replace(TextRange::new(1, 2), "", ""),
+            ),
+        ] {
+            assert!(coalesce_insert_inverse(&previous, &current).is_none());
+        }
+
+        let valid_backspace_previous = TextEdit::replace(TextRange::new(1, 1), "b", "");
+        let valid_backspace_current = TextEdit::replace(TextRange::new(0, 0), "a", "");
+        assert!(
+            coalesce_backspace_inverse(&valid_backspace_previous, &valid_backspace_current)
+                .is_some()
+        );
+        for (previous, current) in [
+            (
+                TextEdit::replace(TextRange::new(1, 1), "", ""),
+                valid_backspace_current.clone(),
+            ),
+            (
+                TextEdit::replace(TextRange::new(1, 1), "b", "x"),
+                valid_backspace_current.clone(),
+            ),
+            (
+                TextEdit::replace(TextRange::new(1, 2), "b", ""),
+                valid_backspace_current,
+            ),
+            (
+                valid_backspace_previous.clone(),
+                TextEdit::replace(TextRange::new(1, 1), "", ""),
+            ),
+            (
+                valid_backspace_previous.clone(),
+                TextEdit::replace(TextRange::new(0, 0), "a", "x"),
+            ),
+            (
+                valid_backspace_previous,
+                TextEdit::replace(TextRange::new(0, 1), "a", ""),
+            ),
+        ] {
+            assert!(coalesce_backspace_inverse(&previous, &current).is_none());
+        }
+
+        let valid_delete_previous = TextEdit::replace(TextRange::new(0, 0), "a", "");
+        let valid_delete_current = TextEdit::replace(TextRange::new(0, 0), "b", "");
+        assert!(coalesce_delete_inverse(&valid_delete_previous, &valid_delete_current).is_some());
+        for (previous, current) in [
+            (
+                TextEdit::replace(TextRange::new(0, 0), "", ""),
+                valid_delete_current.clone(),
+            ),
+            (
+                TextEdit::replace(TextRange::new(0, 0), "a", "x"),
+                valid_delete_current.clone(),
+            ),
+            (
+                TextEdit::replace(TextRange::new(0, 1), "a", ""),
+                valid_delete_current,
+            ),
+            (
+                valid_delete_previous.clone(),
+                TextEdit::replace(TextRange::new(0, 0), "", ""),
+            ),
+            (
+                valid_delete_previous.clone(),
+                TextEdit::replace(TextRange::new(0, 0), "b", "x"),
+            ),
+            (
+                valid_delete_previous,
+                TextEdit::replace(TextRange::new(0, 1), "b", ""),
+            ),
+        ] {
+            assert!(coalesce_delete_inverse(&previous, &current).is_none());
+        }
+    }
+
+    #[test]
+    fn coalescing_breaks_at_time_and_origin_boundaries() {
+        let limits = HistoryLimits {
+            max_transactions: 16,
+            max_bytes: 2,
+        };
+        let mut document = Document::new();
+        let mut history = UndoHistory::new(limits, document.revision());
+        for (range, inserted, before, after, origin, time) in [
+            (
+                TextRange::new(0, 0),
+                "a",
+                Selection::caret(0),
+                Selection::caret(1),
+                EditOrigin::TextInput,
+                0,
+            ),
+            (
+                TextRange::new(1, 1),
+                "b",
+                Selection::caret(1),
+                Selection::caret(2),
+                EditOrigin::TextInput,
+                751,
+            ),
+            (
+                TextRange::new(2, 2),
+                "c",
+                Selection::caret(2),
+                Selection::caret(3),
+                EditOrigin::MarkdownInput,
+                800,
+            ),
+            (
+                TextRange::new(3, 3),
+                "d",
+                Selection::caret(3),
+                Selection::caret(4),
+                EditOrigin::Paste,
+                850,
+            ),
+        ] {
+            assert_eq!(
+                apply_direct_change(
+                    &mut document,
+                    &mut history,
+                    range,
+                    inserted,
+                    "",
+                    before,
+                    after,
+                    origin,
+                    time,
+                ),
+                HistoryRecordOutcome::Stored
+            );
+        }
+        assert_eq!(document.rope().to_string(), "abcd");
+        assert_eq!(history.len(), 2);
+        history
+            .undo(&mut document)
+            .expect("paste should remain an isolated newest step");
+        assert_eq!(document.rope().to_string(), "abc");
+    }
+
+    #[test]
+    fn coalescing_breaks_at_clock_selection_and_intent_boundaries() {
+        let mut moved_document = Document::new();
+        let mut moved_history = UndoHistory::default();
+        apply_direct_change(
+            &mut moved_document,
+            &mut moved_history,
+            TextRange::new(0, 0),
+            "a",
+            "",
+            Selection::caret(0),
+            Selection::caret(1),
+            EditOrigin::TextInput,
+            100,
+        );
+        assert_eq!(
+            apply_direct_change(
+                &mut moved_document,
+                &mut moved_history,
+                TextRange::new(1, 1),
+                "x",
+                "",
+                Selection::caret(1),
+                Selection::caret(2),
+                EditOrigin::TextInput,
+                50,
+            ),
+            HistoryRecordOutcome::Stored
+        );
+        assert_eq!(moved_history.len(), 2);
+
+        let mut selection_document = Document::new();
+        let mut selection_history = UndoHistory::default();
+        apply_direct_change(
+            &mut selection_document,
+            &mut selection_history,
+            TextRange::new(0, 0),
+            "a",
+            "",
+            Selection::caret(0),
+            Selection::caret(1),
+            EditOrigin::TextInput,
+            0,
+        );
+        assert_eq!(
+            apply_direct_change(
+                &mut selection_document,
+                &mut selection_history,
+                TextRange::new(0, 0),
+                "x",
+                "",
+                Selection::caret(0),
+                Selection::caret(1),
+                EditOrigin::TextInput,
+                100,
+            ),
+            HistoryRecordOutcome::Stored
+        );
+        assert_eq!(selection_document.rope().to_string(), "xa");
+        assert_eq!(selection_history.len(), 2);
+
+        let mut intent_document = Document::new();
+        let mut intent_history = UndoHistory::default();
+        apply_direct_change(
+            &mut intent_document,
+            &mut intent_history,
+            TextRange::new(0, 0),
+            "a",
+            "",
+            Selection::caret(0),
+            Selection::caret(1),
+            EditOrigin::TextInput,
+            0,
+        );
+        assert_eq!(
+            apply_direct_change(
+                &mut intent_document,
+                &mut intent_history,
+                TextRange::new(0, 1),
+                "",
+                "a",
+                Selection::caret(1),
+                Selection::caret(0),
+                EditOrigin::TextInput,
+                100,
+            ),
+            HistoryRecordOutcome::Stored
+        );
+        assert_eq!(intent_document.rope().to_string(), "");
+        assert_eq!(intent_history.len(), 2);
+    }
+
+    #[test]
+    fn coalescing_window_is_inclusive_and_never_evades_history_byte_limits() {
+        assert_eq!(DEFAULT_EDIT_COALESCING_WINDOW, Duration::from_millis(750));
+        let mut timed_document = Document::new();
+        let mut timed_history = UndoHistory::default();
+        assert_eq!(
+            apply_direct_change(
+                &mut timed_document,
+                &mut timed_history,
+                TextRange::new(0, 0),
+                "a",
+                "",
+                Selection::caret(0),
+                Selection::caret(1),
+                EditOrigin::TextInput,
+                0,
+            ),
+            HistoryRecordOutcome::Stored
+        );
+        assert_eq!(
+            apply_direct_change(
+                &mut timed_document,
+                &mut timed_history,
+                TextRange::new(1, 1),
+                "b",
+                "",
+                Selection::caret(1),
+                Selection::caret(2),
+                EditOrigin::TextInput,
+                750,
+            ),
+            HistoryRecordOutcome::Coalesced
+        );
+        assert_eq!(timed_history.len(), 1);
+
+        let limits = HistoryLimits {
+            max_transactions: 8,
+            max_bytes: 1,
+        };
+        let mut bounded_document = Document::new();
+        let mut bounded_history = UndoHistory::new(limits, bounded_document.revision());
+        apply_direct_change(
+            &mut bounded_document,
+            &mut bounded_history,
+            TextRange::new(0, 0),
+            "a",
+            "",
+            Selection::caret(0),
+            Selection::caret(1),
+            EditOrigin::TextInput,
+            0,
+        );
+        assert_eq!(
+            apply_direct_change(
+                &mut bounded_document,
+                &mut bounded_history,
+                TextRange::new(1, 1),
+                "b",
+                "",
+                Selection::caret(1),
+                Selection::caret(2),
+                EditOrigin::TextInput,
+                100,
+            ),
+            HistoryRecordOutcome::Stored
+        );
+        assert_eq!(bounded_history.len(), 1);
+        assert_eq!(bounded_history.retained_bytes(), 1);
+        bounded_history
+            .undo(&mut bounded_document)
+            .expect("the newest bounded edit should remain undoable");
+        assert_eq!(bounded_document.rope().to_string(), "a");
+    }
+
+    #[test]
+    fn coalescing_byte_ceiling_is_exact_and_checked_before_combining_text() {
+        let first = "a".repeat(DEFAULT_MAX_COALESCED_EDIT_BYTES / 2);
+        let second = "b".repeat(DEFAULT_MAX_COALESCED_EDIT_BYTES / 2);
+        let mut document = Document::new();
+        let mut history = UndoHistory::default();
+
+        assert_eq!(
+            apply_direct_change(
+                &mut document,
+                &mut history,
+                TextRange::new(0, 0),
+                &first,
+                "",
+                Selection::caret(0),
+                Selection::caret(first.len()),
+                EditOrigin::TextInput,
+                0,
+            ),
+            HistoryRecordOutcome::Stored
+        );
+        assert_eq!(
+            apply_direct_change(
+                &mut document,
+                &mut history,
+                TextRange::new(first.len(), first.len()),
+                &second,
+                "",
+                Selection::caret(first.len()),
+                Selection::caret(first.len() + second.len()),
+                EditOrigin::TextInput,
+                1,
+            ),
+            HistoryRecordOutcome::Coalesced
+        );
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.retained_bytes(), DEFAULT_MAX_COALESCED_EDIT_BYTES);
+
+        let end = first.len() + second.len();
+        assert_eq!(
+            apply_direct_change(
+                &mut document,
+                &mut history,
+                TextRange::new(end, end),
+                "c",
+                "",
+                Selection::caret(end),
+                Selection::caret(end + 1),
+                EditOrigin::TextInput,
+                2,
+            ),
+            HistoryRecordOutcome::Stored
+        );
+        assert_eq!(history.len(), 2);
+        assert_eq!(
+            history.retained_bytes(),
+            DEFAULT_MAX_COALESCED_EDIT_BYTES + 1
+        );
     }
 
     #[test]

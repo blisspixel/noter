@@ -4,14 +4,24 @@ use std::time::Duration;
 use eframe::egui;
 use noter::core::document::{Document, PreparedSaveAs};
 use noter::core::edit::{
-    AppliedTransaction, EditError, EditOrigin, EditTimestamp, EditTransaction, Selection,
+    AppliedTransaction, EditError, EditOrigin, EditTimestamp, EditTransaction, Selection, TextRange,
+};
+use noter::core::lifecycle::{
+    DestructiveIntent as PendingAbandonAction, DirtyDecision, LifecycleCommand, LifecycleEffect,
+    LifecycleState, SaveContinuation,
 };
 use noter::core::markdown::count_markdown_diagnostics;
 use noter::core::revision::Revision;
 use noter::core::save::SaveOutcome;
+use noter::core::search::SearchDirection;
 use noter::core::undo::{HistoryApplyOutcome, HistoryRecordOutcome, UndoHistory};
 use noter::error::NoterError;
 
+use crate::editor_settings::{
+    EditorZoom, TextWrap, WORD_WRAP_STORAGE_KEY, ZOOM_STORAGE_KEY, apply_editor_zoom,
+};
+use crate::find_ui::{FindBar, FindBarAction, ReplaceScope};
+use crate::go_to_line_ui::{GoToLineAction, GoToLineDialog};
 use crate::idle_screen::IdleScreen;
 use crate::markdown_ui::{MarkdownEditor, MarkdownProjectionLimit, markdown_projection_limit};
 use crate::theme::{self, AppTheme, THEME_STORAGE_KEY};
@@ -68,6 +78,7 @@ pub struct LaunchOptions {
 enum FileCommand {
     New,
     Open,
+    Reload,
     Save,
     SaveAs,
     Quit,
@@ -100,6 +111,7 @@ impl FileCommand {
         match self {
             Self::New => "New",
             Self::Open => "Open...",
+            Self::Reload => "Reload from Disk",
             Self::Save => "Save",
             Self::SaveAs => "Save As...",
             Self::Quit => "Quit",
@@ -117,53 +129,102 @@ impl FileCommand {
 enum EditCommand {
     Undo,
     Redo,
+    SelectAll,
+    Find,
+    FindNext,
+    FindPrevious,
+    Replace,
+    GoToLine,
 }
 
 impl EditCommand {
-    const INPUT_SHORTCUTS_IN_PRECEDENCE_ORDER: [(Self, egui::KeyboardShortcut); 3] = [
-        (
-            Self::Redo,
-            egui::KeyboardShortcut::new(
-                egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
-                egui::Key::Z,
-            ),
-        ),
-        (
-            Self::Redo,
-            egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y),
-        ),
-        (
-            Self::Undo,
-            egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z),
-        ),
+    const INPUT_PRECEDENCE: [Self; 8] = [
+        Self::FindPrevious,
+        Self::Redo,
+        Self::Undo,
+        Self::SelectAll,
+        Self::Find,
+        Self::Replace,
+        Self::GoToLine,
+        Self::FindNext,
     ];
 
     const fn label(self) -> &'static str {
         match self {
             Self::Undo => "Undo",
             Self::Redo => "Redo",
+            Self::SelectAll => "Select All",
+            Self::Find => "Find...",
+            Self::FindNext => "Find Next",
+            Self::FindPrevious => "Find Previous",
+            Self::Replace => "Replace...",
+            Self::GoToLine => "Go To Line...",
         }
     }
 
-    const fn menu_shortcut(
-        self,
-        operating_system: egui::os::OperatingSystem,
-    ) -> egui::KeyboardShortcut {
+    const fn shortcut(self, operating_system: egui::os::OperatingSystem) -> egui::KeyboardShortcut {
         match (self, operating_system) {
-            (Self::Redo, egui::os::OperatingSystem::Mac) => {
-                Self::INPUT_SHORTCUTS_IN_PRECEDENCE_ORDER[0].1
+            (Self::Redo, egui::os::OperatingSystem::Mac) => egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                egui::Key::Z,
+            ),
+            (Self::Redo, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y),
+            (Self::Undo, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z),
+            (Self::SelectAll, _) => {
+                egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::A)
             }
-            (Self::Redo, _) => Self::INPUT_SHORTCUTS_IN_PRECEDENCE_ORDER[1].1,
-            (Self::Undo, _) => Self::INPUT_SHORTCUTS_IN_PRECEDENCE_ORDER[2].1,
+            (Self::Find, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F),
+            (Self::FindNext, egui::os::OperatingSystem::Mac) => {
+                egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::G)
+            }
+            (Self::FindNext, _) => {
+                egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::F3)
+            }
+            (Self::FindPrevious, egui::os::OperatingSystem::Mac) => egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                egui::Key::G,
+            ),
+            (Self::FindPrevious, _) => {
+                egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::F3)
+            }
+            (Self::Replace, egui::os::OperatingSystem::Mac) => egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND.plus(egui::Modifiers::ALT),
+                egui::Key::F,
+            ),
+            (Self::Replace, _) => {
+                egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::H)
+            }
+            (Self::GoToLine, _) => egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::G),
         }
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum PendingAbandonAction {
-    New,
-    Open,
-    Quit,
+enum ViewCommand {
+    ToggleWordWrap,
+    ZoomIn,
+    ZoomOut,
+    ResetZoom,
+}
+
+impl ViewCommand {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::ToggleWordWrap => "Word Wrap",
+            Self::ZoomIn => "Zoom In",
+            Self::ZoomOut => "Zoom Out",
+            Self::ResetZoom => "Reset Zoom",
+        }
+    }
+
+    const fn shortcut(self) -> Option<egui::KeyboardShortcut> {
+        match self {
+            Self::ToggleWordWrap => None,
+            Self::ZoomIn => Some(egui::gui_zoom::kb_shortcuts::ZOOM_IN),
+            Self::ZoomOut => Some(egui::gui_zoom::kb_shortcuts::ZOOM_OUT),
+            Self::ResetZoom => Some(egui::gui_zoom::kb_shortcuts::ZOOM_RESET),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -173,22 +234,27 @@ struct MarkdownIssueCache {
     issue_count: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct StatusSnapshot {
+    line: usize,
+    column: usize,
+    selected_characters: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct StatusCache {
+    document_serial: u64,
+    revision: Revision,
+    selection: Selection,
+    snapshot: StatusSnapshot,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct EditorFrameOutcome {
     changed: bool,
     selection: Selection,
     origin: EditOrigin,
     observed_at: EditTimestamp,
-}
-
-impl PendingAbandonAction {
-    const fn prompt(self) -> &'static str {
-        match self {
-            Self::New => "Save your changes before creating a new document?",
-            Self::Open => "Save your changes before opening another file?",
-            Self::Quit => "Save your changes before closing Noter?",
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -216,20 +282,25 @@ pub struct NoterApp {
     history: UndoHistory,
     selection: Selection,
     pending_selection_restore: Option<Selection>,
+    preserve_focus_on_selection_restore: bool,
     pending_document_view: Option<DocumentView>,
     view: DocumentView,
     theme: AppTheme,
+    text_wrap: TextWrap,
+    editor_zoom: EditorZoom,
+    find_bar: FindBar,
+    go_to_line: GoToLineDialog,
     idle_screen: IdleScreen,
     markdown_editor: MarkdownEditor,
     document_editor_serial: u64,
     markdown_issue_cache: Option<MarkdownIssueCache>,
+    status_cache: Option<StatusCache>,
     error_msg: Option<String>,
     save_recovery_msg: Option<String>,
     about_open: bool,
     updates_open: bool,
     pending_hard_link_save: Option<PendingHardLinkSave>,
-    pending_abandon: Option<PendingAbandonAction>,
-    allow_dirty_close: bool,
+    lifecycle: LifecycleState,
     #[cfg(feature = "screenshot-qa")]
     screenshot: Option<ScreenshotCapture>,
 }
@@ -242,20 +313,25 @@ impl Default for NoterApp {
             history: UndoHistory::default(),
             selection: Selection::caret(0),
             pending_selection_restore: None,
+            preserve_focus_on_selection_restore: false,
             pending_document_view: None,
             view: DocumentView::Text,
             theme: AppTheme::System,
+            text_wrap: TextWrap::default(),
+            editor_zoom: EditorZoom::default(),
+            find_bar: FindBar::default(),
+            go_to_line: GoToLineDialog::default(),
             idle_screen: IdleScreen::default(),
             markdown_editor: MarkdownEditor::default(),
             document_editor_serial: 0,
             markdown_issue_cache: None,
+            status_cache: None,
             error_msg: None,
             save_recovery_msg: None,
             about_open: false,
             updates_open: false,
             pending_hard_link_save: None,
-            pending_abandon: None,
-            allow_dirty_close: false,
+            lifecycle: LifecycleState::default(),
             #[cfg(feature = "screenshot-qa")]
             screenshot: None,
         }
@@ -265,6 +341,8 @@ impl Default for NoterApp {
 impl NoterApp {
     pub fn new(cc: &eframe::CreationContext<'_>, options: LaunchOptions) -> Self {
         theme::configure_styles(&cc.egui_ctx);
+        cc.egui_ctx
+            .options_mut(|options| options.zoom_with_keyboard = false);
         let selected_theme = options
             .theme
             .unwrap_or_else(|| AppTheme::from_storage(cc.storage));
@@ -272,6 +350,8 @@ impl NoterApp {
 
         let mut app = Self {
             theme: selected_theme,
+            text_wrap: TextWrap::from_storage(cc.storage),
+            editor_zoom: EditorZoom::from_storage(cc.storage),
             updates_open: options.show_updates,
             ..Self::default()
         };
@@ -310,6 +390,7 @@ impl NoterApp {
                 self.selection = Selection::caret(0);
                 self.pending_selection_restore = Some(self.selection);
                 self.advance_document_editor();
+                self.find_bar.reset();
                 self.markdown_editor.reset();
                 self.markdown_issue_cache = None;
                 self.error_msg = None;
@@ -330,12 +411,23 @@ impl NoterApp {
         }
     }
 
-    fn request_open(&mut self) {
-        if self.document.is_dirty() {
-            self.begin_pending_abandon(PendingAbandonAction::Open);
-        } else {
-            self.do_open_unchecked();
-        }
+    fn reload_current_path_unchecked(&mut self) {
+        let Some(path) = self.document.path().map(std::path::Path::to_path_buf) else {
+            self.error_msg = Some(
+                "Reload is unavailable because this document has not been saved yet.".to_owned(),
+            );
+            return;
+        };
+        let view = self.view;
+        self.open_path(&path, Some(view));
+    }
+
+    fn request_open(&mut self, ctx: &egui::Context) {
+        self.request_destructive_action(PendingAbandonAction::Open, ctx);
+    }
+
+    fn request_reload(&mut self, ctx: &egui::Context) {
+        self.request_destructive_action(PendingAbandonAction::Reload, ctx);
     }
 
     fn do_save(&mut self) {
@@ -459,84 +551,109 @@ impl NoterApp {
         self.pending_selection_restore = Some(self.selection);
         self.view = DocumentView::Text;
         self.advance_document_editor();
+        self.find_bar.reset();
         self.markdown_editor.reset();
         self.markdown_issue_cache = None;
         self.error_msg = None;
     }
 
-    fn request_new_document(&mut self) {
-        if self.document.is_dirty() {
-            self.begin_pending_abandon(PendingAbandonAction::New);
-        } else {
-            self.start_new_document_unchecked();
-        }
+    fn request_new_document(&mut self, ctx: &egui::Context) {
+        self.request_destructive_action(PendingAbandonAction::New, ctx);
     }
 
     fn request_close(&mut self, ctx: &egui::Context) {
-        if self.document.is_dirty() && !self.allow_dirty_close {
-            self.begin_pending_abandon(PendingAbandonAction::Quit);
+        let revision = self.document.revision();
+        let dirty_close_is_blocked =
+            self.document.is_dirty() && !self.lifecycle.close_authorized(revision);
+        let effect = self.lifecycle.reduce(LifecycleCommand::Request {
+            intent: PendingAbandonAction::Quit,
+            document_dirty: self.document.is_dirty(),
+            revision,
+        });
+        if dirty_close_is_blocked {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        } else {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        self.apply_lifecycle_effect(effect, ctx);
     }
 
     fn protect_native_close(&mut self, ctx: &egui::Context) {
+        let revision = self.document.revision();
         if ctx.input(|input| input.viewport().close_requested())
             && self.document.is_dirty()
-            && !self.allow_dirty_close
+            && !self.lifecycle.close_authorized(revision)
         {
-            self.begin_pending_abandon(PendingAbandonAction::Quit);
+            let effect = self.lifecycle.reduce(LifecycleCommand::Request {
+                intent: PendingAbandonAction::Quit,
+                document_dirty: true,
+                revision,
+            });
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.apply_lifecycle_effect(effect, ctx);
         }
     }
 
-    fn begin_pending_abandon(&mut self, action: PendingAbandonAction) {
-        self.pending_abandon = Some(action);
-        let _ = self.restore_save_recovery_message();
+    fn request_destructive_action(&mut self, intent: PendingAbandonAction, ctx: &egui::Context) {
+        let effect = self.lifecycle.reduce(LifecycleCommand::Request {
+            intent,
+            document_dirty: self.document.is_dirty(),
+            revision: self.document.revision(),
+        });
+        self.apply_lifecycle_effect(effect, ctx);
     }
 
     fn cancel_pending_abandon(&mut self) {
-        self.pending_abandon = None;
-        self.allow_dirty_close = false;
+        let _ = self
+            .lifecycle
+            .reduce(LifecycleCommand::Decide(DirtyDecision::Cancel));
         let _ = self.restore_save_recovery_message();
     }
 
     fn discard_pending_abandon(&mut self, ctx: &egui::Context) {
-        let Some(action) = self.pending_abandon.take() else {
-            return;
-        };
-        self.execute_abandon_action(action, ctx);
+        let effect = self
+            .lifecycle
+            .reduce(LifecycleCommand::Decide(DirtyDecision::Discard));
+        self.apply_lifecycle_effect(effect, ctx);
     }
 
     fn save_pending_abandon(&mut self, ctx: &egui::Context) {
-        if self.pending_abandon.is_none() {
-            return;
-        }
-        self.do_save();
-        self.continue_pending_abandon_if_clean(ctx);
+        let effect = self
+            .lifecycle
+            .reduce(LifecycleCommand::Decide(DirtyDecision::Save));
+        self.apply_lifecycle_effect(effect, ctx);
     }
 
     fn continue_pending_abandon_if_clean(&mut self, ctx: &egui::Context) {
-        if self.document.is_dirty() || self.pending_hard_link_save.is_some() {
-            return;
-        }
-        if self.error_msg.is_some() {
-            self.pending_abandon = None;
-            return;
-        }
-        if let Some(action) = self.pending_abandon.take() {
-            self.execute_abandon_action(action, ctx);
+        let effect = self
+            .lifecycle
+            .reduce(LifecycleCommand::SaveSettled(SaveContinuation::new(
+                self.document.revision(),
+                self.document.is_dirty(),
+                self.pending_hard_link_save.is_some(),
+                self.error_msg.is_some(),
+            )));
+        self.apply_lifecycle_effect(effect, ctx);
+    }
+
+    fn apply_lifecycle_effect(&mut self, effect: LifecycleEffect, ctx: &egui::Context) {
+        match effect {
+            LifecycleEffect::None => {}
+            LifecycleEffect::PromptDirty(_) => {
+                let _ = self.restore_save_recovery_message();
+            }
+            LifecycleEffect::StartSave => {
+                self.do_save();
+                self.continue_pending_abandon_if_clean(ctx);
+            }
+            LifecycleEffect::Continue(action) => self.execute_abandon_action(action, ctx),
         }
     }
 
     fn execute_abandon_action(&mut self, action: PendingAbandonAction, ctx: &egui::Context) {
-        self.allow_dirty_close = false;
         match action {
             PendingAbandonAction::New => self.start_new_document_unchecked(),
             PendingAbandonAction::Open => self.do_open_unchecked(),
+            PendingAbandonAction::Reload => self.reload_current_path_unchecked(),
             PendingAbandonAction::Quit => {
-                self.allow_dirty_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
@@ -557,10 +674,34 @@ impl NoterApp {
         command
     }
 
-    fn collect_edit_shortcut(ui: &egui::Ui) -> Option<EditCommand> {
+    fn collect_edit_shortcut(
+        ui: &egui::Ui,
+        document_history_shortcuts_enabled: bool,
+        text_mode_shortcuts_enabled: bool,
+    ) -> Option<EditCommand> {
         let mut command = None;
+        let operating_system = ui.ctx().os();
         ui.input_mut(|input| {
-            for (candidate, shortcut) in EditCommand::INPUT_SHORTCUTS_IN_PRECEDENCE_ORDER {
+            let alternate_redo = egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                egui::Key::Z,
+            );
+            if document_history_shortcuts_enabled && input.consume_shortcut(&alternate_redo) {
+                command = Some(EditCommand::Redo);
+                return;
+            }
+            for candidate in EditCommand::INPUT_PRECEDENCE {
+                if !document_history_shortcuts_enabled
+                    && matches!(candidate, EditCommand::Undo | EditCommand::Redo)
+                {
+                    continue;
+                }
+                if !text_mode_shortcuts_enabled
+                    && matches!(candidate, EditCommand::SelectAll | EditCommand::GoToLine)
+                {
+                    continue;
+                }
+                let shortcut = candidate.shortcut(operating_system);
                 if input.consume_shortcut(&shortcut) {
                     command = Some(candidate);
                     break;
@@ -570,10 +711,27 @@ impl NoterApp {
         command
     }
 
+    fn collect_view_shortcut(ui: &egui::Ui) -> Option<ViewCommand> {
+        let mut command = None;
+        ui.input_mut(|input| {
+            if input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_RESET) {
+                command = Some(ViewCommand::ResetZoom);
+            } else if input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_IN)
+                || input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_IN_SECONDARY)
+            {
+                command = Some(ViewCommand::ZoomIn);
+            } else if input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_OUT) {
+                command = Some(ViewCommand::ZoomOut);
+            }
+        });
+        command
+    }
+
     fn execute_file_command(&mut self, command: FileCommand, ctx: &egui::Context) {
         match command {
-            FileCommand::New => self.request_new_document(),
-            FileCommand::Open => self.request_open(),
+            FileCommand::New => self.request_new_document(ctx),
+            FileCommand::Open => self.request_open(ctx),
+            FileCommand::Reload => self.request_reload(ctx),
             FileCommand::Save => self.do_save(),
             FileCommand::SaveAs => self.do_save_as(),
             FileCommand::Quit => self.request_close(ctx),
@@ -581,9 +739,47 @@ impl NoterApp {
     }
 
     fn execute_edit_command(&mut self, command: EditCommand) {
+        match command {
+            EditCommand::Find => {
+                self.find_bar.open(false, &self.text, self.selection);
+                return;
+            }
+            EditCommand::FindNext => {
+                self.execute_find_navigation(SearchDirection::Next);
+                return;
+            }
+            EditCommand::FindPrevious => {
+                self.execute_find_navigation(SearchDirection::Previous);
+                return;
+            }
+            EditCommand::Replace => {
+                self.find_bar.open(true, &self.text, self.selection);
+                return;
+            }
+            EditCommand::GoToLine => {
+                let (current_line, _) = caret_line_column(&self.text, self.selection.active());
+                self.go_to_line.open(current_line);
+                return;
+            }
+            EditCommand::SelectAll => {
+                if self.view == DocumentView::Text {
+                    self.selection = Selection::new(0, self.text.len());
+                    self.pending_selection_restore = Some(self.selection);
+                    self.preserve_focus_on_selection_restore = false;
+                }
+                return;
+            }
+            EditCommand::Undo | EditCommand::Redo => {}
+        }
         let result = match command {
             EditCommand::Undo => self.history.undo(&mut self.document),
             EditCommand::Redo => self.history.redo(&mut self.document),
+            EditCommand::Find
+            | EditCommand::FindNext
+            | EditCommand::FindPrevious
+            | EditCommand::Replace
+            | EditCommand::GoToLine
+            | EditCommand::SelectAll => return,
         };
         match result {
             Ok(Some(outcome)) => self.synchronize_after_history(outcome),
@@ -593,6 +789,26 @@ impl NoterApp {
                 self.history.reset(self.document.revision());
             }
         }
+    }
+
+    fn execute_view_command(&mut self, command: ViewCommand) {
+        match command {
+            ViewCommand::ToggleWordWrap if self.view == DocumentView::Text => {
+                self.text_wrap.toggle();
+            }
+            ViewCommand::ToggleWordWrap => return,
+            ViewCommand::ZoomIn => {
+                let _ = self.editor_zoom.zoom_in();
+            }
+            ViewCommand::ZoomOut => {
+                let _ = self.editor_zoom.zoom_out();
+            }
+            ViewCommand::ResetZoom => {
+                let _ = self.editor_zoom.reset();
+            }
+        }
+        self.pending_selection_restore = Some(self.selection);
+        self.preserve_focus_on_selection_restore = false;
     }
 
     fn synchronize_after_history(&mut self, outcome: HistoryApplyOutcome) {
@@ -608,6 +824,194 @@ impl NoterApp {
             self.view = DocumentView::Text;
             self.error_msg = Some(markdown_limit_message(self.text.len(), limit));
         }
+    }
+
+    fn execute_find_navigation(&mut self, direction: SearchDirection) {
+        let search = match self
+            .find_bar
+            .prepared_search(self.document.revision(), &self.text)
+        {
+            Ok(search) => search,
+            Err(error) => {
+                self.error_msg = Some(format!(
+                    "Find could not run: {error}. The document was not changed."
+                ));
+                return;
+            }
+        };
+        let selected = self.selection.ordered_range();
+        let position = match (direction, search.matches_range(&self.text, selected)) {
+            (SearchDirection::Next, true) => selected.end(),
+            (SearchDirection::Previous, true) => selected.start(),
+            (SearchDirection::Next | SearchDirection::Previous, false) => self.selection.active(),
+        };
+        let Some(navigation) = search.navigate(&self.text, position, direction) else {
+            return;
+        };
+        let range = navigation.range();
+        self.selection = Selection::new(range.start(), range.end());
+        self.pending_selection_restore = Some(self.selection);
+        self.preserve_focus_on_selection_restore = true;
+        self.find_bar.record_navigation(navigation);
+    }
+
+    fn execute_find_bar_action(&mut self, action: FindBarAction, observed_at: EditTimestamp) {
+        match action {
+            FindBarAction::Close => {
+                self.pending_selection_restore = Some(self.selection);
+                self.preserve_focus_on_selection_restore = false;
+            }
+            FindBarAction::Next => self.execute_find_navigation(SearchDirection::Next),
+            FindBarAction::Previous => self.execute_find_navigation(SearchDirection::Previous),
+            FindBarAction::Replace => self.replace_selected_match(observed_at),
+            FindBarAction::ReplaceAll => self.replace_all_matches(observed_at),
+        }
+    }
+
+    fn replace_selected_match(&mut self, observed_at: EditTimestamp) {
+        let search = match self
+            .find_bar
+            .prepared_search(self.document.revision(), &self.text)
+        {
+            Ok(search) => search,
+            Err(error) => {
+                self.error_msg = Some(format!(
+                    "Replace could not run: {error}. The document was not changed."
+                ));
+                return;
+            }
+        };
+        let range = self.selection.ordered_range();
+        if !search.matches_range(&self.text, range) {
+            return;
+        }
+        let replacement = self.find_bar.replacement().to_owned();
+        if self.text.get(range.start()..range.end()) == Some(replacement.as_str()) {
+            self.find_bar
+                .record_replacements(0, self.document.revision());
+            return;
+        }
+        let maximum = self.document.maximum_text_bytes();
+        let Some(projected) =
+            projected_replacement_length(self.text.len(), range, replacement.len())
+        else {
+            self.error_msg = Some(
+                "Replace could not calculate a bounded result. The document was not changed."
+                    .to_owned(),
+            );
+            return;
+        };
+        if projected > maximum {
+            self.error_msg = Some(format!(
+                "Replace would create {projected} bytes; the maximum is {maximum} bytes. The document was not changed."
+            ));
+            return;
+        }
+        let Some(selection_end) = range.start().checked_add(replacement.len()) else {
+            self.error_msg = Some(
+                "Replace could not calculate a valid selection. The document was not changed."
+                    .to_owned(),
+            );
+            return;
+        };
+        self.text
+            .replace_range(range.start()..range.end(), &replacement);
+        let revision_before = self.document.revision();
+        self.record_editor_change(EditorFrameOutcome {
+            changed: true,
+            selection: Selection::caret(selection_end),
+            origin: EditOrigin::Replace,
+            observed_at,
+        });
+        if self.document.revision() != revision_before {
+            self.synchronize_after_external_edit();
+            self.find_bar
+                .record_replacements(1, self.document.revision());
+        }
+    }
+
+    fn replace_all_matches(&mut self, observed_at: EditTimestamp) {
+        let search = match self
+            .find_bar
+            .prepared_search(self.document.revision(), &self.text)
+        {
+            Ok(search) => search,
+            Err(error) => {
+                self.error_msg = Some(format!(
+                    "Replace All could not run: {error}. The document was not changed."
+                ));
+                return;
+            }
+        };
+        let replace_scope = self.find_bar.replace_scope();
+        let scope = match replace_scope {
+            ReplaceScope::Selection => self.selection.ordered_range(),
+            ReplaceScope::Document => TextRange::new(0, self.text.len()),
+        };
+        if scope.start() == scope.end() {
+            return;
+        }
+        let replacement = self.find_bar.replacement().to_owned();
+        let replacement_result = match search.replace_all(
+            &self.text,
+            scope,
+            &replacement,
+            self.document.maximum_text_bytes(),
+        ) {
+            Ok(Some(result)) => result,
+            Ok(None) => return,
+            Err(error) => {
+                self.error_msg = Some(format!(
+                    "Replace All could not run: {error}. The document was not changed."
+                ));
+                return;
+            }
+        };
+        let replacement_count = replacement_result.replacement_count();
+        let replacement_text = replacement_result.into_text();
+        if self.text.get(scope.start()..scope.end()) == Some(replacement_text.as_str()) {
+            self.find_bar
+                .record_replacements(0, self.document.revision());
+            return;
+        }
+        let Some(scope_end) = scope.start().checked_add(replacement_text.len()) else {
+            self.error_msg = Some(
+                "Replace All could not calculate a valid selection. The document was not changed."
+                    .to_owned(),
+            );
+            return;
+        };
+        let selection_was_forward = self.selection.anchor() <= self.selection.active();
+        let preserved_active = self.selection.active();
+        self.text
+            .replace_range(scope.start()..scope.end(), &replacement_text);
+        let selection_after = match replace_scope {
+            ReplaceScope::Selection if selection_was_forward => {
+                Selection::new(scope.start(), scope_end)
+            }
+            ReplaceScope::Selection => Selection::new(scope_end, scope.start()),
+            ReplaceScope::Document => {
+                Selection::caret(byte_at_or_before(&self.text, preserved_active))
+            }
+        };
+        let revision_before = self.document.revision();
+        self.record_editor_change(EditorFrameOutcome {
+            changed: true,
+            selection: selection_after,
+            origin: EditOrigin::Replace,
+            observed_at,
+        });
+        if self.document.revision() != revision_before {
+            self.synchronize_after_external_edit();
+            self.find_bar
+                .record_replacements(replacement_count, self.document.revision());
+        }
+    }
+
+    fn synchronize_after_external_edit(&mut self) {
+        self.markdown_editor.reset();
+        self.pending_selection_restore = Some(self.selection);
+        self.preserve_focus_on_selection_restore = true;
     }
 
     fn update_title(&self, ctx: &egui::Context) {
@@ -627,6 +1031,7 @@ impl NoterApp {
         ui: &mut egui::Ui,
         file_command: &mut Option<FileCommand>,
         edit_command: &mut Option<EditCommand>,
+        view_command: &mut Option<ViewCommand>,
     ) {
         egui::Panel::top("menu_bar")
             .exact_size(MENU_BAR_HEIGHT)
@@ -655,7 +1060,9 @@ impl NoterApp {
                     ui.menu_button("File", |ui| Self::show_file_menu(ui, file_command));
                     ui.menu_button("Edit", |ui| self.show_edit_menu(ui, edit_command));
                     if expanded {
-                        ui.menu_button("View", |ui| self.show_view_menu(ui));
+                        ui.menu_button("View", |ui| {
+                            self.show_view_menu(ui, view_command);
+                        });
                     }
                     ui.menu_button("Help", |ui| self.show_help_menu(ui));
                 });
@@ -740,12 +1147,19 @@ impl NoterApp {
     }
 
     fn show_file_menu(ui: &mut egui::Ui, command: &mut Option<FileCommand>) {
-        for candidate in [
+        for (index, candidate) in [
             FileCommand::New,
             FileCommand::Open,
+            FileCommand::Reload,
             FileCommand::Save,
             FileCommand::SaveAs,
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if index == 2 {
+                ui.separator();
+            }
             let mut button = egui::Button::new(candidate.label());
             if let Some(shortcut) = candidate.shortcut() {
                 button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
@@ -763,27 +1177,85 @@ impl NoterApp {
     }
 
     fn show_edit_menu(&self, ui: &mut egui::Ui, command: &mut Option<EditCommand>) {
-        for candidate in [EditCommand::Undo, EditCommand::Redo] {
+        for (index, candidate) in [
+            EditCommand::Undo,
+            EditCommand::Redo,
+            EditCommand::SelectAll,
+            EditCommand::Find,
+            EditCommand::FindNext,
+            EditCommand::FindPrevious,
+            EditCommand::Replace,
+            EditCommand::GoToLine,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if matches!(index, 2 | 3 | 7) {
+                ui.separator();
+            }
             let enabled = match candidate {
                 EditCommand::Undo => self.history.can_undo(),
                 EditCommand::Redo => self.history.can_redo(),
+                EditCommand::SelectAll | EditCommand::GoToLine => self.view == DocumentView::Text,
+                EditCommand::Find
+                | EditCommand::FindNext
+                | EditCommand::FindPrevious
+                | EditCommand::Replace => true,
             };
-            let shortcut = candidate.menu_shortcut(ui.ctx().os());
+            let shortcut = candidate.shortcut(ui.ctx().os());
             let button = egui::Button::new(candidate.label())
                 .shortcut_text(ui.ctx().format_shortcut(&shortcut));
-            if ui.add_enabled(enabled, button).clicked() {
+            let response = ui.add_enabled(enabled, button);
+            if !enabled && matches!(candidate, EditCommand::SelectAll | EditCommand::GoToLine) {
+                response
+                    .clone()
+                    .on_disabled_hover_text("Available in Text Mode");
+            }
+            if response.clicked() {
                 command.get_or_insert(candidate);
                 ui.close();
             }
         }
     }
 
-    fn show_view_menu(&mut self, ui: &mut egui::Ui) {
+    fn show_view_menu(&mut self, ui: &mut egui::Ui, command: &mut Option<ViewCommand>) {
         ui.label("Mode");
         self.show_document_mode_choices(ui);
         ui.separator();
         ui.label("Theme");
         self.show_theme_choices(ui);
+        ui.separator();
+        let wrap = ui.add_enabled(
+            self.view == DocumentView::Text,
+            egui::Button::selectable(
+                self.text_wrap.is_wrapped(),
+                ViewCommand::ToggleWordWrap.label(),
+            ),
+        );
+        if self.view != DocumentView::Text {
+            wrap.clone()
+                .on_disabled_hover_text("Markdown Mode wraps formatted content by design");
+        }
+        if wrap.clicked() {
+            command.get_or_insert(ViewCommand::ToggleWordWrap);
+            ui.close();
+        }
+        ui.menu_button(format!("Zoom: {}%", self.editor_zoom.percent()), |ui| {
+            for candidate in [
+                ViewCommand::ZoomIn,
+                ViewCommand::ZoomOut,
+                ViewCommand::ResetZoom,
+            ] {
+                let mut button = egui::Button::new(candidate.label());
+                if let Some(shortcut) = candidate.shortcut() {
+                    button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+                }
+                if ui.add(button).clicked() {
+                    command.get_or_insert(candidate);
+                    ui.close();
+                }
+            }
+        });
     }
 
     fn show_document_mode_choices(&mut self, ui: &mut egui::Ui) {
@@ -914,7 +1386,7 @@ impl NoterApp {
     }
 
     fn show_unsaved_changes_confirmation(&mut self, ctx: &egui::Context) {
-        let Some(action) = self.pending_abandon else {
+        let Some(action) = self.lifecycle.pending_intent() else {
             return;
         };
         if self.pending_hard_link_save.is_some() {
@@ -940,7 +1412,7 @@ impl NoterApp {
                 ui.set_max_width(560.0);
                 ui.heading("Save changes?");
                 ui.label(format!("{document_name} has unsaved changes."));
-                ui.label(action.prompt());
+                ui.label(pending_abandon_prompt(action));
                 if let Some(message) = self.save_recovery_msg.as_deref() {
                     ui.separator();
                     ui.colored_label(ui.visuals().error_fg_color, message);
@@ -1004,6 +1476,7 @@ impl NoterApp {
             self.continue_pending_abandon_if_clean(ctx);
         } else if cancel || response.should_close() {
             self.pending_hard_link_save = None;
+            self.continue_pending_abandon_if_clean(ctx);
         }
     }
 
@@ -1045,8 +1518,21 @@ impl NoterApp {
     }
 
     fn show_status(&mut self, ui: &mut egui::Ui) {
-        let markdown_issue_count =
-            (self.view == DocumentView::Markdown).then(|| self.markdown_issue_count());
+        let available_width = ui.available_width();
+        let show_extended = available_width >= 680.0;
+        let show_markdown_checks = available_width >= 900.0;
+        let markdown_issue_count = (self.view == DocumentView::Markdown && show_markdown_checks)
+            .then(|| self.markdown_issue_count());
+        let StatusSnapshot {
+            line,
+            column,
+            selected_characters,
+        } = self.status_snapshot();
+        let modified_label = if self.document.is_dirty() {
+            "Modified"
+        } else {
+            "Saved"
+        };
         egui::Panel::bottom("status_bar")
             .exact_size(STATUS_BAR_HEIGHT)
             .show(ui, |ui| {
@@ -1067,6 +1553,14 @@ impl NoterApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(format!("Ln {line}, Col {column}"));
+                        ui.separator();
+                        if selected_characters > 0 {
+                            ui.label(format!("Selected: {selected_characters}"));
+                            ui.separator();
+                        }
+                        ui.label(modified_label);
+                        ui.separator();
                         if let Some(issue_count) = markdown_issue_count {
                             let label = if issue_count == 0 {
                                 "Markdown checks: clean".to_owned()
@@ -1076,8 +1570,20 @@ impl NoterApp {
                             ui.label(label);
                             ui.separator();
                         }
-                        ui.label(format!("{} Mode", self.view.label()));
-                        ui.separator();
+                        if show_extended {
+                            ui.label(format!("Zoom {}%", self.editor_zoom.percent()));
+                            ui.separator();
+                            if self.view == DocumentView::Text {
+                                ui.label(if self.text_wrap.is_wrapped() {
+                                    "Wrap"
+                                } else {
+                                    "No Wrap"
+                                });
+                                ui.separator();
+                            }
+                            ui.label(format!("{} Mode", self.view.label()));
+                            ui.separator();
+                        }
                         ui.label(self.document.line_endings().status_label());
                         ui.separator();
                         ui.label(self.document.encoding().status_label());
@@ -1088,6 +1594,40 @@ impl NoterApp {
                     });
                 });
             });
+    }
+
+    fn status_snapshot(&mut self) -> StatusSnapshot {
+        self.status_snapshot_with(|source, selection| {
+            let (line, column) = caret_line_column(source, selection.active());
+            StatusSnapshot {
+                line,
+                column,
+                selected_characters: selected_character_count(source, selection),
+            }
+        })
+    }
+
+    fn status_snapshot_with(
+        &mut self,
+        analyze: impl FnOnce(&str, Selection) -> StatusSnapshot,
+    ) -> StatusSnapshot {
+        let revision = self.document.revision();
+        if let Some(cache) = self.status_cache
+            && cache.document_serial == self.document_editor_serial
+            && cache.revision == revision
+            && cache.selection == self.selection
+        {
+            return cache.snapshot;
+        }
+
+        let snapshot = analyze(&self.text, self.selection);
+        self.status_cache = Some(StatusCache {
+            document_serial: self.document_editor_serial,
+            revision,
+            selection: self.selection,
+            snapshot,
+        });
+        snapshot
     }
 
     fn show_format_toolbar(&mut self, ui: &mut egui::Ui) {
@@ -1109,6 +1649,32 @@ impl NoterApp {
             });
     }
 
+    fn show_find_bar(&mut self, ui: &mut egui::Ui) {
+        let action = self
+            .find_bar
+            .show(ui, self.document.revision(), &self.text, self.selection);
+        if let Some(action) = action {
+            self.execute_find_bar_action(action, edit_timestamp(ui));
+        }
+    }
+
+    fn show_go_to_line(&mut self, context: &egui::Context) {
+        let Some(action) = self.go_to_line.show(context, &self.text) else {
+            return;
+        };
+        match action {
+            GoToLineAction::Navigate(offset) => {
+                self.selection = Selection::caret(offset);
+                self.pending_selection_restore = Some(self.selection);
+                self.preserve_focus_on_selection_restore = false;
+            }
+            GoToLineAction::Close => {
+                self.pending_selection_restore = Some(self.selection);
+                self.preserve_focus_on_selection_restore = false;
+            }
+        }
+    }
+
     fn show_editor(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
             .frame(
@@ -1117,6 +1683,7 @@ impl NoterApp {
                     .inner_margin(egui::Margin::same(12)),
             )
             .show(ui, |ui| {
+                apply_editor_zoom(ui.style_mut(), self.editor_zoom);
                 let outcome = match self.view {
                     DocumentView::Text => self.show_text_editor(ui),
                     DocumentView::Markdown => self.show_markdown_editor(ui),
@@ -1195,38 +1762,55 @@ impl NoterApp {
 
     fn show_text_editor(&mut self, ui: &mut egui::Ui) -> EditorFrameOutcome {
         let observed_at = edit_timestamp(ui);
+        let origin = direct_input_origin(ui, EditOrigin::TextInput);
         let editor_id = self.editor_id();
         let restored_selection = self
             .pending_selection_restore
             .take()
             .map(|pending| valid_selection_or_end(&self.text, pending));
+        let restore_focus = restored_selection.is_some()
+            && !std::mem::take(&mut self.preserve_focus_on_selection_restore);
         let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
         if let Some(selection) = restored_selection {
             if let Some(cursor_range) = cursor_range_from_selection(&self.text, selection) {
                 state.cursor.set_char_range(Some(cursor_range));
             }
-            // Install the restored selection and focus before TextEdit consumes
-            // this frame, so the first keystroke after Undo or a mode change
-            // applies at the visible selection.
-            ui.memory_mut(|memory| memory.request_focus(editor_id));
+            // Install the restored selection before TextEdit consumes this
+            // frame. Undo and mode changes also restore editor focus; Find and
+            // Replace keep focus in their non-modal controls.
+            if restore_focus {
+                ui.memory_mut(|memory| memory.request_focus(editor_id));
+            }
         }
         state.clear_undoer();
         egui::TextEdit::store_state(ui.ctx(), editor_id, state);
 
-        let response = egui::ScrollArea::vertical()
-            .show(ui, |ui| {
-                ui.add_sized(
-                    ui.available_size(),
-                    egui::TextEdit::multiline(&mut self.text)
-                        .id(editor_id)
-                        .font(egui::TextStyle::Monospace)
-                        .code_editor()
-                        .frame(egui::Frame::NONE)
-                        .lock_focus(true),
-                )
-            })
-            .inner;
-        if restored_selection.is_some() {
+        let viewport_size = ui.available_size();
+        let desired_width = if self.text_wrap.is_wrapped() {
+            viewport_size.x
+        } else {
+            f32::INFINITY
+        };
+        let editor = egui::TextEdit::multiline(&mut self.text)
+            .id(editor_id)
+            .font(egui::TextStyle::Monospace)
+            .code_editor()
+            .desired_width(desired_width)
+            .min_size(viewport_size)
+            .frame(egui::Frame::NONE)
+            .lock_focus(true);
+        let response = if self.text_wrap.is_wrapped() {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| ui.add(editor))
+                .inner
+        } else {
+            egui::ScrollArea::both()
+                .auto_shrink([false, false])
+                .show(ui, |ui| ui.add(editor))
+                .inner
+        };
+        if restore_focus {
             // A mode/menu pointer click can surrender focus during TextEdit's
             // interaction pass. Reassert it after the widget as well.
             response.request_focus();
@@ -1246,7 +1830,7 @@ impl NoterApp {
         EditorFrameOutcome {
             changed: response.changed(),
             selection,
-            origin: EditOrigin::TextInput,
+            origin,
             observed_at,
         }
     }
@@ -1254,9 +1838,12 @@ impl NoterApp {
     fn show_markdown_editor(&mut self, ui: &mut egui::Ui) -> EditorFrameOutcome {
         let observed_at = edit_timestamp(ui);
         if let Some(pending) = self.pending_selection_restore.take() {
-            let _ = self
-                .markdown_editor
-                .restore_source_selection(&self.text, pending);
+            let restore_focus = !std::mem::take(&mut self.preserve_focus_on_selection_restore);
+            let _ = self.markdown_editor.restore_source_selection_with_focus(
+                &self.text,
+                pending,
+                restore_focus,
+            );
         }
         let outcome = egui::ScrollArea::vertical()
             .show(ui, |ui| {
@@ -1293,11 +1880,20 @@ impl NoterApp {
 
     fn render_frame(&mut self, ui: &mut egui::Ui) {
         let mut file_command = Self::collect_shortcut(ui);
-        let mut edit_command = Self::collect_edit_shortcut(ui);
-        self.show_menu(ui, &mut file_command, &mut edit_command);
+        let mut view_command = Self::collect_view_shortcut(ui);
+        let document_history_shortcuts_enabled =
+            !self.find_bar.owns_text_focus(ui.ctx()) && !self.go_to_line.owns_text_focus(ui.ctx());
+        let text_mode_shortcuts_enabled =
+            document_history_shortcuts_enabled && self.view == DocumentView::Text;
+        let mut edit_command = Self::collect_edit_shortcut(
+            ui,
+            document_history_shortcuts_enabled,
+            text_mode_shortcuts_enabled,
+        );
+        self.show_menu(ui, &mut file_command, &mut edit_command, &mut view_command);
         self.show_error(ui);
         let commands_enabled =
-            self.pending_hard_link_save.is_none() && self.pending_abandon.is_none();
+            self.pending_hard_link_save.is_none() && self.lifecycle.pending_intent().is_none();
         let edit_executed = if commands_enabled {
             edit_command.take().is_some_and(|command| {
                 self.execute_edit_command(command);
@@ -1306,6 +1902,10 @@ impl NoterApp {
         } else {
             false
         };
+        if commands_enabled && let Some(command) = view_command {
+            self.execute_view_command(command);
+        }
+        self.show_find_bar(ui);
         self.show_format_toolbar(ui);
         self.show_status(ui);
         self.show_editor(ui);
@@ -1320,6 +1920,7 @@ impl NoterApp {
         self.update_title(ui.ctx());
         self.show_about(ui.ctx());
         self.show_updates(ui.ctx());
+        self.show_go_to_line(ui.ctx());
         if self.pending_hard_link_save.is_some() {
             self.show_hard_link_confirmation(ui.ctx());
         } else {
@@ -1395,10 +1996,33 @@ fn preferred_view_for_path(path: &std::path::Path) -> DocumentView {
     }
 }
 
+const fn pending_abandon_prompt(action: PendingAbandonAction) -> &'static str {
+    match action {
+        PendingAbandonAction::New => "Save your changes before creating a new document?",
+        PendingAbandonAction::Open => "Save your changes before opening another file?",
+        PendingAbandonAction::Reload => "Save your changes before reloading from disk?",
+        PendingAbandonAction::Quit => "Save your changes before closing Noter?",
+    }
+}
+
 fn edit_timestamp(ui: &egui::Ui) -> EditTimestamp {
     let seconds = ui.input(|input| input.time);
     let elapsed = Duration::try_from_secs_f64(seconds).unwrap_or_default();
     EditTimestamp::new(elapsed)
+}
+
+fn direct_input_origin(ui: &egui::Ui, fallback: EditOrigin) -> EditOrigin {
+    ui.input(|input| {
+        if input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Paste(_)))
+        {
+            EditOrigin::Paste
+        } else {
+            fallback
+        }
+    })
 }
 
 fn char_index_to_byte(source: &str, character: usize) -> usize {
@@ -1406,6 +2030,56 @@ fn char_index_to_byte(source: &str, character: usize) -> usize {
         .char_indices()
         .nth(character)
         .map_or(source.len(), |(offset, _)| offset)
+}
+
+fn byte_at_or_before(source: &str, position: usize) -> usize {
+    let mut position = position.min(source.len());
+    while !source.is_char_boundary(position) {
+        position = position.saturating_sub(1);
+    }
+    position
+}
+
+fn caret_line_column(source: &str, position: usize) -> (usize, usize) {
+    let position = byte_at_or_before(source, position);
+    let mut line = 1_usize;
+    let mut column = 1_usize;
+    let mut characters = source[..position].chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '\r' => {
+                if characters.peek() == Some(&'\n') {
+                    characters.next();
+                }
+                line = line.saturating_add(1);
+                column = 1;
+            }
+            '\n' => {
+                line = line.saturating_add(1);
+                column = 1;
+            }
+            _ => column = column.saturating_add(1),
+        }
+    }
+    (line, column)
+}
+
+fn selected_character_count(source: &str, selection: Selection) -> usize {
+    let range = selection.ordered_range();
+    source
+        .get(range.start()..range.end())
+        .map_or(0, |selected| selected.chars().count())
+}
+
+fn projected_replacement_length(
+    source_len: usize,
+    range: TextRange,
+    replacement_len: usize,
+) -> Option<usize> {
+    let removed = range.end().checked_sub(range.start())?;
+    source_len
+        .checked_sub(removed)?
+        .checked_add(replacement_len)
 }
 
 fn selection_from_cursor_range(source: &str, range: egui::text::CCursorRange) -> Selection {
@@ -1447,7 +2121,7 @@ const fn selection_is_valid(source: &str, selection: Selection) -> bool {
 
 fn markdown_limit_message(byte_len: usize, limit: MarkdownProjectionLimit) -> String {
     format!(
-        "Markdown Mode is unavailable because this pre-alpha renderer would exceed its {}. This {byte_len}-byte source remains fully available in Text Mode and can be edited there.",
+        "Markdown Mode is unavailable because the current bounded renderer would exceed its {}. This {byte_len}-byte source remains fully available in Text Mode and can be edited there.",
         limit.description()
     )
 }
@@ -1531,6 +2205,11 @@ impl eframe::App for NoterApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string(THEME_STORAGE_KEY, self.theme.storage_value().to_owned());
+        storage.set_string(
+            WORD_WRAP_STORAGE_KEY,
+            self.text_wrap.storage_value().to_owned(),
+        );
+        storage.set_string(ZOOM_STORAGE_KEY, self.editor_zoom.storage_value());
     }
 }
 
@@ -1680,10 +2359,51 @@ mod tests {
     }
 
     fn collect_edit_shortcut_from_input(input: egui::RawInput) -> Option<EditCommand> {
+        collect_edit_shortcut_from_input_with_availability(input, true, true)
+    }
+
+    fn collect_edit_shortcut_from_input_with_history(
+        input: egui::RawInput,
+        document_history_shortcuts_enabled: bool,
+    ) -> Option<EditCommand> {
+        collect_edit_shortcut_from_input_with_availability(
+            input,
+            document_history_shortcuts_enabled,
+            document_history_shortcuts_enabled,
+        )
+    }
+
+    fn collect_edit_shortcut_from_input_with_availability(
+        input: egui::RawInput,
+        document_history_shortcuts_enabled: bool,
+        text_mode_shortcuts_enabled: bool,
+    ) -> Option<EditCommand> {
         let context = egui::Context::default();
         let mut command = None;
-        let _ = context.run_ui(input, |ui| command = NoterApp::collect_edit_shortcut(ui));
+        let _ = context.run_ui(input, |ui| {
+            command = NoterApp::collect_edit_shortcut(
+                ui,
+                document_history_shortcuts_enabled,
+                text_mode_shortcuts_enabled,
+            );
+        });
         command
+    }
+
+    fn collect_view_shortcut_from_input(input: egui::RawInput) -> Option<ViewCommand> {
+        let context = egui::Context::default();
+        let mut command = None;
+        let _ = context.run_ui(input, |ui| {
+            command = NoterApp::collect_view_shortcut(ui);
+        });
+        command
+    }
+
+    fn direct_origin_from_input(input: egui::RawInput, fallback: EditOrigin) -> EditOrigin {
+        let context = egui::Context::default();
+        let mut origin = fallback;
+        let _ = context.run_ui(input, |ui| origin = direct_input_origin(ui, fallback));
+        origin
     }
 
     fn show_menu_frame(
@@ -1694,7 +2414,8 @@ mod tests {
         context.run_ui(input, |ui| {
             let mut file_command = None;
             let mut edit_command = None;
-            app.show_menu(ui, &mut file_command, &mut edit_command);
+            let mut view_command = None;
+            app.show_menu(ui, &mut file_command, &mut edit_command, &mut view_command);
             app.apply_pending_document_view();
         })
     }
@@ -1707,6 +2428,35 @@ mod tests {
             origin,
             observed_at: EditTimestamp::default(),
         });
+    }
+
+    fn arrange_pending_intent(app: &mut NoterApp, intent: PendingAbandonAction) {
+        assert_eq!(
+            app.lifecycle.reduce(LifecycleCommand::Request {
+                intent,
+                document_dirty: true,
+                revision: app.document.revision(),
+            }),
+            LifecycleEffect::PromptDirty(intent)
+        );
+    }
+
+    fn authorize_dirty_close(app: &mut NoterApp) {
+        arrange_pending_intent(app, PendingAbandonAction::Quit);
+        assert_eq!(
+            app.lifecycle
+                .reduce(LifecycleCommand::Decide(DirtyDecision::Discard)),
+            LifecycleEffect::Continue(PendingAbandonAction::Quit)
+        );
+    }
+
+    fn arrange_saving_intent(app: &mut NoterApp, intent: PendingAbandonAction) {
+        arrange_pending_intent(app, intent);
+        assert_eq!(
+            app.lifecycle
+                .reduce(LifecycleCommand::Decide(DirtyDecision::Save)),
+            LifecycleEffect::StartSave
+        );
     }
 
     fn app_with_dismissed_uncertain_save() -> NoterApp {
@@ -1816,6 +2566,81 @@ mod tests {
     }
 
     #[test]
+    fn paste_events_are_explicit_and_other_direct_input_keeps_its_surface() {
+        let mut paste = egui::RawInput::default();
+        paste.events.push(egui::Event::Paste("content".to_owned()));
+        assert_eq!(
+            direct_origin_from_input(paste, EditOrigin::TextInput),
+            EditOrigin::Paste
+        );
+
+        let mut text = egui::RawInput::default();
+        text.events.push(egui::Event::Text("x".to_owned()));
+        assert_eq!(
+            direct_origin_from_input(text, EditOrigin::MarkdownInput),
+            EditOrigin::MarkdownInput
+        );
+    }
+
+    #[test]
+    fn status_position_handles_unicode_and_every_supported_line_ending() {
+        let source = "a\r\né\rb\nc";
+        for (position, expected) in [
+            (0, (1, 1)),
+            (1, (1, 2)),
+            (3, (2, 1)),
+            (4, (2, 1)),
+            (5, (2, 2)),
+            (6, (3, 1)),
+            (8, (4, 1)),
+            (9, (4, 2)),
+            (usize::MAX, (4, 2)),
+        ] {
+            assert_eq!(caret_line_column(source, position), expected);
+        }
+        assert_eq!(selected_character_count(source, Selection::new(8, 3)), 4);
+        assert_eq!(selected_character_count(source, Selection::new(4, 5)), 0);
+    }
+
+    #[test]
+    fn status_analysis_is_cached_by_document_revision_and_selection() {
+        use std::cell::Cell;
+
+        let mut app = NoterApp {
+            text: "one\ntwo".to_owned(),
+            selection: Selection::caret(3),
+            ..NoterApp::default()
+        };
+        app.document
+            .replace_text(&app.text)
+            .expect("fixture text should become authoritative");
+        let calls = Cell::new(0_usize);
+        let analyze = |_: &str, _: Selection| {
+            calls.set(calls.get() + 1);
+            StatusSnapshot {
+                line: calls.get(),
+                column: 1,
+                selected_characters: 0,
+            }
+        };
+
+        assert_eq!(app.status_snapshot_with(analyze).line, 1);
+        assert_eq!(app.status_snapshot_with(analyze).line, 1);
+        assert_eq!(calls.get(), 1);
+
+        app.selection = Selection::new(0, 3);
+        assert_eq!(app.status_snapshot_with(analyze).line, 2);
+        app.text.push('!');
+        app.document
+            .replace_text(&app.text)
+            .expect("fixture edit should advance its revision");
+        assert_eq!(app.status_snapshot_with(analyze).line, 3);
+        app.advance_document_editor();
+        assert_eq!(app.status_snapshot_with(analyze).line, 4);
+        assert_eq!(calls.get(), 4);
+    }
+
+    #[test]
     fn save_as_shortcut_is_checked_before_the_less_specific_save_shortcut() {
         let modifiers = egui::Modifiers {
             ctrl: true,
@@ -1885,6 +2710,7 @@ mod tests {
                 .into_iter()
                 .map(|(label, _)| label)
                 .collect::<Vec<_>>();
+            assert!(labels.contains(&"Reload from Disk".to_owned()));
 
             for file_command in [
                 FileCommand::New,
@@ -1929,6 +2755,114 @@ mod tests {
     }
 
     #[test]
+    fn select_all_and_go_to_line_use_document_command_shortcuts() {
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+
+        assert_eq!(
+            collect_edit_shortcut_from_input(shortcut_input(command, egui::Key::A)),
+            Some(EditCommand::SelectAll)
+        );
+        assert_eq!(
+            collect_edit_shortcut_from_input(shortcut_input(egui::Modifiers::CTRL, egui::Key::G,)),
+            Some(EditCommand::GoToLine)
+        );
+        assert_eq!(
+            collect_edit_shortcut_from_input_with_availability(
+                shortcut_input(command, egui::Key::A),
+                true,
+                false,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn zoom_shortcuts_share_one_bounded_view_command_path() {
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+
+        for (key, expected) in [
+            (egui::Key::Plus, ViewCommand::ZoomIn),
+            (egui::Key::Equals, ViewCommand::ZoomIn),
+            (egui::Key::Minus, ViewCommand::ZoomOut),
+            (egui::Key::Num0, ViewCommand::ResetZoom),
+        ] {
+            assert_eq!(
+                collect_view_shortcut_from_input(shortcut_input(command, key)),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn focused_find_input_retains_undo_and_redo_shortcuts() {
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+        let shifted_command = command.plus(egui::Modifiers::SHIFT);
+
+        for input in [
+            shortcut_input(command, egui::Key::Z),
+            shortcut_input(command, egui::Key::Y),
+            shortcut_input(shifted_command, egui::Key::Z),
+            shortcut_input(command, egui::Key::A),
+        ] {
+            assert_eq!(
+                collect_edit_shortcut_from_input_with_history(input, false),
+                None
+            );
+        }
+        assert_eq!(
+            collect_edit_shortcut_from_input_with_history(
+                shortcut_input(command, egui::Key::F),
+                false,
+            ),
+            Some(EditCommand::Find)
+        );
+    }
+
+    #[test]
+    fn closing_find_restores_document_focus_for_immediate_typing() {
+        let mut app = NoterApp::default();
+        app.find_bar.open(false, &app.text, app.selection);
+        app.execute_find_bar_action(FindBarAction::Close, EditTimestamp::default());
+        let context = egui::Context::default();
+
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| app.render_frame(ui));
+
+        assert!(context.memory(|memory| memory.has_focus(app.editor_id())));
+    }
+
+    #[test]
+    fn replacement_projection_is_checked_before_mutating_ui_text() {
+        assert_eq!(
+            projected_replacement_length(8, TextRange::new(2, 6), 4),
+            Some(8)
+        );
+        assert_eq!(
+            projected_replacement_length(8, TextRange::new(2, 6), 5),
+            Some(9)
+        );
+        assert_eq!(
+            projected_replacement_length(8, TextRange::new(6, 2), 1),
+            None
+        );
+        assert_eq!(
+            projected_replacement_length(usize::MAX, TextRange::new(0, 0), 1),
+            None
+        );
+    }
+
+    #[test]
     fn edit_menu_uses_platform_labels_and_history_enabled_state() {
         for (operating_system, undo_label, redo_label) in [
             (egui::os::OperatingSystem::Windows, "Ctrl+Z", "Ctrl+Y"),
@@ -1948,6 +2882,12 @@ mod tests {
                 .collect::<Vec<_>>();
             assert!(labels.contains(&"Undo".to_owned()));
             assert!(labels.contains(&"Redo".to_owned()));
+            assert!(labels.contains(&"Select All".to_owned()));
+            assert!(labels.contains(&"Find...".to_owned()));
+            assert!(labels.contains(&"Find Next".to_owned()));
+            assert!(labels.contains(&"Find Previous".to_owned()));
+            assert!(labels.contains(&"Replace...".to_owned()));
+            assert!(labels.contains(&"Go To Line...".to_owned()));
             assert!(labels.contains(&undo_label.to_owned()));
             assert!(labels.contains(&redo_label.to_owned()));
             assert!(command.is_none());
@@ -1957,6 +2897,155 @@ mod tests {
             assert!(app.history.can_undo());
             assert!(!app.history.can_redo());
         }
+    }
+
+    #[test]
+    fn select_all_restores_the_exact_text_mode_source_selection() {
+        let source = "one\r\n三";
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection: Selection::caret(2),
+            ..NoterApp::default()
+        };
+
+        app.execute_edit_command(EditCommand::SelectAll);
+
+        assert_eq!(app.selection, Selection::new(0, source.len()));
+        assert_eq!(app.pending_selection_restore, Some(app.selection));
+        assert_eq!(String::from(app.document.rope()), source);
+        assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn wrap_and_zoom_commands_never_change_document_bytes_or_revision() {
+        let source = "a long line that remains authoritative";
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            ..NoterApp::default()
+        };
+        let revision = app.document.revision();
+
+        app.execute_view_command(ViewCommand::ToggleWordWrap);
+        assert_eq!(app.text_wrap, TextWrap::Unwrapped);
+        app.execute_view_command(ViewCommand::ZoomIn);
+        assert_eq!(app.editor_zoom.percent(), 110);
+        app.execute_view_command(ViewCommand::ResetZoom);
+
+        assert_eq!(app.editor_zoom.percent(), 100);
+        assert_eq!(app.document.revision(), revision);
+        assert_eq!(String::from(app.document.rope()), source);
+        assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn markdown_mode_keeps_formatted_wrapping_and_rejects_text_only_commands() {
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            text_wrap: TextWrap::Wrapped,
+            selection: Selection::caret(0),
+            ..NoterApp::default()
+        };
+
+        app.execute_view_command(ViewCommand::ToggleWordWrap);
+        app.execute_edit_command(EditCommand::SelectAll);
+
+        assert_eq!(app.text_wrap, TextWrap::Wrapped);
+        assert_eq!(app.selection, Selection::caret(0));
+        assert_eq!(app.pending_selection_restore, None);
+    }
+
+    #[test]
+    fn find_navigation_uses_the_selected_literal_and_reports_wrap_selection() {
+        let source = "one two one";
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection: Selection::new(0, 3),
+            ..NoterApp::default()
+        };
+
+        app.execute_edit_command(EditCommand::Find);
+        app.execute_edit_command(EditCommand::FindNext);
+        assert_eq!(app.selection, Selection::new(8, 11));
+        assert_eq!(app.pending_selection_restore, Some(app.selection));
+        assert!(app.preserve_focus_on_selection_restore);
+
+        app.execute_edit_command(EditCommand::FindNext);
+        assert_eq!(app.selection, Selection::new(0, 3));
+        app.execute_edit_command(EditCommand::FindPrevious);
+        assert_eq!(app.selection, Selection::new(8, 11));
+        assert_eq!(app.document.rope().to_string(), source);
+        assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn replace_and_replace_all_are_distinct_revision_checked_undo_steps() {
+        let source = "cat cat";
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection: Selection::new(0, 3),
+            ..NoterApp::default()
+        };
+
+        app.execute_edit_command(EditCommand::Replace);
+        app.replace_selected_match(EditTimestamp::default());
+        assert_eq!(app.text, " cat");
+        assert_eq!(app.document.rope().to_string(), " cat");
+        assert_eq!(app.history.len(), 1);
+        app.execute_edit_command(EditCommand::Undo);
+        assert_eq!(app.text, source);
+
+        app.selection = Selection::new(0, source.len());
+        app.replace_all_matches(EditTimestamp::default());
+        assert_eq!(app.text, " ");
+        assert_eq!(app.document.rope().to_string(), " ");
+        assert_eq!(app.history.len(), 1);
+        assert_eq!(app.selection, Selection::new(0, 1));
+        app.execute_edit_command(EditCommand::Undo);
+        assert_eq!(app.text, source);
+        assert_eq!(app.selection, Selection::new(0, source.len()));
+    }
+
+    #[test]
+    fn app_typing_coalesces_but_paste_remains_a_separate_undo_step() {
+        let mut app = NoterApp::default();
+        for (text, selection, origin, time) in [
+            (
+                "a",
+                Selection::caret(1),
+                EditOrigin::TextInput,
+                Duration::from_millis(0),
+            ),
+            (
+                "ab",
+                Selection::caret(2),
+                EditOrigin::TextInput,
+                Duration::from_millis(100),
+            ),
+            (
+                "abc",
+                Selection::caret(3),
+                EditOrigin::Paste,
+                Duration::from_millis(200),
+            ),
+        ] {
+            app.text = text.to_owned();
+            app.record_editor_change(EditorFrameOutcome {
+                changed: true,
+                selection,
+                origin,
+                observed_at: EditTimestamp::new(time),
+            });
+        }
+
+        assert_eq!(app.history.len(), 2);
+        app.execute_edit_command(EditCommand::Undo);
+        assert_eq!(app.text, "ab");
+        app.execute_edit_command(EditCommand::Undo);
+        assert_eq!(app.text, "");
     }
 
     #[test]
@@ -2132,7 +3221,10 @@ mod tests {
             app.request_close(ui.ctx());
         });
         assert!(app.document.is_dirty());
-        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::Quit));
+        assert_eq!(
+            app.lifecycle.pending_intent(),
+            Some(PendingAbandonAction::Quit)
+        );
         assert!(
             output.viewport_output[&egui::ViewportId::ROOT]
                 .commands
@@ -2200,7 +3292,8 @@ mod tests {
         let output = context.run_ui(input, |ui| {
             let mut file_command = None;
             let mut edit_command = None;
-            app.show_menu(ui, &mut file_command, &mut edit_command);
+            let mut view_command = None;
+            app.show_menu(ui, &mut file_command, &mut edit_command, &mut view_command);
         });
         let text = rendered_text(&output);
         let file = text_position(&text, "File");
@@ -2606,11 +3699,15 @@ mod tests {
             .replace_text(&app.text)
             .expect("the test edit should advance the document revision");
 
-        app.request_new_document();
+        let context = egui::Context::default();
+        app.request_new_document(&context);
         assert_eq!(app.text, "unsaved text");
         assert_eq!(String::from(app.document.rope()), "unsaved text");
         assert!(app.document.is_dirty());
-        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::New));
+        assert_eq!(
+            app.lifecycle.pending_intent(),
+            Some(PendingAbandonAction::New)
+        );
         assert!(app.error_msg.is_none());
     }
 
@@ -2624,12 +3721,54 @@ mod tests {
             .replace_text(&app.text)
             .expect("the test edit should advance the document revision");
 
-        app.request_open();
+        let context = egui::Context::default();
+        app.request_open(&context);
 
         assert_eq!(app.text, "unsaved text");
         assert!(app.document.is_dirty());
-        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::Open));
+        assert_eq!(
+            app.lifecycle.pending_intent(),
+            Some(PendingAbandonAction::Open)
+        );
         assert!(app.error_msg.is_none());
+    }
+
+    #[test]
+    fn reload_reads_a_clean_path_and_routes_dirty_work_through_the_same_decision()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let path = directory.path().join("reload.txt");
+        fs::write(&path, b"first")?;
+        let document = Document::from_path(&path)?;
+        let mut app = NoterApp {
+            text: "first".to_owned(),
+            document,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+
+        fs::write(&path, b"second")?;
+        app.request_reload(&context);
+        assert_eq!(app.text, "second");
+        assert!(!app.document.is_dirty());
+
+        app.text = "unsaved".to_owned();
+        app.document.replace_text(&app.text)?;
+        fs::write(&path, b"third")?;
+        app.request_reload(&context);
+        assert_eq!(app.text, "unsaved");
+        assert_eq!(
+            app.lifecycle.pending_intent(),
+            Some(PendingAbandonAction::Reload)
+        );
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            app.discard_pending_abandon(ui.ctx());
+        });
+        assert_eq!(app.text, "third");
+        assert!(!app.document.is_dirty());
+        assert!(app.lifecycle.pending_intent().is_none());
+        Ok(())
     }
 
     #[test]
@@ -2640,7 +3779,8 @@ mod tests {
         };
         let previous_editor_id = app.editor_id();
 
-        app.request_new_document();
+        let context = egui::Context::default();
+        app.request_new_document(&context);
         assert!(app.text.is_empty());
         assert_eq!(app.document.rope().len_bytes(), 0);
         assert!(!app.document.is_dirty());
@@ -2667,7 +3807,10 @@ mod tests {
 
         assert!(commands.contains(&egui::ViewportCommand::CancelClose));
         assert!(!commands.contains(&egui::ViewportCommand::Close));
-        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::Quit));
+        assert_eq!(
+            app.lifecycle.pending_intent(),
+            Some(PendingAbandonAction::Quit)
+        );
         assert!(app.error_msg.is_none());
     }
 
@@ -2694,7 +3837,10 @@ mod tests {
             .commands;
 
         assert!(commands.contains(&egui::ViewportCommand::CancelClose));
-        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::Quit));
+        assert_eq!(
+            app.lifecycle.pending_intent(),
+            Some(PendingAbandonAction::Quit)
+        );
         assert!(app.error_msg.is_none());
     }
 
@@ -2716,7 +3862,7 @@ mod tests {
             .commands;
 
         assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
-        assert!(app.pending_abandon.is_none());
+        assert!(app.lifecycle.pending_intent().is_none());
     }
 
     #[test]
@@ -2739,18 +3885,16 @@ mod tests {
             .commands;
 
         assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
-        assert!(app.pending_abandon.is_none());
+        assert!(app.lifecycle.pending_intent().is_none());
     }
 
     #[test]
     fn native_close_guard_allows_a_confirmed_dirty_close() {
-        let mut app = NoterApp {
-            allow_dirty_close: true,
-            ..NoterApp::default()
-        };
+        let mut app = NoterApp::default();
         app.document
             .replace_text("discarded text")
             .expect("the test edit should advance the document revision");
+        authorize_dirty_close(&mut app);
         let context = egui::Context::default();
         let mut input = egui::RawInput::default();
         input
@@ -2768,7 +3912,7 @@ mod tests {
             .commands;
 
         assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
-        assert!(app.pending_abandon.is_none());
+        assert!(app.lifecycle.pending_intent().is_none());
     }
 
     #[test]
@@ -2777,7 +3921,7 @@ mod tests {
         app.document
             .replace_text("unsaved text")
             .expect("the test edit should advance the document revision");
-        app.pending_abandon = Some(PendingAbandonAction::Quit);
+        arrange_pending_intent(&mut app, PendingAbandonAction::Quit);
         let context = egui::Context::default();
 
         let output = context.run_ui(egui::RawInput::default(), |ui| {
@@ -2790,8 +3934,8 @@ mod tests {
             .commands;
 
         assert!(commands.contains(&egui::ViewportCommand::Close));
-        assert!(app.allow_dirty_close);
-        assert!(app.pending_abandon.is_none());
+        assert!(app.lifecycle.close_authorized(app.document.revision()));
+        assert!(app.lifecycle.pending_intent().is_none());
     }
 
     #[test]
@@ -2800,13 +3944,13 @@ mod tests {
         app.document
             .replace_text("unsaved text")
             .expect("the test edit should advance the document revision");
-        app.pending_abandon = Some(PendingAbandonAction::Quit);
+        arrange_pending_intent(&mut app, PendingAbandonAction::Quit);
 
         app.cancel_pending_abandon();
 
         assert!(app.document.is_dirty());
-        assert!(app.pending_abandon.is_none());
-        assert!(!app.allow_dirty_close);
+        assert!(app.lifecycle.pending_intent().is_none());
+        assert!(!app.lifecycle.close_authorized(app.document.revision()));
     }
 
     #[test]
@@ -2833,8 +3977,8 @@ mod tests {
             let mut app = app_with_dismissed_uncertain_save();
             let context = egui::Context::default();
             match trigger {
-                Trigger::New => app.request_new_document(),
-                Trigger::Open => app.request_open(),
+                Trigger::New => app.request_new_document(&context),
+                Trigger::Open => app.request_open(&context),
                 Trigger::Quit => {
                     let _ = context.run_ui(egui::RawInput::default(), |ui| {
                         app.request_close(ui.ctx());
@@ -2861,7 +4005,7 @@ mod tests {
 
             app.cancel_pending_abandon();
 
-            assert!(app.pending_abandon.is_none());
+            assert!(app.lifecycle.pending_intent().is_none());
             assert_eq!(app.error_msg.as_deref(), Some(recovery.as_str()));
             assert_eq!(app.save_recovery_msg.as_deref(), Some(recovery.as_str()));
         }
@@ -2901,7 +4045,7 @@ mod tests {
         app.document
             .replace_text(&app.text)
             .expect("the test edit should advance the document revision");
-        app.pending_abandon = Some(PendingAbandonAction::New);
+        arrange_pending_intent(&mut app, PendingAbandonAction::New);
         let context = egui::Context::default();
 
         let _ = context.run_ui(egui::RawInput::default(), |ui| {
@@ -2911,8 +4055,8 @@ mod tests {
         assert!(app.text.is_empty());
         assert_eq!(app.document.rope().len_bytes(), 0);
         assert!(!app.document.is_dirty());
-        assert!(app.pending_abandon.is_none());
-        assert!(!app.allow_dirty_close);
+        assert!(app.lifecycle.pending_intent().is_none());
+        assert!(!app.lifecycle.close_authorized(app.document.revision()));
     }
 
     #[test]
@@ -2925,9 +4069,9 @@ mod tests {
         let mut app = NoterApp {
             text: "new text".to_owned(),
             document,
-            pending_abandon: Some(PendingAbandonAction::Quit),
             ..NoterApp::default()
         };
+        arrange_pending_intent(&mut app, PendingAbandonAction::Quit);
         let context = egui::Context::default();
 
         let output = context.run_ui(egui::RawInput::default(), |ui| {
@@ -2941,16 +4085,16 @@ mod tests {
 
         assert_eq!(fs::read(&path)?, b"new text");
         assert!(!app.document.is_dirty());
-        assert!(app.pending_abandon.is_none());
+        assert!(app.lifecycle.pending_intent().is_none());
         #[cfg(windows)]
         {
             assert!(app.error_msg.is_none());
-            assert!(app.allow_dirty_close);
+            assert!(app.lifecycle.close_authorized(app.document.revision()));
             assert!(commands.contains(&egui::ViewportCommand::Close));
         }
         #[cfg(unix)]
         {
-            assert!(!app.allow_dirty_close);
+            assert!(!app.lifecycle.close_authorized(app.document.revision()));
             assert!(!commands.contains(&egui::ViewportCommand::Close));
             assert!(
                 app.error_msg
@@ -2967,7 +4111,7 @@ mod tests {
         app.document
             .replace_text("unsaved text")
             .expect("the test edit should advance the document revision");
-        app.pending_abandon = Some(PendingAbandonAction::New);
+        arrange_pending_intent(&mut app, PendingAbandonAction::New);
         let context = egui::Context::default();
 
         let output = context.run_ui(egui::RawInput::default(), |ui| {
@@ -2981,7 +4125,10 @@ mod tests {
 
         assert!(commands.is_empty());
         assert!(app.document.is_dirty());
-        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::New));
+        assert_eq!(
+            app.lifecycle.pending_intent(),
+            Some(PendingAbandonAction::New)
+        );
     }
 
     #[test]
@@ -2990,9 +4137,9 @@ mod tests {
             error_msg: Some(
                 "Saved, but follow-up is required: inspect retained artifact".to_owned(),
             ),
-            pending_abandon: Some(PendingAbandonAction::Quit),
             ..NoterApp::default()
         };
+        arrange_saving_intent(&mut app, PendingAbandonAction::Quit);
         let context = egui::Context::default();
 
         let output = context.run_ui(egui::RawInput::default(), |ui| {
@@ -3005,8 +4152,8 @@ mod tests {
             .commands;
 
         assert!(commands.is_empty());
-        assert!(app.pending_abandon.is_none());
-        assert!(!app.allow_dirty_close);
+        assert!(app.lifecycle.pending_intent().is_none());
+        assert!(!app.lifecycle.close_authorized(app.document.revision()));
         assert!(app.error_msg.is_some());
     }
 
@@ -3036,7 +4183,10 @@ mod tests {
         assert!(app.document.is_dirty());
         assert!(commands.contains(&egui::ViewportCommand::CancelClose));
         assert!(!commands.contains(&egui::ViewportCommand::Close));
-        assert_eq!(app.pending_abandon, Some(PendingAbandonAction::Quit));
+        assert_eq!(
+            app.lifecycle.pending_intent(),
+            Some(PendingAbandonAction::Quit)
+        );
     }
 
     #[test]
