@@ -205,6 +205,9 @@ release, so current work remains under Unreleased.
 
 ### Engineering
 
+- Make Undo and Redo shortcut tests select the simulated operating system
+  explicitly, so Windows and macOS conventions are verified independently of
+  the runner host.
 - Add public contribution and development guides and require them in the CI
   documentation inventory. Local documentation validation now checks
   GitHub-style heading fragments and rejects links that escape the repository

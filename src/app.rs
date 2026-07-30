@@ -2410,6 +2410,19 @@ mod tests {
         collect_edit_shortcut_from_input_with_availability(input, true, true)
     }
 
+    fn collect_edit_shortcut_from_input_for_os(
+        input: egui::RawInput,
+        operating_system: egui::os::OperatingSystem,
+    ) -> Option<EditCommand> {
+        let context = egui::Context::default();
+        context.set_os(operating_system);
+        let mut command = None;
+        let _ = context.run_ui(input, |ui| {
+            command = NoterApp::collect_edit_shortcut(ui, true, true);
+        });
+        command
+    }
+
     fn collect_edit_shortcut_from_input_with_history(
         input: egui::RawInput,
         document_history_shortcuts_enabled: bool,
@@ -2814,23 +2827,50 @@ mod tests {
 
     #[test]
     fn undo_and_redo_shortcuts_accept_platform_command_conventions() {
-        let command = egui::Modifiers {
+        let windows_command = egui::Modifiers {
             ctrl: true,
             command: true,
             ..egui::Modifiers::NONE
         };
-        let shifted_command = command.plus(egui::Modifiers::SHIFT);
+        let mac_command = egui::Modifiers {
+            mac_cmd: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
 
         assert_eq!(
-            collect_edit_shortcut_from_input(shortcut_input(command, egui::Key::Z)),
+            collect_edit_shortcut_from_input_for_os(
+                shortcut_input(windows_command, egui::Key::Z),
+                egui::os::OperatingSystem::Windows,
+            ),
             Some(EditCommand::Undo)
         );
         assert_eq!(
-            collect_edit_shortcut_from_input(shortcut_input(command, egui::Key::Y)),
+            collect_edit_shortcut_from_input_for_os(
+                shortcut_input(windows_command, egui::Key::Y),
+                egui::os::OperatingSystem::Windows,
+            ),
             Some(EditCommand::Redo)
         );
         assert_eq!(
-            collect_edit_shortcut_from_input(shortcut_input(shifted_command, egui::Key::Z)),
+            collect_edit_shortcut_from_input_for_os(
+                shortcut_input(windows_command.plus(egui::Modifiers::SHIFT), egui::Key::Z,),
+                egui::os::OperatingSystem::Windows,
+            ),
+            Some(EditCommand::Redo)
+        );
+        assert_eq!(
+            collect_edit_shortcut_from_input_for_os(
+                shortcut_input(mac_command, egui::Key::Z),
+                egui::os::OperatingSystem::Mac,
+            ),
+            Some(EditCommand::Undo)
+        );
+        assert_eq!(
+            collect_edit_shortcut_from_input_for_os(
+                shortcut_input(mac_command.plus(egui::Modifiers::SHIFT), egui::Key::Z),
+                egui::os::OperatingSystem::Mac,
+            ),
             Some(EditCommand::Redo)
         );
     }
