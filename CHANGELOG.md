@@ -211,11 +211,16 @@ release, so current work remains under Unreleased.
 - Route Replace and Replace All through the same revision-checked transaction
   authority, calculate bounded results before allocation, and compare literal
   search plus lifecycle command sequences with fixed-seed reference models.
-- Measure the current Windows-local tree at 95.48 percent line coverage for the
-  UI-independent trust kernel and 92.16 percent for the complete workspace.
-  The 375-test suite includes 100 percent line coverage for lifecycle and
-  logical-line navigation, 99.15 percent for transactions, 98.83 percent for
-  history, and 95.41 percent for literal search.
+- Measure the current Windows-local source checkpoint at 95.57 percent line
+  coverage for the UI-independent trust kernel and 92.20 percent for the
+  complete workspace. The 376-test suite includes 100 percent line coverage for
+  lifecycle and logical-line navigation, 99.15 percent for transactions, 98.83
+  percent for history, and 97.29 percent for literal search.
+- Record a complete 256-candidate mutation campaign for the M3 transaction,
+  Undo, literal-search, logical-line navigation, and lifecycle core. The settled
+  exact-commit run catches all 216 compiling mutations, classifies 40 genuine
+  compiler rejections, has no survivor or timeout, and passes the independent
+  infrastructure-failure validator.
 
 - Upgrade eframe and egui to 0.35 while retaining restricted features and
   enabling current shaping, hinting, theme-aware font transfer, and subpixel

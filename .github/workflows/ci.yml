@@ -203,6 +203,7 @@ jobs:
           test -s docs/BASELINE.md
           test -s docs/M1_MUTATION_EVIDENCE.md
           test -s docs/M1_SECURITY_REVIEW.md
+          test -s docs/M3_EDITING_EVIDENCE.md
           test -s docs/REQUIREMENTS.md
           test -s docs/DESIGN.md
           test -s docs/ROADMAP.md

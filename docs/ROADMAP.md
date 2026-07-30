@@ -251,13 +251,14 @@ and navigation parity are still open.
 Deterministic 512-case properties cover single replacements, ordered disjoint
 multi-edit transactions, arbitrary edit sequences, literal search, and
 lifecycle decisions against independent reference models. The current local
-tree has 375 Rust tests, 92.16 percent whole-workspace line coverage, and 95.48
-percent UI-independent trust-kernel line coverage. These measurements are not
-hosted release evidence. A reproducible exact-commit focused mutation record is
-required before the new M3 decision core is claimed as mutation-verified. This
-is not M3 completion. Clipboard and complete navigation policy, revision-safe
-background indexing, cross-platform manual evidence, and the long-session
-memory fixture remain open.
+source checkpoint has 376 Rust tests, 92.20 percent whole-workspace line
+coverage, and 95.57 percent UI-independent trust-kernel line coverage. Its
+[exact-commit M3 editing record](M3_EDITING_EVIDENCE.md) reports 256 generated
+mutations: 216 caught, 40 compiler-unviable, zero missed, and zero timed out,
+with no recognized infrastructure failure. This is focused Windows-local
+evidence, not M3 completion. Clipboard and complete navigation policy,
+revision-safe background indexing, cross-platform manual evidence, and the
+long-session memory fixture remain open.
 
 ## M4: Lifecycle, Recovery, and Conflicts
 

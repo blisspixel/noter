@@ -66,9 +66,13 @@ The current development checkpoint has:
 - one pure lifecycle reducer used by dirty New, Open, Reload, Close, and Quit,
   with Save, Discard, and Cancel effects shared by menu and native-close paths
   and correlated to the exact document revision that authorized them;
-- 375 Rust tests in the current local suite, 95.48 percent UI-independent
-  trust-kernel line coverage, and 92.16 percent whole-workspace line coverage
+- 376 Rust tests in the current local suite, 95.57 percent UI-independent
+  trust-kernel line coverage, and 92.20 percent whole-workspace line coverage
   against respective 90 and 80 percent gates;
+- a 256-candidate exact-commit M3 editing-core mutation campaign with 216
+  caught, 40 compiler-unviable, zero missed, zero timed out, and no recognized
+  infrastructure failure, recorded in
+  [M3_EDITING_EVIDENCE.md](M3_EDITING_EVIDENCE.md);
 - a historical 741-candidate supported-platform mutation union with no miss,
   timeout, infrastructure error, or scope gap; and current exact-commit scopes
   of 817 Linux, 751 Windows, and 47 macOS candidates with no miss, timeout, or
@@ -86,9 +90,9 @@ configuration, accessibility evidence, and release performance evidence also
 remain open. M1 through M4 therefore remain In Progress even where their
 current implementation slices are substantial.
 
-The 375-test and coverage measurements above describe the current local tree,
-not hosted release evidence. The M1 paragraph identifies the latest immutable
-commit whose complete hosted matrix is verified.
+The 376-test and coverage measurements above describe the current local source
+checkpoint, not hosted release evidence. The M1 paragraph identifies the latest
+immutable commit whose complete hosted matrix is verified.
 
 ## 2. Architectural principles
 

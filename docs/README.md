@@ -49,6 +49,8 @@ each topic.
 - [M1 security review](M1_SECURITY_REVIEW.md) and
   [mutation evidence](M1_MUTATION_EVIDENCE.md) record durable-save review
   results.
+- [M3 editing evidence](M3_EDITING_EVIDENCE.md) records the exact-commit
+  transaction, Undo, search, navigation, and lifecycle mutation campaign.
 - [Architecture and product review](RIGOROUS_REVIEW.md) tracks the highest-risk
   remaining work and historical dispositions.
 - The root [changelog](../CHANGELOG.md) records notable implementation changes.
