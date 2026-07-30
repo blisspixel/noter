@@ -18,7 +18,7 @@ pub const DEFAULT_MAX_HISTORY_BYTES: usize = 32 * 1024 * 1024;
 /// Maximum elapsed time between direct edits in one Undo transaction.
 pub const DEFAULT_EDIT_COALESCING_WINDOW: Duration = Duration::from_millis(750);
 /// Maximum source bytes retained by one coalesced direct-edit transaction.
-pub const DEFAULT_MAX_COALESCED_EDIT_BYTES: usize = 16 * 1024;
+pub const DEFAULT_MAX_COALESCED_EDIT_BYTES: usize = 16_384;
 
 /// Independent count and memory ceilings for edit history.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

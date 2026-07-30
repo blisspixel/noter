@@ -34,19 +34,18 @@ pub fn line_start_offset(source: &str, requested: usize) -> Result<usize, LineNa
         return Ok(0);
     }
 
-    let bytes = source.as_bytes();
-    let mut offset = 0_usize;
+    let mut bytes = source.bytes().enumerate().peekable();
     let mut current_line = 1_usize;
-    while offset < bytes.len() {
-        let starts_line_ending = matches!(bytes[offset], b'\r' | b'\n');
-        let ending_length =
-            usize::from(bytes[offset] == b'\r' && bytes.get(offset + 1) == Some(&b'\n')) + 1;
-        offset += if starts_line_ending { ending_length } else { 1 };
-        if starts_line_ending {
-            current_line += 1;
-            if current_line == requested {
-                return Ok(offset);
-            }
+    while let Some((_, byte)) = bytes.next() {
+        if byte == b'\r' && bytes.peek().is_some_and(|(_, next)| *next == b'\n') {
+            bytes.next();
+        } else if byte != b'\r' && byte != b'\n' {
+            continue;
+        }
+
+        current_line += 1;
+        if current_line == requested {
+            return Ok(bytes.peek().map_or(source.len(), |(offset, _)| *offset));
         }
     }
 

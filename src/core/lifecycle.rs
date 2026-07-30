@@ -149,11 +149,6 @@ impl LifecycleState {
             LifecyclePhase::Prompting { .. } | LifecyclePhase::Saving { .. } => {
                 return LifecycleEffect::None;
             }
-            LifecyclePhase::Closing { revision: approved }
-                if intent == DestructiveIntent::Quit && approved == revision && !document_dirty =>
-            {
-                return LifecycleEffect::Continue(intent);
-            }
             LifecyclePhase::Idle | LifecyclePhase::Closing { .. } => {
                 self.phase = LifecyclePhase::Idle;
             }
@@ -431,6 +426,20 @@ mod tests {
             LifecycleEffect::PromptDirty(DestructiveIntent::Quit)
         );
         assert!(!state.close_authorized(INITIAL));
+    }
+
+    #[test]
+    fn repeated_clean_quit_request_preserves_exact_revision_authorization() {
+        let mut state = LifecycleState::default();
+        assert_eq!(
+            state.reduce(request(false, DestructiveIntent::Quit)),
+            LifecycleEffect::Continue(DestructiveIntent::Quit)
+        );
+        assert_eq!(
+            state.reduce(request(false, DestructiveIntent::Quit)),
+            LifecycleEffect::Continue(DestructiveIntent::Quit)
+        );
+        assert!(state.close_authorized(INITIAL));
     }
 
     #[test]

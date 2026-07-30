@@ -5,11 +5,11 @@ use thiserror::Error;
 
 use super::edit::TextRange;
 /// Maximum UTF-8 byte length accepted for one literal query.
-pub const MAX_LITERAL_QUERY_BYTES: usize = 16 * 1024;
+pub const MAX_LITERAL_QUERY_BYTES: usize = 16_384;
 /// Maximum UTF-8 byte length accepted for one literal replacement.
-pub const MAX_LITERAL_REPLACEMENT_BYTES: usize = 16 * 1024;
-const MAX_COMPILED_PATTERN_BYTES: usize = 4 * 1024 * 1024;
-const MAX_DFA_CACHE_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_LITERAL_REPLACEMENT_BYTES: usize = 16_384;
+const MAX_COMPILED_PATTERN_BYTES: usize = 4_194_304;
+const MAX_DFA_CACHE_BYTES: usize = 2_097_152;
 
 /// Whether literal matching distinguishes Unicode letter case.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash, Debug)]
@@ -396,8 +396,14 @@ mod tests {
             LiteralSearch::new("two", MatchCase::Sensitive).expect("fixture query should compile");
         let source = "two one two three two";
 
+        let second = search
+            .navigate(source, 1, SearchDirection::Next)
+            .expect("the second match should be selected");
+        assert_eq!(second.ordinal(), 2);
+        assert_eq!(second.match_count(), 3);
+
         assert_eq!(
-            search.navigate(source, 1, SearchDirection::Next),
+            Some(second),
             Some(SearchNavigation {
                 range: TextRange::new(8, 11),
                 ordinal: 2,
