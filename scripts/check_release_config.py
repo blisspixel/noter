@@ -419,6 +419,11 @@ def validate_license_inventory(
         (template, "{{#each licenses}}", "distinct source-license iteration"),
         (template, "{{#each used_by}}", "per-license package mapping"),
         (
+            template,
+            '<li class="license-user">{{crate.name}} {{crate.version}}</li>',
+            "stable per-license package identity",
+        ),
+        (
             inventory,
             "<h1>Noter third-party licenses</h1>",
             "generated license inventory heading",
@@ -456,6 +461,10 @@ def validate_license_inventory(
         errors.append("third-party inventory collapses distinct source license texts")
     if inventory.count('<li class="license-user">') < 100:
         errors.append("third-party inventory omits per-license package mappings")
+    if "crate.repository" in template:
+        errors.append(
+            "per-license package mapping must not render unstable repository metadata"
+        )
     try:
         configured_targets = tomllib.loads(about_config)["targets"]
     except (tomllib.TOMLDecodeError, KeyError, TypeError):
