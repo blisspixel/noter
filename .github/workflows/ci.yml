@@ -245,7 +245,13 @@ jobs:
           cargo install cargo-about --version 0.9.1 --locked --features cli
           python3 scripts/generate_third_party_licenses.py \
             --output "$RUNNER_TEMP/THIRD-PARTY-LICENSES.html"
-          cmp THIRD-PARTY-LICENSES.html "$RUNNER_TEMP/THIRD-PARTY-LICENSES.html"
+          if ! cmp THIRD-PARTY-LICENSES.html "$RUNNER_TEMP/THIRD-PARTY-LICENSES.html"; then
+            diff --text --unified=3 \
+              THIRD-PARTY-LICENSES.html \
+              "$RUNNER_TEMP/THIRD-PARTY-LICENSES.html" \
+              | head -c 65536 || true
+            exit 1
+          fi
       - name: Lint repository validation scripts
         run: |
           python3 -m pip install --disable-pip-version-check ruff==0.15.16
