@@ -8,6 +8,7 @@ import re
 import stat
 import tomllib
 import xml.etree.ElementTree as element_tree
+from hashlib import sha256
 from pathlib import Path
 
 
@@ -33,7 +34,26 @@ PINNED_INSTALLERS = {
     "6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31",
 }
 PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+REVIEWED_RELEASE_WORKFLOW_SHA256 = (
+    "c39972289876cca69a61373cfc71abc2027e221a8bb0227e05fe393fb0b1b9f4"
+)
+REVIEWED_WIX_SHA256 = "777e3bbc058b30611dc274390eb44059a97375c2ca49cf2af910bc386e2cfada"
+REVIEWED_CI_WORKFLOW_SHA256 = (
+    "076c61ea81db322391513789d122f6770c48ec3bbcf8091a522a5963622f6758"
+)
+REVIEWED_CI_TEST_JOB_SHA256 = (
+    "7abb1436d4c1bbcd14c106d5bf60812866df7265966156226d7353561f2ad785"
+)
 WIX_NAMESPACE = {"wix": "http://schemas.microsoft.com/wix/2006/wi"}
+WIX_XML_COMMENT = re.compile(rb"<!--.*?-->", flags=re.DOTALL)
+WIX_PROCESSING_INSTRUCTION = re.compile(rb"<\?\s*(.*?)\s*\?>", flags=re.DOTALL)
+WIX_PROGRAM_FILES_POLICY = (
+    b"if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64",
+    b'define PlatformProgramFilesFolder = "ProgramFiles64Folder"',
+    b"else",
+    b'define PlatformProgramFilesFolder = "ProgramFilesFolder"',
+    b"endif",
+)
 
 
 def read_regular_file(path: Path) -> bytes:
@@ -58,6 +78,51 @@ def require_text(text: str, expected: str, description: str, errors: list[str]) 
 
     if expected not in text:
         errors.append(f"missing {description}")
+
+
+def _literal_run_step(host: str, name: str, errors: list[str]) -> str | None:
+    """Return one unconditional named host step's literal shell program."""
+
+    lines = host.splitlines()
+    marker = f"      - name: {name}"
+    starts = [index for index, line in enumerate(lines) if line == marker]
+    if len(starts) != 1:
+        errors.append(f"host job must contain exactly one {name} step")
+        return None
+    start = starts[0]
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].startswith("      - ")
+        ),
+        len(lines),
+    )
+    step = lines[start:end]
+    if any(re.match(r"^ {8}(?:if|continue-on-error)\s*:", line) for line in step):
+        errors.append(f"host step {name} must be unconditional and fail closed")
+        return None
+    run_markers = [index for index, line in enumerate(step) if line == "        run: |"]
+    if len(run_markers) != 1:
+        errors.append(f"host step {name} must contain one literal run block")
+        return None
+    script_lines = step[run_markers[0] + 1 :]
+    if any(line and not line.startswith("          ") for line in script_lines):
+        errors.append(f"host step {name} has invalid literal-run indentation")
+        return None
+    return "\n".join(line[10:] if line else "" for line in script_lines)
+
+
+def _executable_shell_lines(script: str | None) -> tuple[str, ...]:
+    """Return nonempty, non-comment shell lines from a literal run block."""
+
+    if script is None:
+        return ()
+    return tuple(
+        stripped
+        for line in script.splitlines()
+        if (stripped := line.strip()) and not stripped.startswith("#")
+    )
 
 
 def validate_manifest(text: str) -> list[str]:
@@ -134,6 +199,8 @@ def validate_workflow(text: str) -> list[str]:
     """Validate least privilege, pinned bootstraps, and artifact coverage."""
 
     errors: list[str] = []
+    if sha256(text.encode("utf-8")).hexdigest() != REVIEWED_RELEASE_WORKFLOW_SHA256:
+        errors.append("release workflow differs from its reviewed source")
     jobs_marker = text.find("\njobs:\n")
     host_marker = text.find("\n  host:\n")
     if jobs_marker < 0 or host_marker < 0:
@@ -142,6 +209,41 @@ def validate_workflow(text: str) -> list[str]:
     header = text[:jobs_marker]
     pre_host = text[:host_marker]
     host = text[host_marker:]
+    immutable_target_script = _literal_run_step(
+        host, "Validate immutable release target", errors
+    )
+    publication_script = _literal_run_step(host, "Create GitHub Release", errors)
+    immutable_target_lines = _executable_shell_lines(immutable_target_script)
+    publication_lines = _executable_shell_lines(publication_script)
+    host_step_headers = [
+        line for line in host.splitlines() if line.startswith("      - ")
+    ]
+    hosting_headers = [
+        index
+        for index, header in enumerate(host_step_headers)
+        if header == "      - id: host"
+    ]
+    immutable_headers = [
+        index
+        for index, header in enumerate(host_step_headers)
+        if header == "      - name: Validate immutable release target"
+    ]
+    publication_headers = [
+        index
+        for index, header in enumerate(host_step_headers)
+        if header == "      - name: Create GitHub Release"
+    ]
+    if (
+        len(hosting_headers) != 1
+        or len(immutable_headers) != 1
+        or immutable_headers[0] + 1 != hosting_headers[0]
+    ):
+        errors.append("immutable release target step must immediately precede hosting")
+    if (
+        len(publication_headers) != 1
+        or publication_headers[0] != len(host_step_headers) - 1
+    ):
+        errors.append("publication step must be the final host step")
     require_text(
         header,
         'permissions:\n  "contents": "read"',
@@ -224,7 +326,29 @@ def validate_workflow(text: str) -> list[str]:
         errors.append("initial main-tip gate must appear exactly once")
     if text.count('[ "$RELEASE_COMMIT" != "$(git rev-parse origin/main)" ]') != 1:
         errors.append("final main-tip gate must appear exactly once")
-
+    if (
+        'if [ "$GITHUB_SHA" != "$(git rev-parse origin/main)" ]; then'
+        not in immutable_target_lines
+    ):
+        errors.append(
+            "initial exact main-tip publication gate must be executable in its host step"
+        )
+    if (
+        'if [ "$RELEASE_COMMIT" != "$(git rev-parse origin/main)" ]; then'
+        not in publication_lines
+    ):
+        errors.append(
+            "final exact main-tip publication gate must be executable in its host step"
+        )
+    if (
+        'if [ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$GITHUB_SHA" ]; then'
+        not in immutable_target_lines
+        or 'if [ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$RELEASE_COMMIT" ]; then'
+        not in publication_lines
+    ):
+        errors.append(
+            "release tag binding checks must be executable in their host steps"
+        )
     for digest in PINNED_INSTALLERS:
         require_text(text, digest, f"pinned installer digest {digest[:12]}", errors)
 
@@ -275,6 +399,21 @@ def validate_wix(contents: bytes) -> list[str]:
     """Validate that the privileged MSI installs only below protected Program Files."""
 
     errors: list[str] = []
+    if sha256(contents).hexdigest() != REVIEWED_WIX_SHA256:
+        errors.append("MSI authoring differs from its reviewed source")
+    uncommented = WIX_XML_COMMENT.sub(b"", contents)
+    instructions = tuple(
+        b" ".join(instruction.split())
+        for instruction in WIX_PROCESSING_INSTRUCTION.findall(uncommented)
+    )
+    if (
+        not instructions
+        or instructions[0] != b"xml version='1.0' encoding='windows-1252'"
+        or instructions[1:] != WIX_PROGRAM_FILES_POLICY
+    ):
+        errors.append(
+            "MSI protected-directory macro differs from approved Program Files mapping"
+        )
     try:
         root = element_tree.fromstring(contents)
     except element_tree.ParseError as error:
@@ -308,10 +447,12 @@ def validate_wix(contents: bytes) -> list[str]:
         "third-party license inventory": third_party_file,
         "Inter license": inter_license_file,
     }
+    missing_required_node = False
     for description, node in required_nodes.items():
         if node is None:
             errors.append(f"MSI is missing {description}")
-    if errors:
+            missing_required_node = True
+    if missing_required_node:
         return errors
 
     assert product is not None
@@ -388,6 +529,22 @@ def validate_license_inventory(
     """Validate the checked-in third-party license generation contract."""
 
     errors: list[str] = []
+    if sha256(ci_workflow.encode("utf-8")).hexdigest() != REVIEWED_CI_WORKFLOW_SHA256:
+        errors.append("CI workflow differs from its reviewed source")
+    test_job_marker = ci_workflow.find("\n  test:\n")
+    mutation_job_marker = ci_workflow.find("\n  mutation:\n")
+    if (
+        test_job_marker < 0
+        or mutation_job_marker < 0
+        or mutation_job_marker <= test_job_marker
+    ):
+        errors.append("CI is missing its reviewed cross-platform test job boundary")
+    else:
+        test_job = ci_workflow[test_job_marker:mutation_job_marker]
+        if sha256(test_job.encode("utf-8")).hexdigest() != REVIEWED_CI_TEST_JOB_SHA256:
+            errors.append(
+                "CI test job differs from its reviewed cross-platform program"
+            )
     for text, expected, description in [
         (manifest, 'version = "0.1.0-alpha.1"', "root prerelease version"),
         (
@@ -412,8 +569,23 @@ def validate_license_inventory(
             "Apple Silicon license target",
         ),
         (generator, "MAX_JSON_BYTES = 16 * 1024 * 1024", "bounded JSON input"),
-        (generator, "grouped_licenses", "canonical license-text grouping"),
-        (generator, "ordered_licenses.sort(", "deterministic license ordering"),
+        (
+            generator,
+            "MAX_NOTICE_INPUT_BYTES = 16 * 1024 * 1024",
+            "bounded packaged legal-file input",
+        ),
+        (
+            generator,
+            "MAX_SOURCE_ENTRIES = 131072",
+            "bounded third-party source traversal",
+        ),
+        (
+            generator,
+            "_collect_packaged_notices",
+            "packaged legal-file collection",
+        ),
+        (generator, "notice_sources", "packaged legal-file aggregation"),
+        (generator, "ordered_texts.sort(", "deterministic legal-text ordering"),
         (generator, 'parsed.scheme not in {"http", "https"}', "safe link policy"),
         (generator, "shell=False", "shell-free license generation"),
         (generator, "os.replace(", "atomic license inventory replacement"),
@@ -463,8 +635,8 @@ def validate_license_inventory(
         errors.append("third-party license inventory has implausibly few components")
     if inventory.count('<section class="license-text">') < 20:
         errors.append("third-party inventory collapses distinct source license texts")
-    if inventory.count('<li class="license-user">') < 100:
-        errors.append("third-party inventory omits per-license package mappings")
+    if inventory.count('<li class="notice-source">') < 100:
+        errors.append("third-party inventory omits packaged legal-file mappings")
     try:
         configured_targets = tomllib.loads(about_config)["targets"]
     except (tomllib.TOMLDecodeError, KeyError, TypeError):

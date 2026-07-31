@@ -9,7 +9,7 @@ gate.
 
 - [Git](https://git-scm.com/)
 - [Rust installed through rustup](https://rustup.rs/)
-- Python 3 for repository validation scripts
+- Python 3.11 or newer for repository validation scripts
 - Ruff for the Python validation scripts, using the version pinned in CI
 
 The repository pins Rust in [`rust-toolchain.toml`](../rust-toolchain.toml).
@@ -72,9 +72,17 @@ python scripts/generate_third_party_licenses.py
 ```
 
 The generator consumes frozen cargo-about JSON, validates every component and
-license mapping, canonicalizes ordering and line endings, and replaces the
-inventory atomically. Commit the regenerated inventory with the dependency
-change.
+license mapping, and independently collects bounded legal files from locked
+third-party package sources. Explicit license files, recognized legal-document
+names, legal directories, and bundled font license sidecars are included;
+conventional test, example, and benchmark trees and source-code lookalikes are
+not inferred to be notices. Each
+candidate must be a single-link regular file below a stable, non-reparse source
+directory and is read through an identity-checked descriptor. The generator
+preserves the union of selected license terms and packaged notices,
+canonicalizes ordering and line endings, and replaces the inventory atomically.
+This avoids making a cross-platform notice depend on the host that ran
+cargo-about. Commit the regenerated inventory with the dependency change.
 
 ## README screenshots
 
