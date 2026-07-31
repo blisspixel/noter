@@ -208,6 +208,9 @@ release, so current work remains under Unreleased.
 - Exercise the whole-document replacement size decision at a small injected
   boundary, distinguishing the accepted limit from an oversized replacement
   before diffing without multiplying a 64 MiB fixture across mutation runs.
+- Split Windows mutation enforcement across both deterministic cargo-mutants
+  shards. Both shards remain required, preserving the complete filtered
+  candidate set while keeping each job inside the runner time bound.
 - Make Undo and Redo shortcut tests select the simulated operating system
   explicitly, so Windows and macOS conventions are verified independently of
   the runner host.

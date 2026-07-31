@@ -128,8 +128,14 @@ jobs:
         include:
           - os: ubuntu-latest
             scope: linux-common
+          # Both Windows shards are required. cargo-mutants partitions the
+          # filtered candidate list deterministically after generation.
           - os: windows-latest
-            scope: windows-full
+            scope: windows-shard-0
+            shard: 0/2
+          - os: windows-latest
+            scope: windows-shard-1
+            shard: 1/2
           - os: macos-latest
             scope: macos-platform
     runs-on: ${{ matrix.os }}
@@ -168,6 +174,7 @@ jobs:
         run: >
           cargo mutants -vV --in-place --colors never --workspace
           --minimum-test-timeout 60
+          --shard ${{ matrix.shard }}
           --exclude-re
           '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|[Mm]acos)'
       - name: Run macOS platform mutation tests
