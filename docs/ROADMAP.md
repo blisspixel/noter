@@ -106,18 +106,18 @@ progress arithmetic. Each defect has a focused regression. The historical
 741-candidate supported-platform union is recorded in
 [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md).
 
-The latest verified implementation checkpoint is commit `1988337`. Protected
-pull-request run
-[30606904746](https://github.com/blisspixel/noter/actions/runs/30606904746)
+The latest verified implementation checkpoint is commit `bfdeb55`. Protected
+main-branch run
+[30612842346](https://github.com/blisspixel/noter/actions/runs/30612842346)
 passes all nine Windows, macOS, Linux, documentation, dependency, coverage, and
-mutation contexts. Hosted Linux line coverage is 93.38 percent for the workspace
-and 94.44 percent for the trust kernel. The current platform mutation scopes
-report 967 Linux candidates, 901 Windows candidates across two required shards,
-and 47 macOS candidates, with no miss or timeout. The infrastructure validator
-reports no recognized tool, compiler, linker, process, or storage failure hidden
-as unviable. The implementation does not change in the documentation-only
-reconciliation commit that follows this checkpoint. The reproducible benchmark
-harness and required manual filesystem fixtures remain open.
+mutation contexts for exact commit
+`bfdeb55fb5b903421dd2db6aa093b76e4130ac55`. Hosted Linux line coverage is
+93.38 percent for the workspace and 94.44 percent for the trust kernel. The
+current platform mutation scopes report 967 Linux candidates, 901 Windows
+candidates across two required shards, and 47 macOS candidates, with no miss or
+timeout. The infrastructure validator reports no recognized tool, compiler,
+linker, process, or storage failure hidden as unviable. The reproducible
+benchmark harness and required manual filesystem fixtures remain open.
 
 Current detailed evidence and known gaps are maintained in:
 
@@ -257,7 +257,7 @@ parity are still open.
 Deterministic 512-case properties cover single replacements, ordered disjoint
 multi-edit transactions, arbitrary edit sequences, literal search, and
 lifecycle decisions against independent reference models. The current local
-source checkpoint has 404 Rust tests, 93.18 percent whole-workspace line
+source checkpoint has 413 Rust tests, 93.49 percent whole-workspace line
 coverage, and 95.58 percent UI-independent trust-kernel line coverage. Its
 [exact-commit M3 editing record](M3_EDITING_EVIDENCE.md) reports 256 generated
 mutations: 216 caught, 40 compiler-unviable, zero missed, and zero timed out,
@@ -323,6 +323,16 @@ large-file requirements needed by both text and native Markdown editing.
 - reproducible cold-start, typing, scrolling, search, memory, and size
   benchmarks.
 
+### Current state
+
+The trust-kernel loader remains bounded at 64 MiB, but the current egui editor
+mirrors the complete document as a `String`. A local Windows measurement found a
+665.3 MiB process peak when a 64 MiB file reached that widget path. The current
+interface therefore refuses files above 8 MiB before creating the mirror,
+preserves the open document, and explains the limit. The same 64 MiB run then
+peaked at 196 MiB without entering the editor. This is defensive containment,
+not M5 completion; the release still requires a measured 50 MiB editable path.
+
 ### Exit criteria
 
 - Performance budgets in [REQUIREMENTS.md](REQUIREMENTS.md) pass on named
@@ -376,9 +386,11 @@ accessibility, asynchronous parsing, and the quality engine remain open.
 
 The current synchronous formatted slice enforces explicit source-byte, line,
 line-length, block-count, block-span, and parser-event ceilings. Over-budget
-Markdown files stay unchanged and editable in Text Mode. Diagnostic counts are
-cached by document generation and revision. M5 and M6 still own incremental
-parsing, virtualized layout, and the measured final limits.
+Markdown files stay unchanged in Text Mode when they remain within the current
+8 MiB interactive-file ceiling; larger files are refused without replacing the
+open document. Diagnostic counts are cached by document generation and
+revision. M5 and M6 still own incremental parsing, virtualized layout, and the
+measured final limits.
 
 ### Exit criteria
 
@@ -411,6 +423,24 @@ supported systems, with verifiable artifacts and honest release evidence.
 
 See [INSTALLATION.md](INSTALLATION.md) for the normative installer and updater
 contract.
+
+### Current state
+
+The source installers already build the locked checkout and verify the installed
+CLI contract on Windows, macOS, and Linux. A pinned cargo-dist plan now produces
+four target archives, PowerShell and POSIX installers, Homebrew and MSI
+packaging, checksums, four target-specific CycloneDX 1.5 SBOMs, and GitHub
+attestations. The SBOMs are declared cargo-dist artifacts, so the generated
+release manifest names the same four files that the workflow builds and
+publishes. Every binary package includes the generated third-party dependency
+inventory and bundled-font license. Publication is restricted to a prerelease
+tag on the protected `main` tip, rechecks that tip immediately before atomic tag
+creation, and remains an explicit human decision. Native signing, clean-machine
+artifact tests, updater authentication, platform evidence, and the required
+dogfood period remain open.
+
+The static musl target is deferred until the release inventory can account for
+its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 
 ### Exit criteria
 

@@ -76,6 +76,7 @@ desktop.ini
 *.rpm
 *.tar.gz
 *.zip
+*.cdx.xml
 
 # =============================================================================
 # Test / coverage artifacts

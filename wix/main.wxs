@@ -1,0 +1,148 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  Copyright (C) 2017 Christopher R. Field.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<!-- Select the protected Program Files root matching the package architecture. -->
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+    <Product
+        Id='*'
+        Name='Noter'
+        UpgradeCode='04EFB570-9D04-49E1-B908-F5CEBD979E1B'
+        Manufacturer='Nick'
+        Language='1033'
+        Codepage='1252'
+        Version='0.0.1'>
+        <Package
+            Id='*'
+            Keywords='Installer'
+            Description='A focused, private text and Markdown editor for Windows, macOS, and Linux.'
+            Manufacturer='Nick'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'/>
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <!-- ProductVersion is a monotonic Windows package sequence. -->
+        <Property Id='ARPDisplayVersion' Value='0.1.0-alpha.1'/>
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='Noter installation media'/>
+        <Property Id='DiskPrompt' Value='Noter installation'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='Noter'>
+                    <Component Id='License' Guid='*'>
+                        <File
+                            Id='LicenseFile'
+                            DiskId='1'
+                            Source='wix/License.rtf'
+                            KeyPath='yes'/>
+                    </Component>
+                    <Component Id='ThirdPartyLicenses' Guid='*'>
+                        <File
+                            Id='ThirdPartyLicensesFile'
+                            Name='THIRD-PARTY-LICENSES.html'
+                            DiskId='1'
+                            Source='THIRD-PARTY-LICENSES.html'
+                            KeyPath='yes'/>
+                    </Component>
+                    <Component Id='InterLicense' Guid='*'>
+                        <File
+                            Id='InterLicenseFile'
+                            Name='Inter-OFL.txt'
+                            DiskId='1'
+                            Source='assets\fonts\Inter-OFL.txt'
+                            KeyPath='yes'/>
+                    </Component>
+                    <Directory Id='Bin' Name='bin'>
+                        <Component Id='Path' Guid='495D73C5-0B48-41F9-A34D-30DAFD03BB54' KeyPath='yes'>
+                            <Environment
+                                Id='PATH'
+                                Name='PATH'
+                                Value='[Bin]'
+                                Permanent='no'
+                                Part='last'
+                                Action='set'
+                                System='yes'/>
+                        </Component>
+                        <Component Id='binary0' Guid='*'>
+                            <File
+                                Id='exe0'
+                                Name='noter.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\noter.exe'
+                                KeyPath='yes'/>
+                        </Component>
+                    </Directory>
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='Application'
+            Description='Installs Noter and its license notices.'
+            Level='1'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+            <ComponentRef Id='License'/>
+            <ComponentRef Id='ThirdPartyLicenses'/>
+            <ComponentRef Id='InterLicense'/>
+            <ComponentRef Id='binary0'/>
+            <Feature
+                Id='Environment'
+                Title='PATH Environment Variable'
+                Description='Add Noter to the system PATH so it can be started from any command line.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='Path'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty
+            Id='ARPINSTALLLOCATION'
+            Value='[APPLICATIONFOLDER]'
+            After='CostFinalize'/>
+        <Property Id='ARPHELPLINK' Value='https://github.com/blisspixel/noter'/>
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+            <Publish
+                Dialog='WelcomeDlg'
+                Control='Next'
+                Event='NewDialog'
+                Value='CustomizeDlg'
+                Order='99'>1</Publish>
+            <Publish
+                Dialog='CustomizeDlg'
+                Control='Back'
+                Event='NewDialog'
+                Value='WelcomeDlg'
+                Order='99'>1</Publish>
+        </UI>
+    </Product>
+</Wix>

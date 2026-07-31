@@ -1,3 +1,9 @@
 * text=auto eol=lf
 
 *.png binary
+
+# Preserve upstream license text verbatim even when it contains trailing spaces.
+THIRD-PARTY-LICENSES.html binary -whitespace
+
+# The deterministic Windows Installer sidecar requires byte-exact CRLF records.
+wix/License.rtf binary

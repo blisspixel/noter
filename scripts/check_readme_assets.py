@@ -19,33 +19,91 @@ SCREENSHOTS = (
 EXPECTED_SIZE = (1200, 760)
 MAX_PNG_BYTES = 2 * 1024 * 1024
 MAX_DECODED_BYTES = (1 + EXPECTED_SIZE[0] * 4) * EXPECTED_SIZE[1]
+MAX_SCREENSHOT_SOURCE_BYTES = 4 * 1024 * 1024
+MAX_SCREENSHOT_SOURCE_TOTAL_BYTES = 16 * 1024 * 1024
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+SCREENSHOT_SOURCE_FILES = (
+    Path("Cargo.lock"),
+    Path("Cargo.toml"),
+    Path("assets/fonts/InterVariable.ttf"),
+    Path("docs/assets/noter-demo.md"),
+    Path("rust-toolchain.toml"),
+    Path("scripts/update_readme_screenshots.py"),
+)
+SCREENSHOT_SOURCE_GLOBS = (
+    "crates/**/Cargo.toml",
+    "crates/**/*.rs",
+    "src/**/*.rs",
+)
+EXPECTED_SCREENSHOT_SOURCE_SHA256 = (
+    "0f61788077668243089684450cb9c393b45116a7eb25e83f7698ac2d8b4aa279"
+)
 EXPECTED_SHA256 = {
     Path(
         "docs/assets/noter-light.png"
-    ): "4ee22fc916d1eed52a31648745462dc0061c53e817bd5bbdcd1e021f744891d3",
+    ): "f3f4d2eec69af701987f0ef5f93c1e5e88b062ad8bbe42780eb2bf8f6e324204",
     Path(
         "docs/assets/noter-dark.png"
-    ): "432cecfef06d0539cb0c2d27658221c32e20236d0d518992a2bcb9feebb1d423",
+    ): "47f73d80461a6a86b88473b9ba9db6ce86c681af17e0b6505b3ea2cc282c233e",
 }
 
 
-def read_bounded_regular_file(path: Path) -> bytes:
+def read_bounded_regular_file(
+    path: Path, *, maximum: int = MAX_PNG_BYTES, description: str = "PNG"
+) -> bytes:
     """Read one regular file without following repository symlinks."""
 
     metadata = path.lstat()
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise ValueError(f"{path} is not a regular file")
-    if metadata.st_size > MAX_PNG_BYTES:
-        raise ValueError(f"{path} exceeds the PNG file-size limit")
+    if metadata.st_size > maximum:
+        raise ValueError(f"{path} exceeds the {description} file-size limit")
 
     with path.open("rb") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ValueError(f"{path} is not a regular file")
-        data = stream.read(MAX_PNG_BYTES + 1)
-    if len(data) > MAX_PNG_BYTES:
-        raise ValueError(f"{path} exceeds the PNG file-size limit")
+        data = stream.read(maximum + 1)
+    if len(data) > maximum:
+        raise ValueError(f"{path} exceeds the {description} file-size limit")
     return data
+
+
+def screenshot_source_paths(root: Path = REPOSITORY_ROOT) -> tuple[Path, ...]:
+    """Return every deterministic input to the native screenshot build."""
+
+    paths = set(SCREENSHOT_SOURCE_FILES)
+    for pattern in SCREENSHOT_SOURCE_GLOBS:
+        paths.update(path.relative_to(root) for path in root.glob(pattern))
+    return tuple(sorted(paths, key=lambda path: path.as_posix()))
+
+
+def screenshot_source_digest(
+    root: Path = REPOSITORY_ROOT, paths: tuple[Path, ...] | None = None
+) -> str:
+    """Hash path-framed screenshot inputs without accepting links or large files."""
+
+    selected_paths = screenshot_source_paths(root) if paths is None else paths
+    selected_paths = tuple(sorted(selected_paths, key=lambda path: path.as_posix()))
+    if len(selected_paths) > 256:
+        raise ValueError("screenshot input count exceeds the validation limit")
+
+    digest = hashlib.sha256()
+    total = 0
+    for relative_path in selected_paths:
+        encoded_path = relative_path.as_posix().encode("utf-8")
+        data = read_bounded_regular_file(
+            root / relative_path,
+            maximum=MAX_SCREENSHOT_SOURCE_BYTES,
+            description="screenshot source",
+        )
+        total += len(data)
+        if total > MAX_SCREENSHOT_SOURCE_TOTAL_BYTES:
+            raise ValueError("screenshot inputs exceed the aggregate size limit")
+        digest.update(len(encoded_path).to_bytes(4, "big"))
+        digest.update(encoded_path)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
 
 
 def png_dimensions(path: Path) -> tuple[int, int]:
@@ -126,11 +184,21 @@ def png_dimensions(path: Path) -> tuple[int, int]:
     return dimensions
 
 
-def validate(*, check_hashes: bool = True) -> None:
+def validate(*, check_hashes: bool = True, check_source_freshness: bool = True) -> None:
     """Require complete approved screenshots, dimensions, and README references."""
 
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
     failures: list[str] = []
+    if check_source_freshness:
+        try:
+            source_digest = screenshot_source_digest()
+        except (OSError, ValueError) as error:
+            failures.append(str(error))
+        else:
+            if source_digest != EXPECTED_SCREENSHOT_SOURCE_SHA256:
+                failures.append(
+                    "README screenshots were not approved for the current native build inputs"
+                )
     for relative_path in SCREENSHOTS:
         path = REPOSITORY_ROOT / relative_path
         if not path.is_file():

@@ -2,7 +2,7 @@
 
 **Version:** 0.3
 
-**Reviewed:** 2026-07-30
+**Reviewed:** 2026-07-31
 
 **Status:** Active architecture contract
 
@@ -67,8 +67,8 @@ The current development checkpoint has:
 - one pure lifecycle reducer used by dirty New, Open, Reload, Close, and Quit,
   with Save, Discard, and Cancel effects shared by menu and native-close paths
   and correlated to the exact document revision that authorized them;
-- 404 Rust tests in the current local suite, 95.58 percent UI-independent
-  trust-kernel line coverage, and 93.18 percent whole-workspace line coverage
+- 413 Rust tests in the current local suite, 95.58 percent UI-independent
+  trust-kernel line coverage, and 93.49 percent whole-workspace line coverage
   against respective 90 and 80 percent gates;
 - a 256-candidate exact-commit M3 editing-core mutation campaign with 216
   caught, 40 compiler-unviable, zero missed, zero timed out, and no recognized
@@ -76,22 +76,22 @@ The current development checkpoint has:
   [M3_EDITING_EVIDENCE.md](M3_EDITING_EVIDENCE.md);
 - a historical 741-candidate supported-platform mutation union with no miss,
   timeout, infrastructure error, or scope gap; and current exact-commit scopes
-  of 817 Linux, 751 Windows, and 47 macOS candidates with no miss, timeout, or
+  of 967 Linux, 901 Windows, and 47 macOS candidates with no miss, timeout, or
   recognized infrastructure failure.
 
-The latest verified production-adapter checkpoint passes all eight jobs in
+The latest verified implementation checkpoint passes all nine required jobs in
 exact-commit run
-[30558477309](https://github.com/blisspixel/noter/actions/runs/30558477309)
-for commit `d77460c`. It still requires the manual metadata and
-weaker-filesystem evidence named by ADR-003 plus the reproducible benchmark
-baseline. The edit foundation still requires complete navigation and clipboard
-policy, Markdown parity for document-wide selection, long-session fixtures,
-and cross-platform evidence. Recovery, external-change handling,
-configuration, accessibility evidence, and release performance evidence also
-remain open. M1 through M4 therefore remain In Progress even where their
-current implementation slices are substantial.
+[30612842346](https://github.com/blisspixel/noter/actions/runs/30612842346)
+for commit `bfdeb55fb5b903421dd2db6aa093b76e4130ac55`. It still requires the
+manual metadata and weaker-filesystem evidence named by ADR-003 plus the
+reproducible benchmark baseline. The edit foundation still requires complete
+navigation and clipboard policy, Markdown parity for document-wide selection,
+long-session fixtures, and cross-platform evidence. Recovery, external-change
+handling, configuration, accessibility evidence, and release performance
+evidence also remain open. M1 through M4 therefore remain In Progress even
+where their current implementation slices are substantial.
 
-The 404-test and coverage measurements above describe the current local source
+The local test and coverage measurements above describe the current source
 checkpoint, not hosted release evidence. The M1 paragraph identifies the latest
 immutable commit whose complete hosted matrix is verified.
 
@@ -757,10 +757,13 @@ interaction direction but does not satisfy M6.
 Because the current slice discovers and renders the complete block set
 synchronously, it enforces prototype ceilings of 1 MiB of source, 8,192 logical
 lines, 64 KiB per line, 512 projected blocks, 64 KiB per block span, and 8,192
-parser events. A document that exceeds any ceiling remains unchanged in Text
-Mode. Diagnostic counts are cached by document generation and revision. These
-ceilings are safety boundaries, not evidence that the final 1 MiB Markdown
-latency requirement passes.
+parser events. A document that exceeds a Markdown ceiling remains unchanged in
+Text Mode when it is within the interface's current 8 MiB file ceiling. The
+interface refuses a larger file before constructing its complete widget string,
+while the trust-kernel loader retains the independent 64 MiB storage boundary.
+Diagnostic counts are cached by document generation and revision. These
+ceilings are temporary safety boundaries, not evidence that the final 1 MiB
+Markdown latency or 50 MiB text-editing requirements pass.
 
 The M6 architecture completes the model:
 
@@ -802,6 +805,14 @@ The benchmark corpus contains:
 - mixed Unicode and mixed EOL;
 - one pathological long line;
 - early, middle, late, absent, and adversarial search matches.
+
+The framework-backed editor currently mirrors a document as a complete
+`String`. A measured 64 MiB open through that widget path peaked at 665.3 MiB on
+Windows. Refusing files above 8 MiB before that mirror reduced the same bounded
+run to a 196 MiB peak and kept the existing document intact. This local
+measurement justifies containment only. M5 still requires either a virtualized,
+rope-backed editor or evidence that another bounded design meets the 50 MiB
+release corpus without sacrificing IME or accessibility.
 
 Benchmark reports include OS, CPU, memory, storage, display refresh, build
 profile, commit, corpus checksum, sample count, warm or cold state, and raw data.
@@ -985,9 +996,9 @@ required.
 CI uses the pinned Rust toolchain, locked Cargo graph, immutable action commits,
 minimum permissions, formatting, strict Clippy, cross-platform tests, coverage,
 full trust-kernel mutation testing, documentation checks, license policy, and
-advisory audits. Release work retains those gates and adds an SBOM, provenance,
-checksums, signatures where credentials exist, and cargo-dist artifacts verified
-on clean systems.
+advisory audits. Release work retains those gates and adds target-specific
+SBOMs, provenance, checksums, signatures where credentials exist, and cargo-dist
+artifacts verified on clean systems.
 
 ## 17. Failure modes and effects
 

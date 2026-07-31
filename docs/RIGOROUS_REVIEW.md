@@ -107,11 +107,13 @@ does not provide incremental display behavior.
 to the complete document on input and paint. More features added to this path
 increase the cost of replacing it.
 
-**Immediate containment:** the bounded development projection rejects work above
-explicit source-byte, logical-line, line-length, block-count, block-span, and
-parser-event ceilings, while leaving the authoritative source available in Text
-Mode. This bounds known synchronous work but does not satisfy the feasibility
-gate.
+**Immediate containment:** Markdown projection rejects work above explicit
+source-byte, logical-line, line-length, block-count, block-span, and parser-event
+ceilings. The framework-backed interface refuses files above 8 MiB before
+constructing its complete widget string and preserves the already open document.
+A measured Windows run reduced the 64 MiB case from a 665.3 MiB process peak to
+196 MiB without entering the editor. This bounds the observed amplification but
+does not satisfy the 50 MiB feasibility gate.
 
 **Completion standard:** Time-box the documented editor spike. Demonstrate
 rope-backed edits, visible-row layout, bounded caches, long-line behavior, hit
@@ -198,9 +200,11 @@ them with signed manual evidence for behaviors automation cannot establish.
 ### 9. Ship a real distribution and secure update system
 
 **Evidence:** current helpers compile from source, the update command opens a
-truthful status dialog, and cargo-dist metadata is reserved. There is no release
-workflow, prebuilt installer set, authenticated update manifest, rollback
-protection, SBOM, provenance, or tested uninstall path.
+truthful status dialog, and a manually dispatched cargo-dist workflow now plans
+archives, installer scripts, Homebrew, MSI, checksums, an SBOM, and GitHub
+attestations. The workflow has not produced or published a supported release,
+and there is no authenticated update manifest, rollback implementation,
+platform signing evidence, or clean-system uninstall record.
 
 **Risk:** source installation is high friction, while a naive self-updater would
 create a more serious supply-chain risk than having no updater.

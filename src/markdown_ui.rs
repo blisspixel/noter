@@ -9,7 +9,9 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag};
 use crate::bounded_text_input::{BoundedTextBuffer, sanitize_bounded_text_events};
 
 const ACTIVE_EDITOR_ID: &str = "noter-markdown-active-block";
-const EXPANDED_FORMAT_MIN_WIDTH: f32 = 540.0;
+const EXPANDED_FORMAT_MIN_WIDTH: f32 = 480.0;
+const FORMAT_BUTTON_SIZE: egui::Vec2 = egui::vec2(32.0, 28.0);
+const CODE_BUTTON_SIZE: egui::Vec2 = egui::vec2(38.0, 28.0);
 const MARKER_FONT_SIZE: f32 = 0.1;
 const BODY_WEIGHT: f32 = 400.0;
 const HEADING_WEIGHT: f32 = 600.0;
@@ -206,19 +208,6 @@ impl MarkdownCommand {
         Self::Quote,
     ];
 
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Heading1 => "H1",
-            Self::Heading2 => "H2",
-            Self::Bold => "Bold",
-            Self::Italic => "Italic",
-            Self::Link => "Link",
-            Self::InlineCode => "Code",
-            Self::BulletedList => "List",
-            Self::Quote => "Quote",
-        }
-    }
-
     const fn description(self) -> &'static str {
         match self {
             Self::Heading1 => "Format the active content as a level-one heading",
@@ -245,11 +234,104 @@ impl MarkdownCommand {
         }
     }
 
-    const fn button_width(self) -> f32 {
+    fn button_text(self) -> Option<egui::RichText> {
         match self {
-            Self::Heading1 | Self::Heading2 => 40.0,
-            Self::Bold | Self::Link | Self::InlineCode | Self::Quote => 54.0,
-            Self::Italic | Self::BulletedList => 50.0,
+            Self::Heading1 => Some(egui::RichText::new("H1").strong().size(12.0)),
+            Self::Heading2 => Some(egui::RichText::new("H2").strong().size(12.0)),
+            Self::Bold => Some(egui::RichText::new("B").strong().size(16.0)),
+            Self::InlineCode => Some(egui::RichText::new("</>").monospace().size(11.0)),
+            Self::Italic | Self::Link | Self::BulletedList | Self::Quote => None,
+        }
+    }
+
+    const fn button_size(self) -> egui::Vec2 {
+        if matches!(self, Self::InlineCode) {
+            CODE_BUTTON_SIZE
+        } else {
+            FORMAT_BUTTON_SIZE
+        }
+    }
+
+    const fn ends_group(self) -> bool {
+        matches!(self, Self::Heading2 | Self::Italic | Self::InlineCode)
+    }
+
+    fn paint_icon(self, ui: &egui::Ui, response: &egui::Response, enabled: bool) {
+        if !matches!(
+            self,
+            Self::Italic | Self::Link | Self::BulletedList | Self::Quote
+        ) || !ui.is_rect_visible(response.rect)
+        {
+            return;
+        }
+        let color = if enabled {
+            ui.style().interact(response).fg_stroke.color
+        } else {
+            ui.visuals().widgets.noninteractive.fg_stroke.color
+        };
+        let painter = ui.painter();
+        let center = response.rect.center();
+        let stroke = egui::Stroke::new(1.6, color);
+        match self {
+            Self::Italic => {
+                painter.line_segment(
+                    [
+                        center + egui::vec2(-1.0, -6.0),
+                        center + egui::vec2(6.0, -6.0),
+                    ],
+                    stroke,
+                );
+                painter.line_segment(
+                    [
+                        center + egui::vec2(3.0, -6.0),
+                        center + egui::vec2(-3.0, 6.0),
+                    ],
+                    stroke,
+                );
+                painter.line_segment(
+                    [
+                        center + egui::vec2(-6.0, 6.0),
+                        center + egui::vec2(1.0, 6.0),
+                    ],
+                    stroke,
+                );
+            }
+            Self::Link => {
+                let left = center + egui::vec2(-3.5, 1.5);
+                let right = center + egui::vec2(3.5, -1.5);
+                painter.circle_stroke(left, 4.0, stroke);
+                painter.circle_stroke(right, 4.0, stroke);
+                painter.line_segment(
+                    [
+                        center + egui::vec2(-1.5, 0.7),
+                        center + egui::vec2(1.5, -0.7),
+                    ],
+                    stroke,
+                );
+            }
+            Self::BulletedList => {
+                for offset in [-5.0, 0.0, 5.0] {
+                    painter.circle_filled(center + egui::vec2(-6.0, offset), 1.4, color);
+                    painter.line_segment(
+                        [
+                            center + egui::vec2(-2.0, offset),
+                            center + egui::vec2(7.0, offset),
+                        ],
+                        stroke,
+                    );
+                }
+            }
+            Self::Quote => {
+                for offset in [-3.5, 3.5] {
+                    let mark = center + egui::vec2(offset, -1.5);
+                    painter.circle_filled(mark, 2.1, color);
+                    painter.line_segment(
+                        [mark + egui::vec2(0.0, 1.0), mark + egui::vec2(-1.5, 5.0)],
+                        stroke,
+                    );
+                }
+            }
+            Self::Heading1 | Self::Heading2 | Self::Bold | Self::InlineCode => {}
         }
     }
 }
@@ -411,26 +493,27 @@ impl MarkdownEditor {
             return;
         }
 
-        ui.label(
-            egui::RichText::new("Format")
-                .text_style(egui::TextStyle::Button)
-                .weak(),
-        );
         let enabled = self.active.is_some();
         for command in MarkdownCommand::ALL {
+            let button = command
+                .button_text()
+                .map_or_else(|| egui::Button::new(""), egui::Button::new);
             let response = ui
-                .add_enabled(
-                    enabled,
-                    egui::Button::new(command.label())
-                        .min_size(egui::vec2(command.button_width(), 28.0)),
-                )
+                .add_enabled(enabled, button.min_size(command.button_size()))
                 .on_hover_text(if enabled {
                     command.description()
                 } else {
-                    "Select formatted content before applying a format"
+                    "Click or drag in formatted text to activate formatting"
                 });
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, command.menu_label())
+            });
+            command.paint_icon(ui, &response, enabled);
             if response.clicked() {
                 self.apply_command(command);
+            }
+            if command.ends_group() {
+                ui.separator();
             }
         }
         if enabled {
@@ -469,7 +552,8 @@ impl MarkdownEditor {
             })
             .response;
         if !enabled {
-            response.on_disabled_hover_text("Select formatted content before applying a format");
+            response
+                .on_disabled_hover_text("Click or drag in formatted text to activate formatting");
         }
     }
 
@@ -544,6 +628,10 @@ impl MarkdownEditor {
         Some(Selection::new(anchor, caret))
     }
 
+    pub fn can_restore_source_selection(source: &str, selection: Selection) -> bool {
+        restorable_source_block_range(source, selection).is_some()
+    }
+
     /// Restores a source-backed selection and optionally focuses its editor.
     ///
     /// Non-modal controls use `request_focus = false` so their keyboard input
@@ -554,13 +642,7 @@ impl MarkdownEditor {
         selection: Selection,
         request_focus: bool,
     ) -> bool {
-        let ordered = selection.ordered_range();
-        let Some(range) = markdown_block_ranges(source).into_iter().find(|range| {
-            range.start <= ordered.start()
-                && ordered.end() <= range.end
-                && source.is_char_boundary(selection.anchor())
-                && source.is_char_boundary(selection.active())
-        }) else {
+        let Some(range) = restorable_source_block_range(source, selection) else {
             return false;
         };
         let Some(block) = source.get(range.clone()) else {
@@ -864,6 +946,17 @@ impl MarkdownEditor {
         output.state.store(ui.ctx(), output.response.id);
         changed
     }
+}
+
+fn restorable_source_block_range(source: &str, selection: Selection) -> Option<Range<usize>> {
+    if !source.is_char_boundary(selection.anchor()) || !source.is_char_boundary(selection.active())
+    {
+        return None;
+    }
+    let ordered = selection.ordered_range();
+    markdown_block_ranges(source)
+        .into_iter()
+        .find(|range| range.start <= ordered.start() && ordered.end() <= range.end)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1622,6 +1715,22 @@ fn remap_disjoint_range(
 mod tests {
     use super::*;
 
+    fn accesskit_bounds(output: &egui::FullOutput, label: &str) -> egui::accesskit::Rect {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled")
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}` with bounds"))
+    }
+
     fn first_text_rect(shape: &egui::Shape) -> Option<egui::Rect> {
         match shape {
             egui::Shape::Text(text) => Some(text.visual_bounding_rect()),
@@ -1730,9 +1839,49 @@ mod tests {
     }
 
     #[test]
-    fn narrow_toolbars_use_the_compact_format_menu() {
-        for (width, expected) in [(420.0, false), (800.0, true)] {
+    fn format_toolbar_uses_compact_layout_only_below_its_minimum() {
+        for (width, expected) in [(420.0, false), (479.0, false), (480.0, true)] {
             assert_eq!(expanded_toolbar_fits(std::hint::black_box(width)), expected);
+        }
+    }
+
+    #[test]
+    fn active_format_toolbar_stays_inside_compact_and_expanded_viewports() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        crate::theme::configure_styles(&context);
+        let mut editor = MarkdownEditor::default();
+        editor.activate(0..1, "x".to_owned());
+
+        let compact = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(420.0);
+            editor.toolbar(ui);
+        });
+        assert!(
+            accesskit_bounds(&compact, "Format").x1 <= 420.0,
+            "the compact Format control must stay inside the minimum viewport"
+        );
+
+        let expanded = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(EXPANDED_FORMAT_MIN_WIDTH);
+            editor.toolbar(ui);
+        });
+        for label in [
+            "Heading 1",
+            "Heading 2",
+            "Bold",
+            "Italic",
+            "Link",
+            "Inline code",
+            "Bulleted list",
+            "Quote",
+            "Done",
+        ] {
+            let bounds = accesskit_bounds(&expanded, label);
+            assert!(
+                bounds.x1 <= f64::from(EXPANDED_FORMAT_MIN_WIDTH),
+                "`{label}` extends beyond the expanded toolbar: {bounds:?}"
+            );
         }
     }
 
@@ -2674,6 +2823,9 @@ mod tests {
         let mut editor = MarkdownEditor::default();
 
         let selected = Selection::new(unicode_end, unicode_start);
+        assert!(MarkdownEditor::can_restore_source_selection(
+            source, selected
+        ));
         assert!(editor.restore_source_selection_with_focus(source, selected, true));
         assert_eq!(editor.source_selection(), Some(selected));
 
@@ -2683,6 +2835,9 @@ mod tests {
             Selection::new(unicode_start + 1, unicode_end),
         ] {
             editor.reset();
+            assert!(!MarkdownEditor::can_restore_source_selection(
+                source, invalid
+            ));
             assert!(!editor.restore_source_selection_with_focus(source, invalid, true));
             assert!(!editor.is_editing());
         }

@@ -332,6 +332,11 @@ impl FindBar {
         &self.replacement
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_replacement_for_test(&mut self, replacement: String) {
+        self.replacement = replacement;
+    }
+
     pub(crate) const fn replace_scope(&self) -> ReplaceScope {
         self.replace_scope
     }

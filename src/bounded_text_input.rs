@@ -410,15 +410,15 @@ mod tests {
 
     #[test]
     fn utf8_prefix_handles_every_position_inside_a_four_byte_scalar() {
-        let value = "a🦀z";
+        let value = "a\u{10437}z";
         for (maximum, expected) in [
             (0, ""),
             (1, "a"),
             (2, "a"),
             (3, "a"),
             (4, "a"),
-            (5, "a🦀"),
-            (6, "a🦀z"),
+            (5, "a\u{10437}"),
+            (6, "a\u{10437}z"),
         ] {
             assert_eq!(utf8_prefix(value, maximum), expected);
         }

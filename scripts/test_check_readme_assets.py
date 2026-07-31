@@ -8,7 +8,12 @@ import unittest
 import zlib
 from pathlib import Path
 
-from check_readme_assets import MAX_DECODED_BYTES, PNG_SIGNATURE, png_dimensions
+from check_readme_assets import (
+    MAX_DECODED_BYTES,
+    PNG_SIGNATURE,
+    png_dimensions,
+    screenshot_source_digest,
+)
 from update_readme_screenshots import validate_generated_screenshot
 
 
@@ -99,6 +104,37 @@ class GeneratedScreenshotTests(unittest.TestCase):
             path.write_bytes(rgba_png(1200, 760, padding=20_000))
 
             validate_generated_screenshot(path)
+
+
+class ScreenshotSourceDigestTests(unittest.TestCase):
+    def test_digest_frames_paths_and_contents_deterministically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.rs").write_bytes(b"same")
+            (root / "b.rs").write_bytes(b"same")
+
+            first = screenshot_source_digest(root, (Path("a.rs"), Path("b.rs")))
+            second = screenshot_source_digest(root, (Path("a.rs"), Path("b.rs")))
+            renamed = screenshot_source_digest(root, (Path("b.rs"), Path("a.rs")))
+
+            self.assertEqual(first, second)
+            self.assertEqual(first, renamed)
+            self.assertNotEqual(
+                screenshot_source_digest(root, (Path("a.rs"),)),
+                screenshot_source_digest(root, (Path("b.rs"),)),
+            )
+
+    def test_digest_changes_with_source_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "source.rs"
+            path.write_bytes(b"before")
+            before = screenshot_source_digest(root, (Path("source.rs"),))
+            path.write_bytes(b"after")
+
+            self.assertNotEqual(
+                before, screenshot_source_digest(root, (Path("source.rs"),))
+            )
 
 
 if __name__ == "__main__":

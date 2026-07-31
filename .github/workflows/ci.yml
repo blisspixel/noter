@@ -201,15 +201,20 @@ jobs:
 
   docs:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check that key planning documents exist and are not empty
         run: |
           test -s README.md
+          test -s AGENTS.md
+          test -s CLAUDE.md
           test -s CONTRIBUTING.md
           test -s CHANGELOG.md
           test -s LICENSE
+          test -s THIRD-PARTY-LICENSES.html
+          test -s about.toml
+          test -s about.hbs
           test -s docs/RESEARCH.md
           test -s docs/BASELINE.md
           test -s docs/M1_MUTATION_EVIDENCE.md
@@ -219,6 +224,7 @@ jobs:
           test -s docs/DESIGN.md
           test -s docs/ROADMAP.md
           test -s docs/INSTALLATION.md
+          test -s docs/RELEASING.md
           test -s docs/DEVELOPMENT.md
           test -s docs/MARKDOWN.md
           test -s docs/PRIVACY.md
@@ -231,6 +237,16 @@ jobs:
         run: python3 scripts/check_doc_links.py
       - name: Check README screenshot assets
         run: python3 scripts/check_readme_assets.py
+      - name: Check release configuration
+        run: python3 scripts/check_release_config.py
+      - name: Verify third-party license inventory
+        run: |
+          cargo fetch --locked
+          cargo install cargo-about --version 0.9.1 --locked --features cli
+          cargo about generate about.hbs \
+            --output-file "$RUNNER_TEMP/THIRD-PARTY-LICENSES.html" \
+            --workspace --all-features --frozen --fail
+          cmp THIRD-PARTY-LICENSES.html "$RUNNER_TEMP/THIRD-PARTY-LICENSES.html"
       - name: Lint repository validation scripts
         run: |
           python3 -m pip install --disable-pip-version-check ruff==0.15.16

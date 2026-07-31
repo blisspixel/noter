@@ -12,6 +12,7 @@ each topic.
 | Understand Text Mode and Markdown Mode | [Native Markdown Mode](MARKDOWN.md) |
 | See current work and release gates | [Roadmap](ROADMAP.md) |
 | Build, test, or update screenshots | [Development guide](DEVELOPMENT.md) |
+| Prepare or verify a release | [Release process](RELEASING.md) |
 | Contribute a change | [Contributing guide](../CONTRIBUTING.md) |
 | Review local-data and network behavior | [Privacy contract](PRIVACY.md) |
 | Report a vulnerability | [Security policy](../SECURITY.md) |
@@ -38,6 +39,8 @@ each topic.
   choices.
 - [Manual platform matrix](manual-test-matrix.md) defines release checks that
   automation cannot establish alone.
+- [Release process](RELEASING.md) defines the dry-run, approval, artifact, and
+  publication gates.
 
 ## Planning and evidence
 

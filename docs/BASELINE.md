@@ -9,11 +9,11 @@ measurements are a development baseline, not release evidence.
 
 ## Latest exact implementation checkpoint
 
-Commit `1988337` is the latest verified implementation checkpoint. Protected
-pull-request run
-[30606904746](https://github.com/blisspixel/noter/actions/runs/30606904746)
-completed all nine required jobs successfully. The implementation does not
-change in the documentation-only reconciliation commit that follows it.
+Commit `bfdeb55` is the latest verified implementation checkpoint. Protected
+main-branch run
+[30612842346](https://github.com/blisspixel/noter/actions/runs/30612842346)
+completed all nine required jobs successfully for exact commit
+`bfdeb55fb5b903421dd2db6aa093b76e4130ac55`.
 
 | Measure | Result |
 | --- | --- |
