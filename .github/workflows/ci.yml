@@ -214,7 +214,7 @@ jobs:
           test -s LICENSE
           test -s THIRD-PARTY-LICENSES.html
           test -s about.toml
-          test -s about.hbs
+          test -s scripts/generate_third_party_licenses.py
           test -s docs/RESEARCH.md
           test -s docs/BASELINE.md
           test -s docs/M1_MUTATION_EVIDENCE.md
@@ -243,9 +243,8 @@ jobs:
         run: |
           cargo fetch --locked
           cargo install cargo-about --version 0.9.1 --locked --features cli
-          cargo about generate about.hbs \
-            --output-file "$RUNNER_TEMP/THIRD-PARTY-LICENSES.html" \
-            --workspace --all-features --frozen --fail
+          python3 scripts/generate_third_party_licenses.py \
+            --output "$RUNNER_TEMP/THIRD-PARTY-LICENSES.html"
           cmp THIRD-PARTY-LICENSES.html "$RUNNER_TEMP/THIRD-PARTY-LICENSES.html"
       - name: Lint repository validation scripts
         run: |
