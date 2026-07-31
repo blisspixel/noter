@@ -6,6 +6,8 @@ use noter::core::line_endings::logical_lines;
 use noter::core::markdown::recoverable_emphasis_spans;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag};
 
+use crate::bounded_text_input::{BoundedTextBuffer, sanitize_bounded_text_events};
+
 const ACTIVE_EDITOR_ID: &str = "noter-markdown-active-block";
 const EXPANDED_FORMAT_MIN_WIDTH: f32 = 540.0;
 const MARKER_FONT_SIZE: f32 = 0.1;
@@ -387,6 +389,7 @@ pub struct MarkdownEditor {
     next_editor_serial: u64,
     rendered_drag: Option<RenderedDragSelection>,
     finish_requested: bool,
+    input_was_limited: bool,
 }
 
 impl MarkdownEditor {
@@ -394,7 +397,12 @@ impl MarkdownEditor {
         self.active = None;
         self.rendered_drag = None;
         self.finish_requested = false;
+        self.input_was_limited = false;
         self.next_editor_serial = self.next_editor_serial.wrapping_add(1);
+    }
+
+    pub fn take_input_was_limited(&mut self) -> bool {
+        std::mem::take(&mut self.input_was_limited)
     }
 
     pub fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -571,6 +579,16 @@ impl MarkdownEditor {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, source: &mut String) -> MarkdownShowOutcome {
+        self.show_with_source_byte_limit(ui, source, PROTOTYPE_MARKDOWN_MAX_BYTES)
+    }
+
+    fn show_with_source_byte_limit(
+        &mut self,
+        ui: &mut egui::Ui,
+        source: &mut String,
+        maximum_source_bytes: usize,
+    ) -> MarkdownShowOutcome {
+        self.input_was_limited = false;
         let mut changed_origin = self.sync_pending_command(source);
         if let Some(origin) = changed_origin
             && let Some(limit) = markdown_projection_limit(source)
@@ -583,7 +601,8 @@ impl MarkdownEditor {
             if self.active.is_none() {
                 self.activate(0..0, String::new());
             }
-            if self.show_active_editor(ui)
+            let maximum_draft_bytes = self.maximum_active_draft_bytes(source, maximum_source_bytes);
+            if self.show_active_editor(ui, maximum_draft_bytes)
                 && let Some(origin) = self.sync_pending_command(source)
             {
                 changed_origin.get_or_insert(origin);
@@ -609,7 +628,9 @@ impl MarkdownEditor {
                 .is_some_and(|active| ranges_overlap(active, &range));
             if overlaps_active {
                 if !active_shown {
-                    let _ = self.show_active_editor(ui);
+                    let maximum_draft_bytes =
+                        self.maximum_active_draft_bytes(source, maximum_source_bytes);
+                    let _ = self.show_active_editor(ui, maximum_draft_bytes);
                     active_shown = true;
                 }
                 continue;
@@ -660,6 +681,13 @@ impl MarkdownEditor {
         }
         self.finish_active_if_requested();
         changed_origin.map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed)
+    }
+
+    fn maximum_active_draft_bytes(&self, source: &str, maximum_source_bytes: usize) -> usize {
+        self.active.as_ref().map_or(maximum_source_bytes, |active| {
+            let retained_source_bytes = source.len().saturating_sub(active.source_range.len());
+            maximum_source_bytes.saturating_sub(retained_source_bytes)
+        })
     }
 
     fn finish_active_if_requested(&mut self) {
@@ -766,7 +794,7 @@ impl MarkdownEditor {
         activation
     }
 
-    fn show_active_editor(&mut self, ui: &mut egui::Ui) -> bool {
+    fn show_active_editor(&mut self, ui: &mut egui::Ui, maximum_draft_bytes: usize) -> bool {
         let Some(active) = self.active.as_mut() else {
             return false;
         };
@@ -787,6 +815,8 @@ impl MarkdownEditor {
         }
         state.clear_undoer();
         state.store(ui.ctx(), editor_id);
+        self.input_was_limited |=
+            sanitize_bounded_text_events(ui, editor_id, &active.draft, maximum_draft_bytes);
 
         let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
             let source = buffer.as_str();
@@ -797,15 +827,20 @@ impl MarkdownEditor {
             job.wrap.max_width = wrap_width;
             ui.fonts_mut(|fonts| fonts.layout_job(job))
         };
-        let editor = egui::TextEdit::multiline(&mut active.draft)
-            .id(editor_id)
-            .font(egui::TextStyle::Body)
-            .desired_width(f32::INFINITY)
-            .desired_rows(rows)
-            .frame(egui::Frame::NONE)
-            .margin(egui::Margin::symmetric(8, 2))
-            .layouter(&mut layouter);
-        let mut output = editor.show(ui);
+        let (mut output, buffer_was_limited) = {
+            let mut buffer = BoundedTextBuffer::new(&mut active.draft, maximum_draft_bytes);
+            let editor = egui::TextEdit::multiline(&mut buffer)
+                .id(editor_id)
+                .font(egui::TextStyle::Body)
+                .desired_width(f32::INFINITY)
+                .desired_rows(rows)
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::symmetric(8, 2))
+                .layouter(&mut layouter);
+            let output = editor.show(ui);
+            (output, buffer.was_limited())
+        };
+        self.input_was_limited |= buffer_was_limited;
         if restore_focus {
             // Toolbar and mode clicks can surrender the focus requested before
             // TextEdit processes input. Reassert it after that pointer pass.
@@ -923,14 +958,22 @@ fn markdown_render_projection(source: &str, style: &egui::Style) -> MarkdownRend
     let mut run_style = None;
     let mut suppress_quote_space = false;
     let mut source_span_for_rendered_character = Vec::new();
+    let mut line_prefix_is_indentation = true;
 
     for (source_character, (index, character)) in source.char_indices().enumerate() {
+        let at_indented_line_start = line_prefix_is_indentation;
+        let followed_by_space = source[index + character.len_utf8()..].starts_with(' ');
+        line_prefix_is_indentation = match character {
+            '\n' | '\r' => true,
+            ' ' | '\t' => line_prefix_is_indentation,
+            _ => false,
+        };
         let source_style = source_styles[index];
         if !source_style.has(STYLE_VISIBLE) {
             append_render_run(&mut job, &mut run, run_style.take(), style);
             continue;
         }
-        if is_quote_marker(source, index, character) {
+        if is_quote_marker(character, at_indented_line_start, followed_by_space) {
             append_render_run(&mut job, &mut run, run_style.take(), style);
             suppress_quote_space = true;
             continue;
@@ -945,7 +988,11 @@ fn markdown_render_projection(source: &str, style: &egui::Style) -> MarkdownRend
             append_render_run(&mut job, &mut run, run_style.take(), style);
         }
         run_style = Some(source_style);
-        run.push(formatted_block_marker(source, index, character));
+        run.push(formatted_block_marker(
+            character,
+            at_indented_line_start,
+            followed_by_space,
+        ));
         source_span_for_rendered_character.push(source_character..source_character + 1);
     }
     append_render_run(&mut job, &mut run, run_style, style);
@@ -1068,33 +1115,24 @@ fn append_render_run(
     run.clear();
 }
 
-fn formatted_block_marker(source: &str, index: usize, character: char) -> char {
-    let line_start = source[..index]
-        .rfind(['\n', '\r'])
-        .map_or(0, |position| position + 1);
-    let indented_line_start = source[line_start..index]
-        .chars()
-        .all(|prefix| matches!(prefix, ' ' | '\t'));
-    let followed_by_space = source[index + character.len_utf8()..].starts_with(' ');
-
-    if indented_line_start && followed_by_space && matches!(character, '-' | '+' | '*') {
+const fn formatted_block_marker(
+    character: char,
+    at_indented_line_start: bool,
+    followed_by_space: bool,
+) -> char {
+    if at_indented_line_start && followed_by_space && matches!(character, '-' | '+' | '*') {
         '•'
     } else {
         character
     }
 }
 
-fn is_quote_marker(source: &str, index: usize, character: char) -> bool {
-    if character != '>' {
-        return false;
-    }
-    let line_start = source[..index]
-        .rfind(['\n', '\r'])
-        .map_or(0, |position| position + 1);
-    source[line_start..index]
-        .chars()
-        .all(|prefix| matches!(prefix, ' ' | '\t'))
-        && source[index + 1..].starts_with(' ')
+const fn is_quote_marker(
+    character: char,
+    at_indented_line_start: bool,
+    followed_by_space: bool,
+) -> bool {
+    character == '>' && at_indented_line_start && followed_by_space
 }
 
 fn semantic_target_at_selection(source: &str, selection: &Range<usize>) -> Option<Range<usize>> {
@@ -1786,6 +1824,22 @@ mod tests {
     }
 
     #[test]
+    fn exact_ceiling_line_renders_without_rescanning_line_prefixes() {
+        let source = "x".repeat(PROTOTYPE_MARKDOWN_MAX_LINE_BYTES);
+
+        let projection = markdown_render_projection(&source, &egui::Style::default());
+
+        assert_eq!(projection.job.text, source);
+        assert_eq!(
+            projection
+                .source_map
+                .source_span_for_rendered_character
+                .len(),
+            PROTOTYPE_MARKDOWN_MAX_LINE_BYTES
+        );
+    }
+
+    #[test]
     fn inline_commands_preserve_unicode_selection_boundaries() {
         let result = apply_markdown_command("cafe cafe", 0..4, MarkdownCommand::Bold);
 
@@ -2331,17 +2385,24 @@ mod tests {
     #[test]
     fn quote_marker_projection_respects_line_boundaries_and_required_space() {
         let source = "paragraph\n> quoted line";
-        let marker = source
-            .find('>')
-            .expect("the fixture contains a quote marker");
 
-        assert!(is_quote_marker(source, marker, '>'));
+        assert!(is_quote_marker('>', true, true));
         assert_eq!(
             markdown_render_layout(source, &egui::Style::default()).text,
             "paragraph\nquoted line"
         );
-        assert!(!is_quote_marker("inline > quote", 7, '>'));
-        assert!(!is_quote_marker(">not a quote", 0, '>'));
+        assert!(!is_quote_marker('>', false, true));
+        assert!(!is_quote_marker('>', true, false));
+    }
+
+    #[test]
+    fn block_marker_projection_tracks_indentation_across_native_line_endings() {
+        let source = "- first\r\n  * second\rparagraph * prose\n  > nested";
+
+        assert_eq!(
+            markdown_render_layout(source, &egui::Style::default()).text,
+            "• first\r\n  • second\rparagraph * prose\n  nested"
+        );
     }
 
     #[test]
@@ -2562,6 +2623,7 @@ mod tests {
             next_editor_serial: 1,
             rendered_drag: None,
             finish_requested: false,
+            input_was_limited: false,
         };
         let mut source = "text".to_owned();
 
@@ -2638,6 +2700,7 @@ mod tests {
             next_editor_serial: 1,
             rendered_drag: None,
             finish_requested: false,
+            input_was_limited: false,
         };
         let context = egui::Context::default();
         let mut outcome = MarkdownShowOutcome::Unchanged;
@@ -2670,6 +2733,7 @@ mod tests {
             next_editor_serial: 1,
             rendered_drag: None,
             finish_requested: false,
+            input_was_limited: false,
         };
         let mut source = "# A\n\nParagraph\n".to_owned();
 
@@ -2699,6 +2763,7 @@ mod tests {
             next_editor_serial: 1,
             rendered_drag: None,
             finish_requested: false,
+            input_was_limited: false,
         };
         let mut source = "# A\n\nParagraph\n".to_owned();
 
@@ -2743,6 +2808,7 @@ mod tests {
             next_editor_serial: 1,
             rendered_drag: None,
             finish_requested: false,
+            input_was_limited: false,
         };
         let mut source = "Paragraph\n\n# A".to_owned();
 
@@ -2787,6 +2853,7 @@ mod tests {
             next_editor_serial: 1,
             rendered_drag: None,
             finish_requested: false,
+            input_was_limited: false,
         };
         let mut source = "# A".to_owned();
 
@@ -2871,5 +2938,36 @@ mod tests {
         let current = (cursor, source);
         assert!(!state.undoer().has_undo(&current));
         assert!(!state.undoer().has_redo(&current));
+    }
+
+    #[test]
+    fn active_editor_bounds_paste_before_layout_and_reports_the_limit() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        editor.activate(0..4, "text".to_owned());
+        let mut source = "text".to_owned();
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(640.0);
+            assert!(
+                !editor
+                    .show_with_source_byte_limit(ui, &mut source, 8)
+                    .changed()
+            );
+        });
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Paste("12345é".to_owned()));
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(640.0);
+            assert!(
+                editor
+                    .show_with_source_byte_limit(ui, &mut source, 8)
+                    .changed()
+            );
+        });
+
+        assert_eq!(source, "text1234");
+        assert!(editor.take_input_was_limited());
+        assert!(!editor.take_input_was_limited());
     }
 }

@@ -96,6 +96,17 @@ release, so current work remains under Unreleased.
 
 ### Security
 
+- Preserve positional document paths as native operating-system strings during
+  command-line parsing. Non-Unicode Unix paths now reach the file loader, while
+  non-Unicode option names and non-path values such as `--theme` and `--view`
+  fail with controlled diagnostics instead of panicking during process startup.
+- Bound text, paste, IME, Enter, and Tab document mutations before the Text and
+  Markdown editor widgets can lay out bytes beyond their source budgets. The UI
+  reports every truncation and preserves the prefix that fits on a UTF-8
+  boundary.
+- Track Markdown line-prefix state during the existing render pass so accepted
+  64 KiB lines render in linear time instead of repeatedly scanning every prior
+  byte for each character.
 - Restrict any race-safe Unix displaced-document recovery artifact to
   owner-only mode through its verified open handle. On macOS, remove and verify
   the absence of extended access-control entries before retaining it.
@@ -137,6 +148,9 @@ release, so current work remains under Unreleased.
 
 ### Fixed
 
+- Serialize Cargo build jobs in the focused macOS mutation job after Apple
+  clang crashed while linking concurrent workspace test binaries. Mutation
+  validation remains strict and the job retains its 90-minute outer bound.
 - Render conservative line-wide emphasis-spacing mistakes such as `*text *` as
   intended in Markdown Mode while reporting MD037 and preserving exact source
   until an explicit correction. Flush inactive render runs whenever visible
@@ -205,6 +219,12 @@ release, so current work remains under Unreleased.
 
 ### Engineering
 
+- Verify implementation commit `1988337` in protected nine-context run
+  [30606904746](https://github.com/blisspixel/noter/actions/runs/30606904746).
+  Hosted Linux runs 411 Rust tests at 93.38 percent whole-workspace and 94.44
+  percent trust-kernel line coverage. Linux, both required Windows mutation
+  shards, and macOS classify 967, 901, and 47 candidates respectively with no
+  miss, timeout, or recognized infrastructure failure.
 - Exercise the whole-document replacement size decision at a small injected
   boundary, distinguishing the accepted limit from an oversized replacement
   before diffing without multiplying a 64 MiB fixture across mutation runs.
@@ -226,8 +246,8 @@ release, so current work remains under Unreleased.
   authority, calculate bounded results before allocation, and compare literal
   search plus lifecycle command sequences with fixed-seed reference models.
 - Measure the current Windows-local source checkpoint at 95.58 percent line
-  coverage for the UI-independent trust kernel and 92.87 percent for the
-  complete workspace. The 380-test suite includes 100 percent line coverage for
+  coverage for the UI-independent trust kernel and 93.18 percent for the
+  complete workspace. The 404-test suite includes 100 percent line coverage for
   lifecycle and logical-line navigation, 99.15 percent for transactions, 98.83
   percent for history, and 97.29 percent for literal search.
 - Record a complete 256-candidate mutation campaign for the M3 transaction,

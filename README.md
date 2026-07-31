@@ -15,7 +15,7 @@ portability problems without changing the source.
 
 ## Interface
 
-These Light and Dark captures come from Noter's native release renderer. Both
+These Light and Dark captures come from the actual Noter release build. Both
 show the same local Markdown file in Markdown Mode.
 
 | Light | Dark |

@@ -1,7 +1,9 @@
 use eframe::egui;
 use noter::core::navigation::line_start_offset;
 
-use crate::bounded_text_input::{sanitize_bounded_text_events, truncate_to_utf8_byte_limit};
+use crate::bounded_text_input::{
+    BoundedTextBuffer, sanitize_bounded_text_events, truncate_to_utf8_byte_limit,
+};
 
 const LINE_INPUT_ID: &str = "noter-go-to-line-input";
 const MAX_LINE_NUMBER_BYTES: usize = 20;
@@ -56,12 +58,17 @@ impl GoToLineDialog {
                 let accepts_input = self.request_focus || ui.memory(|memory| memory.has_focus(id));
                 let event_was_clamped = accepts_input
                     && sanitize_bounded_text_events(ui, id, &self.input, MAX_LINE_NUMBER_BYTES);
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.input)
-                        .id(id)
-                        .char_limit(MAX_LINE_NUMBER_BYTES)
-                        .desired_width(220.0),
-                );
+                let (response, buffer_was_clamped) = {
+                    let mut buffer = BoundedTextBuffer::new(&mut self.input, MAX_LINE_NUMBER_BYTES);
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut buffer)
+                            .id(id)
+                            .char_limit(MAX_LINE_NUMBER_BYTES)
+                            .desired_width(220.0),
+                    );
+                    (response, buffer.was_limited())
+                };
+                let event_was_clamped = event_was_clamped || buffer_was_clamped;
                 if self.request_focus {
                     response.request_focus();
                     self.request_focus = false;

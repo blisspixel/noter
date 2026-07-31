@@ -180,6 +180,10 @@ jobs:
       - name: Run macOS platform mutation tests
         if: runner.os == 'macOS'
         env:
+          # Apple clang crashed while several workspace test binaries linked
+          # concurrently. This 47-candidate platform scope is small enough to
+          # serialize Cargo build jobs within the existing outer time bound.
+          CARGO_BUILD_JOBS: 1
           CARGO_INCREMENTAL: 1
         run: >
           cargo mutants -vV --in-place --colors never --workspace
