@@ -67,8 +67,8 @@ The current development checkpoint has:
 - one pure lifecycle reducer used by dirty New, Open, Reload, Close, and Quit,
   with Save, Discard, and Cancel effects shared by menu and native-close paths
   and correlated to the exact document revision that authorized them;
-- 380 Rust tests in the current local suite, 95.57 percent UI-independent
-  trust-kernel line coverage, and 92.85 percent whole-workspace line coverage
+- 380 Rust tests in the current local suite, 95.58 percent UI-independent
+  trust-kernel line coverage, and 92.87 percent whole-workspace line coverage
   against respective 90 and 80 percent gates;
 - a 256-candidate exact-commit M3 editing-core mutation campaign with 216
   caught, 40 compiler-unviable, zero missed, zero timed out, and no recognized

@@ -192,6 +192,14 @@ impl Document {
     /// exceeds the BOM-aware document ceiling.
     pub fn replace_text(&mut self, text: &str) -> Result<bool, NoterError> {
         let maximum = self.maximum_text_bytes();
+        self.replace_text_with_maximum(text, maximum)
+    }
+
+    fn replace_text_with_maximum(
+        &mut self,
+        text: &str,
+        maximum: usize,
+    ) -> Result<bool, NoterError> {
         if text.len() > maximum {
             return Err(NoterError::Edit(EditError::ResultTooLarge {
                 projected: text.len(),
@@ -565,17 +573,25 @@ mod tests {
     }
 
     #[test]
-    fn whole_text_replacement_rejects_oversized_input_before_diffing() {
+    fn whole_text_replacement_limit_is_exact_and_rejects_before_diffing() {
+        let mut exact_document = Document::new();
+
+        let changed = exact_document
+            .replace_text_with_maximum("four", 4)
+            .expect("a replacement at the exact ceiling should succeed");
+        assert!(changed);
+        assert_eq!(exact_document.rope().to_string(), "four");
+        assert!(exact_document.is_dirty());
+
         let mut document = Document::from_bytes(b"unchanged").expect("fixture should load");
         let revision = document.revision();
-        let oversized = "x".repeat(MAX_DOCUMENT_BYTES + 1);
 
         assert!(matches!(
-            document.replace_text(&oversized),
+            document.replace_text_with_maximum("12345", 4),
             Err(NoterError::Edit(EditError::ResultTooLarge {
                 projected,
-                maximum: MAX_DOCUMENT_BYTES,
-            })) if projected == MAX_DOCUMENT_BYTES + 1
+                maximum: 4,
+            })) if projected == 5
         ));
         assert_eq!(document.rope().to_string(), "unchanged");
         assert_eq!(document.revision(), revision);
