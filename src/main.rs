@@ -14,6 +14,7 @@ mod idle_screen;
 mod markdown_ui;
 mod theme;
 
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use app::{DocumentView, LaunchOptions, NoterApp};
@@ -23,7 +24,7 @@ const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter upda
 const THEME_ERROR_VALUES: &str = "system, light, dark, green, or amber";
 
 fn main() -> eframe::Result {
-    let request = match parse_launch_request(std::env::args().skip(1)) {
+    let request = match parse_launch_request(std::env::args_os().skip(1)) {
         Ok(request) => request,
         Err(message) => {
             write_line(
@@ -83,9 +84,12 @@ enum LaunchRequest {
     Version,
 }
 
-fn parse_launch_request(args: impl IntoIterator<Item = String>) -> Result<LaunchRequest, String> {
+fn parse_launch_request(args: impl IntoIterator<Item = OsString>) -> Result<LaunchRequest, String> {
     let mut args = args.into_iter().peekable();
-    if args.peek().is_some_and(|argument| argument == "update") {
+    if args
+        .peek()
+        .is_some_and(|argument| argument == OsStr::new("update"))
+    {
         args.next();
         if args.next().is_some() {
             return Err("`noter update` does not accept additional arguments".to_owned());
@@ -99,55 +103,66 @@ fn parse_launch_request(args: impl IntoIterator<Item = String>) -> Result<Launch
     let mut options = LaunchOptions::default();
     let mut options_finished = false;
     while let Some(argument) = args.next() {
-        match argument.as_str() {
-            "--" if !options_finished => options_finished = true,
-            "-h" | "--help" if !options_finished => return Ok(LaunchRequest::Help),
-            "-V" | "--version" if !options_finished => return Ok(LaunchRequest::Version),
-            "--theme" if !options_finished => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| format!("`--theme` requires {THEME_ERROR_VALUES}"))?;
-                options.theme = Some(parse_theme(&value)?);
+        if !options_finished && argument == OsStr::new("--") {
+            options_finished = true;
+        } else if !options_finished
+            && (argument == OsStr::new("-h") || argument == OsStr::new("--help"))
+        {
+            return Ok(LaunchRequest::Help);
+        } else if !options_finished
+            && (argument == OsStr::new("-V") || argument == OsStr::new("--version"))
+        {
+            return Ok(LaunchRequest::Version);
+        } else if !options_finished && argument == OsStr::new("--theme") {
+            let value = args
+                .next()
+                .ok_or_else(|| format!("`--theme` requires {THEME_ERROR_VALUES}"))?;
+            let value = unicode_option_value("--theme", value)?;
+            options.theme = Some(parse_theme(&value)?);
+        } else if !options_finished && argument == OsStr::new("--view") {
+            let value = args
+                .next()
+                .ok_or_else(|| "`--view` requires text or markdown".to_owned())?;
+            let value = unicode_option_value("--view", value)?;
+            options.view = Some(parse_view(&value)?);
+        } else if !options_finished && argument == OsStr::new("--screenshot") {
+            if !cfg!(feature = "screenshot-qa") {
+                return Err(
+                    "`--screenshot` requires a build with feature `screenshot-qa`".to_owned(),
+                );
             }
-            "--view" if !options_finished => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| "`--view` requires text or markdown".to_owned())?;
-                options.view = Some(parse_view(&value)?);
+            let value = args
+                .next()
+                .ok_or_else(|| "`--screenshot` requires an output path".to_owned())?;
+            options.screenshot_path = Some(PathBuf::from(value));
+        } else if !options_finished && argument == OsStr::new("--screenshot-idle") {
+            if !cfg!(feature = "screenshot-qa") {
+                return Err(
+                    "`--screenshot-idle` requires a build with feature `screenshot-qa`".to_owned(),
+                );
             }
-            "--screenshot" if !options_finished => {
-                if !cfg!(feature = "screenshot-qa") {
-                    return Err(
-                        "`--screenshot` requires a build with feature `screenshot-qa`".to_owned(),
-                    );
-                }
-                let value = args
-                    .next()
-                    .ok_or_else(|| "`--screenshot` requires an output path".to_owned())?;
-                options.screenshot_path = Some(PathBuf::from(value));
-            }
-            "--screenshot-idle" if !options_finished => {
-                if !cfg!(feature = "screenshot-qa") {
-                    return Err(
-                        "`--screenshot-idle` requires a build with feature `screenshot-qa`"
-                            .to_owned(),
-                    );
-                }
-                options.screenshot_idle = true;
-            }
-            _ if !options_finished && argument.starts_with('-') => {
-                return Err(format!("unknown option `{}`", escaped_cli_value(&argument)));
-            }
-            _ if options.initial_path.is_none() => {
-                options.initial_path = Some(PathBuf::from(argument));
-            }
-            _ => return Err("only one document path may be opened at startup".to_owned()),
+            options.screenshot_idle = true;
+        } else if !options_finished && argument.to_string_lossy().starts_with('-') {
+            let Some(argument) = argument.to_str() else {
+                return Err("option names must be valid Unicode".to_owned());
+            };
+            return Err(format!("unknown option `{}`", escaped_cli_value(argument)));
+        } else if options.initial_path.is_none() {
+            options.initial_path = Some(PathBuf::from(argument));
+        } else {
+            return Err("only one document path may be opened at startup".to_owned());
         }
     }
     if options.screenshot_idle && options.screenshot_path.is_none() {
         return Err("`--screenshot-idle` requires `--screenshot PATH`".to_owned());
     }
     Ok(LaunchRequest::Run(options))
+}
+
+fn unicode_option_value(option: &str, value: OsString) -> Result<String, String> {
+    value
+        .into_string()
+        .map_err(|_| format!("`{option}` value must be valid Unicode"))
 }
 
 fn parse_theme(value: &str) -> Result<AppTheme, String> {
@@ -191,7 +206,7 @@ mod tests {
     }
 
     fn parse(arguments: &[&str]) -> Result<LaunchRequest, String> {
-        parse_launch_request(arguments.iter().map(ToString::to_string))
+        parse_launch_request(arguments.iter().map(OsString::from))
     }
 
     #[test]
@@ -288,6 +303,46 @@ mod tests {
             options.initial_path,
             Some(PathBuf::from("-meeting-notes.md"))
         );
+    }
+
+    #[cfg(unix)]
+    fn non_unicode_path() -> OsString {
+        use std::os::unix::ffi::OsStringExt;
+
+        OsString::from_vec(b"notes-\xff.md".to_vec())
+    }
+
+    #[cfg(windows)]
+    fn non_unicode_path() -> OsString {
+        use std::os::windows::ffi::OsStringExt;
+
+        OsString::from_wide(&[
+            u16::from(b'n'),
+            u16::from(b'o'),
+            u16::from(b't'),
+            u16::from(b'e'),
+            0xd800,
+        ])
+    }
+
+    #[test]
+    fn document_paths_preserve_non_unicode_operating_system_values() {
+        let path = non_unicode_path();
+        let LaunchRequest::Run(options) =
+            parse_launch_request([path.clone()]).expect("an OS-native path should parse")
+        else {
+            panic!("the path should launch the application");
+        };
+
+        assert_eq!(options.initial_path, Some(PathBuf::from(path)));
+    }
+
+    #[test]
+    fn non_unicode_option_values_return_controlled_errors() {
+        let error = parse_launch_request([OsString::from("--theme"), non_unicode_path()])
+            .expect_err("theme values must be Unicode");
+
+        assert_eq!(error, "`--theme` value must be valid Unicode");
     }
 
     #[cfg(feature = "screenshot-qa")]

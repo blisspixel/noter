@@ -17,6 +17,7 @@ use noter::core::search::SearchDirection;
 use noter::core::undo::{HistoryApplyOutcome, HistoryRecordOutcome, UndoHistory};
 use noter::error::NoterError;
 
+use crate::bounded_text_input::{BoundedTextBuffer, sanitize_bounded_text_events};
 use crate::editor_settings::{
     EditorZoom, PointerZoomAccumulator, TextWrap, WORD_WRAP_STORAGE_KEY, ZOOM_STORAGE_KEY,
     apply_editor_zoom,
@@ -41,6 +42,9 @@ const STATUS_BAR_HEIGHT: f32 = 26.0;
 const EXPANDED_TOP_CONTROLS_MIN_WIDTH: f32 = 600.0;
 const EXPANDED_TOP_CONTROLS_WIDTH: f32 = 326.0;
 const COMPACT_TOP_CONTROLS_WIDTH: f32 = 280.0;
+const TEXT_INPUT_LIMIT_PREFIX: &str =
+    "Input was limited to keep this document within its supported";
+const MARKDOWN_INPUT_LIMIT_MESSAGE: &str = "Markdown Mode limited this input to keep the source within its 1 MiB safety budget. Text within the remaining budget was preserved.";
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum DocumentView {
@@ -1786,6 +1790,14 @@ impl NoterApp {
     }
 
     fn show_text_editor(&mut self, ui: &mut egui::Ui) -> EditorFrameOutcome {
+        self.show_text_editor_with_limit(ui, self.document.maximum_text_bytes())
+    }
+
+    fn show_text_editor_with_limit(
+        &mut self,
+        ui: &mut egui::Ui,
+        maximum_text_bytes: usize,
+    ) -> EditorFrameOutcome {
         let observed_at = edit_timestamp(ui);
         let origin = direct_input_origin(ui, EditOrigin::TextInput);
         let editor_id = self.editor_id();
@@ -1809,6 +1821,8 @@ impl NoterApp {
         }
         state.clear_undoer();
         egui::TextEdit::store_state(ui.ctx(), editor_id, state);
+        let event_was_limited =
+            sanitize_bounded_text_events(ui, editor_id, &self.text, maximum_text_bytes);
 
         let viewport_size = ui.available_size();
         let desired_width = if self.text_wrap.is_wrapped() {
@@ -1816,25 +1830,35 @@ impl NoterApp {
         } else {
             f32::INFINITY
         };
-        let editor = egui::TextEdit::multiline(&mut self.text)
-            .id(editor_id)
-            .font(egui::TextStyle::Monospace)
-            .code_editor()
-            .desired_width(desired_width)
-            .min_size(viewport_size)
-            .frame(egui::Frame::NONE)
-            .lock_focus(true);
-        let response = if self.text_wrap.is_wrapped() {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| ui.add(editor))
-                .inner
-        } else {
-            egui::ScrollArea::both()
-                .auto_shrink([false, false])
-                .show(ui, |ui| ui.add(editor))
-                .inner
+        let (response, buffer_was_limited) = {
+            let mut buffer = BoundedTextBuffer::new(&mut self.text, maximum_text_bytes);
+            let editor = egui::TextEdit::multiline(&mut buffer)
+                .id(editor_id)
+                .font(egui::TextStyle::Monospace)
+                .code_editor()
+                .desired_width(desired_width)
+                .min_size(viewport_size)
+                .frame(egui::Frame::NONE)
+                .lock_focus(true);
+            let response = if self.text_wrap.is_wrapped() {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| ui.add(editor))
+                    .inner
+            } else {
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| ui.add(editor))
+                    .inner
+            };
+            (response, buffer.was_limited())
         };
+        let input_was_limited = event_was_limited || buffer_was_limited;
+        if input_was_limited {
+            self.error_msg = Some(format!(
+                "{TEXT_INPUT_LIMIT_PREFIX} {maximum_text_bytes}-byte safety limit. Text within the remaining budget was preserved."
+            ));
+        }
         if restore_focus {
             // A mode/menu pointer click can surrender focus during TextEdit's
             // interaction pass. Reassert it after the widget as well.
@@ -1885,6 +1909,7 @@ impl NoterApp {
                 .inner
             })
             .inner;
+        let input_was_limited = self.markdown_editor.take_input_was_limited();
         let selection = self
             .markdown_editor
             .source_selection()
@@ -1894,6 +1919,8 @@ impl NoterApp {
             self.markdown_editor.reset();
             self.pending_selection_restore = Some(selection);
             self.error_msg = Some(markdown_limit_message(self.text.len(), limit));
+        } else if input_was_limited {
+            self.error_msg = Some(MARKDOWN_INPUT_LIMIT_MESSAGE.to_owned());
         }
         EditorFrameOutcome {
             changed: outcome.changed(),
@@ -3303,6 +3330,33 @@ mod tests {
         let current = (cursor, app.text);
         assert!(!state.undoer().has_undo(&current));
         assert!(!state.undoer().has_redo(&current));
+    }
+
+    #[test]
+    fn text_editor_bounds_paste_before_widget_layout_and_reports_the_limit() {
+        let context = egui::Context::default();
+        let mut app = NoterApp {
+            text: "text".to_owned(),
+            pending_selection_restore: Some(Selection::caret(4)),
+            ..NoterApp::default()
+        };
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(640.0);
+            assert!(!app.show_text_editor_with_limit(ui, 8).changed);
+        });
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Paste("12345é".to_owned()));
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(640.0);
+            assert!(app.show_text_editor_with_limit(ui, 8).changed);
+        });
+
+        assert_eq!(app.text, "text1234");
+        assert!(app.error_msg.as_deref().is_some_and(|message| {
+            message.contains("8-byte safety limit")
+                && message.contains("remaining budget was preserved")
+        }));
     }
 
     #[test]

@@ -67,8 +67,8 @@ The current development checkpoint has:
 - one pure lifecycle reducer used by dirty New, Open, Reload, Close, and Quit,
   with Save, Discard, and Cancel effects shared by menu and native-close paths
   and correlated to the exact document revision that authorized them;
-- 380 Rust tests in the current local suite, 95.58 percent UI-independent
-  trust-kernel line coverage, and 92.87 percent whole-workspace line coverage
+- 404 Rust tests in the current local suite, 95.58 percent UI-independent
+  trust-kernel line coverage, and 93.18 percent whole-workspace line coverage
   against respective 90 and 80 percent gates;
 - a 256-candidate exact-commit M3 editing-core mutation campaign with 216
   caught, 40 compiler-unviable, zero missed, zero timed out, and no recognized
@@ -91,7 +91,7 @@ configuration, accessibility evidence, and release performance evidence also
 remain open. M1 through M4 therefore remain In Progress even where their
 current implementation slices are substantial.
 
-The 380-test and coverage measurements above describe the current local source
+The 404-test and coverage measurements above describe the current local source
 checkpoint, not hosted release evidence. The M1 paragraph identifies the latest
 immutable commit whose complete hosted matrix is verified.
 
@@ -310,15 +310,17 @@ directional selection after apply and exact inverse, and compare every retained
 state after Undo and Redo.
 
 Literal search escapes all regex metacharacters before using the linear-time
-regex engine. A shared UI adapter caps focused text, paste, and IME events
-before `TextEdit` normalizes or retains their complete payload. Queries and
-replacements are each capped at 16 KiB. Match counting
-retains no document-sized range vector, and the UI cache is keyed by document
-revision, query, and case policy. Unicode-insensitive matching uses the engine's
-simple case folding and returns source byte ranges. Replace and Replace All use
-literal replacement text, reject invalid UTF-8 scopes, calculate the result
-length before allocation, enforce the BOM-aware 64 MiB serialized-document
-ceiling, and enter the same transaction history with explicit Replace intent.
+regex engine. A shared UI adapter caps each frame's focused text, paste, and IME
+payload before widget processing. A bounded text buffer then enforces the exact
+UTF-8 byte ceiling at every mutation, including Enter, Tab, and replacements
+after navigation changes the selection. Queries and replacements are each
+capped at 16 KiB. Match counting retains no document-sized range vector, and
+the UI cache is keyed by document revision, query, and case policy.
+Unicode-insensitive matching uses the engine's simple case folding and returns
+source byte ranges. Replace and Replace All use literal replacement text,
+reject invalid UTF-8 scopes, calculate the result length before allocation,
+enforce the BOM-aware 64 MiB serialized-document ceiling, and enter the same
+transaction history with explicit Replace intent.
 
 Go To Line caps its focused input at 20 UTF-8 bytes before widget processing,
 then scans source bytes without allocation and treats LF, CRLF, CR, and mixed

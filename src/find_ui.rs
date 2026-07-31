@@ -6,7 +6,9 @@ use noter::core::search::{
     SearchNavigation,
 };
 
-use crate::bounded_text_input::{sanitize_bounded_text_events, truncate_to_utf8_byte_limit};
+use crate::bounded_text_input::{
+    BoundedTextBuffer, sanitize_bounded_text_events, truncate_to_utf8_byte_limit,
+};
 
 const FIND_QUERY_ID: &str = "noter-find-query";
 const REPLACEMENT_ID: &str = "noter-find-replacement";
@@ -163,15 +165,20 @@ impl FindBar {
         let query_was_clamped =
             truncate_to_utf8_byte_limit(&mut self.query, MAX_LITERAL_QUERY_BYTES);
         let accepts_input = self.request_query_focus || ui.memory(|memory| memory.has_focus(id));
-        let input_was_clamped = accepts_input
+        let event_was_clamped = accepts_input
             && sanitize_bounded_text_events(ui, id, &self.query, MAX_LITERAL_QUERY_BYTES);
-        let query_response = ui.add(
-            egui::TextEdit::singleline(&mut self.query)
-                .id(id)
-                .desired_width(240.0)
-                .char_limit(MAX_LITERAL_QUERY_BYTES)
-                .hint_text("Literal text"),
-        );
+        let (query_response, buffer_was_clamped) = {
+            let mut buffer = BoundedTextBuffer::new(&mut self.query, MAX_LITERAL_QUERY_BYTES);
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut buffer)
+                    .id(id)
+                    .desired_width(240.0)
+                    .char_limit(MAX_LITERAL_QUERY_BYTES)
+                    .hint_text("Literal text"),
+            );
+            (response, buffer.was_limited())
+        };
+        let input_was_clamped = event_was_clamped || buffer_was_clamped;
         if self.request_query_focus {
             query_response.request_focus();
             self.request_query_focus = false;
@@ -240,20 +247,26 @@ impl FindBar {
         let id = egui::Id::new(REPLACEMENT_ID);
         let replacement_was_clamped =
             truncate_to_utf8_byte_limit(&mut self.replacement, MAX_LITERAL_REPLACEMENT_BYTES);
-        let input_was_clamped = ui.memory(|memory| memory.has_focus(id))
+        let event_was_clamped = ui.memory(|memory| memory.has_focus(id))
             && sanitize_bounded_text_events(
                 ui,
                 id,
                 &self.replacement,
                 MAX_LITERAL_REPLACEMENT_BYTES,
             );
-        let replacement_response = ui.add(
-            egui::TextEdit::singleline(&mut self.replacement)
-                .id(id)
-                .desired_width(240.0)
-                .char_limit(MAX_LITERAL_REPLACEMENT_BYTES)
-                .hint_text("Literal replacement"),
-        );
+        let (replacement_response, buffer_was_clamped) = {
+            let mut buffer =
+                BoundedTextBuffer::new(&mut self.replacement, MAX_LITERAL_REPLACEMENT_BYTES);
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut buffer)
+                    .id(id)
+                    .desired_width(240.0)
+                    .char_limit(MAX_LITERAL_REPLACEMENT_BYTES)
+                    .hint_text("Literal replacement"),
+            );
+            (response, buffer.was_limited())
+        };
+        let input_was_clamped = event_was_clamped || buffer_was_clamped;
         let result_was_clamped =
             truncate_to_utf8_byte_limit(&mut self.replacement, MAX_LITERAL_REPLACEMENT_BYTES);
         if replacement_was_clamped || input_was_clamped || result_was_clamped {
@@ -595,7 +608,7 @@ mod tests {
                 ui,
                 id,
                 &value,
-                MAX_LITERAL_QUERY_BYTES,
+                MAX_LITERAL_QUERY_BYTES
             ));
             let event_bytes = ui.input(|input| {
                 input
@@ -608,8 +621,9 @@ mod tests {
                     .expect("the sanitized paste should remain available to the widget")
             });
             assert_eq!(event_bytes, MAX_LITERAL_QUERY_BYTES - 1);
+            let mut buffer = BoundedTextBuffer::new(&mut value, MAX_LITERAL_QUERY_BYTES);
             ui.add(
-                egui::TextEdit::singleline(&mut value)
+                egui::TextEdit::singleline(&mut buffer)
                     .id(id)
                     .char_limit(MAX_LITERAL_QUERY_BYTES),
             );

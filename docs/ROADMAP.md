@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-07-30
+**Updated:** 2026-07-31
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -233,7 +233,9 @@ ceilings end the group. Text and Markdown adapters identify paste explicitly.
 A non-modal Find and Replace bar now provides bounded literal queries, Unicode
 case matching, next and previous navigation, wrap reporting, match counts, and
 explicit selection or whole-document Replace All scope. Query and replacement
-input is bounded before focused widgets receive text, paste, or IME commits.
+input payloads are bounded before focused widgets process text, paste, or IME
+commits, and an exact mutation-boundary byte ceiling covers Enter, Tab,
+selection changes, and replacements.
 Search caches are revision-keyed and retain counts rather than a document-sized
 match vector. Replacement calculates its BOM-aware bounded result before
 allocation and enters shared Undo as one explicit Replace transaction. Find
@@ -254,7 +256,7 @@ parity are still open.
 Deterministic 512-case properties cover single replacements, ordered disjoint
 multi-edit transactions, arbitrary edit sequences, literal search, and
 lifecycle decisions against independent reference models. The current local
-source checkpoint has 380 Rust tests, 92.87 percent whole-workspace line
+source checkpoint has 404 Rust tests, 93.18 percent whole-workspace line
 coverage, and 95.58 percent UI-independent trust-kernel line coverage. Its
 [exact-commit M3 editing record](M3_EDITING_EVIDENCE.md) reports 256 generated
 mutations: 216 caught, 40 compiler-unviable, zero missed, and zero timed out,
