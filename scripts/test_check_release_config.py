@@ -102,6 +102,18 @@ class ReleaseConfigurationTests(unittest.TestCase):
             errors,
         )
 
+    def test_rejects_an_unbounded_license_inventory_diagnostic(self) -> None:
+        changed = self.ci_workflow.replace("| head -c 65536 || true", "|| true")
+        errors = validate_license_inventory(
+            self.manifest,
+            self.platform_manifest,
+            self.about_config,
+            self.license_generator,
+            self.inventory,
+            changed,
+        )
+        self.assertIn("missing license inventory diagnostic output bound", errors)
+
     def test_rejects_a_floating_release_tool(self) -> None:
         changed = self.workflow.replace(
             "releases/download/v0.7.5", "releases/latest/download", 1

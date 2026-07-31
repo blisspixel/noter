@@ -447,6 +447,16 @@ def validate_license_inventory(
             "cmp THIRD-PARTY-LICENSES.html",
             "license inventory drift check",
         ),
+        (
+            ci_workflow,
+            "diff --text --unified=3",
+            "bounded license inventory drift diagnostic",
+        ),
+        (
+            ci_workflow,
+            "| head -c 65536 || true",
+            "license inventory diagnostic output bound",
+        ),
     ]:
         require_text(text, expected, description, errors)
     if inventory.count("<tr>") < 50:
