@@ -68,9 +68,13 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
-- Canonicalize third-party license generation from bounded cargo-about JSON so
-  package order, source paths, line endings, and repeated license records cannot
-  make the checked-in notice differ across build hosts.
+- Canonicalize third-party license generation from bounded cargo-about JSON and
+  the legal files packaged in every locked dependency. Component expressions
+  remain separate from preserved copyright and notice text, and target-gated
+  nested notices are included without relying on host-sensitive associations.
+  Conventional non-runtime trees and source-code lookalikes are excluded from
+  legal-text discovery, while compact third-party notice names and bundled font
+  license sidecars remain covered.
 - Replace wide text-labeled Markdown formatting controls with compact visual
   controls, grouped by purpose, while retaining full accessible names,
   descriptions, and text labels in the responsive overflow menu.
@@ -126,6 +130,16 @@ release, so current work remains under Unreleased.
 
 ### Security
 
+- Bind the complete release workflow, CI workflow, and WiX authoring source to
+  reviewed digests, with an independently isolated release-validator step and
+  a separate cross-platform test-job digest. This makes commented-out gates,
+  inherited shell bypasses, altered shell execution context,
+  reordered publication steps, unpinned action syntax, disabled native tests,
+  and dynamic MSI-directory redirection fail closed.
+- Read dependency legal files through identity-checked descriptors, reject
+  symbolic links, Windows reparse points, hard links, directory replacement,
+  and observed concurrent mutation, and run the repository-script suite in the
+  native Windows CI job.
 - Restrict release workflow write, OIDC, and attestation permissions to the
   final host job; validate dispatch tags before shell use; checksum every
   release-tool bootstrap; upload the SBOM through the correct step output; and
