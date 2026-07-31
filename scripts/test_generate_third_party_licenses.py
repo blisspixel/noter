@@ -52,6 +52,17 @@ def create_junction(link: Path, target: Path) -> subprocess.CompletedProcess[str
     )
 
 
+def same_filesystem_entry(
+    left: os.PathLike[str] | str, right: os.PathLike[str] | str
+) -> bool:
+    """Compare test injection targets by identity across Windows path aliases."""
+
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return False
+
+
 def sample_evidence() -> dict:
     return {
         "crates": [
@@ -337,8 +348,11 @@ class ThirdPartyLicenseGenerationTests(unittest.TestCase):
             package_root.mkdir()
             manifest = package_root / "Cargo.toml"
             manifest.write_text("[package]\nname='alpha'\n", encoding="utf-8")
-            legal_file = package_root / "LICENSE"
-            legal_file.write_text("Expected terms\n", encoding="utf-8")
+            canonical_legal_file = package_root / "LICENSE"
+            canonical_legal_file.write_text("Expected terms\n", encoding="utf-8")
+            alias_directory = package_root / "path-alias"
+            alias_directory.mkdir()
+            legal_file = alias_directory / ".." / "LICENSE"
             outside = container / "outside.txt"
             outside.write_text("Synthetic private data\n", encoding="utf-8")
             evidence = sample_evidence()
@@ -363,7 +377,7 @@ class ThirdPartyLicenseGenerationTests(unittest.TestCase):
                 *,
                 dir_fd: int | None = None,
             ) -> int:
-                if Path(path) == legal_file:
+                if same_filesystem_entry(path, legal_file):
                     swap_checked_file()
                 return original_open(path, flags, mode, dir_fd=dir_fd)
 
@@ -400,7 +414,7 @@ class ThirdPartyLicenseGenerationTests(unittest.TestCase):
                 dir_fd: int | None = None,
             ) -> int:
                 nonlocal mutated
-                if Path(path) == legal_file and not mutated:
+                if same_filesystem_entry(path, legal_file) and not mutated:
                     legal_file.write_text("Replaced terms\n", encoding="utf-8")
                     metadata = legal_file.stat()
                     os.utime(
@@ -438,7 +452,7 @@ class ThirdPartyLicenseGenerationTests(unittest.TestCase):
 
             def racing_lstat(path: Path) -> os.stat_result:
                 nonlocal legal_lstat_count, mutated
-                if path == legal_file:
+                if same_filesystem_entry(path, legal_file):
                     legal_lstat_count += 1
                     if legal_lstat_count == 2:
                         legal_file.write_text("Replaced terms\n", encoding="utf-8")
@@ -535,7 +549,7 @@ class ThirdPartyLicenseGenerationTests(unittest.TestCase):
             def racing_resolve(path: Path, strict: bool = False) -> Path:
                 nonlocal replaced
                 result = original_resolve(path, strict=strict)
-                if path == legal_root and not replaced:
+                if same_filesystem_entry(path, legal_root) and not replaced:
                     legal_root.rename(saved_legal_root)
                     junction_result = create_junction(legal_root, outside)
                     if junction_result.returncode != 0:
