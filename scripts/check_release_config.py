@@ -381,7 +381,7 @@ def validate_license_inventory(
     manifest: str,
     platform_manifest: str,
     about_config: str,
-    template: str,
+    generator: str,
     inventory: str,
     ci_workflow: str,
 ) -> list[str]:
@@ -411,18 +411,17 @@ def validate_license_inventory(
             '"aarch64-apple-darwin"',
             "Apple Silicon license target",
         ),
-        (
-            template,
-            "The bundled\n      Inter typeface is covered separately",
-            "bundled-font notice",
-        ),
-        (template, "{{#each licenses}}", "distinct source-license iteration"),
-        (template, "{{#each used_by}}", "per-license package mapping"),
-        (
-            template,
-            '<li class="license-user">{{crate.name}} {{crate.version}}</li>',
-            "stable per-license package identity",
-        ),
+        (generator, "MAX_JSON_BYTES = 16 * 1024 * 1024", "bounded JSON input"),
+        (generator, "grouped_licenses", "canonical license-text grouping"),
+        (generator, "ordered_licenses.sort(", "deterministic license ordering"),
+        (generator, 'parsed.scheme not in {"http", "https"}', "safe link policy"),
+        (generator, "shell=False", "shell-free license generation"),
+        (generator, "os.replace(", "atomic license inventory replacement"),
+        (generator, '"--format",', "cargo-about JSON mode"),
+        (generator, '"--workspace",', "workspace license scan"),
+        (generator, '"--all-features",', "all-feature license scan"),
+        (generator, '"--frozen",', "frozen license scan"),
+        (generator, '"--fail",', "fail-closed license scan"),
         (
             inventory,
             "<h1>Noter third-party licenses</h1>",
@@ -440,13 +439,8 @@ def validate_license_inventory(
         ),
         (
             ci_workflow,
-            "cargo about generate about.hbs \\",
+            "python3 scripts/generate_third_party_licenses.py \\",
             "third-party inventory generation command",
-        ),
-        (
-            ci_workflow,
-            "--workspace --all-features --frozen --fail",
-            "frozen complete inventory generation",
         ),
         (
             ci_workflow,
@@ -461,10 +455,6 @@ def validate_license_inventory(
         errors.append("third-party inventory collapses distinct source license texts")
     if inventory.count('<li class="license-user">') < 100:
         errors.append("third-party inventory omits per-license package mappings")
-    if "crate.repository" in template:
-        errors.append(
-            "per-license package mapping must not render unstable repository metadata"
-        )
     try:
         configured_targets = tomllib.loads(about_config)["targets"]
     except (tomllib.TOMLDecodeError, KeyError, TypeError):
@@ -511,7 +501,9 @@ def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
         license_text = read_regular_file(root / "LICENSE").decode("utf-8")
         license_rtf = read_regular_file(root / "wix/License.rtf")
         about_config = read_regular_file(root / "about.toml").decode("utf-8")
-        about_template = read_regular_file(root / "about.hbs").decode("utf-8")
+        license_generator = read_regular_file(
+            root / "scripts/generate_third_party_licenses.py"
+        ).decode("utf-8")
         license_inventory = read_regular_file(
             root / "THIRD-PARTY-LICENSES.html"
         ).decode("utf-8")
@@ -531,7 +523,7 @@ def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
             manifest,
             platform_manifest,
             about_config,
-            about_template,
+            license_generator,
             license_inventory,
             ci_workflow,
         )

@@ -68,6 +68,9 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
+- Canonicalize third-party license generation from bounded cargo-about JSON so
+  package order, source paths, line endings, and repeated license records cannot
+  make the checked-in notice differ across build hosts.
 - Replace wide text-labeled Markdown formatting controls with compact visual
   controls, grouped by purpose, while retaining full accessible names,
   descriptions, and text labels in the responsive overflow menu.

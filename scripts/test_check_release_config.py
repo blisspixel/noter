@@ -30,9 +30,9 @@ class ReleaseConfigurationTests(unittest.TestCase):
         cls.about_config = read_regular_file(REPOSITORY_ROOT / "about.toml").decode(
             "utf-8"
         )
-        cls.about_template = read_regular_file(REPOSITORY_ROOT / "about.hbs").decode(
-            "utf-8"
-        )
+        cls.license_generator = read_regular_file(
+            REPOSITORY_ROOT / "scripts/generate_third_party_licenses.py"
+        ).decode("utf-8")
         cls.inventory = read_regular_file(
             REPOSITORY_ROOT / "THIRD-PARTY-LICENSES.html"
         ).decode("utf-8")
@@ -47,8 +47,8 @@ class ReleaseConfigurationTests(unittest.TestCase):
         self.assertEqual(validate_repository(), [])
 
     def test_rejects_collapsed_overview_only_license_texts(self) -> None:
-        template = self.about_template.replace(
-            "{{#each licenses}}", "{{#each overview}}", 1
+        generator = self.license_generator.replace(
+            "grouped_licenses", "license_buckets"
         )
         inventory = self.inventory.replace(
             '<section class="license-text">', "<section>"
@@ -57,11 +57,11 @@ class ReleaseConfigurationTests(unittest.TestCase):
             self.manifest,
             self.platform_manifest,
             self.about_config,
-            template,
+            generator,
             inventory,
             self.ci_workflow,
         )
-        self.assertIn("missing distinct source-license iteration", errors)
+        self.assertIn("missing canonical license-text grouping", errors)
         self.assertIn(
             "third-party inventory collapses distinct source license texts", errors
         )
@@ -79,21 +79,15 @@ class ReleaseConfigurationTests(unittest.TestCase):
             self.manifest,
             self.platform_manifest,
             about_config,
-            self.about_template,
+            self.license_generator,
             self.inventory,
             self.ci_workflow,
         )
         self.assertIn("license inventory targets differ from the release set", errors)
 
-    def test_rejects_volatile_repository_metadata_in_license_mapping(self) -> None:
-        stable_mapping = (
-            '<li class="license-user">{{crate.name}} {{crate.version}}</li>'
-        )
-        changed = self.about_template.replace(
-            stable_mapping,
-            '<li class="license-user"><a href="{{crate.repository}}">'
-            "{{crate.name}} {{crate.version}}</a></li>",
-            1,
+    def test_rejects_a_nondeterministic_license_generator(self) -> None:
+        changed = self.license_generator.replace(
+            "ordered_licenses.sort(", "sorted(ordered_licenses,"
         )
         errors = validate_license_inventory(
             self.manifest,
@@ -103,9 +97,8 @@ class ReleaseConfigurationTests(unittest.TestCase):
             self.inventory,
             self.ci_workflow,
         )
-        self.assertIn("missing stable per-license package identity", errors)
         self.assertIn(
-            "per-license package mapping must not render unstable repository metadata",
+            "missing deterministic license ordering",
             errors,
         )
 

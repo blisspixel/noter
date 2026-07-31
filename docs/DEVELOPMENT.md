@@ -64,6 +64,18 @@ local pass does not replace exact-commit CI evidence. Commands and thresholds
 for the complete gate are maintained in
 [CODE-QUALITY-STANDARDS.md](CODE-QUALITY-STANDARDS.md).
 
+When the locked runtime dependency graph changes, install the cargo-about
+version pinned in CI and regenerate the tracked notices with:
+
+```sh
+python scripts/generate_third_party_licenses.py
+```
+
+The generator consumes frozen cargo-about JSON, validates every component and
+license mapping, canonicalizes ordering and line endings, and replaces the
+inventory atomically. Commit the regenerated inventory with the dependency
+change.
+
 ## README screenshots
 
 The tracked screenshots are generated from Noter's real native renderer and the
