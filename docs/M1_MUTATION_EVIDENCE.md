@@ -356,3 +356,21 @@ caught and 6 unviable. Every scope has zero missed and zero timed out, and the
 strengthened infrastructure validator reports no recognized failure hidden as
 unviable. These overlapping per-platform results are not presented as a new
 deduplicated union without a matching reconciliation artifact.
+
+## 2026-07-31 exact implementation checkpoint
+
+Commit `1988337` is verified by protected pull-request run
+[30606904746](https://github.com/blisspixel/noter/actions/runs/30606904746).
+Linux reports 967 candidates: 718 caught and 249 genuine compiler rejections.
+The two independently required Windows shards classify the complete 901-item
+Windows list: shard 0 reports 309 caught and 142 compiler rejections, while
+shard 1 reports 347 caught and 103 compiler rejections. macOS reports 47
+candidates: 41 caught and 6 compiler rejections. Every scope has zero missed
+and zero timed out.
+
+The infrastructure validator passes all four artifacts. In particular, the
+macOS job completes after serializing Cargo build jobs, rather than reproducing
+the Apple linker crash seen when several workspace test binaries linked
+concurrently. These per-platform scopes overlap and are not described as a new
+deduplicated cross-platform union. The implementation does not change in the
+documentation-only reconciliation commit that records this result.

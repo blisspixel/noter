@@ -106,17 +106,18 @@ progress arithmetic. Each defect has a focused regression. The historical
 741-candidate supported-platform union is recorded in
 [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md).
 
-The latest verified implementation checkpoint is commit `d77460c`.
-Exact-commit run
-[30558477309](https://github.com/blisspixel/noter/actions/runs/30558477309)
-passes all eight Windows, macOS, Linux, documentation, dependency, coverage, and
-mutation jobs. Hosted line coverage is 92.65 percent for the workspace and
-93.57 percent for the trust kernel. The current platform mutation scopes report
-817 Linux candidates, 751 Windows candidates, and 47 macOS candidates, with no
-miss or timeout; the infrastructure validator reports no recognized tool,
-compiler, linker, process, or storage failure hidden as unviable. The
-reproducible benchmark harness and required manual filesystem fixtures remain
-open.
+The latest verified implementation checkpoint is commit `1988337`. Protected
+pull-request run
+[30606904746](https://github.com/blisspixel/noter/actions/runs/30606904746)
+passes all nine Windows, macOS, Linux, documentation, dependency, coverage, and
+mutation contexts. Hosted Linux line coverage is 93.38 percent for the workspace
+and 94.44 percent for the trust kernel. The current platform mutation scopes
+report 967 Linux candidates, 901 Windows candidates across two required shards,
+and 47 macOS candidates, with no miss or timeout. The infrastructure validator
+reports no recognized tool, compiler, linker, process, or storage failure hidden
+as unviable. The implementation does not change in the documentation-only
+reconciliation commit that follows this checkpoint. The reproducible benchmark
+harness and required manual filesystem fixtures remain open.
 
 Current detailed evidence and known gaps are maintained in:
 

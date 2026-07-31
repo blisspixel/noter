@@ -2,27 +2,28 @@
 
 **M0 measured:** 2026-07-26
 
-**Latest verified implementation checkpoint:** 2026-07-30
+**Latest verified implementation checkpoint:** 2026-07-31
 
 **M0 source state:** Evidence commit `7512534` after dependency cleanup. These
 measurements are a development baseline, not release evidence.
 
 ## Latest exact implementation checkpoint
 
-Commit `d77460c` is the latest verified implementation checkpoint before the
-current correctness-alpha work. Exact-commit run
-[30558477309](https://github.com/blisspixel/noter/actions/runs/30558477309)
-completed all eight required jobs successfully.
+Commit `1988337` is the latest verified implementation checkpoint. Protected
+pull-request run
+[30606904746](https://github.com/blisspixel/noter/actions/runs/30606904746)
+completed all nine required jobs successfully. The implementation does not
+change in the documentation-only reconciliation commit that follows it.
 
 | Measure | Result |
 | --- | --- |
-| Hosted Linux Rust tests | 307 passed, 0 failed |
-| Whole-workspace line coverage | 92.65 percent, 11,179 of 12,066 lines |
-| Trust-kernel line coverage | 93.57 percent, 6,612 of 7,066 lines |
-| Linux mutation scope | 817 total, 586 caught, 231 unviable, 0 missed, 0 timed out |
-| Windows mutation scope | 751 total, 524 caught, 227 unviable, 0 missed, 0 timed out |
+| Hosted Linux Rust tests | 411 passed, 0 failed |
+| Whole-workspace line coverage | 93.38 percent, 14,736 of 15,781 lines |
+| Trust-kernel line coverage | 94.44 percent, 7,387 of 7,822 lines |
+| Linux mutation scope | 967 total, 718 caught, 249 unviable, 0 missed, 0 timed out |
+| Windows mutation scope | 901 total across two required shards, 656 caught, 245 unviable, 0 missed, 0 timed out |
 | macOS mutation scope | 47 total, 41 caught, 6 unviable, 0 missed, 0 timed out |
-| Mutation infrastructure validation | Pass in all three jobs; no recognized compiler, linker, process, storage, or tool failure hidden as unviable |
+| Mutation infrastructure validation | Pass in all four mutation jobs; no recognized compiler, linker, process, storage, or tool failure hidden as unviable |
 | Source installers | Pass on Windows, macOS, and Linux using custom roots containing spaces |
 | Formatting, Clippy, rustdoc, dependency audit and policy | Pass |
 | Documentation, validation-script lint, and validation-script tests | Pass |
@@ -68,8 +69,9 @@ semantic UI and manual platform tests.
 - At the M0 evidence commit, the document module exceeded the initial percentage
   target but still lacked its I/O adapter, property tests, failure injection, and
   mutation evidence.
-- The current GUI shell has one About-window smoke test but still lacks the
-  semantic command, state, accessibility, and visual coverage required for v0.1.
+- Semantic command and state tests now cover the implemented GUI surface, but
+  installed-product accessibility and cross-platform visual evidence remain
+  required for v0.1.
 - Startup, input latency, open latency, RSS, and long-file measurements do not
   yet have a reproducible harness.
 - Duplicate target-specific dependency families remain in the GUI stack and
