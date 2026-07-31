@@ -44,7 +44,7 @@
         <p>Used by:</p>
         <ul>
           {{#each used_by}}
-            <li class="license-user">{{#if crate.repository}}<a href="{{crate.repository}}">{{crate.name}} {{crate.version}}</a>{{else}}{{crate.name}} {{crate.version}}{{/if}}</li>
+            <li class="license-user">{{crate.name}} {{crate.version}}</li>
           {{/each}}
         </ul>
         <pre>{{text}}</pre>

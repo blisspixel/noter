@@ -85,6 +85,30 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
         self.assertIn("license inventory targets differ from the release set", errors)
 
+    def test_rejects_volatile_repository_metadata_in_license_mapping(self) -> None:
+        stable_mapping = (
+            '<li class="license-user">{{crate.name}} {{crate.version}}</li>'
+        )
+        changed = self.about_template.replace(
+            stable_mapping,
+            '<li class="license-user"><a href="{{crate.repository}}">'
+            "{{crate.name}} {{crate.version}}</a></li>",
+            1,
+        )
+        errors = validate_license_inventory(
+            self.manifest,
+            self.platform_manifest,
+            self.about_config,
+            changed,
+            self.inventory,
+            self.ci_workflow,
+        )
+        self.assertIn("missing stable per-license package identity", errors)
+        self.assertIn(
+            "per-license package mapping must not render unstable repository metadata",
+            errors,
+        )
+
     def test_rejects_a_floating_release_tool(self) -> None:
         changed = self.workflow.replace(
             "releases/download/v0.7.5", "releases/latest/download", 1
