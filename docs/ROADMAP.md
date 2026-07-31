@@ -254,8 +254,8 @@ parity are still open.
 Deterministic 512-case properties cover single replacements, ordered disjoint
 multi-edit transactions, arbitrary edit sequences, literal search, and
 lifecycle decisions against independent reference models. The current local
-source checkpoint has 380 Rust tests, 92.85 percent whole-workspace line
-coverage, and 95.57 percent UI-independent trust-kernel line coverage. Its
+source checkpoint has 380 Rust tests, 92.87 percent whole-workspace line
+coverage, and 95.58 percent UI-independent trust-kernel line coverage. Its
 [exact-commit M3 editing record](M3_EDITING_EVIDENCE.md) reports 256 generated
 mutations: 216 caught, 40 compiler-unviable, zero missed, and zero timed out,
 with no recognized infrastructure failure. This is focused Windows-local

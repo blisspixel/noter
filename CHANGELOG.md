@@ -205,6 +205,9 @@ release, so current work remains under Unreleased.
 
 ### Engineering
 
+- Exercise the exact whole-document replacement ceiling through the public
+  mutation boundary, distinguishing the accepted limit from an oversized
+  replacement before diffing.
 - Make Undo and Redo shortcut tests select the simulated operating system
   explicitly, so Windows and macOS conventions are verified independently of
   the runner host.
@@ -219,8 +222,8 @@ release, so current work remains under Unreleased.
 - Route Replace and Replace All through the same revision-checked transaction
   authority, calculate bounded results before allocation, and compare literal
   search plus lifecycle command sequences with fixed-seed reference models.
-- Measure the current Windows-local source checkpoint at 95.57 percent line
-  coverage for the UI-independent trust kernel and 92.85 percent for the
+- Measure the current Windows-local source checkpoint at 95.58 percent line
+  coverage for the UI-independent trust kernel and 92.87 percent for the
   complete workspace. The 380-test suite includes 100 percent line coverage for
   lifecycle and logical-line navigation, 99.15 percent for transactions, 98.83
   percent for history, and 97.29 percent for literal search.

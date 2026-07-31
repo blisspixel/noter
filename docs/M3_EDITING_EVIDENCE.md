@@ -19,8 +19,11 @@ remain open in the [roadmap](ROADMAP.md).
 - Mutation runner: `cargo-mutants 27.1.0`
 - Coverage runner: `cargo-llvm-cov 0.8.7`
 
-The subject revision is a clean committed source tree. The five settled core
-modules named in the campaign are unchanged by later UI-adapter corrections.
+The subject revision is a clean committed source tree. Production code in the
+five settled core modules named in the campaign is unchanged by later
+corrections. A later test-only change extends the `Document::replace_text`
+boundary regression; it does not change this exact-commit campaign or its
+counts.
 
 ## Mutation campaign
 

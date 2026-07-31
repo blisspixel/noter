@@ -565,7 +565,19 @@ mod tests {
     }
 
     #[test]
-    fn whole_text_replacement_rejects_oversized_input_before_diffing() {
+    fn whole_text_replacement_accepts_the_ceiling_and_rejects_oversized_input() {
+        let mut exact_document = Document::new();
+        let exact = "x".repeat(MAX_DOCUMENT_BYTES);
+
+        let changed = exact_document
+            .replace_text(&exact)
+            .expect("a replacement at the exact ceiling should succeed");
+        assert!(changed);
+        assert_eq!(exact_document.rope().len_bytes(), MAX_DOCUMENT_BYTES);
+        assert!(exact_document.is_dirty());
+        drop(exact_document);
+        drop(exact);
+
         let mut document = Document::from_bytes(b"unchanged").expect("fixture should load");
         let revision = document.revision();
         let oversized = "x".repeat(MAX_DOCUMENT_BYTES + 1);
