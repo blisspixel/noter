@@ -1,10 +1,12 @@
 # Installation and Updates
 
-**Reviewed:** 2026-07-30
+**Reviewed:** 2026-07-31
 
 **Current availability:** Source installation is supported for development and
 evaluation. Noter has not published a signed binary release, native package, or
-self-updating release channel.
+self-updating release channel. The cross-platform distribution workflow is
+prepared for dry runs, but preparation is not release approval. See the
+[release process](RELEASING.md).
 
 ## Prerequisites
 

@@ -1,6 +1,6 @@
 [package]
 name = "noter"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
 rust-version = "1.97.1" # Verified and pinned by rust-toolchain.toml and CI.
 authors = ["Nick"]
@@ -8,8 +8,25 @@ description = "A focused, private text and Markdown editor for Windows, macOS, a
 readme = "README.md"
 license = "Apache-2.0"
 repository = "https://github.com/blisspixel/noter"
+homepage = "https://github.com/blisspixel/noter"
 keywords = ["notepad", "text-editor", "plain-text", "markdown", "cross-platform"]
 categories = ["gui", "text-editors"]
+
+[package.metadata.wix]
+# These product identifiers are permanent once an MSI is published.
+upgrade-guid = "04EFB570-9D04-49E1-B908-F5CEBD979E1B"
+path-guid = "495D73C5-0B48-41F9-A34D-30DAFD03BB54"
+license = "wix/License.rtf"
+eula = false
+
+[[package.metadata.dist.extra-artifacts]]
+artifacts = [
+    "noter_aarch64-apple-darwin.cdx.xml",
+    "noter_x86_64-apple-darwin.cdx.xml",
+    "noter_x86_64-pc-windows-msvc.cdx.xml",
+    "noter_x86_64-unknown-linux-gnu.cdx.xml",
+]
+build = ["python", "scripts/generate_release_sboms.py"]
 
 [workspace]
 members = [".", "crates/noter-platform"]
@@ -20,7 +37,7 @@ blake3 = { version = "1.8", default-features = false, features = ["std"] }
 eframe = { version = "0.35", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
 getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
-noter-platform = { version = "=0.1.0", path = "crates/noter-platform" }
+noter-platform = { version = "=0.1.0-alpha.1", path = "crates/noter-platform" }
 pulldown-cmark = { version = "0.13", default-features = false }
 regex = { version = "1.13", default-features = false, features = ["perf", "std", "unicode-case"] }
 rfd = "0.17"
@@ -49,6 +66,10 @@ panic = "abort"
 [profile.dev]
 opt-level = 1
 
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+
 # =============================================================================
 # Lints
 # =============================================================================
@@ -75,17 +96,40 @@ cast_precision_loss = "allow"
 # every upstream version split into a Clippy failure.
 multiple_crate_versions = "allow"
 
-# =============================================================================
-# cargo-dist metadata reserved for the packaging milestone
-# =============================================================================
+# Config for 'dist'
 [workspace.metadata.dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.32.0"
-ci = ["github"]
-installers = ["shell", "msi", "homebrew"]
-targets = [
-    "x86_64-unknown-linux-gnu",
-    "x86_64-unknown-linux-musl",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
-]
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell", "homebrew", "msi"]
+# Ship the complete dependency notice and bundled-font license beside every
+# standalone binary so redistribution does not separate code from its notices.
+include = ["THIRD-PARTY-LICENSES.html", "assets/fonts/Inter-OFL.txt"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false
+# Embed dependency metadata. Target-specific SBOMs are declared as extra
+# artifacts above so the release manifest and published assets stay identical.
+cargo-auditable = true
+cargo-cyclonedx = false
+# Attest release artifacts through GitHub's OIDC-backed provenance service.
+github-attestations = true
+github-attestations-phase = "host"
+github-attestations-filters = ["*.json", "*.sh", "*.ps1", "*.rb", "*.xml", "*.sum", "*.sha256", "*.zip", "*.tar.gz", "*.tar.xz", "*.msi"]
+pr-run-mode = "plan"
+dispatch-releases = true
+# The checked-in CI and MSI definitions contain reviewed security hardening on
+# top of cargo-dist's generated templates. scripts/check_release_config.py owns
+# their deterministic drift checks.
+allow-dirty = ["ci", "msi"]
+
+[workspace.metadata.dist.github-action-commits]
+"actions/checkout" = "3d3c42e5aac5ba805825da76410c181273ba90b1"
+"actions/upload-artifact" = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+"actions/download-artifact" = "70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3"
+"actions/attest" = "c32b4b8b198b65d0bd9d63490e847ff7b53989d4"

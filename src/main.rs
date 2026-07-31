@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn closed_cli_output_does_not_panic() {
-        write_line(ClosedOutput, "noter 0.1.0");
+        write_line(ClosedOutput, concat!("noter ", env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

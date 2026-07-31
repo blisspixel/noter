@@ -42,6 +42,8 @@ const STATUS_BAR_HEIGHT: f32 = 26.0;
 const EXPANDED_TOP_CONTROLS_MIN_WIDTH: f32 = 600.0;
 const EXPANDED_TOP_CONTROLS_WIDTH: f32 = 326.0;
 const COMPACT_TOP_CONTROLS_WIDTH: f32 = 280.0;
+const INTERACTIVE_TEXT_MAX_BYTES: usize = 8 << 20;
+const INTERACTIVE_TEXT_MAX_LABEL: &str = "8 MiB";
 const TEXT_INPUT_LIMIT_PREFIX: &str =
     "Input was limited to keep this document within its supported";
 const MARKDOWN_INPUT_LIMIT_MESSAGE: &str = "Markdown Mode limited this input to keep the source within its 1 MiB safety budget. Text within the remaining budget was preserved.";
@@ -346,6 +348,16 @@ impl Default for NoterApp {
 }
 
 impl NoterApp {
+    fn interactive_text_maximum_for(document: &Document) -> usize {
+        document
+            .maximum_text_bytes()
+            .min(INTERACTIVE_TEXT_MAX_BYTES)
+    }
+
+    fn interactive_text_maximum(&self) -> usize {
+        Self::interactive_text_maximum_for(&self.document)
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, options: LaunchOptions) -> Self {
         theme::configure_styles(&cc.egui_ctx);
         cc.egui_ctx
@@ -391,6 +403,14 @@ impl NoterApp {
     fn open_path(&mut self, path: &std::path::Path, requested_view: Option<DocumentView>) {
         match Document::from_path(path) {
             Ok(document) => {
+                let source_bytes = document.rope().len_bytes();
+                let maximum = Self::interactive_text_maximum_for(&document);
+                if source_bytes > maximum {
+                    self.error_msg = Some(format!(
+                        "This file contains {source_bytes} UTF-8 bytes. The current editor safely supports files up to {INTERACTIVE_TEXT_MAX_LABEL}, so the file was not opened. Larger-file editing requires the planned virtualized editor."
+                    ));
+                    return;
+                }
                 self.text = String::from(document.rope());
                 self.document = document;
                 self.history.reset(self.document.revision());
@@ -898,7 +918,7 @@ impl NoterApp {
                 .record_replacements(0, self.document.revision());
             return;
         }
-        let maximum = self.document.maximum_text_bytes();
+        let maximum = self.interactive_text_maximum();
         let Some(projected) =
             projected_replacement_length(self.text.len(), range, replacement.len())
         else {
@@ -963,7 +983,7 @@ impl NoterApp {
             &self.text,
             scope,
             &replacement,
-            self.document.maximum_text_bytes(),
+            self.interactive_text_maximum(),
         ) {
             Ok(Some(result)) => result,
             Ok(None) => return,
@@ -1307,6 +1327,17 @@ impl NoterApp {
             && let Some(limit) = markdown_projection_limit(&self.text)
         {
             self.error_msg = Some(markdown_limit_message(self.text.len(), limit));
+            return;
+        }
+        if view == DocumentView::Markdown
+            && self.selection.anchor() != self.selection.active()
+            && !MarkdownEditor::can_restore_source_selection(&self.text, self.selection)
+        {
+            self.pending_selection_restore = Some(self.selection);
+            self.error_msg = Some(
+                "Markdown Mode currently edits one formatted block at a time. This selection crosses blocks, so Noter kept Text Mode and preserved it. Select text within one block before switching modes."
+                    .to_owned(),
+            );
             return;
         }
         if self.view != view {
@@ -1661,7 +1692,7 @@ impl NoterApp {
                     self.markdown_editor.toolbar(ui);
                     if !self.markdown_editor.is_editing() && ui.available_width() >= 180.0 {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.weak("Select content to format");
+                            ui.weak("Click or drag in formatted text to edit or format");
                         });
                     }
                 });
@@ -1726,6 +1757,13 @@ impl NoterApp {
     }
 
     fn record_editor_change(&mut self, outcome: EditorFrameOutcome) {
+        let maximum = self.interactive_text_maximum();
+        if self.text.len() > maximum {
+            let error =
+                format!("the result exceeded the current {maximum}-byte interactive safety limit");
+            self.restore_editor_after_failed_change(&error);
+            return;
+        }
         let before = String::from(self.document.rope());
         let transaction = EditTransaction::between(
             self.document.revision(),
@@ -1790,7 +1828,7 @@ impl NoterApp {
     }
 
     fn show_text_editor(&mut self, ui: &mut egui::Ui) -> EditorFrameOutcome {
-        self.show_text_editor_with_limit(ui, self.document.maximum_text_bytes())
+        self.show_text_editor_with_limit(ui, self.interactive_text_maximum())
     }
 
     fn show_text_editor_with_limit(
@@ -3052,6 +3090,85 @@ mod tests {
     }
 
     #[test]
+    fn every_interactive_path_uses_the_measured_editor_ceiling() {
+        let plain = NoterApp::default();
+        assert_eq!(plain.interactive_text_maximum(), INTERACTIVE_TEXT_MAX_BYTES);
+
+        let bom_document =
+            Document::from_bytes(b"\xEF\xBB\xBFtext").expect("the UTF-8 BOM fixture should load");
+        assert_eq!(
+            NoterApp::interactive_text_maximum_for(&bom_document),
+            INTERACTIVE_TEXT_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn replace_cannot_grow_an_interactive_document_past_the_ceiling() {
+        let source = "x".repeat(INTERACTIVE_TEXT_MAX_BYTES);
+        let selection = Selection::new(source.len() - 1, source.len());
+        let mut app = NoterApp {
+            document: Document::from_bytes(source.as_bytes())
+                .expect("the exact-boundary fixture should load"),
+            text: source.clone(),
+            selection,
+            ..NoterApp::default()
+        };
+        app.execute_edit_command(EditCommand::Replace);
+        app.find_bar.set_replacement_for_test("yy".to_owned());
+
+        app.replace_selected_match(EditTimestamp::default());
+
+        assert_eq!(app.text, source);
+        assert_eq!(app.document.rope().len_bytes(), INTERACTIVE_TEXT_MAX_BYTES);
+        assert!(app.error_msg.as_deref().is_some_and(|message| {
+            message.contains("Replace would create")
+                && message.contains(&INTERACTIVE_TEXT_MAX_BYTES.to_string())
+                && message.contains("document was not changed")
+        }));
+
+        app.find_bar.set_replacement_for_test(String::new());
+        app.replace_selected_match(EditTimestamp::default());
+        assert_eq!(app.text.len(), INTERACTIVE_TEXT_MAX_BYTES - 1);
+        assert_eq!(
+            app.document.rope().len_bytes(),
+            INTERACTIVE_TEXT_MAX_BYTES - 1
+        );
+    }
+
+    #[test]
+    fn replace_all_accepts_the_ceiling_and_rejects_one_byte_beyond_it() {
+        let source = format!("{}z", "x".repeat(INTERACTIVE_TEXT_MAX_BYTES - 2));
+        let selection = Selection::new(source.len() - 1, source.len());
+        let mut app = NoterApp {
+            document: Document::from_bytes(source.as_bytes())
+                .expect("the near-boundary fixture should load"),
+            text: source.clone(),
+            selection,
+            ..NoterApp::default()
+        };
+        app.execute_edit_command(EditCommand::Replace);
+        app.find_bar.set_replacement_for_test("zzz".to_owned());
+
+        app.replace_all_matches(EditTimestamp::default());
+
+        assert_eq!(app.text, source);
+        assert_eq!(
+            app.document.rope().len_bytes(),
+            INTERACTIVE_TEXT_MAX_BYTES - 1
+        );
+        assert!(app.error_msg.as_deref().is_some_and(|message| {
+            message.contains("Replace All could not run")
+                && message.contains(&INTERACTIVE_TEXT_MAX_BYTES.to_string())
+                && message.contains("document was not changed")
+        }));
+
+        app.find_bar.set_replacement_for_test("zz".to_owned());
+        app.replace_all_matches(EditTimestamp::default());
+        assert_eq!(app.text.len(), INTERACTIVE_TEXT_MAX_BYTES);
+        assert_eq!(app.document.rope().len_bytes(), INTERACTIVE_TEXT_MAX_BYTES);
+    }
+
+    #[test]
     fn edit_menu_uses_platform_labels_and_history_enabled_state() {
         for (operating_system, undo_label, redo_label) in [
             (egui::os::OperatingSystem::Windows, "Ctrl+Z", "Ctrl+Y"),
@@ -3143,6 +3260,74 @@ mod tests {
         assert_eq!(app.text_wrap, TextWrap::Wrapped);
         assert_eq!(app.selection, Selection::caret(0));
         assert_eq!(app.pending_selection_restore, None);
+    }
+
+    #[test]
+    fn markdown_mode_preserves_a_cross_block_text_selection_until_it_is_supported() {
+        let source = "# First\n\nSecond";
+        let selection = Selection::new(2, source.len());
+        let mut app = NoterApp {
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            text: source.to_owned(),
+            selection,
+            ..NoterApp::default()
+        };
+
+        app.select_document_view(DocumentView::Markdown);
+
+        assert_eq!(app.view, DocumentView::Text);
+        assert_eq!(app.selection, selection);
+        assert_eq!(app.pending_selection_restore, Some(selection));
+        assert!(app.error_msg.as_deref().is_some_and(|message| {
+            message.contains("one formatted block at a time")
+                && message.contains("kept Text Mode")
+                && message.contains("preserved")
+        }));
+    }
+
+    #[test]
+    fn markdown_projection_budget_precedes_cross_block_selection_mapping() {
+        let source = "x\n\n".repeat(513);
+        let selection = Selection::new(0, source.len());
+        let mut app = NoterApp {
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            text: source,
+            selection,
+            ..NoterApp::default()
+        };
+
+        app.select_document_view(DocumentView::Markdown);
+
+        assert_eq!(app.view, DocumentView::Text);
+        assert_eq!(app.selection, selection);
+        assert!(app.error_msg.as_deref().is_some_and(|message| {
+            message.contains("512-block layout budget")
+                && message.contains("remains fully available in Text Mode")
+                && !message.contains("one formatted block at a time")
+        }));
+    }
+
+    #[test]
+    fn markdown_mode_restores_a_same_block_text_selection_for_formatting() {
+        let source = "# First\n\nSecond";
+        let selection = Selection::new(2, 7);
+        let mut app = NoterApp {
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            text: source.to_owned(),
+            selection,
+            ..NoterApp::default()
+        };
+
+        app.select_document_view(DocumentView::Markdown);
+        let context = egui::Context::default();
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| {
+            let _ = app.show_markdown_editor(ui);
+        });
+
+        assert_eq!(app.view, DocumentView::Markdown);
+        assert_eq!(app.markdown_editor.source_selection(), Some(selection));
+        assert!(app.markdown_editor.is_editing());
+        assert!(app.error_msg.is_none());
     }
 
     #[test]
@@ -3751,6 +3936,7 @@ mod tests {
     fn format_toolbar_is_present_only_in_markdown_mode() {
         let mut app = NoterApp::default();
         let context = egui::Context::default();
+        context.enable_accesskit();
         theme::configure_styles(&context);
 
         let text_output = context.run_ui(egui::RawInput::default(), |ui| {
@@ -3765,9 +3951,34 @@ mod tests {
             app.show_format_toolbar(ui);
         });
         let text = rendered_text(&markdown_output);
-        text_position(&text, "Format");
-        text_position(&text, "Bold");
-        assert!(!text.iter().any(|(label, _)| label == "Mode"));
+        let graphic_labels = ["H1", "H2", "B", "</>"];
+        let visible_graphic_labels = text
+            .iter()
+            .map(|(label, _)| label.as_str())
+            .filter(|label| graphic_labels.contains(label))
+            .collect::<Vec<_>>();
+        assert_eq!(visible_graphic_labels, graphic_labels);
+        assert!(!text.iter().any(|(label, _)| label == "Format"));
+        assert!(!text.iter().any(|(label, _)| label == "Bold"));
+
+        let expected_accessible_labels = [
+            "Heading 1",
+            "Heading 2",
+            "Bold",
+            "Italic",
+            "Link",
+            "Inline code",
+            "Bulleted list",
+            "Quote",
+        ];
+        let labels = accesskit_labels(&markdown_output);
+        let relevant = labels
+            .iter()
+            .map(String::as_str)
+            .filter(|label| expected_accessible_labels.contains(label))
+            .collect::<Vec<_>>();
+        assert_eq!(relevant, expected_accessible_labels);
+        assert!(!labels.iter().any(|label| label == "Mode"));
     }
 
     #[test]
@@ -3793,6 +4004,45 @@ mod tests {
                 .as_deref()
                 .is_some_and(|message| message.contains("fully available in Text Mode"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn file_above_interactive_limit_does_not_replace_the_open_document() -> std::io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("too-large.txt");
+        fs::write(&path, vec![b'x'; INTERACTIVE_TEXT_MAX_BYTES + 1])?;
+        let mut app = NoterApp {
+            document: Document::from_bytes(b"keep this document")
+                .expect("the existing document fixture should load"),
+            text: "keep this document".to_owned(),
+            selection: Selection::caret(4),
+            ..NoterApp::default()
+        };
+
+        app.open_path(&path, None);
+
+        assert_eq!(app.text, "keep this document");
+        assert_eq!(app.document.to_bytes(), b"keep this document");
+        assert_eq!(app.selection, Selection::caret(4));
+        assert!(app.error_msg.as_deref().is_some_and(|message| {
+            message.contains("file was not opened") && message.contains(INTERACTIVE_TEXT_MAX_LABEL)
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn file_at_interactive_limit_opens_normally() -> std::io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("interactive-limit.txt");
+        fs::write(&path, vec![b'x'; INTERACTIVE_TEXT_MAX_BYTES])?;
+        let mut app = NoterApp::default();
+
+        app.open_path(&path, None);
+
+        assert_eq!(app.text.len(), INTERACTIVE_TEXT_MAX_BYTES);
+        assert_eq!(app.document.rope().len_bytes(), INTERACTIVE_TEXT_MAX_BYTES);
+        assert!(app.error_msg.is_none());
         Ok(())
     }
 

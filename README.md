@@ -2,21 +2,32 @@
 
 [![CI](https://github.com/blisspixel/noter/actions/workflows/ci.yml/badge.svg)](https://github.com/blisspixel/noter/actions/workflows/ci.yml)
 
-Noter is a focused, private editor for plain text and Markdown, written in Rust
-for Windows, macOS, and Linux.
+Noter is a private, cross-platform editor for plain text and Markdown, written
+in Rust. It combines the speed and restraint of classic Notepad with a native,
+formatted Markdown editing mode.
 
-Text Mode is a classic notepad surface that shows the exact file source.
-Markdown Mode presents that same source as formatted, directly editable content,
-so headings look like headings and emphasis looks like emphasis while the file
-remains ordinary Markdown on disk. Noter uses no proprietary document format,
-requires no account, collects no telemetry, and fetches no remote content while
-editing. A conservative initial diagnostic set reports common Markdown
-portability problems without changing the source.
+Tired of opening a local file only to meet an account prompt, a recurring
+subscription, opaque "telemetry," advertising, or AI features you never asked
+for? Noter is built around the opposite promise: useful modern editing, no
+surveillance business model, no proprietary document format, and no feature
+pileup between you and your words.
+
+Text Mode is a fast, classic notepad surface that shows the exact file source.
+Markdown Mode is modern where it matters: headings look like headings and
+emphasis looks like emphasis, yet the formatted document remains directly
+editable for supported content and stays ordinary Markdown on disk. A
+conservative initial diagnostic set reports common portability problems without
+changing the source.
+
+There is no account, subscription, telemetry, advertising, cloud document
+format, bundled AI, or remote content fetch while editing. Your files remain
+portable `.txt` and `.md` files, ready to move between devices using whatever
+storage, sync, or version-control tools you trust.
 
 ## Interface
 
-These Light and Dark captures come from the actual Noter release build. Both
-show the same local Markdown file in Markdown Mode.
+These Light and Dark captures come from the current release-profile source
+build. Both show the same local Markdown file in Markdown Mode.
 
 | Light | Dark |
 | --- | --- |

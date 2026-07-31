@@ -1,0 +1,462 @@
+# Derived from cargo-dist 0.32.0 and reviewed for Noter's release contract.
+# Pull requests plan only. A dry run builds private workflow artifacts. Public
+# publication requires an explicit prerelease tag dispatched from the exact
+# protected main tip.
+
+name: Release
+permissions:
+  "contents": "read"
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release Tag
+        required: true
+        default: dry-run
+        type: string
+
+jobs:
+  # Run 'dist plan' (or host) to determine what tasks we need to do
+  plan:
+    runs-on: "ubuntu-22.04"
+    outputs:
+      val: ${{ steps.plan.outputs.manifest }}
+      tag: ${{ steps.plan.outputs.tag }}
+      tag-flag: ${{ steps.plan.outputs.tag-flag }}
+      publishing: ${{ steps.plan.outputs.publishing }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install verified dist
+        shell: bash
+        env:
+          INSTALLER_URL: https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh
+          INSTALLER_SHA256: b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5
+        run: |
+          installer="$RUNNER_TEMP/cargo-dist-installer.sh"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            --location "$INSTALLER_URL" --output "$installer"
+          echo "$INSTALLER_SHA256  $installer" | sha256sum --check --strict
+          sh "$installer"
+          test "$(dist --version)" = "cargo-dist 0.32.0"
+      - name: Cache dist
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/dist
+      # sure would be cool if github gave us proper conditionals...
+      # so here's a doubly-nested ternary-via-truthiness to try to provide the best possible
+      # functionality based on whether this is a pull_request, and whether it's from a fork.
+      # (PRs run on the *source* but secrets are usually on the *target* -- that's *good*
+      # but also really annoying to build CI around when it needs secrets to work right.)
+      - id: plan
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$RELEASE_TAG" ] && [ "$RELEASE_TAG" != "dry-run" ]; then
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "Publishing must be dispatched from the protected main branch." >&2
+              exit 2
+            fi
+            if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*$'; then
+              echo "The current release gate requires a SemVer prerelease tag such as v0.1.0-alpha.1." >&2
+              exit 2
+            fi
+            dist plan --tag "$RELEASE_TAG" --output-format=json > plan-dist-manifest.json
+            echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+            echo "tag-flag=--tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+            echo "publishing=true" >> "$GITHUB_OUTPUT"
+          else
+            dist plan --output-format=json > plan-dist-manifest.json
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "tag-flag=" >> "$GITHUB_OUTPUT"
+            echo "publishing=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "dist ran successfully"
+          cat plan-dist-manifest.json
+          echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
+      - name: "Upload dist-manifest.json"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: artifacts-plan-dist-manifest
+          path: plan-dist-manifest.json
+
+  # Build and packages all the platform-specific things
+  build-local-artifacts:
+    name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
+    # Let the initial task tell us to not run (currently very blunt)
+    needs:
+      - plan
+    if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') || inputs.tag == 'dry-run' }}
+    strategy:
+      fail-fast: false
+      # Target platforms/runners are computed by dist in create-release.
+      # Each member of the matrix has the following arguments:
+      #
+      # - runner: the github runner
+      # - dist-args: cli flags to pass to dist
+      # - install-dist: expression to run to install dist on the runner
+      #
+      # Typically there will be:
+      # - 1 "global" task that builds universal installers
+      # - N "local" tasks that build each platform's binaries and platform-specific installers
+      matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container && matrix.container.image || null }}
+    env:
+      BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
+    steps:
+      - name: enable windows longpaths
+        run: |
+          git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install verified dist on macOS or Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          INSTALLER_URL: https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh
+          INSTALLER_SHA256: b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5
+        run: |
+          installer="$RUNNER_TEMP/cargo-dist-installer.sh"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            --location "$INSTALLER_URL" --output "$installer"
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual_sha256="$(sha256sum "$installer" | awk '{print $1}')"
+          else
+            actual_sha256="$(shasum -a 256 "$installer" | awk '{print $1}')"
+          fi
+          test "$actual_sha256" = "$INSTALLER_SHA256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sh "$installer"
+          else
+            checksum_bin="$RUNNER_TEMP/noter-dist-checksum-bin"
+            mkdir -m 700 "$checksum_bin"
+            printf '%s\n' '#!/bin/sh' 'exec shasum -a 256 "$@"' > "$checksum_bin/sha256sum"
+            chmod 700 "$checksum_bin/sha256sum"
+            PATH="$checksum_bin:$PATH" sh "$installer"
+          fi
+          test "$(dist --version)" = "cargo-dist 0.32.0"
+      - name: Install verified dist on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          INSTALLER_URL: https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.ps1
+          INSTALLER_SHA256: a3435e9944f1a1297add11c6a8ac1f543c14a5ea88879ee05b24ff8218d46d87
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'cargo-dist-installer.ps1'
+          Invoke-WebRequest -Uri $env:INSTALLER_URL -OutFile $installer
+          $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          if ($actual -cne $env:INSTALLER_SHA256) {
+            throw "cargo-dist installer checksum mismatch: $actual"
+          }
+          & $installer
+          if ((dist --version) -cne 'cargo-dist 0.32.0') {
+            throw 'Unexpected cargo-dist version.'
+          }
+      # Get the dist-manifest
+      - name: Fetch local artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
+        with:
+          pattern: artifacts-*
+          path: target/distrib/
+          merge-multiple: true
+      - name: Install verified cargo-auditable on macOS or Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          INSTALLER_URL: https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.5/cargo-auditable-installer.sh
+          INSTALLER_SHA256: ffaafe99087affa66e3202ebb78fb0aeea6c6ff4019f941c82040502442f770a
+        run: |
+          installer="$RUNNER_TEMP/cargo-auditable-installer.sh"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            --location "$INSTALLER_URL" --output "$installer"
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual_sha256="$(sha256sum "$installer" | awk '{print $1}')"
+          else
+            actual_sha256="$(shasum -a 256 "$installer" | awk '{print $1}')"
+          fi
+          test "$actual_sha256" = "$INSTALLER_SHA256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sh "$installer"
+          else
+            checksum_bin="$RUNNER_TEMP/noter-auditable-checksum-bin"
+            mkdir -m 700 "$checksum_bin"
+            printf '%s\n' '#!/bin/sh' 'exec shasum -a 256 "$@"' > "$checksum_bin/sha256sum"
+            chmod 700 "$checksum_bin/sha256sum"
+            PATH="$checksum_bin:$PATH" sh "$installer"
+          fi
+          cargo auditable --version | grep -F '0.7.5'
+      - name: Install verified cargo-auditable on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          INSTALLER_URL: https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.5/cargo-auditable-installer.ps1
+          INSTALLER_SHA256: 2cb2764f6f5e339a1dee20051c02f53b6ed712ef3a79aca2de495762108cdb64
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'cargo-auditable-installer.ps1'
+          Invoke-WebRequest -Uri $env:INSTALLER_URL -OutFile $installer
+          $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          if ($actual -cne $env:INSTALLER_SHA256) {
+            throw "cargo-auditable installer checksum mismatch: $actual"
+          }
+          & $installer
+          $version = cargo auditable --version
+          if ($version -notmatch '0\.7\.5') {
+            throw "Unexpected cargo-auditable version: $version"
+          }
+      - name: Install verified WiX Toolset on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ARCHIVE_URL: https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip
+          ARCHIVE_SHA256: 6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'wix314-binaries.zip'
+          $wixBin = Join-Path $env:RUNNER_TEMP 'wix314'
+          Invoke-WebRequest -Uri $env:ARCHIVE_URL -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -cne $env:ARCHIVE_SHA256) {
+            throw "WiX archive checksum mismatch: $actual"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $wixBin
+          foreach ($tool in 'candle.exe', 'light.exe') {
+            $path = Join-Path $wixBin $tool
+            $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($path).FileVersion
+            if ($version -cne '3.14.1.8722') {
+              throw "Unexpected $tool version: $version"
+            }
+          }
+          $wixBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Install dependencies
+        run: |
+          ${{ matrix.packages_install }}
+      - name: Build artifacts
+        run: |
+          # Actually do builds and make zips and whatnot
+          dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          echo "dist ran successfully"
+      - id: cargo-dist
+        name: Post-build
+        # We force bash here just because github makes it really hard to get values up
+        # to "real" actions without writing to env-vars, and writing to env-vars has
+        # inconsistent syntax between shell and powershell.
+        shell: bash
+        run: |
+          # Parse out what we just built and upload it to scratch storage
+          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
+          dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: "Upload artifacts"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: artifacts-build-local-${{ join(matrix.targets, '_') }}
+          path: |
+            ${{ steps.cargo-dist.outputs.paths }}
+            ${{ env.BUILD_MANIFEST_NAME }}
+
+  # Build and package all the platform-agnostic(ish) things
+  build-global-artifacts:
+    needs:
+      - plan
+      - build-local-artifacts
+    runs-on: "ubuntu-22.04"
+    env:
+      BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install cached dist
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
+        with:
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/
+      - run: chmod +x ~/.cargo/bin/dist
+      - name: Install verified cargo-cyclonedx
+        shell: bash
+        env:
+          ARCHIVE_URL: https://github.com/CycloneDX/cyclonedx-rust-cargo/releases/download/cargo-cyclonedx-0.5.9/cargo-cyclonedx-x86_64-unknown-linux-gnu.tar.xz
+          ARCHIVE_SHA256: fb8dbee9f182173e062a64a387b21a0badc6fab8b2abf9294973f012972bf6d8
+        run: |
+          archive="$RUNNER_TEMP/cargo-cyclonedx.tar.xz"
+          extract_dir="$RUNNER_TEMP/cargo-cyclonedx"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            --location "$ARCHIVE_URL" --output "$archive"
+          echo "$ARCHIVE_SHA256  $archive" | sha256sum --check --strict
+          mkdir -m 700 "$extract_dir"
+          tar --extract --xz --file "$archive" --directory "$extract_dir" \
+            --strip-components=1 \
+            cargo-cyclonedx-x86_64-unknown-linux-gnu/cargo-cyclonedx
+          install --mode=755 "$extract_dir/cargo-cyclonedx" "$HOME/.cargo/bin/cargo-cyclonedx"
+          cargo cyclonedx --version | grep -F '0.5.9'
+      # Get all the local artifacts for the global tasks to use (for e.g. checksums)
+      - name: Fetch local artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
+        with:
+          pattern: artifacts-*
+          path: target/distrib/
+          merge-multiple: true
+      - id: cargo-dist
+        shell: bash
+        run: |
+          dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
+          echo "dist ran successfully"
+
+          # Parse out what we just built and upload it to scratch storage
+          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
+          jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: "Upload artifacts"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: artifacts-build-global
+          path: |
+            ${{ steps.cargo-dist.outputs.paths }}
+            ${{ env.BUILD_MANIFEST_NAME }}
+  # Determines if we should publish/announce
+  host:
+    needs:
+      - plan
+      - build-local-artifacts
+      - build-global-artifacts
+    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    runs-on: "ubuntu-22.04"
+    outputs:
+      val: ${{ steps.host.outputs.manifest }}
+    permissions:
+      "attestations": "write"
+      "contents": "write"
+      "id-token": "write"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install cached dist
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
+        with:
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/
+      - run: chmod +x ~/.cargo/bin/dist
+      # Fetch artifacts from scratch-storage
+      - name: Fetch artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
+        with:
+          pattern: artifacts-*
+          path: target/distrib/
+          merge-multiple: true
+      - name: Validate immutable release target
+        shell: bash
+        env:
+          RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          if [ "$GITHUB_SHA" != "$(git rev-parse origin/main)" ]; then
+            echo "Main advanced after this release candidate started; refusing stale publication." >&2
+            exit 2
+          fi
+          set +e
+          git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" >/dev/null
+          tag_status=$?
+          set -e
+          if [ "$tag_status" -eq 0 ]; then
+            git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            if [ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$GITHUB_SHA" ]; then
+              echo "The release tag already points to a different commit." >&2
+              exit 2
+            fi
+          elif [ "$tag_status" -ne 2 ]; then
+            echo "The remote release tag could not be inspected safely." >&2
+            exit "$tag_status"
+          fi
+      - id: host
+        shell: bash
+        run: |
+          dist host ${{ needs.plan.outputs.tag-flag }} --steps=create --steps=upload --steps=release --output-format=json > dist-manifest.json
+          echo "artifacts uploaded and released successfully"
+          cat dist-manifest.json
+          echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
+      - name: "Upload dist-manifest.json"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          # Overwrite the previous copy
+          name: artifacts-dist-manifest
+          path: dist-manifest.json
+      # Create a GitHub Release while uploading all files to it
+      - name: "Download GitHub Artifacts"
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
+        with:
+          pattern: artifacts-*
+          path: artifacts
+          merge-multiple: true
+      - name: Cleanup
+        run: |
+          # Remove the granular manifests
+          rm -f artifacts/*-dist-manifest.json
+      - name: Attest
+        uses: actions/attest@c32b4b8b198b65d0bd9d63490e847ff7b53989d4
+        with:
+          subject-path: |
+            artifacts/*.json
+            artifacts/*.sh
+            artifacts/*.ps1
+            artifacts/*.rb
+            artifacts/*.xml
+            artifacts/*.sum
+            artifacts/*.sha256
+            artifacts/*.zip
+            artifacts/*.tar.gz
+            artifacts/*.tar.xz
+            artifacts/*.msi
+      - name: Create GitHub Release
+        env:
+          RELEASE_COMMIT: "${{ github.sha }}"
+          RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          if [ "$RELEASE_COMMIT" != "$(git rev-parse origin/main)" ]; then
+            echo "Main advanced before final publication; refusing stale publication." >&2
+            exit 2
+          fi
+          set +e
+          git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" >/dev/null
+          tag_status=$?
+          set -e
+          if [ "$tag_status" -eq 2 ]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT" >/dev/null
+          elif [ "$tag_status" -ne 0 ]; then
+            echo "The remote release tag could not be inspected safely." >&2
+            exit "$tag_status"
+          fi
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          if [ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$RELEASE_COMMIT" ]; then
+            echo "The release tag does not identify the built commit." >&2
+            exit 2
+          fi
+
+          {
+            printf '%s\n\n' "This prerelease is for evaluation and careful dogfooding."
+            printf '%s\n' "Download an asset before executing it. Verify its GitHub build provenance with:"
+            printf '%s\n\n' "gh attestation verify PATH_TO_DOWNLOADED_ASSET --repo blisspixel/noter"
+            printf '%s\n' "Compare the asset with the published SHA-256 checksums and review the version-matched installation guide:"
+            printf 'https://github.com/blisspixel/noter/blob/%s/docs/INSTALLATION.md\n\n' "$RELEASE_TAG"
+            printf '%s\n' "Do not pipe a remote installer directly into a shell. Windows and macOS artifacts are not yet platform-signed unless the release notes explicitly say otherwise."
+          } > "$RUNNER_TEMP/notes.txt"
+
+          gh release create "$RELEASE_TAG" --verify-tag --prerelease --title "Noter ${RELEASE_TAG#v}" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*

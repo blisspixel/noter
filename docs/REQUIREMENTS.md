@@ -2,7 +2,7 @@
 
 **Version:** 0.4
 
-**Reviewed:** 2026-07-30
+**Reviewed:** 2026-07-31
 
 **Status:** Ratified contract for the first public-quality release
 
@@ -67,9 +67,12 @@ Feature presence alone is not verification.
 - **FR-012 Strict UTF-8:** Accept UTF-8 with or without a UTF-8 BOM. Reject
   invalid UTF-8 without replacement characters. A future explicit import flow
   may create a new untitled converted document, but it must never overwrite the
-  source implicitly. v0.1 refuses documents above 64 MiB before allocating or
-  hashing beyond that bound; the 50 MiB performance corpus remains inside the
-  supported range.
+  source implicitly. The trust-kernel loader refuses documents above 64 MiB
+  before allocating or hashing beyond that bound. The current framework-backed
+  interface also refuses documents above 8 MiB before creating its complete
+  widget string. This 8 MiB containment is not the first-release target: M5 must
+  prove an editor path that safely handles the 50 MiB performance corpus within
+  the 64 MiB storage boundary.
 - **FR-013 Save:** Save to the current regular-file path through the durable
   replacement protocol in NFR-REL-02. A multiply hard-linked destination
   requires an explicit GUI confirmation that only the selected directory entry

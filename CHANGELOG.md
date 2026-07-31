@@ -7,6 +7,19 @@ release, so current work remains under Unreleased.
 
 ### Added
 
+- Add a pinned cross-platform release workflow with archives, POSIX and
+  PowerShell installers, MSI and Homebrew packaging, SHA-256 checksums, a
+  target-specific CycloneDX 1.5 SBOM for each release platform, GitHub artifact
+  attestations, and a non-publishing dry-run path. Release-tool bootstraps are
+  versioned and checksum-pinned, the MSI keeps permanent product identities and
+  embeds Apache-2.0 terms, and publication remains an explicit release gate.
+- Add a release guide that distinguishes provenance from platform code signing
+  and requires exact-commit CI, platform, installer, screenshot, privacy, and
+  dogfood evidence before publication.
+- Add a reproducible third-party dependency inventory and ship it together with
+  the bundled-font license in standalone archives and the Windows MSI.
+- Defer static musl archives until non-Cargo runtime licenses and SBOM evidence
+  are represented in the validated release payload.
 - Add a public vulnerability-reporting policy with a private-reporting path and
   guidance that keeps sensitive details and real documents out of public issues.
 - Add persisted System, Light, Dark, Green Screen, and Amber Screen themes with
@@ -55,6 +68,20 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
+- Replace wide text-labeled Markdown formatting controls with compact visual
+  controls, grouped by purpose, while retaining full accessible names,
+  descriptions, and text labels in the responsive overflow menu.
+- Keep the compact formatting layout through 479 pixels, verify every active
+  control remains inside its viewport, and render Italic as a deliberate
+  typographic icon instead of an ambiguous slash-like glyph.
+- Refuse files above the framework editor's current 8 MiB interactive ceiling
+  before constructing a complete widget string. The trust-kernel loader keeps
+  its separate 64 MiB storage boundary, and M5 retains the 50 MiB release goal.
+- Enforce the same interactive ceiling for Text and Markdown typing, paste,
+  Replace, and Replace All, with a final restoration guard at the authoritative
+  document boundary.
+- Update `event-listener` to 5.4.2 so the locked dependency graph clears the
+  applicable RustSec advisory.
 - Refocus the root README on the product promise, native Markdown interaction,
   screenshots, source installation, release status, and a small documentation
   map. Move contributor workflow and detailed install, update, uninstall, and
@@ -96,6 +123,19 @@ release, so current work remains under Unreleased.
 
 ### Security
 
+- Restrict release workflow write, OIDC, and attestation permissions to the
+  final host job; validate dispatch tags before shell use; checksum every
+  release-tool bootstrap; upload the SBOM through the correct step output; and
+  attest the source archive directly. Keep the per-machine MSI rooted in
+  protected Program Files so its optional system PATH entry cannot target a
+  user-writable directory.
+- Restrict publication to the protected `main` branch and prerelease tags until
+  M7 is complete. Publish reviewed, attestation-first notes instead of generated
+  install commands or direct pipe-to-shell guidance.
+- Declare all four target-specific SBOMs as cargo-dist artifacts so the release
+  manifest and published asset set agree exactly. Recheck the remote `main` tip
+  immediately before atomic tag creation so a concurrent merge cannot publish
+  a stale candidate.
 - Preserve positional document paths as native operating-system strings during
   command-line parsing. Non-Unicode Unix paths now reach the file loader, while
   non-Unicode option names and non-path values such as `--theme` and `--view`
@@ -172,6 +212,10 @@ release, so current work remains under Unreleased.
   vector.
 - Replace the dirty-document close trap with a Save, Discard Changes, and Cancel
   decision for New, Open, Quit, and native window close.
+- Preserve cross-block Text Mode selections when Markdown Mode cannot yet map
+  them safely, explain the current one-block editing boundary, and restore
+  same-block selections so Bold and the other formatting actions work
+  immediately after switching modes.
 - Correlate destructive intents, save completions, and native-close
   authorization with the exact document revision. Unsolicited or stale save
   completions can no longer authorize abandonment.
@@ -246,8 +290,8 @@ release, so current work remains under Unreleased.
   authority, calculate bounded results before allocation, and compare literal
   search plus lifecycle command sequences with fixed-seed reference models.
 - Measure the current Windows-local source checkpoint at 95.58 percent line
-  coverage for the UI-independent trust kernel and 93.18 percent for the
-  complete workspace. The 404-test suite includes 100 percent line coverage for
+  coverage for the UI-independent trust kernel and 93.49 percent for the
+  complete workspace. The 413-test suite includes 100 percent line coverage for
   lifecycle and logical-line navigation, 99.15 percent for transactions, 98.83
   percent for history, and 97.29 percent for literal search.
 - Record a complete 256-candidate mutation campaign for the M3 transaction,

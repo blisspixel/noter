@@ -54,6 +54,7 @@ ruff check scripts
 ruff format --check scripts
 python scripts/check_doc_links.py
 python scripts/check_readme_assets.py
+python scripts/check_release_config.py
 python -m unittest discover -s scripts -p "test_*.py"
 ```
 

@@ -1,6 +1,6 @@
 # Native Markdown Mode
 
-**Reviewed:** 2026-07-30
+**Reviewed:** 2026-07-31
 
 **Status:** Early source-backed formatted editing is available. The complete
 contract below remains in progress.
@@ -75,9 +75,10 @@ complete.
   high-DPI, and large-file requirements still require release evidence.
 - The synchronous prototype accepts at most 1 MiB of source, 8,192 logical
   lines, 64 KiB per line, 512 projected blocks, 64 KiB per block span, and
-  8,192 parser events. A document that exceeds any ceiling opens unchanged and
-  remains fully editable in Text Mode instead of entering an unproven formatted
-  path.
+  8,192 parser events. A document that exceeds a Markdown ceiling but remains
+  within the current 8 MiB interactive-file ceiling opens unchanged in Text
+  Mode instead of entering an unproven formatted path. Larger files are refused
+  without replacing the open document until M5 delivers a virtualized editor.
 - Diagnostics are a conservative initial set, not a complete Markdown linter.
 - Whole-document Format, reviewed diffs, semantic-equivalence checks, and safe
   fixes are not implemented.

@@ -14,6 +14,7 @@ from check_readme_assets import (
     REPOSITORY_ROOT,
     SCREENSHOTS,
     png_dimensions,
+    screenshot_source_digest,
     validate,
 )
 
@@ -82,7 +83,8 @@ def main() -> None:
 
     for theme, relative_output in zip(("light", "dark"), SCREENSHOTS, strict=True):
         render_and_promote(theme, REPOSITORY_ROOT / relative_output)
-    validate(check_hashes=False)
+    validate(check_hashes=False, check_source_freshness=False)
+    print(f"screenshot inputs  sha256:{screenshot_source_digest()}")
     for relative_output in SCREENSHOTS:
         data = (REPOSITORY_ROOT / relative_output).read_bytes()
         print(
