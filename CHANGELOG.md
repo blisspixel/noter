@@ -205,9 +205,9 @@ release, so current work remains under Unreleased.
 
 ### Engineering
 
-- Exercise the exact whole-document replacement ceiling through the public
-  mutation boundary, distinguishing the accepted limit from an oversized
-  replacement before diffing.
+- Exercise the whole-document replacement size decision at a small injected
+  boundary, distinguishing the accepted limit from an oversized replacement
+  before diffing without multiplying a 64 MiB fixture across mutation runs.
 - Make Undo and Redo shortcut tests select the simulated operating system
   explicitly, so Windows and macOS conventions are verified independently of
   the runner host.
