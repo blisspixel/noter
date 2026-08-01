@@ -50,6 +50,7 @@ use imp::{
 #[derive(Debug)]
 struct RetainedPrivateCreation {
     cause: io::Error,
+    cleanup: Option<io::Error>,
 }
 
 impl fmt::Display for RetainedPrivateCreation {
@@ -58,7 +59,11 @@ impl fmt::Display for RetainedPrivateCreation {
             formatter,
             "private file security finalization failed after exclusive creation: {}",
             self.cause
-        )
+        )?;
+        if let Some(cleanup) = &self.cleanup {
+            write!(formatter, "; handle-bound cleanup also failed: {cleanup}")?;
+        }
+        Ok(())
     }
 }
 
@@ -70,7 +75,24 @@ impl std::error::Error for RetainedPrivateCreation {
 
 #[cfg(any(target_os = "macos", test))]
 fn retained_private_creation_error(cause: io::Error) -> io::Error {
-    io::Error::new(cause.kind(), RetainedPrivateCreation { cause })
+    io::Error::new(
+        cause.kind(),
+        RetainedPrivateCreation {
+            cause,
+            cleanup: None,
+        },
+    )
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn retained_private_creation_error_with_cleanup(cause: io::Error, cleanup: io::Error) -> io::Error {
+    io::Error::new(
+        cause.kind(),
+        RetainedPrivateCreation {
+            cause,
+            cleanup: Some(cleanup),
+        },
+    )
 }
 
 /// Reports whether private-file creation succeeded but security finalization failed.
@@ -94,6 +116,19 @@ pub fn retained_private_file_creation_cause(error: &io::Error) -> Option<&io::Er
         .get_ref()
         .and_then(|source| source.downcast_ref::<RetainedPrivateCreation>())
         .map(|marker| &marker.cause)
+}
+
+/// Returns the handle-bound cleanup failure for a retained private creation.
+///
+/// `None` means either the error is not a marked post-creation failure or no
+/// cleanup failure was recorded. Call
+/// [`retained_private_file_creation_cause`] first to distinguish those cases.
+#[must_use]
+pub fn retained_private_file_cleanup_cause(error: &io::Error) -> Option<&io::Error> {
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<RetainedPrivateCreation>())
+        .and_then(|marker| marker.cleanup.as_ref())
 }
 
 /// Strength of the platform-provided file identifier.
@@ -230,13 +265,17 @@ pub fn file_facts(file: &File) -> io::Result<FileFacts> {
 /// macOS atomically requests mode 0600 and a no-inherit ACL, then sets exact mode
 /// 0600, applies the native remove-ACL sentinel, and verifies true ACL absence
 /// before returning the still-empty file. Windows supplies a protected DACL at
-/// creation so permissive parent entries are never inherited by the new file.
+/// creation with the process user's explicit SID as owner and principal, then
+/// verifies that owner and the exact protected user-and-SYSTEM DACL through the
+/// opened object. Filesystems that ignore or cannot report the requested policy
+/// fail closed before document bytes exist.
 ///
 /// # Errors
 ///
 /// Returns an operating-system error when the path already exists, the private
 /// security descriptor cannot be constructed, the file cannot be created, or
-/// the macOS mode or ACL absence cannot be finalized and verified. Call
+/// the macOS mode or ACL absence cannot be finalized and verified, or the
+/// Windows owner or protected DACL cannot be verified. Call
 /// [`creation_error_may_have_retained_private_file`] to distinguish the last
 /// case, where an empty random sibling may require operator inspection.
 pub fn create_private_new_file(path: &Path) -> io::Result<File> {
@@ -2186,16 +2225,22 @@ mod imp {
     use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::path::Path;
 
     use windows_sys::Win32::Foundation::{
-        GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree,
+        ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE,
+        INVALID_HANDLE_VALUE, LocalFree,
     };
     use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+        SE_FILE_OBJECT,
     };
-    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, GetTokenInformation, OWNER_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL,
         FILE_BASIC_INFO, FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
@@ -2203,13 +2248,15 @@ mod imp {
         FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
         MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW, SetFileInformationByHandle,
     };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     use super::{
         FileChangeToken, FileFacts, FileIdentity, IdentityQuality, InstallNewOutcome,
         ParentSyncOutcome, ReplaceExistingOutcome,
     };
 
-    const PRIVATE_FILE_SDDL: &str = "D:P(A;;FA;;;SY)(A;;FA;;;OW)";
+    const MAX_SID_STRING_UNITS: usize = 256;
+    const SYSTEM_SID: &str = "S-1-5-18";
 
     type LocalDeallocator = unsafe extern "system" fn(
         windows_sys::Win32::Foundation::HLOCAL,
@@ -2221,12 +2268,30 @@ mod imp {
         deallocate: LocalDeallocator,
     }
 
+    struct LocalWideString(*mut u16);
+
+    struct WindowsPrivateSecurityPolicy {
+        owner_sid: String,
+        dacl_sddl: String,
+        descriptor_sddl: String,
+    }
+
     impl Drop for WindowsSecurityDescriptor {
         #[allow(unsafe_code)]
         fn drop(&mut self) {
-            // SAFETY: the descriptor is returned by LocalAlloc through the SDDL
-            // conversion API, remains owned by this guard, and is freed once.
+            // SAFETY: the SDDL conversion and GetSecurityInfo APIs return
+            // LocalAlloc-owned descriptors. This guard retains sole ownership
+            // of either form and frees it exactly once.
             let _ = unsafe { (self.deallocate)(self.raw.cast()) };
+        }
+    }
+
+    impl Drop for LocalWideString {
+        #[allow(unsafe_code)]
+        fn drop(&mut self) {
+            // SAFETY: the conversion API returned this LocalAlloc-owned string
+            // to this guard, which frees it exactly once.
+            let _ = unsafe { LocalFree(self.0.cast()) };
         }
     }
 
@@ -2243,10 +2308,123 @@ mod imp {
         ))
     }
 
-    #[allow(unsafe_code)]
     pub fn windows_create_private_new_file(path: &Path) -> io::Result<File> {
+        let policy = windows_private_security_policy()?;
+        let file = windows_create_new_file_with_security(path, &policy.descriptor_sddl)?;
+        windows_finalize_private_creation(
+            file,
+            |file| windows_verify_private_file_security(file, &policy.owner_sid, &policy.dacl_sddl),
+            windows_delete_open_file,
+        )
+    }
+
+    fn windows_private_security_policy() -> io::Result<WindowsPrivateSecurityPolicy> {
+        let owner_sid = windows_current_process_user_sid()?;
+        windows_private_security_policy_for_sid(owner_sid)
+    }
+
+    fn windows_private_security_policy_for_sid(
+        owner_sid: String,
+    ) -> io::Result<WindowsPrivateSecurityPolicy> {
+        let requested_dacl = if owner_sid == SYSTEM_SID {
+            "D:P(A;;FA;;;SY)".to_owned()
+        } else {
+            format!("D:P(A;;FA;;;SY)(A;;FA;;;{owner_sid})")
+        };
+        let descriptor_sddl = format!("O:{owner_sid}{requested_dacl}");
+        let descriptor = windows_security_descriptor_from_sddl(&descriptor_sddl)?;
+        let dacl_sddl = windows_descriptor_dacl_sddl(descriptor.raw)?;
+        Ok(WindowsPrivateSecurityPolicy {
+            owner_sid,
+            dacl_sddl,
+            descriptor_sddl,
+        })
+    }
+
+    #[allow(unsafe_code)]
+    fn windows_current_process_user_sid() -> io::Result<String> {
+        let mut raw_token = std::ptr::null_mut();
+        // SAFETY: GetCurrentProcess returns a valid pseudo-handle and the token
+        // output points to writable storage owned by this function.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw_token) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: OpenProcessToken returned a unique, valid owned handle.
+        let token = unsafe { OwnedHandle::from_raw_handle(raw_token) };
+
+        let mut required_length = 0_u32;
+        // SAFETY: a zero-length query may use a null output buffer, and the
+        // required-length output points to writable storage.
+        if unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenUser,
+                std::ptr::null_mut(),
+                0,
+                &raw mut required_length,
+            )
+        } != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Windows unexpectedly returned token-user data without a buffer",
+            ));
+        }
+        let sizing_error = io::Error::last_os_error();
+        if sizing_error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER.cast_signed()) {
+            return Err(sizing_error);
+        }
+        let required_length = usize::try_from(required_length).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "token-user data length does not fit memory",
+            )
+        })?;
+        if required_length < size_of::<TOKEN_USER>() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Windows returned undersized token-user data",
+            ));
+        }
+        let word_count = required_length.div_ceil(size_of::<usize>());
+        let mut buffer = vec![0_usize; word_count];
+        let buffer_length = u32::try_from(required_length).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "token-user buffer length does not fit the Windows API parameter",
+            )
+        })?;
+        let mut returned_length = buffer_length;
+        // SAFETY: the word buffer is suitably aligned and large enough for the
+        // requested bytes, and the returned-length output is writable.
+        if unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                buffer_length,
+                &raw mut returned_length,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if returned_length > buffer_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Windows returned token-user data larger than its buffer",
+            ));
+        }
+        // SAFETY: GetTokenInformation initialized a TOKEN_USER at the aligned
+        // start of the live buffer, which remains in scope for SID conversion.
+        let token_user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+        windows_sid_string(token_user.User.Sid)
+    }
+
+    #[allow(unsafe_code)]
+    fn windows_create_new_file_with_security(path: &Path, sddl: &str) -> io::Result<File> {
         let path = windows_wide_path(path)?;
-        let descriptor = windows_security_descriptor_from_sddl(PRIVATE_FILE_SDDL)?;
+        let descriptor = windows_security_descriptor_from_sddl(sddl)?;
         let attributes_length = u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -2281,6 +2459,140 @@ mod imp {
         // SAFETY: CreateFileW returned a unique, valid owned handle. `File`
         // assumes ownership and closes it exactly once.
         Ok(unsafe { File::from_raw_handle(handle) })
+    }
+
+    fn windows_finalize_private_creation(
+        file: File,
+        verify: impl FnOnce(&File) -> io::Result<()>,
+        cleanup: impl FnOnce(&File) -> io::Result<()>,
+    ) -> io::Result<File> {
+        let Err(cause) = verify(&file) else {
+            return Ok(file);
+        };
+        match cleanup(&file) {
+            Ok(()) => Err(cause),
+            Err(cleanup) => Err(super::retained_private_creation_error_with_cleanup(
+                cause, cleanup,
+            )),
+        }
+    }
+
+    #[allow(unsafe_code)]
+    fn windows_verify_private_file_security(
+        file: &File,
+        expected_owner_sid: &str,
+        expected_dacl_sddl: &str,
+    ) -> io::Result<()> {
+        let mut raw_descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut raw_owner: PSID = std::ptr::null_mut();
+        // SAFETY: the file handle is valid and the descriptor output points to
+        // writable storage. The owner output remains live with the returned
+        // descriptor, and unrequested ACL outputs may be null.
+        let status = unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &raw mut raw_owner,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &raw mut raw_descriptor,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(status.cast_signed()));
+        }
+        let descriptor = WindowsSecurityDescriptor {
+            raw: raw_descriptor,
+            deallocate: LocalFree,
+        };
+        let owner_sid = windows_sid_string(raw_owner)?;
+        let dacl_sddl = windows_descriptor_dacl_sddl(descriptor.raw)?;
+        if owner_sid != expected_owner_sid || dacl_sddl != expected_dacl_sddl {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "created file does not expose the required explicit user owner and protected user-and-SYSTEM DACL",
+            ));
+        }
+        Ok(())
+    }
+
+    #[allow(unsafe_code)]
+    fn windows_sid_string(sid: PSID) -> io::Result<String> {
+        if sid.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Windows returned a null security identifier",
+            ));
+        }
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: `sid` points into a live token or security descriptor and the
+        // output points to writable storage transferred to `LocalWideString`.
+        if unsafe { ConvertSidToStringSidW(sid, &raw mut raw) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let guard = LocalWideString(raw);
+        let Some(length) = (0..MAX_SID_STRING_UNITS).find(|index| {
+            // SAFETY: Windows SID strings are NUL-terminated and bounded well
+            // below MAX_SID_STRING_UNITS; the guard keeps the allocation live.
+            unsafe { *guard.0.add(*index) == 0 }
+        }) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Windows returned an unterminated security identifier string",
+            ));
+        };
+        // SAFETY: the bounded scan found `length` initialized UTF-16 units
+        // before the NUL terminator, and the guard keeps them live.
+        let units = unsafe { std::slice::from_raw_parts(guard.0, length) };
+        String::from_utf16(units).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("security identifier returned invalid UTF-16: {error}"),
+            )
+        })
+    }
+
+    #[allow(unsafe_code)]
+    fn windows_descriptor_dacl_sddl(descriptor: PSECURITY_DESCRIPTOR) -> io::Result<String> {
+        let mut raw = std::ptr::null_mut();
+        let mut length = 0_u32;
+        // SAFETY: `descriptor` is live for the call and both output pointers
+        // refer to writable storage. The returned string is transferred
+        // immediately into `LocalWideString`.
+        if unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &raw mut raw,
+                &raw mut length,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let guard = LocalWideString(raw);
+        let length = usize::try_from(length).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "security descriptor string length does not fit memory",
+            )
+        })?;
+        // SAFETY: the conversion API returned `length` live UTF-16 code units,
+        // including a trailing NUL, owned by `guard`.
+        let units = unsafe { std::slice::from_raw_parts(guard.0, length) };
+        let content_length = units
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(units.len());
+        String::from_utf16(&units[..content_length]).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("security descriptor returned invalid UTF-16: {error}"),
+            )
+        })
     }
 
     #[allow(unsafe_code)]
@@ -2531,77 +2843,41 @@ mod imp {
 
         use tempfile::tempdir;
         use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-        use windows_sys::Win32::Security::Authorization::{
-            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
-            SE_FILE_OBJECT,
-        };
+        use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
         use windows_sys::Win32::Security::{
-            DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl, PSECURITY_DESCRIPTOR,
-            SE_DACL_PROTECTED,
+            DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl, OWNER_SECURITY_INFORMATION,
+            PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
         };
         use windows_sys::Win32::Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, FILE_ID_128, FILE_ID_INFO,
         };
 
         use super::{
-            IdentityQuality, LocalFree, PRIVATE_FILE_SDDL, WindowsSecurityDescriptor,
-            windows_create_private_new_file, windows_delete_open_file,
-            windows_extended_information, windows_identity_from_information,
+            IdentityQuality, LocalFree, SYSTEM_SID, WindowsSecurityDescriptor,
+            windows_create_new_file_with_security, windows_create_private_new_file,
+            windows_delete_open_file, windows_descriptor_dacl_sddl, windows_extended_information,
+            windows_finalize_private_creation, windows_identity_from_information,
             windows_open_existing_no_follow, windows_open_for_cleanup,
-            windows_security_descriptor_from_sddl,
+            windows_private_security_policy, windows_private_security_policy_for_sid,
+            windows_security_descriptor_from_sddl, windows_sid_string,
+            windows_verify_private_file_security,
         };
 
-        struct LocalWideString(*mut u16);
+        #[test]
+        fn private_policy_canonicalizes_well_known_user_sids() -> io::Result<()> {
+            let system = windows_private_security_policy_for_sid(SYSTEM_SID.to_owned())?;
+            assert_eq!(system.owner_sid, SYSTEM_SID);
+            assert_eq!(system.dacl_sddl, "D:P(A;;FA;;;SY)");
 
-        impl Drop for LocalWideString {
-            #[allow(unsafe_code)]
-            fn drop(&mut self) {
-                // SAFETY: the conversion API returned this LocalAlloc-owned
-                // string to this guard, which frees it exactly once.
-                let _ = unsafe { LocalFree(self.0.cast()) };
+            for (sid, alias) in [("S-1-5-19", "LS"), ("S-1-5-20", "NS")] {
+                let policy = windows_private_security_policy_for_sid(sid.to_owned())?;
+                assert_eq!(policy.owner_sid, sid);
+                assert_eq!(
+                    policy.dacl_sddl,
+                    format!("D:P(A;;FA;;;SY)(A;;FA;;;{alias})")
+                );
             }
-        }
-
-        #[allow(unsafe_code)]
-        fn descriptor_dacl_sddl(descriptor: PSECURITY_DESCRIPTOR) -> io::Result<String> {
-            let mut raw = std::ptr::null_mut();
-            let mut length = 0_u32;
-            // SAFETY: the descriptor is live for the call and both output
-            // pointers refer to writable storage. The returned string is
-            // transferred immediately into `LocalWideString`.
-            if unsafe {
-                ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                    descriptor,
-                    SDDL_REVISION_1,
-                    DACL_SECURITY_INFORMATION,
-                    &raw mut raw,
-                    &raw mut length,
-                )
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            let guard = LocalWideString(raw);
-            let length = usize::try_from(length).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "security descriptor string length does not fit memory",
-                )
-            })?;
-            // SAFETY: the conversion API returned `length` live UTF-16 code
-            // units, including a trailing NUL, owned by `guard`.
-            let units = unsafe { std::slice::from_raw_parts(guard.0, length) };
-            let content_length = units
-                .iter()
-                .position(|unit| *unit == 0)
-                .unwrap_or(units.len());
-            let units = &units[..content_length];
-            String::from_utf16(units).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("security descriptor returned invalid UTF-16: {error}"),
-                )
-            })
+            Ok(())
         }
 
         #[test]
@@ -2609,18 +2885,21 @@ mod imp {
         fn private_file_is_exclusive_writable_and_dacl_protected() -> io::Result<()> {
             let directory = tempdir()?;
             let path = directory.path().join("private.txt");
+            let policy = windows_private_security_policy()?;
             let mut file = windows_create_private_new_file(&path)?;
             file.write_all(b"private")?;
 
             let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            let mut owner: PSID = std::ptr::null_mut();
             // SAFETY: the file handle is valid and the descriptor output points
-            // to writable storage. Unrequested SID and ACL outputs may be null.
+            // to writable storage. The owner output remains live with the
+            // returned descriptor, and unrequested ACL outputs may be null.
             let status = unsafe {
                 GetSecurityInfo(
                     file.as_raw_handle(),
                     SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION,
-                    std::ptr::null_mut(),
+                    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                    &raw mut owner,
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
@@ -2650,9 +2929,10 @@ mod imp {
             }
 
             assert_ne!(control & SE_DACL_PROTECTED, 0);
+            assert_eq!(windows_sid_string(owner)?, policy.owner_sid);
             assert_eq!(
-                descriptor_dacl_sddl(descriptor_guard.raw)?,
-                PRIVATE_FILE_SDDL
+                windows_descriptor_dacl_sddl(descriptor_guard.raw)?,
+                policy.dacl_sddl
             );
             assert_eq!(fs::read(&path)?, b"private");
             assert_eq!(
@@ -2665,6 +2945,105 @@ mod imp {
                 OpenOptions::new().write(true).open(&path).is_err(),
                 "the private staging handle must deny competing writers"
             );
+            Ok(())
+        }
+
+        #[test]
+        fn failed_private_security_verification_deletes_the_exact_open_file() -> io::Result<()> {
+            let directory = tempdir()?;
+            let path = directory.path().join("rejected-private.txt");
+            let file = windows_create_private_new_file(&path)?;
+
+            let error = windows_finalize_private_creation(
+                file,
+                |_| {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "injected private security verification failure",
+                    ))
+                },
+                windows_delete_open_file,
+            )
+            .expect_err("security verification failure must reject the file");
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(!crate::creation_error_may_have_retained_private_file(
+                &error
+            ));
+            assert!(!path.exists());
+            Ok(())
+        }
+
+        #[test]
+        fn verifier_rejects_a_broader_protected_dacl() -> io::Result<()> {
+            let directory = tempdir()?;
+            let path = directory.path().join("broader-private.txt");
+            let policy = windows_private_security_policy()?;
+            let descriptor = format!(
+                "O:{}D:P(A;;FA;;;SY)(A;;FA;;;{})(A;;FR;;;BA)",
+                policy.owner_sid, policy.owner_sid
+            );
+            let file = windows_create_new_file_with_security(&path, &descriptor)?;
+
+            let error =
+                windows_verify_private_file_security(&file, &policy.owner_sid, &policy.dacl_sddl)
+                    .expect_err("an additional access grant must fail private-file verification");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+            windows_delete_open_file(&file)?;
+            drop(file);
+            assert!(!path.exists());
+            Ok(())
+        }
+
+        #[test]
+        fn verifier_rejects_an_unexpected_owner() -> io::Result<()> {
+            let directory = tempdir()?;
+            let path = directory.path().join("wrong-owner.txt");
+            let policy = windows_private_security_policy()?;
+            let file = windows_create_new_file_with_security(&path, &policy.descriptor_sddl)?;
+            let unexpected_owner = if policy.owner_sid == "S-1-0-0" {
+                "S-1-5-18"
+            } else {
+                "S-1-0-0"
+            };
+
+            let error =
+                windows_verify_private_file_security(&file, unexpected_owner, &policy.dacl_sddl)
+                    .expect_err("an owner other than the creating user must fail verification");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+            windows_delete_open_file(&file)?;
+            drop(file);
+            assert!(!path.exists());
+            Ok(())
+        }
+
+        #[test]
+        fn failed_private_security_cleanup_preserves_both_native_causes() -> io::Result<()> {
+            let directory = tempdir()?;
+            let path = directory.path().join("retained-private.txt");
+            let file = windows_create_private_new_file(&path)?;
+
+            let error = windows_finalize_private_creation(
+                file,
+                |_| Err(io::Error::from_raw_os_error(13)),
+                |_| Err(io::Error::from_raw_os_error(5)),
+            )
+            .expect_err("failed cleanup must mark the pathname as potentially retained");
+
+            assert_eq!(
+                crate::retained_private_file_creation_cause(&error)
+                    .and_then(io::Error::raw_os_error),
+                Some(13)
+            );
+            assert_eq!(
+                crate::retained_private_file_cleanup_cause(&error)
+                    .and_then(io::Error::raw_os_error),
+                Some(5)
+            );
+            assert!(path.exists());
+            fs::remove_file(path)?;
             Ok(())
         }
 
@@ -2960,7 +3339,8 @@ mod tests {
     };
     use super::{
         creation_error_may_have_retained_private_file, open_existing_no_follow,
-        retained_private_creation_error, retained_private_file_creation_cause,
+        retained_private_creation_error, retained_private_creation_error_with_cleanup,
+        retained_private_file_cleanup_cause, retained_private_file_creation_cause,
     };
 
     #[test]
@@ -3037,12 +3417,24 @@ mod tests {
             .expect("the retained marker must preserve its original cause");
         assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
         assert_eq!(source.raw_os_error(), Some(permission_denied_code));
+        assert!(retained_private_file_cleanup_cause(&marked).is_none());
         let error_source = marked
             .get_ref()
             .and_then(std::error::Error::source)
             .and_then(|source| source.downcast_ref::<io::Error>())
             .expect("the marker's error chain must expose the native cause");
         assert_eq!(error_source.raw_os_error(), Some(permission_denied_code));
+
+        let cleanup_code = if cfg!(windows) { 1 } else { 5 };
+        let retained = retained_private_creation_error_with_cleanup(
+            io::Error::from_raw_os_error(permission_denied_code),
+            io::Error::from_raw_os_error(cleanup_code),
+        );
+        assert_eq!(
+            retained_private_file_cleanup_cause(&retained).and_then(io::Error::raw_os_error),
+            Some(cleanup_code)
+        );
+        assert!(retained.to_string().contains("cleanup also failed"));
     }
 
     #[test]

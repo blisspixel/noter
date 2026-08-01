@@ -54,8 +54,11 @@ Recovery never silently overwrites the original document.
 
 Unix staging files are created with mode 0600. macOS additionally suppresses ACL
 inheritance during creation and verifies the finalized ACL before writing.
-Windows creates a protected DACL granting full control only to the owner and
-SYSTEM.
+Windows explicitly assigns the process user's SID as owner and creates a
+protected DACL granting full control only to that SID and SYSTEM, then verifies
+the owner and exact DACL through the opened file handle before writing. A
+filesystem that ignores or cannot report the policy is rejected and the
+zero-byte file is removed through that same handle when supported.
 
 When Unix replacement must retain a displaced original, Noter first validates
 its identity, content, and metadata through the open object. An exact match is

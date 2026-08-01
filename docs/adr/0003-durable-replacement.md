@@ -77,6 +77,12 @@ I/O error is never interpreted as non-commit.
 2. Inspect the final path without following an unapproved final link. Refuse
    special files and detect an external version before creating a sibling.
 3. Create an unpredictable same-directory sibling with create-new semantics.
+   On Windows, explicitly set the process user's SID as owner and supply a
+   protected user-and-SYSTEM DACL at `CreateFileW` time, then read the owner and
+   DACL through the created handle and require the exact policy before writing.
+   If the filesystem ignores or cannot report it, mark that exact zero-byte
+   handle for deletion and fail closed. Preserve both the verification and
+   cleanup causes if handle-bound removal fails.
    On macOS, atomically request mode 0600 with a zero-entry `no_inherit` ACL and
    rely on that kernel contract to suppress inheritance. Native execution proves
    a control file inherits the parent ACE while the protected file immediately
@@ -127,7 +133,7 @@ durability policy.
 | Platform and case | Commit primitive | Metadata | Durability result |
 | --- | --- | --- | --- |
 | Windows, existing file | `ReplaceFileW` with a unique backup sibling and no ignore-merge flags; reconcile destination, replacement, and backup on documented partial failures | Native merge preserves the documented DACL, encryption, compression, creation, identifier, and named-stream properties; any merge failure is not ignored | Flush sibling before commit; because `REPLACEFILE_WRITE_THROUGH` is unsupported and no supported parent-directory barrier is documented, report at most `FileSynced` unless platform tests prove more |
-| Windows, absent file | `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`, without replace or cross-volume copy flags | Protected DACL grants full control only to object owner and SYSTEM; no parent entries are inherited | Refuse a newly appeared destination; report the barrier strength demonstrated by platform tests |
+| Windows, absent file | `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`, without replace or cross-volume copy flags | Set the process user's explicit owner SID and request a protected DACL granting full control only to that SID and SYSTEM, then verify the owner and exact DACL through the created handle before writing; reject filesystems that ignore or cannot report it | Refuse a newly appeared destination; report the barrier strength demonstrated by platform tests |
 | Linux, existing file | Same-directory atomic exchange; retain the displaced destination because portable unlink cannot target a verified handle | Capture and revalidate an immutable ownership, mode, ACL, extended-attribute, security-context, and capability snapshot before commit; bound xattrs by count and aggregate bytes before allocation; keep staging mode 0600 through exchange; verify the displaced original and apply the snapshot only if its stable metadata payload still matches; restrict the exact verified displaced handle to mode 0600 before retention; a failure is committed with a warning | `fsync` sibling, exchange, finalize and resync metadata, then `fsync` opened parent directory |
 | Linux, absent file | No-replace rename where supported, otherwise create a no-overwrite hard link and retain the temporary name | Owner-only mode 0600 | Same file and parent barriers as existing replacement; retained fallback names are explicit cleanup warnings |
 | macOS, existing file | Same-directory atomic exchange through an opened parent; retain the displaced destination because portable unlink cannot target a verified handle | Atomically request staging mode 0600 with a zero-entry `no_inherit` ACL, verify the kernel's resulting ACL absence before writing, and serialize the destination ACL plus ownership, mode, and a count-and-byte-bounded immutable xattr snapshot before commit; replay the ACL through the destination descriptor with no temporary pathname; resource forks use the same xattr budget; keep staging private through exchange; verify the displaced original and apply the snapshot only if its stable metadata payload still matches; restrict the exact verified displaced handle to mode 0600 with verified ACL absence before retention; saving intentionally advances modification time | Request `F_FULLFSYNC` for the sibling, exchange, finalize and resync metadata, then synchronize the parent where supported |

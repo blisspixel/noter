@@ -318,7 +318,7 @@ impl StorageError {
 /// failure that occurred after the sibling was created.
 ///
 /// Creation normally fails before a temporary object exists. A native identity
-/// query or macOS security finalization can instead fail immediately after
+/// query or platform security finalization can instead fail immediately after
 /// exclusive creation. In those narrow cases the adapter must report both the
 /// primary failure and whether the newly created sibling could not be removed
 /// safely.

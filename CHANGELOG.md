@@ -144,6 +144,12 @@ release, so current work remains under Unreleased.
 
 ### Security
 
+- Bind every newly created Windows file to the process user's explicit owner SID
+  and protected user-and-SYSTEM DACL, then verify both through the opened handle
+  before any document bytes are written. Filesystems that ignore or cannot
+  report the requested private policy now fail closed and remove the exact open
+  zero-byte file; a cleanup failure preserves both native causes and reports the
+  possible private artifact separately.
 - Bind the complete release workflow, CI workflow, and WiX authoring source to
   reviewed digests, with an independently isolated release-validator step and
   a separate cross-platform test-job digest. This makes commented-out gates,
