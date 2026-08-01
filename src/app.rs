@@ -745,8 +745,8 @@ impl NoterApp {
 
     fn collect_edit_shortcut(
         ui: &egui::Ui,
-        document_history_shortcuts_enabled: bool,
-        text_mode_shortcuts_enabled: bool,
+        document_shortcuts_enabled: bool,
+        go_to_line_shortcut_enabled: bool,
     ) -> Option<EditCommand> {
         let mut command = None;
         let operating_system = ui.ctx().os();
@@ -755,19 +755,20 @@ impl NoterApp {
                 egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
                 egui::Key::Z,
             );
-            if document_history_shortcuts_enabled && input.consume_shortcut(&alternate_redo) {
+            if document_shortcuts_enabled && input.consume_shortcut(&alternate_redo) {
                 command = Some(EditCommand::Redo);
                 return;
             }
             for candidate in EditCommand::INPUT_PRECEDENCE {
-                if !document_history_shortcuts_enabled
-                    && matches!(candidate, EditCommand::Undo | EditCommand::Redo)
+                if !document_shortcuts_enabled
+                    && matches!(
+                        candidate,
+                        EditCommand::Undo | EditCommand::Redo | EditCommand::SelectAll
+                    )
                 {
                     continue;
                 }
-                if !text_mode_shortcuts_enabled
-                    && matches!(candidate, EditCommand::SelectAll | EditCommand::GoToLine)
-                {
+                if !go_to_line_shortcut_enabled && candidate == EditCommand::GoToLine {
                     continue;
                 }
                 let shortcut = candidate.shortcut(operating_system);
@@ -831,11 +832,9 @@ impl NoterApp {
                 return;
             }
             EditCommand::SelectAll => {
-                if self.view == DocumentView::Text {
-                    self.selection = Selection::new(0, self.text.len());
-                    self.pending_selection_restore = Some(self.selection);
-                    self.preserve_focus_on_selection_restore = false;
-                }
+                self.selection = Selection::new(0, self.text.len());
+                self.pending_selection_restore = Some(self.selection);
+                self.preserve_focus_on_selection_restore = false;
                 return;
             }
             EditCommand::Undo | EditCommand::Redo => {}
@@ -1273,20 +1272,12 @@ impl NoterApp {
             if matches!(index, 2 | 3 | 7) {
                 ui.separator();
             }
-            let enabled = match candidate {
-                EditCommand::Undo => self.history.can_undo(),
-                EditCommand::Redo => self.history.can_redo(),
-                EditCommand::SelectAll | EditCommand::GoToLine => self.view == DocumentView::Text,
-                EditCommand::Find
-                | EditCommand::FindNext
-                | EditCommand::FindPrevious
-                | EditCommand::Replace => true,
-            };
+            let enabled = self.edit_command_enabled(candidate);
             let shortcut = candidate.shortcut(ui.ctx().os());
             let button = egui::Button::new(candidate.label())
                 .shortcut_text(ui.ctx().format_shortcut(&shortcut));
             let response = ui.add_enabled(enabled, button);
-            if !enabled && matches!(candidate, EditCommand::SelectAll | EditCommand::GoToLine) {
+            if !enabled && candidate == EditCommand::GoToLine {
                 response
                     .clone()
                     .on_disabled_hover_text("Available in Text Mode");
@@ -1295,6 +1286,19 @@ impl NoterApp {
                 command.get_or_insert(candidate);
                 ui.close();
             }
+        }
+    }
+
+    fn edit_command_enabled(&self, command: EditCommand) -> bool {
+        match command {
+            EditCommand::Undo => self.history.can_undo(),
+            EditCommand::Redo => self.history.can_redo(),
+            EditCommand::GoToLine => self.view == DocumentView::Text,
+            EditCommand::SelectAll
+            | EditCommand::Find
+            | EditCommand::FindNext
+            | EditCommand::FindPrevious
+            | EditCommand::Replace => true,
         }
     }
 
@@ -1377,12 +1381,11 @@ impl NoterApp {
             return;
         }
         if view == DocumentView::Markdown
-            && self.selection.anchor() != self.selection.active()
             && !MarkdownEditor::can_restore_source_selection(&self.text, self.selection)
         {
             self.pending_selection_restore = Some(self.selection);
             self.error_msg = Some(
-                "Markdown Mode currently edits one formatted block at a time. This selection crosses blocks, so Noter kept Text Mode and preserved it. Select text within one block before switching modes."
+                "Markdown Mode could not map the current selection to exact UTF-8 source boundaries, so Noter kept Text Mode and preserved the selection."
                     .to_owned(),
             );
             return;
@@ -2110,14 +2113,14 @@ impl NoterApp {
     fn render_frame(&mut self, ui: &mut egui::Ui) {
         let mut file_command = Self::collect_shortcut(ui);
         let mut view_command = Self::collect_view_shortcut(ui);
-        let document_history_shortcuts_enabled =
+        let document_shortcuts_enabled =
             !self.find_bar.owns_text_focus(ui.ctx()) && !self.go_to_line.owns_text_focus(ui.ctx());
-        let text_mode_shortcuts_enabled =
-            document_history_shortcuts_enabled && self.view == DocumentView::Text;
+        let go_to_line_shortcut_enabled =
+            document_shortcuts_enabled && self.view == DocumentView::Text;
         let mut edit_command = Self::collect_edit_shortcut(
             ui,
-            document_history_shortcuts_enabled,
-            text_mode_shortcuts_enabled,
+            document_shortcuts_enabled,
+            go_to_line_shortcut_enabled,
         );
         self.show_menu(ui, &mut file_command, &mut edit_command, &mut view_command);
         self.show_error(ui);
@@ -2657,29 +2660,29 @@ mod tests {
         command
     }
 
-    fn collect_edit_shortcut_from_input_with_history(
+    fn collect_edit_shortcut_from_input_with_document_focus(
         input: egui::RawInput,
-        document_history_shortcuts_enabled: bool,
+        document_shortcuts_enabled: bool,
     ) -> Option<EditCommand> {
         collect_edit_shortcut_from_input_with_availability(
             input,
-            document_history_shortcuts_enabled,
-            document_history_shortcuts_enabled,
+            document_shortcuts_enabled,
+            document_shortcuts_enabled,
         )
     }
 
     fn collect_edit_shortcut_from_input_with_availability(
         input: egui::RawInput,
-        document_history_shortcuts_enabled: bool,
-        text_mode_shortcuts_enabled: bool,
+        document_shortcuts_enabled: bool,
+        go_to_line_shortcut_enabled: bool,
     ) -> Option<EditCommand> {
         let context = egui::Context::default();
         let mut command = None;
         let _ = context.run_ui(input, |ui| {
             command = NoterApp::collect_edit_shortcut(
                 ui,
-                document_history_shortcuts_enabled,
-                text_mode_shortcuts_enabled,
+                document_shortcuts_enabled,
+                go_to_line_shortcut_enabled,
             );
         });
         command
@@ -3110,7 +3113,7 @@ mod tests {
     }
 
     #[test]
-    fn select_all_and_go_to_line_use_document_command_shortcuts() {
+    fn select_all_remains_global_when_go_to_line_is_unavailable() {
         let command = egui::Modifiers {
             ctrl: true,
             command: true,
@@ -3128,6 +3131,14 @@ mod tests {
         assert_eq!(
             collect_edit_shortcut_from_input_with_availability(
                 shortcut_input(command, egui::Key::A),
+                true,
+                false,
+            ),
+            Some(EditCommand::SelectAll)
+        );
+        assert_eq!(
+            collect_edit_shortcut_from_input_with_availability(
+                shortcut_input(egui::Modifiers::CTRL, egui::Key::G),
                 true,
                 false,
             ),
@@ -3319,7 +3330,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_find_input_retains_undo_and_redo_shortcuts() {
+    fn focused_find_input_retains_local_edit_shortcuts() {
         let command = egui::Modifiers {
             ctrl: true,
             command: true,
@@ -3334,12 +3345,12 @@ mod tests {
             shortcut_input(command, egui::Key::A),
         ] {
             assert_eq!(
-                collect_edit_shortcut_from_input_with_history(input, false),
+                collect_edit_shortcut_from_input_with_document_focus(input, false),
                 None
             );
         }
         assert_eq!(
-            collect_edit_shortcut_from_input_with_history(
+            collect_edit_shortcut_from_input_with_document_focus(
                 shortcut_input(command, egui::Key::F),
                 false,
             ),
@@ -3496,6 +3507,17 @@ mod tests {
     }
 
     #[test]
+    fn markdown_edit_menu_enables_select_all_but_not_go_to_line() {
+        let app = NoterApp {
+            view: DocumentView::Markdown,
+            ..NoterApp::default()
+        };
+
+        assert!(app.edit_command_enabled(EditCommand::SelectAll));
+        assert!(!app.edit_command_enabled(EditCommand::GoToLine));
+    }
+
+    #[test]
     fn select_all_restores_the_exact_text_mode_source_selection() {
         let source = "one\r\n三";
         let mut app = NoterApp {
@@ -3538,9 +3560,12 @@ mod tests {
     }
 
     #[test]
-    fn markdown_mode_keeps_formatted_wrapping_and_rejects_text_only_commands() {
+    fn markdown_mode_keeps_formatted_wrapping_and_supports_select_all() {
+        let source = "# One\n\nTwo";
         let mut app = NoterApp {
             view: DocumentView::Markdown,
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
             text_wrap: TextWrap::Wrapped,
             selection: Selection::caret(0),
             ..NoterApp::default()
@@ -3552,14 +3577,75 @@ mod tests {
         app.execute_edit_command(EditCommand::SelectAll);
 
         assert_eq!(app.text_wrap, TextWrap::Wrapped);
-        assert_eq!(app.selection, Selection::caret(0));
-        assert_eq!(app.pending_selection_restore, None);
+        assert_eq!(app.selection, Selection::new(0, source.len()));
+        assert_eq!(app.pending_selection_restore, Some(app.selection));
+        assert_eq!(String::from(app.document.rope()), source);
+        assert!(!app.document.is_dirty());
     }
 
     #[test]
-    fn markdown_mode_preserves_a_cross_block_text_selection_until_it_is_supported() {
-        let source = "# First\n\nSecond";
-        let selection = Selection::new(2, source.len());
+    fn markdown_select_all_shortcut_activates_the_exact_document_selection() {
+        let source = "# One\r\n\r\nTwo";
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection: Selection::caret(2),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+
+        let _ = context.run_ui(shortcut_input(command, egui::Key::A), |ui| {
+            ui.set_width(800.0);
+            app.render_frame(ui);
+        });
+
+        let selection = Selection::new(0, source.len());
+        assert_eq!(app.selection, selection);
+        assert_eq!(app.markdown_editor.source_selection(), Some(selection));
+        assert_eq!(app.text, source);
+        assert_eq!(String::from(app.document.rope()), source);
+        assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn markdown_mode_restores_a_directional_cross_block_text_selection() {
+        let source = "# First\r\n\r\nSecond\rThird";
+        let selection = Selection::new(source.len(), 2);
+        let mut app = NoterApp {
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            text: source.to_owned(),
+            selection,
+            ..NoterApp::default()
+        };
+        let revision = app.document.revision();
+
+        app.select_document_view(DocumentView::Markdown);
+        let context = egui::Context::default();
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| {
+            let _ = app.show_markdown_editor(ui);
+        });
+
+        assert_eq!(app.view, DocumentView::Markdown);
+        assert_eq!(app.selection, selection);
+        assert_eq!(app.pending_selection_restore, None);
+        assert_eq!(app.markdown_editor.source_selection(), Some(selection));
+        assert!(app.markdown_editor.is_editing());
+        assert!(app.error_msg.is_none());
+        assert_eq!(app.document.revision(), revision);
+        assert_eq!(String::from(app.document.rope()), source);
+        assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn markdown_mode_rejects_a_selection_outside_exact_utf8_boundaries() {
+        let source = "é";
+        let selection = Selection::caret(1);
         let mut app = NoterApp {
             document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
             text: source.to_owned(),
@@ -3573,7 +3659,7 @@ mod tests {
         assert_eq!(app.selection, selection);
         assert_eq!(app.pending_selection_restore, Some(selection));
         assert!(app.error_msg.as_deref().is_some_and(|message| {
-            message.contains("one formatted block at a time")
+            message.contains("exact UTF-8 source boundaries")
                 && message.contains("kept Text Mode")
                 && message.contains("preserved")
         }));

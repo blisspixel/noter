@@ -510,8 +510,10 @@ actions update standard source. Supported inline delimiters remain in source but
 are visually suppressed while their content stays formatted. A direct
 `pulldown-cmark` event projection builds the inactive native layout before text
 shaping, while the active editor keeps the exact source buffer and reveals a
-link destination only while it is edited. The current range-focused
-implementation is a vertical slice; M6 replaces its local edit path with shared
+link destination only while it is edited. Select All and Text-to-Markdown
+selection carry can activate one contiguous source buffer across parsed blocks
+without normalizing line endings. The current range-focused implementation is a
+vertical slice; M6 replaces its local edit path with shared
 revision-tagged transactions, full keyboard and accessibility behavior,
 stale-result rejection, and conformance evidence. Whole-document Format remains
 a separately reviewed diff with semantic equivalence, idempotence, byte-policy

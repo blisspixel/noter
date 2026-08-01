@@ -61,7 +61,8 @@ The current development checkpoint has:
 - a non-modal literal Find and Replace surface with Unicode case matching,
   next, previous, wrap reporting, match counts, explicit selection or document
   replacement scope, and revision-keyed bounded caching;
-- Text Mode Select All, allocation-free mixed-EOL Go To Line, persistent word
+- Select All in Text Mode and Markdown Mode, directional cross-block selection
+  carry, allocation-free mixed-EOL Go To Line in Text Mode, persistent word
   wrap, and document-only keyboard, menu, and pointer zoom bounded from 50 to
   300 percent;
 - one pure lifecycle reducer used by dirty New, Open, Reload, Close, and Quit,
@@ -81,12 +82,12 @@ The current development checkpoint has:
 
 The latest verified implementation checkpoint passes all nine required jobs in
 exact-commit run
-[30702655806](https://github.com/blisspixel/noter/actions/runs/30702655806)
-for commit `08fd8a5e074da6a88e12e5fcc9c7908d148b088c`. A reproducible local
+[30717757040](https://github.com/blisspixel/noter/actions/runs/30717757040)
+for commit `c28711deae601efaf242b65007cd3e26f333b141`. A reproducible local
 trust-kernel benchmark baseline now exists; the manual
 metadata and weaker-filesystem evidence named by ADR-003, and later M5 GUI and
 input benchmarks remain open. The edit foundation still requires complete
-navigation and clipboard policy, Markdown parity for document-wide selection,
+navigation and clipboard policy, cross-block Markdown pointer selection,
 long-session fixtures, and cross-platform evidence. Recovery, external-change
 handling, configuration, accessibility evidence, and release performance
 evidence also remain open. M1 through M4 therefore remain In Progress even
@@ -326,9 +327,12 @@ transaction history with explicit Replace intent.
 Go To Line caps its focused input at 20 UTF-8 bytes before widget processing,
 then scans source bytes without allocation and treats LF, CRLF, CR, and mixed
 files exactly. An empty document has one addressable line and a final terminator
-starts a trailing empty line. Text Mode Select All and Go To Line restore the
-exact source selection through the same editor-state boundary used by Undo and
-Find. Word wrap changes only Text Mode layout. Keyboard, menu, and supported
+starts a trailing empty line. Select All in either view and Text Mode Go To Line
+restore the exact source selection through the same editor-state boundary used
+by Undo and Find. Markdown restoration accepts any in-bounds UTF-8 source
+selection, retains its direction, and activates one contiguous source-backed
+edit region even when parsed blocks or native line-ending forms differ. Word
+wrap changes only Text Mode layout. Keyboard, menu, and supported
 pointer magnification over the document surface scale document type, including
 native Markdown headings, from 50 to 300 percent without changing menus, status
 controls, source bytes, or revision identity. The Markdown document bar also

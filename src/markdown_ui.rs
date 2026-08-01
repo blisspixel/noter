@@ -846,7 +846,7 @@ impl MarkdownEditor {
     }
 
     pub fn can_restore_source_selection(source: &str, selection: Selection) -> bool {
-        restorable_source_block_range(source, selection).is_some()
+        restorable_source_edit_range(source, selection).is_some()
     }
 
     /// Restores a source-backed selection and optionally focuses its editor.
@@ -859,7 +859,7 @@ impl MarkdownEditor {
         selection: Selection,
         request_focus: bool,
     ) -> bool {
-        let Some(range) = restorable_source_block_range(source, selection) else {
+        let Some(range) = restorable_source_edit_range(source, selection) else {
             return false;
         };
         let Some(block) = source.get(range.clone()) else {
@@ -1282,15 +1282,44 @@ fn consume_format_shortcut(input: &mut egui::InputState, shortcut: egui::Keyboar
     pressed_once && input.consume_shortcut(&shortcut)
 }
 
-fn restorable_source_block_range(source: &str, selection: Selection) -> Option<Range<usize>> {
-    if !source.is_char_boundary(selection.anchor()) || !source.is_char_boundary(selection.active())
+fn restorable_source_edit_range(source: &str, selection: Selection) -> Option<Range<usize>> {
+    if selection.anchor() > source.len()
+        || selection.active() > source.len()
+        || !source.is_char_boundary(selection.anchor())
+        || !source.is_char_boundary(selection.active())
     {
         return None;
     }
-    let ordered = selection.ordered_range();
-    markdown_block_ranges(source)
-        .into_iter()
-        .find(|range| range.start <= ordered.start() && ordered.end() <= range.end)
+    let selected = selection.ordered_range();
+    let ranges = markdown_block_ranges(source);
+    if ranges.is_empty() {
+        return Some(0..source.len());
+    }
+
+    if selection.anchor() == selection.active()
+        && let Some(block) = ranges
+            .iter()
+            .find(|range| range.start <= selected.start() && selected.start() <= range.end)
+    {
+        return Some(block.clone());
+    }
+
+    let mut related = ranges
+        .iter()
+        .filter(|range| range.start < selected.end() && selected.start() < range.end);
+    if let Some(first) = related.next() {
+        let last = related.next_back().unwrap_or(first);
+        return Some(selected.start().min(first.start)..selected.end().max(last.end));
+    }
+    if let Some(previous) = ranges
+        .iter()
+        .rev()
+        .find(|range| range.end <= selected.start())
+    {
+        return Some(previous.start..selected.end().max(previous.end));
+    }
+    let next = ranges.iter().find(|range| selected.end() <= range.start)?;
+    Some(selected.start().min(next.start)..next.end)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -4591,6 +4620,9 @@ mod tests {
         assert!(editor.restore_source_selection_with_focus(source, selection, true));
         assert_eq!(editor.source_selection(), Some(selection));
         assert!(editor.is_editing());
+        let active = editor.active.as_ref().expect("selection should be active");
+        assert_eq!(active.source_range, 0.."# é".len());
+        assert_eq!(active.draft, "# é");
 
         editor.reset();
         assert!(editor.restore_source_selection_with_focus(source, selection, false));
@@ -4604,7 +4636,7 @@ mod tests {
     }
 
     #[test]
-    fn source_selection_restoration_rejects_cross_block_and_invalid_utf8_ranges() {
+    fn source_selection_restoration_accepts_cross_block_and_rejects_invalid_ranges() {
         let source = "# First\n\nSecond é block";
         let second_start = source
             .find("Second")
@@ -4622,8 +4654,46 @@ mod tests {
         assert!(editor.restore_source_selection_with_focus(source, selected, true));
         assert_eq!(editor.source_selection(), Some(selected));
 
+        let cross_block = Selection::new(source.len(), 2);
+        editor.reset();
+        assert!(MarkdownEditor::can_restore_source_selection(
+            source,
+            cross_block
+        ));
+        assert!(editor.restore_source_selection_with_focus(source, cross_block, true));
+        assert_eq!(editor.source_selection(), Some(cross_block));
+        let active = editor.active.as_ref().expect("selection should be active");
+        assert_eq!(active.source_range, 0..source.len());
+        assert_eq!(active.draft, source);
+
+        for boundary_selection in [
+            Selection::new(0, second_start),
+            Selection::new(second_start, 0),
+        ] {
+            editor.reset();
+            assert!(editor.restore_source_selection_with_focus(source, boundary_selection, false,));
+            assert_eq!(editor.source_selection(), Some(boundary_selection));
+            let active = editor
+                .active
+                .as_ref()
+                .expect("boundary selection should be active");
+            assert_eq!(active.source_range, 0..second_start);
+            assert_eq!(active.draft, &source[..second_start]);
+        }
+
+        let separator_caret = Selection::caret(second_start - 1);
+        editor.reset();
+        assert!(editor.restore_source_selection_with_focus(source, separator_caret, false));
+        assert_eq!(editor.source_selection(), Some(separator_caret));
+        let active = editor
+            .active
+            .as_ref()
+            .expect("separator caret should be active");
+        assert_eq!(active.source_range.end, separator_caret.active());
+        assert!(active.source_range.end < source.len());
+
         for invalid in [
-            Selection::new(0, second_start + 1),
+            Selection::new(0, source.len() + 1),
             Selection::new(unicode_start, unicode_start + 1),
             Selection::new(unicode_start + 1, unicode_end),
         ] {
@@ -4634,6 +4704,32 @@ mod tests {
             assert!(!editor.restore_source_selection_with_focus(source, invalid, true));
             assert!(!editor.is_editing());
         }
+    }
+
+    #[test]
+    fn cross_block_selection_replacement_changes_only_selected_source() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "# é\r\n\r\nSecond".to_owned();
+        let selection = Selection::new(source.len(), "# ".len());
+        assert!(editor.restore_source_selection_with_focus(&source, selection, true));
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
+        });
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Text("X".to_owned()));
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(800.0);
+            assert_eq!(
+                editor.show(ui, &mut source),
+                MarkdownShowOutcome::Changed(EditOrigin::MarkdownInput)
+            );
+        });
+
+        assert_eq!(source, "# X");
+        assert_eq!(editor.source_selection(), Some(Selection::caret(3)));
     }
 
     #[test]

@@ -68,6 +68,11 @@ authoritative. Changing modes never rewrites a file.
   row. The contextual document bar appears only in Markdown Mode, with
   formatting groups on the left and a visually separated zoom cluster on the
   right when space permits.
+- Edit > Select All and the platform-standard shortcut select the complete
+  source in Markdown Mode without changing bytes. A valid directional Text Mode
+  selection can span parsed blocks and native or mixed line endings; switching
+  views activates one contiguous source-backed edit region and preserves the
+  exact anchor and caret. Invalid UTF-8 boundaries fail closed in Text Mode.
 - Switching to Text Mode exposes the exact source produced by those edits.
 - Source diagnostics currently report skipped heading levels, spaces that
   prevent portable emphasis, unsafe trailing spaces, repeated blank lines, and
@@ -101,9 +106,12 @@ complete.
 
 ## Current limitations
 
-- Editing is range-focused rather than continuous across the full formatted
-  document. Supported headings, emphasis, links, and inline code remain styled
-  in the active range; complex and unsupported punctuation may remain visible.
+- Editing is still range-focused rather than permanently continuous across the
+  full formatted document. Select All and a selection carried from Text Mode
+  can activate one contiguous region across parsed blocks, but pointer dragging
+  across separate inactive rendered blocks is not implemented. Supported
+  headings, emphasis, links, and inline code remain styled in the active range;
+  complex and unsupported punctuation may remain visible.
 - Tables, images, nested structures, reference resolution, and other complex
   constructs do not yet have complete native layout or editing behavior.
 - Cross-block Markdown references may not resolve in every rendered fragment.
@@ -139,7 +147,7 @@ Text Mode remains the recovery path for unsupported or malformed source.
 
 ## Formatting controls
 
-The completed toolbar and accessible menus cover headings, emphasis,
+The completed M6 toolbar and accessible menus will cover headings, emphasis,
 strikethrough, inline and fenced code, links, quotes, ordered and unordered
 lists, task lists, and supported tables. Commands must work with empty and
 non-empty selections, expose keyboard paths, and avoid stacking invalid

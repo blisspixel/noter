@@ -58,12 +58,13 @@ properties compare single, ordered multi-edit, and Undo and Redo sequences to a
 `String` model.
 
 `NoterApp` still uses a mutable contiguous `String` as the framework adapter,
-and `MarkdownEditor` still owns one active block draft. Direct input is now
-classified conservatively, paste is explicit, and typing, Backspace, and
-forward Delete coalesce under bounded deterministic rules. Literal Find and
-Replace also enter the same transaction history. Text Mode now has Select All,
-mixed-EOL Go To Line, and byte-preserving word wrap; bounded editor zoom works
-in both modes.
+and `MarkdownEditor` still owns one contiguous active source draft, which may
+span parsed blocks for Select All or a selection carried from Text Mode. Direct
+input is now classified conservatively, paste is explicit, and typing,
+Backspace, and forward Delete coalesce under bounded deterministic rules.
+Literal Find and Replace also enter the same transaction history. Both views
+now have Select All, while Text Mode has mixed-EOL Go To Line and byte-preserving
+word wrap; bounded editor zoom works in both modes.
 
 **Risk:** the common model now protects source mutation, inverse history, saved
 content identity, selection direction, and common edit grouping. The remaining

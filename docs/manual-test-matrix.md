@@ -143,6 +143,12 @@ replacement-scope coverage. Fixed-seed reference properties cover Unicode
 typing, literal search, and replacement. These checks do not replace the manual
 platform rows.
 
+Automated native UI coverage proves Select All in both views, exact directional
+selection carry across Markdown blocks and mixed line endings, UTF-8 boundary
+rejection, and replacement of only selected source bytes. EDT-04 remains open
+until Cut, Copy, Paste, Delete, cancellation, and platform behavior pass the
+full manual matrix.
+
 - [ ] EDT-01 Character, word, line, page, and document movement follows platform
   conventions.
 - [ ] EDT-02 Shift variants extend and shrink selection predictably.
