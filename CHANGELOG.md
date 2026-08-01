@@ -257,6 +257,10 @@ release, so current work remains under Unreleased.
 
 ### Fixed
 
+- Make Windows private-file resource release and security flag invariants
+  directly mutation-testable. LocalAlloc strings now carry their owned
+  deallocator, and access, sharing, and security-information masks reject
+  overlapping bits while retaining the exact Windows flag values.
 - Serialize Cargo build jobs in the focused macOS mutation job after Apple
   clang crashed while linking concurrent workspace test binaries. Mutation
   validation remains strict and the job retains its 90-minute outer bound.

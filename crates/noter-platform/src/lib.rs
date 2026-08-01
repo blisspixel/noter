@@ -2258,6 +2258,23 @@ mod imp {
     const MAX_SID_STRING_UNITS: usize = 256;
     const SYSTEM_SID: &str = "S-1-5-18";
 
+    const fn windows_combine_disjoint_flags(left: u32, right: u32) -> u32 {
+        assert!(
+            left & right == 0,
+            "overlapping Windows flags cannot be combined as disjoint values"
+        );
+        left + right
+    }
+
+    const WINDOWS_PRIVATE_FILE_ACCESS: u32 = windows_combine_disjoint_flags(
+        windows_combine_disjoint_flags(GENERIC_READ, GENERIC_WRITE),
+        DELETE,
+    );
+    const WINDOWS_PRIVATE_FILE_SHARE: u32 =
+        windows_combine_disjoint_flags(FILE_SHARE_READ, FILE_SHARE_DELETE);
+    const WINDOWS_PRIVATE_SECURITY_INFORMATION: u32 =
+        windows_combine_disjoint_flags(OWNER_SECURITY_INFORMATION, DACL_SECURITY_INFORMATION);
+
     type LocalDeallocator = unsafe extern "system" fn(
         windows_sys::Win32::Foundation::HLOCAL,
     )
@@ -2268,7 +2285,10 @@ mod imp {
         deallocate: LocalDeallocator,
     }
 
-    struct LocalWideString(*mut u16);
+    struct WindowsLocalWideString {
+        raw: *mut u16,
+        deallocate: LocalDeallocator,
+    }
 
     struct WindowsPrivateSecurityPolicy {
         owner_sid: String,
@@ -2286,12 +2306,12 @@ mod imp {
         }
     }
 
-    impl Drop for LocalWideString {
+    impl Drop for WindowsLocalWideString {
         #[allow(unsafe_code)]
         fn drop(&mut self) {
             // SAFETY: the conversion API returned this LocalAlloc-owned string
             // to this guard, which frees it exactly once.
-            let _ = unsafe { LocalFree(self.0.cast()) };
+            let _ = unsafe { (self.deallocate)(self.raw.cast()) };
         }
     }
 
@@ -2457,8 +2477,8 @@ mod imp {
         let handle = unsafe {
             CreateFileW(
                 path.as_ptr(),
-                GENERIC_READ | GENERIC_WRITE | DELETE,
-                FILE_SHARE_READ | FILE_SHARE_DELETE,
+                WINDOWS_PRIVATE_FILE_ACCESS,
+                WINDOWS_PRIVATE_FILE_SHARE,
                 &raw const attributes,
                 CREATE_NEW,
                 FILE_ATTRIBUTE_NORMAL,
@@ -2505,7 +2525,7 @@ mod imp {
             GetSecurityInfo(
                 file.as_raw_handle(),
                 SE_FILE_OBJECT,
-                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                WINDOWS_PRIVATE_SECURITY_INFORMATION,
                 &raw mut raw_owner,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -2541,15 +2561,19 @@ mod imp {
         }
         let mut raw = std::ptr::null_mut();
         // SAFETY: `sid` points into a live token or security descriptor and the
-        // output points to writable storage transferred to `LocalWideString`.
+        // output points to writable storage transferred to
+        // `WindowsLocalWideString`.
         if unsafe { ConvertSidToStringSidW(sid, &raw mut raw) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        let guard = LocalWideString(raw);
+        let guard = WindowsLocalWideString {
+            raw,
+            deallocate: LocalFree,
+        };
         let Some(length) = (0..MAX_SID_STRING_UNITS).find(|index| {
             // SAFETY: Windows SID strings are NUL-terminated and bounded well
             // below MAX_SID_STRING_UNITS; the guard keeps the allocation live.
-            unsafe { *guard.0.add(*index) == 0 }
+            unsafe { *guard.raw.add(*index) == 0 }
         }) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -2558,7 +2582,7 @@ mod imp {
         };
         // SAFETY: the bounded scan found `length` initialized UTF-16 units
         // before the NUL terminator, and the guard keeps them live.
-        let units = unsafe { std::slice::from_raw_parts(guard.0, length) };
+        let units = unsafe { std::slice::from_raw_parts(guard.raw, length) };
         String::from_utf16(units).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -2573,7 +2597,7 @@ mod imp {
         let mut length = 0_u32;
         // SAFETY: `descriptor` is live for the call and both output pointers
         // refer to writable storage. The returned string is transferred
-        // immediately into `LocalWideString`.
+        // immediately into `WindowsLocalWideString`.
         if unsafe {
             ConvertSecurityDescriptorToStringSecurityDescriptorW(
                 descriptor,
@@ -2586,7 +2610,10 @@ mod imp {
         {
             return Err(io::Error::last_os_error());
         }
-        let guard = LocalWideString(raw);
+        let guard = WindowsLocalWideString {
+            raw,
+            deallocate: LocalFree,
+        };
         let length = usize::try_from(length).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -2595,7 +2622,7 @@ mod imp {
         })?;
         // SAFETY: the conversion API returned `length` live UTF-16 code units,
         // including a trailing NUL, owned by `guard`.
-        let units = unsafe { std::slice::from_raw_parts(guard.0, length) };
+        let units = unsafe { std::slice::from_raw_parts(guard.raw, length) };
         let content_length = units
             .iter()
             .position(|unit| *unit == 0)
@@ -2867,7 +2894,10 @@ mod imp {
         };
 
         use super::{
-            IdentityQuality, LocalFree, SYSTEM_SID, WindowsSecurityDescriptor,
+            DELETE, FILE_SHARE_DELETE, FILE_SHARE_READ, GENERIC_READ, GENERIC_WRITE,
+            IdentityQuality, LocalFree, SYSTEM_SID, WINDOWS_PRIVATE_FILE_ACCESS,
+            WINDOWS_PRIVATE_FILE_SHARE, WINDOWS_PRIVATE_SECURITY_INFORMATION,
+            WindowsLocalWideString, WindowsSecurityDescriptor, windows_combine_disjoint_flags,
             windows_create_new_file_with_security, windows_create_private_new_file,
             windows_delete_open_file, windows_descriptor_dacl_sddl, windows_extended_information,
             windows_finalize_private_creation, windows_identity_from_information,
@@ -3114,6 +3144,54 @@ mod imp {
             assert_eq!(
                 RELEASED.swap(std::ptr::null_mut(), Ordering::SeqCst),
                 allocation
+            );
+        }
+
+        #[test]
+        #[allow(unsafe_code)]
+        fn local_wide_string_guard_dispatches_its_deallocator() {
+            use std::sync::atomic::{AtomicPtr, Ordering};
+
+            static RELEASED: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+            unsafe extern "system" fn record_release(
+                allocation: windows_sys::Win32::Foundation::HLOCAL,
+            ) -> windows_sys::Win32::Foundation::HLOCAL {
+                RELEASED.store(allocation, Ordering::SeqCst);
+                std::ptr::null_mut()
+            }
+
+            let allocation = std::ptr::dangling_mut::<u16>();
+            let wide_string = WindowsLocalWideString {
+                raw: allocation,
+                deallocate: record_release,
+            };
+
+            drop(wide_string);
+
+            assert_eq!(
+                RELEASED.swap(std::ptr::null_mut(), Ordering::SeqCst),
+                allocation.cast()
+            );
+        }
+
+        #[test]
+        fn private_security_flag_sets_are_exact_and_disjoint() {
+            assert_eq!(
+                WINDOWS_PRIVATE_FILE_ACCESS,
+                GENERIC_READ | GENERIC_WRITE | DELETE
+            );
+            assert_eq!(
+                WINDOWS_PRIVATE_FILE_SHARE,
+                FILE_SHARE_READ | FILE_SHARE_DELETE
+            );
+            assert_eq!(
+                WINDOWS_PRIVATE_SECURITY_INFORMATION,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
+            );
+            assert!(
+                std::panic::catch_unwind(|| windows_combine_disjoint_flags(1, 1)).is_err(),
+                "overlapping Windows flags must be rejected"
             );
         }
 
