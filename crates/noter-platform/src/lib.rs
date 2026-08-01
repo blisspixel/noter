@@ -2341,6 +2341,35 @@ mod imp {
         })
     }
 
+    fn windows_token_user_buffer_length(required_length: u32) -> io::Result<usize> {
+        let required_length = usize::try_from(required_length).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "token-user data length does not fit memory",
+            )
+        })?;
+        if required_length < size_of::<TOKEN_USER>() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Windows returned undersized token-user data",
+            ));
+        }
+        Ok(required_length)
+    }
+
+    fn windows_validate_token_user_returned_length(
+        returned_length: u32,
+        buffer_length: u32,
+    ) -> io::Result<()> {
+        if returned_length > buffer_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Windows returned token-user data larger than its buffer",
+            ));
+        }
+        Ok(())
+    }
+
     #[allow(unsafe_code)]
     fn windows_current_process_user_sid() -> io::Result<String> {
         let mut raw_token = std::ptr::null_mut();
@@ -2374,18 +2403,7 @@ mod imp {
         if sizing_error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER.cast_signed()) {
             return Err(sizing_error);
         }
-        let required_length = usize::try_from(required_length).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "token-user data length does not fit memory",
-            )
-        })?;
-        if required_length < size_of::<TOKEN_USER>() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Windows returned undersized token-user data",
-            ));
-        }
+        let required_length = windows_token_user_buffer_length(required_length)?;
         let word_count = required_length.div_ceil(size_of::<usize>());
         let mut buffer = vec![0_usize; word_count];
         let buffer_length = u32::try_from(required_length).map_err(|_| {
@@ -2409,12 +2427,7 @@ mod imp {
         {
             return Err(io::Error::last_os_error());
         }
-        if returned_length > buffer_length {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Windows returned token-user data larger than its buffer",
-            ));
-        }
+        windows_validate_token_user_returned_length(returned_length, buffer_length)?;
         // SAFETY: GetTokenInformation initialized a TOKEN_USER at the aligned
         // start of the live buffer, which remains in scope for SID conversion.
         let token_user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
@@ -2838,6 +2851,7 @@ mod imp {
     mod tests {
         use std::fs::{self, File, OpenOptions};
         use std::io::{self, Write};
+        use std::mem::size_of;
         use std::os::windows::io::AsRawHandle;
         use std::path::Path;
 
@@ -2846,7 +2860,7 @@ mod imp {
         use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
         use windows_sys::Win32::Security::{
             DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl, OWNER_SECURITY_INFORMATION,
-            PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
+            PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, TOKEN_USER,
         };
         use windows_sys::Win32::Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, FILE_ID_128, FILE_ID_INFO,
@@ -2860,8 +2874,36 @@ mod imp {
             windows_open_existing_no_follow, windows_open_for_cleanup,
             windows_private_security_policy, windows_private_security_policy_for_sid,
             windows_security_descriptor_from_sddl, windows_sid_string,
+            windows_token_user_buffer_length, windows_validate_token_user_returned_length,
             windows_verify_private_file_security,
         };
+
+        #[test]
+        fn token_user_buffer_lengths_have_exact_boundaries() -> io::Result<()> {
+            let minimum = u32::try_from(size_of::<TOKEN_USER>())
+                .expect("TOKEN_USER size must fit the Windows API length parameter");
+
+            assert_eq!(
+                windows_token_user_buffer_length(minimum)?,
+                usize::try_from(minimum).expect("u32 must fit usize on supported Windows")
+            );
+            assert_eq!(
+                windows_token_user_buffer_length(minimum - 1)
+                    .expect_err("one byte below TOKEN_USER must fail")
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+
+            windows_validate_token_user_returned_length(minimum - 1, minimum)?;
+            windows_validate_token_user_returned_length(minimum, minimum)?;
+            assert_eq!(
+                windows_validate_token_user_returned_length(minimum + 1, minimum)
+                    .expect_err("a returned length above the buffer must fail")
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+            Ok(())
+        }
 
         #[test]
         fn private_policy_canonicalizes_well_known_user_sids() -> io::Result<()> {
