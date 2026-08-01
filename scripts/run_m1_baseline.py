@@ -33,6 +33,7 @@ MAXIMUM_COMMAND_OUTPUT_BYTES = 16 * MIB
 WINDOWS_CREATE_SUSPENDED = 0x00000004
 WINDOWS_JOB_TERMINATION_TIMEOUT_SECONDS = 30.0
 WINDOWS_JOB_POLL_INTERVAL_SECONDS = 0.01
+WINDOWS_MAXIMUM_JOB_PROCESSES = 4_096
 SUPPORTED_TARGETS = (
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -44,6 +45,15 @@ SEARCH_MARKERS = {
     "middle": "NOTER-SEARCH-MIDDLE-932E8A04",
     "late": "NOTER-SEARCH-LATE-45F016BC",
 }
+
+
+def _validate_windows_process_list_counts(assigned: int, returned: int) -> int:
+    """Return a complete bounded Job Object process-list length."""
+    if assigned != returned or returned > WINDOWS_MAXIMUM_JOB_PROCESSES:
+        raise RuntimeError("Windows command process list is incomplete or invalid")
+    return returned
+
+
 ADVERSARIAL_QUERY = ("a" * 63) + "b"
 BENCHMARK_CASES = (
     ("load-empty", True, "Stable-handle load of an empty document"),
@@ -508,6 +518,16 @@ class _WindowsProcessJob:
                 ("total_terminated_processes", wintypes.DWORD),
             ]
 
+        class BasicProcessIdList(ctypes.Structure):
+            _fields_ = [
+                ("number_of_assigned_processes", wintypes.DWORD),
+                ("number_of_process_ids_in_list", wintypes.DWORD),
+                (
+                    "process_id_list",
+                    ctypes.c_size_t * WINDOWS_MAXIMUM_JOB_PROCESSES,
+                ),
+            ]
+
         class ThreadEntry(ctypes.Structure):
             _fields_ = [
                 ("size", wintypes.DWORD),
@@ -559,12 +579,24 @@ class _WindowsProcessJob:
         kernel32.ResumeThread.restype = wintypes.DWORD
         kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
         kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateProcess.restype = wintypes.BOOL
+        kernel32.IsProcessInJob.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        kernel32.IsProcessInJob.restype = wintypes.BOOL
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
 
         self._ctypes = ctypes
         self._kernel32 = kernel32
         self._accounting_type = BasicAccountingInformation
+        self._bool_type = wintypes.BOOL
+        self._process_id_list_type = BasicProcessIdList
         self._thread_entry_type = ThreadEntry
         self._handle = kernel32.CreateJobObjectW(None, None)
         if not self._handle:
@@ -690,19 +722,159 @@ class _WindowsProcessJob:
             )
         return information.active_processes
 
+    def _open_process_handles(self) -> tuple[int, list[int]]:
+        information = self._process_id_list_type()
+        if not self._kernel32.QueryInformationJobObject(
+            self._handle,
+            3,
+            self._ctypes.byref(information),
+            self._ctypes.sizeof(information),
+            None,
+        ):
+            raise OSError(
+                self._ctypes.get_last_error(),
+                "QueryInformationJobObject process list failed",
+            )
+        process_count = _validate_windows_process_list_counts(
+            information.number_of_assigned_processes,
+            information.number_of_process_ids_in_list,
+        )
+
+        process_query_limited_information = 0x1000
+        process_terminate = 0x0001
+        synchronize = 0x00100000
+        handles = []
+        try:
+            for process_id in information.process_id_list[:process_count]:
+                process_handle = self._kernel32.OpenProcess(
+                    synchronize | process_query_limited_information | process_terminate,
+                    False,
+                    process_id,
+                )
+                if not process_handle:
+                    error = self._ctypes.get_last_error()
+                    if error == 87:
+                        continue
+                    raise OSError(error, "OpenProcess for shutdown wait failed")
+                handles.append(process_handle)
+                in_job = self._bool_type()
+                if not self._kernel32.IsProcessInJob(
+                    process_handle,
+                    self._handle,
+                    self._ctypes.byref(in_job),
+                ):
+                    raise OSError(
+                        self._ctypes.get_last_error(),
+                        "IsProcessInJob failed",
+                    )
+                if in_job.value:
+                    continue
+                handles.pop()
+                if not self._kernel32.CloseHandle(process_handle):
+                    raise OSError(
+                        self._ctypes.get_last_error(),
+                        "CloseHandle failed",
+                    )
+            return process_count, handles
+        except (OSError, RuntimeError) as error:
+            close_failure = self._close_process_handles(handles)
+            if close_failure is not None:
+                error.add_note(str(close_failure))
+            raise
+
+    def _close_process_handles(self, handles: list[int]) -> OSError | None:
+        first_error = None
+        for process_handle in handles:
+            if not self._kernel32.CloseHandle(process_handle) and first_error is None:
+                first_error = OSError(
+                    self._ctypes.get_last_error(),
+                    "CloseHandle failed",
+                )
+        return first_error
+
+    def _terminate_process_handles(self, handles: list[int]) -> None:
+        wait_object_0 = 0
+        for process_handle in handles:
+            if self._kernel32.TerminateProcess(process_handle, 1):
+                continue
+            error = self._ctypes.get_last_error()
+            if self._kernel32.WaitForSingleObject(process_handle, 0) == wait_object_0:
+                continue
+            raise OSError(error, "TerminateProcess failed")
+
+    def _wait_for_process_handles(self, handles: list[int], deadline: float) -> None:
+        wait_object_0 = 0
+        wait_failed = 0xFFFFFFFF
+        for process_handle in handles:
+            remaining = deadline - time.monotonic()
+            timeout_ms = max(0, math.ceil(remaining * 1_000))
+            result = self._kernel32.WaitForSingleObject(process_handle, timeout_ms)
+            if result == wait_object_0:
+                continue
+            if result == wait_failed:
+                raise OSError(
+                    self._ctypes.get_last_error(),
+                    "WaitForSingleObject failed",
+                )
+            raise RuntimeError(
+                "Windows command descendants did not terminate within "
+                f"{WINDOWS_JOB_TERMINATION_TIMEOUT_SECONDS:g} seconds"
+            )
+
     def terminate(self) -> None:
         """Terminate every assigned process and wait for complete shutdown."""
-        if self._handle and not self._kernel32.TerminateJobObject(self._handle, 1):
-            raise OSError(self._ctypes.get_last_error(), "TerminateJobObject failed")
+        unsettled_handles = []
+        capture_failure = None
         deadline = time.monotonic() + WINDOWS_JOB_TERMINATION_TIMEOUT_SECONDS
-        while self._handle and self._active_process_count() != 0:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(
-                    "Windows command descendants did not terminate within "
-                    f"{WINDOWS_JOB_TERMINATION_TIMEOUT_SECONDS:g} seconds"
+        if self._handle:
+            try:
+                while True:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(
+                            "Windows command process capture did not converge within "
+                            f"{WINDOWS_JOB_TERMINATION_TIMEOUT_SECONDS:g} seconds"
+                        )
+                    member_count, batch = self._open_process_handles()
+                    if member_count == 0:
+                        break
+                    if not batch:
+                        continue
+                    unsettled_handles = batch
+                    self._terminate_process_handles(batch)
+                    self._wait_for_process_handles(batch, deadline)
+                    close_failure = self._close_process_handles(batch)
+                    unsettled_handles = []
+                    if close_failure is not None:
+                        raise close_failure
+            except (OSError, RuntimeError) as error:
+                capture_failure = error
+        failure = None
+        try:
+            if self._handle and not self._kernel32.TerminateJobObject(self._handle, 1):
+                raise OSError(
+                    self._ctypes.get_last_error(),
+                    "TerminateJobObject failed",
                 )
-            time.sleep(min(WINDOWS_JOB_POLL_INTERVAL_SECONDS, remaining))
+            self._wait_for_process_handles(unsettled_handles, deadline)
+            while self._handle and self._active_process_count() != 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        "Windows command descendants did not terminate within "
+                        f"{WINDOWS_JOB_TERMINATION_TIMEOUT_SECONDS:g} seconds"
+                    )
+                time.sleep(min(WINDOWS_JOB_POLL_INTERVAL_SECONDS, remaining))
+            if capture_failure is not None:
+                raise RuntimeError(
+                    "Windows command process handles could not be retained"
+                ) from capture_failure
+        except (OSError, RuntimeError) as error:
+            failure = error
+            raise
+        finally:
+            close_failure = self._close_process_handles(unsettled_handles)
+            if close_failure is not None and failure is None:
+                raise close_failure
 
     def close(self) -> None:
         if not self._handle:
