@@ -771,6 +771,28 @@ class ArtifactValidationTests(unittest.TestCase):
 
         baseline.validate_artifact(artifact, require_reference=True)
 
+    def test_committed_windows_reference_is_exact_and_recomputable(self):
+        path = (
+            baseline.ROOT / "docs" / "evidence" / "m1-baseline-windows-2026-07-31.json"
+        )
+
+        artifact, digest = baseline.read_artifact(path)
+        baseline.validate_artifact(artifact, require_reference=True)
+
+        self.assertEqual(
+            digest,
+            "5da4643bf7f84c2ae37605c35a91c52e6e4f85fb0f06052f8ddfc0161bfd47e8",
+        )
+        self.assertEqual(
+            artifact["source"],
+            {
+                "checkout": "detached-worktree",
+                "commit": "580f16409957ecf0a3ff074a24703937231ca05d",
+                "tree": "405a6d24bdb091fdc905f1a877cfd6cde8c97286",
+                "worktree_clean": True,
+            },
+        )
+
     def test_reference_artifact_rejects_dirty_short_or_tampered_evidence(self):
         mutations = []
         dirty = self.valid_artifact()

@@ -116,13 +116,21 @@ mutation contexts for exact commit
 current platform mutation scopes report 967 Linux candidates, 901 Windows
 candidates across two required shards, and 47 macOS candidates, with no miss or
 timeout. The infrastructure validator reports no recognized tool, compiler,
-linker, process, or storage failure hidden as unviable. The reproducible
-benchmark harness and required manual filesystem fixtures remain open.
+linker, process, or storage failure hidden as unviable.
+
+The schema-v2 reproducible benchmark harness is implemented at commit
+`580f164`. A 30-sample Windows reference from that clean detached commit records
+all raw latency and peak-working-set samples, the exact deterministic corpus,
+release binary size and hash, and a four-target dependency summary. Its
+self-reported local provenance and complete limitations are recorded in
+[M1_BASELINE_EVIDENCE.md](M1_BASELINE_EVIDENCE.md). Exact-head hosted validation
+and the required native and weaker-filesystem fixtures remain open.
 
 Current detailed evidence and known gaps are maintained in:
 
 - [M1_SECURITY_REVIEW.md](M1_SECURITY_REVIEW.md)
 - [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md)
+- [M1_BASELINE_EVIDENCE.md](M1_BASELINE_EVIDENCE.md)
 - [BASELINE.md](BASELINE.md)
 - [adr/0003-durable-replacement.md](adr/0003-durable-replacement.md)
 
@@ -460,16 +468,19 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
    one immutable commit, reconcile the evidence, and pass independent review.
    Evidence: `97371d8`,
    [run 30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209).
-2. Build the reproducible M1 benchmark harness and execute the remaining manual
-   filesystem fixtures.
-3. Complete M2 evidence for installed About and update actions, theme
+2. Complete: build the reproducible M1 benchmark harness and record the
+   canonical 30-sample Windows reference. Evidence:
+   [M1_BASELINE_EVIDENCE.md](M1_BASELINE_EVIDENCE.md).
+3. Execute and report the remaining manual native, network, cloud, removable,
+   and weaker-filesystem fixtures without overstating unavailable evidence.
+4. Complete M2 evidence for installed About and update actions, theme
    persistence, cross-platform visual behavior, and disposable source installs.
-4. Complete the remaining M3 navigation, clipboard, Markdown document-selection,
+5. Complete the remaining M3 navigation, clipboard, Markdown document-selection,
    background-work, cross-platform keyboard, and long-session requirements atop
    the implemented Undo, Find and Replace, Go To Line, wrap, and zoom foundation.
-5. Complete M4 recovery records and external-change decisions through the pure
+6. Complete M4 recovery records and external-change decisions through the pure
    lifecycle reducer, including fault and stale-effect evidence.
-6. Execute the M5 editor feasibility gate, including native typography, IME,
+7. Execute the M5 editor feasibility gate, including native typography, IME,
    accessibility, display-scale, and large-file evidence. Keep the early
    block-focused Markdown slice bounded until the transaction, lifecycle, and
    production-editor contracts it depends on are stable.

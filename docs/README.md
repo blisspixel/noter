@@ -49,6 +49,8 @@ each topic.
   and engineering decisions.
 - [Engineering baseline](BASELINE.md) records measured checkpoints and known
   gaps.
+- [M1 reproducible baseline evidence](M1_BASELINE_EVIDENCE.md) records the
+  canonical trust-kernel latency, memory, binary-size, and dependency reference.
 - [M1 security review](M1_SECURITY_REVIEW.md) and
   [mutation evidence](M1_MUTATION_EVIDENCE.md) record durable-save review
   results.
