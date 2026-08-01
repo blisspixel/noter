@@ -12,7 +12,7 @@ const ACTIVE_EDITOR_ID: &str = "noter-markdown-active-block";
 const EXPANDED_FORMAT_MIN_WIDTH: f32 = 480.0;
 const FORMAT_BUTTON_SIZE: egui::Vec2 = egui::vec2(32.0, 28.0);
 const CODE_BUTTON_SIZE: egui::Vec2 = egui::vec2(38.0, 28.0);
-const BLOCK_HORIZONTAL_PADDING: i8 = 8;
+const BLOCK_HORIZONTAL_PADDING: i8 = 0;
 const BLOCK_VERTICAL_PADDING: i8 = 3;
 const BLOCK_GAP: f32 = 3.0;
 const MARKER_FONT_SIZE: f32 = 0.1;
@@ -506,7 +506,6 @@ pub struct MarkdownEditor {
     active: Option<ActiveBlock>,
     next_editor_serial: u64,
     rendered_drag: Option<RenderedDragSelection>,
-    finish_requested: bool,
     input_was_limited: bool,
 }
 
@@ -514,7 +513,6 @@ impl MarkdownEditor {
     pub fn reset(&mut self) {
         self.active = None;
         self.rendered_drag = None;
-        self.finish_requested = false;
         self.input_was_limited = false;
         self.next_editor_serial = self.next_editor_serial.wrapping_add(1);
     }
@@ -562,16 +560,6 @@ impl MarkdownEditor {
                 ui.add_space(8.0);
             }
         }
-        if enabled {
-            ui.separator();
-            if ui
-                .add(egui::Button::new("Done").min_size(egui::vec2(54.0, 28.0)))
-                .on_hover_text("Finish editing the active content")
-                .clicked()
-            {
-                self.finish_requested = true;
-            }
-        }
     }
 
     fn compact_toolbar(&mut self, ui: &mut egui::Ui) {
@@ -596,11 +584,6 @@ impl MarkdownEditor {
                             self.apply_command(command);
                             ui.close();
                         }
-                    }
-                    ui.separator();
-                    if ui.button("Done editing").clicked() {
-                        self.finish_requested = true;
-                        ui.close();
                     }
                 });
             })
@@ -725,6 +708,7 @@ impl MarkdownEditor {
         maximum_source_bytes: usize,
     ) -> MarkdownShowOutcome {
         self.input_was_limited = false;
+        let mut finish_after_frame = false;
         let mut changed_origin = self.sync_pending_command(source);
         if let Some(origin) = changed_origin
             && let Some(limit) = markdown_projection_limit(source)
@@ -738,16 +722,19 @@ impl MarkdownEditor {
                 self.activate(0..0, String::new());
             }
             let maximum_draft_bytes = self.maximum_active_draft_bytes(source, maximum_source_bytes);
-            if self.show_active_editor(ui, maximum_draft_bytes)
-                && let Some(origin) = self.sync_pending_command(source)
-            {
+            let (active_changed, finish_requested) =
+                self.show_active_editor(ui, maximum_draft_bytes);
+            finish_after_frame |= finish_requested;
+            if active_changed && let Some(origin) = self.sync_pending_command(source) {
                 changed_origin.get_or_insert(origin);
                 if let Some(limit) = markdown_projection_limit(source) {
                     return MarkdownShowOutcome::ProjectionLimitExceeded { limit, origin };
                 }
             }
             ui.add_space(BLOCK_GAP);
-            self.finish_active_if_requested();
+            if finish_after_frame {
+                self.finish_active();
+            }
             return changed_origin
                 .map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed);
         }
@@ -767,7 +754,8 @@ impl MarkdownEditor {
                 if !active_shown {
                     let maximum_draft_bytes =
                         self.maximum_active_draft_bytes(source, maximum_source_bytes);
-                    let _ = self.show_active_editor(ui, maximum_draft_bytes);
+                    let (_, finish_requested) = self.show_active_editor(ui, maximum_draft_bytes);
+                    finish_after_frame |= finish_requested;
                     ui.add_space(BLOCK_GAP);
                     active_shown = true;
                 }
@@ -817,7 +805,9 @@ impl MarkdownEditor {
                 self.activate_with_selection(source_range, block.to_owned(), activation.selection);
             }
         }
-        self.finish_active_if_requested();
+        if finish_after_frame {
+            self.finish_active();
+        }
         changed_origin.map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed)
     }
 
@@ -828,12 +818,9 @@ impl MarkdownEditor {
         })
     }
 
-    fn finish_active_if_requested(&mut self) {
-        if self.finish_requested {
-            self.active = None;
-            self.rendered_drag = None;
-            self.finish_requested = false;
-        }
+    fn finish_active(&mut self) {
+        self.active = None;
+        self.rendered_drag = None;
     }
 
     fn sync_pending_command(&mut self, source: &mut String) -> Option<EditOrigin> {
@@ -935,7 +922,11 @@ impl MarkdownEditor {
         activation
     }
 
-    fn show_active_editor(&mut self, ui: &mut egui::Ui, maximum_draft_bytes: usize) -> bool {
+    fn show_active_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        maximum_draft_bytes: usize,
+    ) -> (bool, bool) {
         let editor_id = self.active.as_ref().map(ActiveBlock::editor_id);
         let format_command = editor_id
             .filter(|editor_id| ui.memory(|memory| memory.has_focus(*editor_id)))
@@ -952,11 +943,12 @@ impl MarkdownEditor {
             self.apply_command(command);
         }
         let Some(active) = self.active.as_mut() else {
-            return false;
+            return (false, false);
         };
+        let editor_id = active.editor_id();
+        let finish_requested = prepare_escape_finish(ui, editor_id);
         let rows = logical_lines(&active.draft).count().max(1) + 1;
         let input_origin = direct_input_origin(ui);
-        let editor_id = active.editor_id();
         let selection = active.selection.ordered_range();
         let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
         let restore_focus = active.request_focus;
@@ -1004,6 +996,7 @@ impl MarkdownEditor {
             // TextEdit processes input. Reassert it after that pointer pass.
             output.response.request_focus();
         }
+        retain_escape_focus(ui, editor_id);
         if let Some(cursor_range) = output.cursor_range {
             active.selection = CharSelection::new(
                 cursor_range.secondary.index.into(),
@@ -1012,6 +1005,9 @@ impl MarkdownEditor {
         }
 
         let changed = output.response.changed();
+        if finish_requested {
+            ui.input_mut(|input| input.events.retain(|event| !is_plain_escape_press(event)));
+        }
         if changed {
             active.dirty = true;
             active.pending_origin.get_or_insert(input_origin);
@@ -1020,8 +1016,49 @@ impl MarkdownEditor {
         // snapshots so an active block cannot retain an independent history.
         output.state.clear_undoer();
         output.state.store(ui.ctx(), output.response.id);
-        changed
+        (changed, finish_requested)
     }
+}
+
+fn prepare_escape_finish(ui: &egui::Ui, editor_id: egui::Id) -> bool {
+    let finish_requested = ui.input(|input| input.events.iter().any(is_plain_escape_press))
+        && ui.memory(|memory| memory.had_focus_last_frame(editor_id));
+    if finish_requested && !ui.memory(|memory| memory.has_focus(editor_id)) {
+        // egui normally releases focus at the start of an Escape frame, before
+        // TextEdit can consume text, paste, or IME commit events delivered in
+        // that frame. Restore it for one pass so every pending event reaches
+        // the backing source before the active range is finished.
+        ui.memory_mut(|memory| memory.request_focus(editor_id));
+    }
+    finish_requested
+}
+
+fn retain_escape_focus(ui: &egui::Ui, editor_id: egui::Id) {
+    if ui.memory(|memory| memory.has_focus(editor_id)) {
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                editor_id,
+                egui::EventFilter {
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                    ..Default::default()
+                },
+            );
+        });
+    }
+}
+
+fn is_plain_escape_press(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key {
+            key: egui::Key::Escape,
+            pressed: true,
+            modifiers,
+            ..
+        } if !modifiers.any()
+    )
 }
 
 fn consume_format_shortcut(input: &mut egui::InputState, shortcut: egui::KeyboardShortcut) -> bool {
@@ -2471,7 +2508,6 @@ mod tests {
             "Inline code",
             "Bulleted list",
             "Quote",
-            "Done",
         ] {
             let bounds = accesskit_bounds(&expanded, label);
             assert!(
@@ -2479,6 +2515,13 @@ mod tests {
                 "`{label}` extends beyond the expanded toolbar: {bounds:?}"
             );
         }
+        assert!(
+            expanded
+                .shapes
+                .iter()
+                .all(|shape| text_rect(&shape.shape, "Done").is_none()),
+            "the permanent format bar must not expose a modal Done control"
+        );
     }
 
     #[test]
@@ -3766,7 +3809,6 @@ mod tests {
             active: Some(active),
             next_editor_serial: 1,
             rendered_drag: None,
-            finish_requested: false,
             input_was_limited: false,
         };
         let mut source = "text".to_owned();
@@ -3849,7 +3891,6 @@ mod tests {
             active: Some(active),
             next_editor_serial: 1,
             rendered_drag: None,
-            finish_requested: false,
             input_was_limited: false,
         };
         let context = egui::Context::default();
@@ -3882,7 +3923,6 @@ mod tests {
             active: Some(active),
             next_editor_serial: 1,
             rendered_drag: None,
-            finish_requested: false,
             input_was_limited: false,
         };
         let mut source = "# A\n\nParagraph\n".to_owned();
@@ -3912,7 +3952,6 @@ mod tests {
             active: Some(active),
             next_editor_serial: 1,
             rendered_drag: None,
-            finish_requested: false,
             input_was_limited: false,
         };
         let mut source = "# A\n\nParagraph\n".to_owned();
@@ -3957,7 +3996,6 @@ mod tests {
             active: Some(active),
             next_editor_serial: 1,
             rendered_drag: None,
-            finish_requested: false,
             input_was_limited: false,
         };
         let mut source = "Paragraph\n\n# A".to_owned();
@@ -3994,45 +4032,126 @@ mod tests {
     }
 
     #[test]
-    fn same_frame_input_commits_before_done_finishes_editing() {
-        let context = egui::Context::default();
-        let mut active = ActiveBlock::new(0..3, "# A".to_owned(), 1);
-        active.selection = CharSelection::new(0, 3);
-        let mut editor = MarkdownEditor {
-            active: Some(active),
-            next_editor_serial: 1,
-            rendered_drag: None,
-            finish_requested: false,
-            input_was_limited: false,
+    fn same_frame_input_commits_before_escape_finishes_editing() {
+        let escape = || egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
         };
-        let mut source = "# A".to_owned();
+        let cases = [
+            (
+                "text",
+                egui::Event::Text("x".to_owned()),
+                EditOrigin::MarkdownInput,
+            ),
+            (
+                "paste",
+                egui::Event::Paste("x".to_owned()),
+                EditOrigin::Paste,
+            ),
+            (
+                "IME commit",
+                egui::Event::Ime(egui::ImeEvent::Commit("x".to_owned())),
+                EditOrigin::MarkdownInput,
+            ),
+        ];
 
-        let initial = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.set_width(800.0);
-            editor.toolbar(ui);
-            assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
-        });
-        let done = initial
-            .shapes
-            .iter()
-            .find_map(|shape| text_rect(&shape.shape, "Done"))
-            .expect("the expanded toolbar should have a Done button")
-            .center();
+        for (label, edit_event, expected_origin) in cases {
+            for escape_first in [false, true] {
+                let context = egui::Context::default();
+                let mut active = ActiveBlock::new(0..3, "# A".to_owned(), 1);
+                active.selection = CharSelection::new(0, 3);
+                let mut editor = MarkdownEditor {
+                    active: Some(active),
+                    next_editor_serial: 1,
+                    rendered_drag: None,
+                    input_was_limited: false,
+                };
+                let mut source = "# A".to_owned();
 
-        let mut input = egui::RawInput::default();
-        input.events.push(egui::Event::Text("x".to_owned()));
-        append_primary_click(&mut input, done);
-        let _ = context.run_ui(input, |ui| {
-            ui.set_width(800.0);
-            editor.toolbar(ui);
-            assert_eq!(
-                editor.show(ui, &mut source),
-                MarkdownShowOutcome::Changed(EditOrigin::MarkdownInput)
+                let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                    ui.set_width(800.0);
+                    assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
+                });
+
+                let mut input = egui::RawInput::default();
+                if escape_first {
+                    input.events.push(escape());
+                }
+                input.events.push(edit_event.clone());
+                if !escape_first {
+                    input.events.push(escape());
+                }
+                let _ = context.run_ui(input, |ui| {
+                    ui.set_width(800.0);
+                    assert_eq!(
+                        editor.show(ui, &mut source),
+                        MarkdownShowOutcome::Changed(expected_origin),
+                        "{label} must commit regardless of same-frame event order"
+                    );
+                });
+
+                assert_eq!(
+                    source, "x",
+                    "{label} must reach source regardless of same-frame event order"
+                );
+                assert!(
+                    !editor.is_editing(),
+                    "Escape must finish editing after the {label} commit"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn modified_escape_never_finishes_active_editing() {
+        for (label, modifiers) in [
+            ("Control", egui::Modifiers::CTRL),
+            ("Alt", egui::Modifiers::ALT),
+            ("Shift", egui::Modifiers::SHIFT),
+            ("Command", egui::Modifiers::COMMAND),
+            ("Mac Command", egui::Modifiers::MAC_CMD),
+        ] {
+            let context = egui::Context::default();
+            let active = ActiveBlock::new(0..3, "# A".to_owned(), 1);
+            let mut editor = MarkdownEditor {
+                active: Some(active),
+                next_editor_serial: 1,
+                rendered_drag: None,
+                input_was_limited: false,
+            };
+            let mut source = "# A".to_owned();
+
+            let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(800.0);
+                assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
+            });
+
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            });
+            let _ = context.run_ui(input, |ui| {
+                ui.set_width(800.0);
+                assert_eq!(
+                    editor.show(ui, &mut source),
+                    MarkdownShowOutcome::Unchanged,
+                    "{label}+Escape must not finish the active editor"
+                );
+            });
+
+            assert_eq!(source, "# A");
+            assert!(
+                editor.is_editing(),
+                "{label}+Escape must leave the active editor open"
             );
-        });
-
-        assert_eq!(source, "x");
-        assert!(!editor.is_editing());
+        }
     }
 
     #[test]

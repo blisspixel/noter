@@ -46,10 +46,11 @@ release, so current work remains under Unreleased.
   `noter update` entry point.
 - Add locked source-install helpers for PowerShell and POSIX systems with check
   and custom-root modes.
-- Add deterministic native Light and Dark README screenshot generation and
-  validation using a polished non-sensitive Markdown demo document. The capture
-  keeps formatted content active so the direct editor and formatting controls
-  are visible together while suppressing transient focus pixels.
+- Add deterministic native README screenshot generation and validation for an
+  identical-document Light Text and Markdown pair plus Dark, Green Screen, and
+  Amber Screen Markdown captures. The calm non-sensitive demo proves the
+  dual-view behavior while each formatted capture keeps the direct editor and
+  formatting controls visible without transient focus pixels.
 - Add revision-checked edit transactions with exact UTF-8 source expectations,
   exact inverses, directional selections, operation origin, and adapter-supplied
   monotonic timestamps.
@@ -76,6 +77,14 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
+- Mark the generated third-party HTML license inventory as generated legal
+  material for GitHub language analysis. Noter remains a compiled Rust desktop
+  application with no WebView, browser engine, HTML interface, JavaScript
+  runtime, or Python product path; release-critical maintainer automation is
+  now scheduled for parity-verified Rust `xtask` consolidation.
+- State Noter's privacy promise directly: no tracking, usage analytics,
+  automatic crash uploads, or background activity logging, with no spyware or
+  bloatware capabilities hidden behind opt-out settings.
 - Bound macOS mutation-test linker input by disabling test-profile debug
   information in that job after Apple clang 21 crashed while linking a mutant
   even with serialized Cargo builds. Ordinary macOS tests retain their normal
@@ -96,7 +105,10 @@ release, so current work remains under Unreleased.
   cases fail closed. Empty selections insert blank delimiters instead of
   invented prose. Link never preloads a fake label or URL, validates the exact
   candidate, and preserves complete code-bearing labels when toggled off. Bold,
-  Italic, and Link also provide standard focused-editor keyboard paths.
+  Italic, and Link also provide standard focused-editor keyboard paths. The
+  formatting bar is permanent and non-modal, with Escape returning an active
+  source range to rendered form instead of exposing a prototype-style Done
+  control.
 - Let the pointer wheel over the live zoom percentage change document zoom
   through the same bounded, non-editing command path used by its buttons,
   keyboard shortcuts, and menu. Clicking the percentage still resets to 100
@@ -107,8 +119,9 @@ release, so current work remains under Unreleased.
   specialty style. Preserve the complete default font fallback chain so
   Unicode and emoji bytes remain supported while M5 retains native emoji
   appearance validation.
-- Regenerate and visually review the native Light and Dark screenshots after
-  removing the centered page-like Markdown measure.
+- Rewrite the demo as a quiet proof of the dual-view workflow, then regenerate
+  and visually review the complete five-capture README set after removing the
+  centered page-like Markdown measure and modal Done control.
 - Canonicalize third-party license generation from bounded cargo-about JSON and
   the legal files packaged in every locked dependency. Component expressions
   remain separate from preserved copyright and notice text, and target-gated
@@ -336,6 +349,12 @@ release, so current work remains under Unreleased.
 
 ### Engineering
 
+- Verify implementation commit `08fd8a5` in exact-commit nine-context run
+  [30702655806](https://github.com/blisspixel/noter/actions/runs/30702655806).
+  Hosted Linux coverage is 93.02 percent for the whole workspace and 94.36
+  percent for the UI-independent trust kernel. Linux, both required Windows
+  mutation shards, and macOS classify 970, 939, and 47 candidates respectively
+  with no miss, timeout, or recognized infrastructure failure.
 - Verify implementation commit `1988337` in protected nine-context run
   [30606904746](https://github.com/blisspixel/noter/actions/runs/30606904746).
   Hosted Linux runs 411 Rust tests at 93.38 percent whole-workspace and 94.44

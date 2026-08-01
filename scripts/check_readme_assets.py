@@ -10,13 +10,10 @@ import struct
 import zlib
 from pathlib import Path
 
+from readme_screenshot_contract import EXPECTED_SIZE, SCREENSHOTS
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-SCREENSHOTS = (
-    Path("docs/assets/noter-light.png"),
-    Path("docs/assets/noter-dark.png"),
-)
-EXPECTED_SIZE = (1200, 760)
 MAX_PNG_BYTES = 2 * 1024 * 1024
 MAX_DECODED_BYTES = (1 + EXPECTED_SIZE[0] * 4) * EXPECTED_SIZE[1]
 MAX_SCREENSHOT_SOURCE_BYTES = 4 * 1024 * 1024
@@ -28,6 +25,7 @@ SCREENSHOT_SOURCE_FILES = (
     Path("assets/fonts/InterVariable.ttf"),
     Path("docs/assets/noter-demo.md"),
     Path("rust-toolchain.toml"),
+    Path("scripts/readme_screenshot_contract.py"),
     Path("scripts/update_readme_screenshots.py"),
 )
 SCREENSHOT_SOURCE_GLOBS = (
@@ -36,15 +34,24 @@ SCREENSHOT_SOURCE_GLOBS = (
     "src/**/*.rs",
 )
 EXPECTED_SCREENSHOT_SOURCE_SHA256 = (
-    "c6b5b2cac6a980a3eeae236836f711c78aac600516d0f31039091d37acaab744"
+    "314beed33a446a96ff810caf5e24182ec6db0d7ded5124970184844adc749cb4"
 )
 EXPECTED_SHA256 = {
     Path(
+        "docs/assets/noter-light-text.png"
+    ): "442b2732ce4002510863ca8f7003d851ca41944d5aa8177993e88f8f3ea079e1",
+    Path(
         "docs/assets/noter-light.png"
-    ): "ccc72f2b51c37b0139dab910f935dd85047a3c62af0f7d818ac0fbcb19bdbd24",
+    ): "1c54b998ee8bce8eb1493a6937e90eb543c7861b3156758d81671a150f7949a7",
     Path(
         "docs/assets/noter-dark.png"
-    ): "03ab8634167edb4a92f781bbe921b350047b429ae1a417e243b03937e728d02b",
+    ): "198e23228f9a8bc3f21e213dcbb2d054909b7cd060e1e121d07b3aa5574242e8",
+    Path(
+        "docs/assets/noter-green-screen.png"
+    ): "a2fe2d0ea5220d0220c2e3818672e28eb47a2ca7c56f1f4b59ab3047f7a90766",
+    Path(
+        "docs/assets/noter-amber-screen.png"
+    ): "86eb0196684556005abeefce252b8d4bc8b104408b23fc0471c1c8d4b6267296",
 }
 
 

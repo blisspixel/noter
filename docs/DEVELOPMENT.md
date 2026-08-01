@@ -12,6 +12,12 @@ gate.
 - Python 3.11 or newer for repository validation scripts
 - Ruff for the Python validation scripts, using the version pinned in CI
 
+Python is a maintainer-only automation dependency. The Noter application and
+binary installers neither embed nor invoke Python. Release-critical validators
+and generators are scheduled for parity-verified consolidation into a Rust
+`xtask`; until each replacement is simpler and equally well tested, the current
+scripts remain the authoritative repository checks.
+
 The repository pins Rust in [`rust-toolchain.toml`](../rust-toolchain.toml).
 Rustup selects and installs that toolchain when a Cargo command runs in the
 checkout.
@@ -87,17 +93,20 @@ cargo-about. Commit the regenerated inventory with the dependency change.
 ## README screenshots
 
 The tracked screenshots are generated from Noter's real native renderer and the
-non-sensitive demo file at [`assets/noter-demo.md`](assets/noter-demo.md). After
-an intentional UI change, regenerate both Light and Dark captures on Windows:
+non-sensitive demo file at [`assets/noter-demo.md`](assets/noter-demo.md). The
+five-capture contract pairs the identical document in Light Text and Markdown
+modes, then records Dark, Green Screen, and Amber Screen Markdown. After an
+intentional UI change, regenerate the complete set on Windows:
 
 ```powershell
 python scripts\update_readme_screenshots.py
 python scripts\check_readme_assets.py
 ```
 
-Review both images at full size before committing them. Confirm text alignment,
-focus and selection state, theme contrast, demo content, dimensions, and the
-absence of private data. The manual release expectations are in
+Review all five images at full size before committing them. Confirm Text and
+Markdown gutter parity, text alignment, focus and selection state, theme
+contrast, demo content, dimensions, and the absence of private data. The manual
+release expectations are in
 [manual-test-matrix.md](manual-test-matrix.md).
 
 ## Repository hygiene

@@ -22,10 +22,10 @@ authoritative. Changing modes never rewrites a file.
 - Markdown is projected into borderless native egui text layouts before
   shaping. One continuous editor background owns the window, without a nested
   page card, border, or shadow. Content uses the available canvas with only the
-  ordinary editor inset, so Markdown does not begin at an artificial centered
-  page offset. The inactive document and active editor share explicit Inter
-  body, heading, and strong-emphasis weights, deliberate line height, and
-  stable block spacing rather than simulated bold.
+  same outer editor gutter as Text Mode, so Markdown does not begin at an
+  artificial page offset. The inactive document and active editor share
+  explicit Inter body, heading, and strong-emphasis weights, deliberate line
+  height, and stable block spacing rather than simulated bold.
 - Selecting formatted content keeps supported heading and inline syntax
   visually formatted while editing the exact backing source range. Markdown
   delimiters remain in the edit buffer and on disk even when they are not
@@ -50,7 +50,9 @@ authoritative. Changing modes never rewrites a file.
   spans. Bold, Italic, and Link use
   Ctrl+B, Ctrl+I, and Ctrl+K on Windows and Linux and the corresponding Command
   shortcuts on macOS while the Markdown editor owns focus. Toolbar buttons
-  expose their active state to assistive technology.
+  expose their active state to assistive technology. The bar is permanent and
+  non-modal: there is no Done state, and Escape returns a focused active range
+  to rendered form after its pending source edit is synchronized.
 - The primary Text and Markdown switch remains in the upper-right application
   row. The contextual document bar appears only in Markdown Mode, with
   formatting groups on the left and a visually separated zoom cluster on the

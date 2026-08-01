@@ -1,31 +1,26 @@
-# Tools should serve the work
+# A quieter editor
 
-A good editor clarifies the document while asking for little attention. The
-work stays in the foreground. The tool does not.
+Writing is easier when the tool stays quiet.
 
-## Focus is a feature
+## Two views, one file
 
-Bloatware accumulates one plausible feature at a time until its purpose is
-buried under panels, accounts, and interruptions.
+**Text Mode** shows every character of the source.
+**Markdown Mode** shows the same ordinary file as readable structure: headings,
+emphasis, and lists, while remaining plain Markdown on disk.
 
-- **Every feature** should earn its place and justify its cost.
-- **Every default** should respect the current task, not demand attention.
-- **Removing distraction** is product work, not missing ambition.
+You can switch at any time. The bytes never change unless you edit them.
 
-Feature slop is not generosity. A long checklist cannot replace a coherent
-reason for a tool to exist.
+## What stays out
 
-## Privacy is not a setting
+- No accounts
+- No telemetry
+- No background network activity
+- No AI
+- No proprietary format
 
-Telemetry can diagnose failures when it is *limited, transparent, and knowingly
-chosen*. Collection becomes spyware when it is opaque, compulsory, or
-repurposed to profile people and sell access to their private behavior.
+Your `.txt` and `.md` files remain portable. Use whatever storage, sync, or
+version control you already trust.
 
-> 1984 was a warning, not an instruction manual.
+## The point
 
-## A smaller bargain
-
-A trustworthy editor keeps files ordinary, attention centered, and **every
-network action explicit**. Capability does not require intrusion.
-
-Sometimes the most respectful feature is the one carefully left out.
+A good editor clarifies the document and then gets out of the way.

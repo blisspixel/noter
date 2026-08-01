@@ -76,14 +76,14 @@ The current development checkpoint has:
   [M3_EDITING_EVIDENCE.md](M3_EDITING_EVIDENCE.md);
 - a historical 741-candidate supported-platform mutation union with no miss,
   timeout, infrastructure error, or scope gap; and current exact-commit scopes
-  of 967 Linux, 901 Windows, and 47 macOS candidates with no miss, timeout, or
+  of 970 Linux, 939 Windows, and 47 macOS candidates with no miss, timeout, or
   recognized infrastructure failure.
 
 The latest verified implementation checkpoint passes all nine required jobs in
 exact-commit run
-[30612842346](https://github.com/blisspixel/noter/actions/runs/30612842346)
-for commit `bfdeb55fb5b903421dd2db6aa093b76e4130ac55`. A reproducible local
-trust-kernel benchmark baseline now exists; exact-head validation, the manual
+[30702655806](https://github.com/blisspixel/noter/actions/runs/30702655806)
+for commit `08fd8a5e074da6a88e12e5fcc9c7908d148b088c`. A reproducible local
+trust-kernel benchmark baseline now exists; the manual
 metadata and weaker-filesystem evidence named by ADR-003, and later M5 GUI and
 input benchmarks remain open. The edit foundation still requires complete
 navigation and clipboard policy, Markdown parity for document-wide selection,
@@ -622,6 +622,18 @@ The conflict UI initially offers:
 True concurrent merge is out of scope.
 
 ## 8. Application and command architecture
+
+Noter's product runtime is a compiled Rust desktop binary. eframe supplies the
+winit window and event integration, OpenGL rendering through glow, persistence,
+and AccessKit bridge; it does not embed a browser engine or WebView. The product
+contains no HTML, CSS, JavaScript, or Python execution path. Repository Python
+is maintainer-only test, benchmark, legal-inventory, screenshot, and release
+automation. It is not invoked by the application or binary installers.
+
+Release-critical repository automation should move to a Rust `xtask` in small,
+parity-verified slices when doing so removes a toolchain or materially reduces
+total complexity. Language statistics alone do not justify rewriting mature
+evidence tooling or weakening its platform behavior.
 
 `AppState::reduce(Command) -> Vec<Effect>` is the testable center. Commands
 include New, OpenRequested, OpenCompleted, Edit, SaveRequested, SaveCompleted,

@@ -210,10 +210,10 @@ Required real readers:
 - [ ] UI-07 Removed or rearranged displays cannot restore the window off screen.
 - [ ] UI-08 System dialogs, Command versus Control shortcuts, and window close
   behavior match the platform.
-- [ ] UI-09 The Markdown document uses the same borderless editor surface as
-  Text Mode, without a card or document box, in both Light and Dark. At ordinary
-  widths the reading measure is centered; at narrow widths the gutters collapse
-  without clipping or creating a nested surface.
+- [ ] UI-09 The Markdown document uses the same borderless editor surface and
+  outer gutter as Text Mode, without a card, document box, or centered measure,
+  in System, Light, Dark, Green Screen, and Amber Screen. Narrow windows remain
+  unclipped and never create a nested surface.
 - [ ] UI-10 Command or Control plus Shift plus S invokes Save As rather than
   Save, and every displayed shortcut uses the platform convention.
 - [ ] UI-11 Markdown files at the exact source-byte ceiling, including UTF-8
@@ -268,9 +268,11 @@ Attach the reproducible benchmark report rather than estimating subjectively.
 - [ ] REL-06 At least one tester is not the primary developer.
 - [ ] REL-07 At least one full soak occurred on a non-Windows platform.
 - [ ] REL-08 No data-loss incident or unresolved critical or high defect occurred.
-- [ ] REL-09 README screenshots are regenerated from the cited native release
-  build in Light and Dark, contain polished non-sensitive demo text, and pass
-  visual review at 100 and 150 percent scaling.
+- [ ] REL-09 The five README screenshots are regenerated from the cited native
+  release build, contain the same polished non-sensitive demo text, and pass
+  visual review at 100 and 150 percent scaling. The Light Text and Markdown
+  pair proves view and gutter parity; Dark, Green Screen, and Amber Screen prove
+  the remaining public themes.
 
 ## 12. Native Markdown Mode
 
@@ -296,8 +298,10 @@ Attach the reproducible benchmark report rather than estimating subjectively.
   target becomes visible only for editing.
 - [ ] MD-12 Prose spacing, wrapping, list markers, multiline quotes, and mixed
   inline weights render without collisions, missing spaces, or source leakage.
-- [ ] MD-13 The native Light and Dark README captures use the same polished demo
-  document, align menus and controls, and match the exact candidate renderer.
+- [ ] MD-13 The five native README captures use the same polished demo document,
+  align menus and controls, and match the exact candidate renderer. The Light
+  Text and Markdown pair preserves the same outer gutter, approximate scroll
+  position, selection, and source bytes across the view switch.
 
 ## Sign-off
 

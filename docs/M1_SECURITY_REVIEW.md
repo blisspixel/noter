@@ -2,14 +2,15 @@
 
 **Initial reviewed revision:** `3830cdd6e487a35bdd2adeecb3d45bb080ade114`
 
-**Latest follow-up revision:** `994e0a3dc66a67cc22b1c0590436b92953a42747`
+**Latest follow-up revision:** `08fd8a5e074da6a88e12e5fcc9c7908d148b088c`
 
 **Review date:** 2026-07-25
 
 **Follow-ups:** 2026-07-26 macOS staging review and remediation; 2026-07-27
 repository-wide review and final-entry race hardening; 2026-07-28 macOS
 retained-recovery ACL verification; 2026-07-31 Windows private-owner and
-cross-filesystem verification plus exact token-length boundary validation
+cross-filesystem verification plus exact token-length boundary validation;
+2026-08-01 exact hosted mutation reconciliation
 
 **Coverage:** Partial repository review with full-file inspection of the runtime
 document, observation, save, platform, GUI lifecycle, dependency, and CI paths.
@@ -206,9 +207,10 @@ focused tests and isolated reruns produce a composite classification of 270
 caught, 148 unviable, zero missed, and zero timed out. The expanded native
 adapter scope adds a clean local 57-mutant Windows pass with 39 caught and 18
 unviable. The descriptor-deallocation repair produced a clean 58-mutant Windows
-pass with 40 caught and 18 unviable. The current adapter scope is 66. The settled
-three-platform 741-mutant union assigns 617 candidates to Linux, 557 to Windows,
-and 49 macOS-specific candidates to macOS with no set-union gap. Hosted run
+pass with 40 caught and 18 unviable. The adapter scope at that historical stage
+was 66. The settled three-platform 741-mutant union assigns 617 candidates to
+Linux, 557 to Windows, and 49 macOS-specific candidates to macOS with no
+set-union gap. Hosted run
 30213398323 closed the macOS scope and exposed 32 Linux survivors plus two
 shared scanner timeouts. The correction replaces the mutable
 scanner arithmetic, gives repeated Unix decisions exact named predicates, and
@@ -226,12 +228,12 @@ passes all eight required jobs, including the expanded per-platform mutation
 scopes and infrastructure validation. The manual filesystem and crash-persistence
 gaps above remain open.
 
-The 2026-07-31 filesystem fixtures are source-equivalent to `65ac25f`. The latest
-follow-up at exact commit `994e0a3` passes 425 Windows-local workspace tests,
-strict lint and documentation validation, 93.49 percent whole-workspace line
-coverage, 95.23 percent trust-kernel line coverage, and 92.14 percent platform-
-adapter line coverage. The native WSL2 ext4 source-equivalent run remains 428
-passing tests.
+The 2026-07-31 filesystem fixtures are source-equivalent to `65ac25f`. The
+token-boundary follow-up at exact commit `994e0a3` passes 425 Windows-local
+workspace tests, strict lint and documentation validation, 93.49 percent
+whole-workspace line coverage, 95.23 percent trust-kernel line coverage, and
+92.14 percent platform-adapter line coverage. The native WSL2 ext4
+source-equivalent run remains 428 passing tests.
 
 The first clean-detached Windows owner and descriptor campaign against
 `65ac25f` caught 17 of 20 candidates and exposed three token-length boundary
@@ -242,5 +244,19 @@ set, equivalence exclusion, source trees, outcomes, and local artifact hashes
 are recorded in the
 [focused mutation artifact](evidence/m1-windows-private-security-mutation-2026-07-31.json).
 The exact local NTFS, ext4, and Windows-to-WSL observations are recorded in
-[M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md). Hosted exact-head CI and
-the remaining environment gaps are still required.
+[M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md). The remaining
+environment gaps are still required.
+
+Exact-commit workflow-dispatch run
+[30702655806](https://github.com/blisspixel/noter/actions/runs/30702655806)
+verifies implementation commit `08fd8a5` across all nine required contexts.
+Linux classifies 719 of 970 mutation candidates as caught and 251 as genuine
+compiler rejections. The two Windows shards classify 686 of 939 as caught and
+253 as genuine compiler rejections. macOS classifies 41 of 47 as caught and 6
+as genuine compiler rejections. Every scope has zero missed and zero timed out,
+and infrastructure validation passes all four retained artifacts. Hosted Linux
+line coverage is 93.02 percent for the whole workspace and 94.36 percent for
+the UI-independent trust kernel. The scopes overlap and are not claimed as a
+new deduplicated cross-platform union. The current target-filtered Windows
+adapter command enumerates 108 candidates. The native filesystem and
+crash-persistence gaps above remain open.

@@ -28,8 +28,8 @@ legible:
 - a tested monospace stack for exact source and a bundled document face with
   real weights for formatted Markdown;
 - comfortable line height and stable block rhythm;
-- one continuous borderless Markdown canvas, with a centered readable measure
-  on wide windows and responsive gutters instead of a simulated paper card;
+- one continuous borderless Markdown canvas using the same outer gutter as Text
+  Mode, with no centered measure or simulated paper card;
 - obvious caret, selection, focus, modified, error, and conflict states;
 - five restrained built-in themes with measured contrast, including Green
   Screen and Amber Screen specialty palettes;

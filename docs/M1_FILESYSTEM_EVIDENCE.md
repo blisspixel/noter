@@ -191,8 +191,9 @@ The exact Rust source at `994e0a3` passed formatting, strict workspace Clippy,
 rustdoc with warnings denied, dependency audit and policy, and the following
 test and coverage gates. The current evidence worktree separately passes
 documentation, release-configuration, and screenshot validation after
-regenerating byte-identical Light and Dark captures and approving their current
-native-input digest. Exact-head validation of that approval remains pending.
+regenerating the deterministic Light Text, Light Markdown, Dark, Green Screen,
+and Amber Screen capture set and approving its current native-input digest.
+Exact-head validation of that approval remains pending.
 
 | Gate | Result |
 | --- | --- |

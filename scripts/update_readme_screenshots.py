@@ -17,13 +17,14 @@ from check_readme_assets import (
     screenshot_source_digest,
     validate,
 )
+from readme_screenshot_contract import SCREENSHOT_SPECS, ScreenshotSpec
 
 
 DEMO_DOCUMENT = REPOSITORY_ROOT / "docs/assets/noter-demo.md"
 
 
-def render(theme: str, output: Path) -> None:
-    """Render one deterministic theme screenshot and require a clean exit."""
+def render(spec: ScreenshotSpec, output: Path) -> None:
+    """Render one deterministic view and theme, requiring a clean exit."""
 
     command = [
         "cargo",
@@ -34,9 +35,9 @@ def render(theme: str, output: Path) -> None:
         "screenshot-qa",
         "--",
         "--theme",
-        theme,
+        spec.theme,
         "--view",
-        "markdown",
+        spec.view,
         "--screenshot",
         str(output),
         str(DEMO_DOCUMENT),
@@ -59,7 +60,7 @@ def validate_generated_screenshot(path: Path) -> None:
         raise RuntimeError(f"Noter rendered an implausibly small screenshot: {path}")
 
 
-def render_and_promote(theme: str, output: Path) -> None:
+def render_and_promote(spec: ScreenshotSpec, output: Path) -> None:
     """Render to a unique sibling and atomically promote only a valid fresh PNG."""
 
     with tempfile.NamedTemporaryFile(
@@ -71,7 +72,7 @@ def render_and_promote(theme: str, output: Path) -> None:
         staged = Path(handle.name)
     staged.unlink()
     try:
-        render(theme, staged)
+        render(spec, staged)
         validate_generated_screenshot(staged)
         staged.replace(output)
     finally:
@@ -79,10 +80,10 @@ def render_and_promote(theme: str, output: Path) -> None:
 
 
 def main() -> None:
-    """Render both themes, validate the assets, and report reproducible hashes."""
+    """Render the capture matrix, validate it, and report reproducible hashes."""
 
-    for theme, relative_output in zip(("light", "dark"), SCREENSHOTS, strict=True):
-        render_and_promote(theme, REPOSITORY_ROOT / relative_output)
+    for spec in SCREENSHOT_SPECS:
+        render_and_promote(spec, REPOSITORY_ROOT / spec.path)
     validate(check_hashes=False, check_source_freshness=False)
     print(f"screenshot inputs  sha256:{screenshot_source_digest()}")
     for relative_output in SCREENSHOTS:
