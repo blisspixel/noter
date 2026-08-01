@@ -182,6 +182,47 @@ class ReleaseConfigurationTests(unittest.TestCase):
             )
         )
 
+    def test_rejects_cargo_self_version_as_auditable_identity(self) -> None:
+        changed = self.workflow.replace(
+            'test ! -L "$auditable_bin"',
+            "cargo auditable --version | grep -F '0.7.5'",
+            1,
+        )
+
+        errors = validate_workflow(changed)
+
+        self.assertIn(
+            "release workflow contains ambiguous Cargo self-version probe", errors
+        )
+        self.assertIn("missing non-symlink POSIX cargo-auditable binary", errors)
+
+    def test_rejects_unverified_windows_auditable_installer(self) -> None:
+        changed = self.workflow.replace(
+            "cargo-auditable-x86_64-pc-windows-msvc.zip",
+            "cargo-auditable-installer.ps1",
+            1,
+        )
+
+        errors = validate_workflow(changed)
+
+        self.assertIn(
+            "release workflow contains unverified Windows cargo-auditable installer",
+            errors,
+        )
+        self.assertIn("missing pinned Windows cargo-auditable archive", errors)
+
+    def test_rejects_changed_windows_auditable_archive_digest(self) -> None:
+        changed = self.workflow.replace(
+            "83a7d5955c7ac96ede5d896ac9ede5f7ecce9ece0e95d9e47acd766b09e2ef1b",
+            "0" * 64,
+            1,
+        )
+
+        self.assertIn(
+            "missing pinned release-tool digest 83a7d5955c7a",
+            validate_workflow(changed),
+        )
+
     def test_rejects_pre_host_write_permission(self) -> None:
         changed = self.workflow.replace('"contents": "read"', '"contents": "write"', 1)
         errors = validate_workflow(changed)

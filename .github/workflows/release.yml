@@ -192,24 +192,80 @@ jobs:
             chmod 700 "$checksum_bin/sha256sum"
             PATH="$checksum_bin:$PATH" sh "$installer"
           fi
-          cargo auditable --version | grep -F '0.7.5'
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          auditable_bin="$cargo_home/bin/cargo-auditable"
+          receipt_root="${XDG_CONFIG_HOME:-$HOME/.config}"
+          receipt="$receipt_root/cargo-auditable/cargo-auditable-receipt.json"
+          test -f "$auditable_bin"
+          test -x "$auditable_bin"
+          test ! -L "$auditable_bin"
+          test -f "$receipt"
+          test ! -L "$receipt"
+          grep -Fq '"binaries":["cargo-auditable"]' "$receipt"
+          grep -Fq '"version":"0.7.5"' "$receipt"
+          grep -Fq "\"install_prefix\":\"$cargo_home\"" "$receipt"
       - name: Install verified cargo-auditable on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          INSTALLER_URL: https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.5/cargo-auditable-installer.ps1
-          INSTALLER_SHA256: 2cb2764f6f5e339a1dee20051c02f53b6ed712ef3a79aca2de495762108cdb64
+          ARCHIVE_URL: https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.5/cargo-auditable-x86_64-pc-windows-msvc.zip
+          ARCHIVE_SHA256: 83a7d5955c7ac96ede5d896ac9ede5f7ecce9ece0e95d9e47acd766b09e2ef1b
+          BINARY_SHA256: eeb2592233ffaa8536ca809ea50706618cc67b3e26684c5194e79cd642d91b0e
         run: |
-          $installer = Join-Path $env:RUNNER_TEMP 'cargo-auditable-installer.ps1'
-          Invoke-WebRequest -Uri $env:INSTALLER_URL -OutFile $installer
-          $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
-          if ($actual -cne $env:INSTALLER_SHA256) {
-            throw "cargo-auditable installer checksum mismatch: $actual"
+          $archive = Join-Path $env:RUNNER_TEMP 'cargo-auditable.zip'
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'cargo-auditable-extracted'
+          Invoke-WebRequest -Uri $env:ARCHIVE_URL -OutFile $archive
+          $archiveFile = Get-Item -LiteralPath $archive -Force
+          if (($archiveFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'cargo-auditable archive must not be a reparse point'
           }
-          & $installer
-          $version = cargo auditable --version
-          if ($version -notmatch '0\.7\.5') {
-            throw "Unexpected cargo-auditable version: $version"
+          $actualArchive = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($actualArchive -cne $env:ARCHIVE_SHA256) {
+            throw "cargo-auditable archive checksum mismatch: $actualArchive"
+          }
+          $null = New-Item -ItemType Directory -Path $extractRoot -ErrorAction Stop
+          Expand-Archive -LiteralPath $archive -DestinationPath $extractRoot
+          $auditableSource = Join-Path $extractRoot 'cargo-auditable.exe'
+          if (-not (Test-Path -LiteralPath $auditableSource -PathType Leaf)) {
+            throw 'cargo-auditable archive does not contain the expected binary'
+          }
+          $sourceFile = Get-Item -LiteralPath $auditableSource -Force
+          if (($sourceFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'extracted cargo-auditable binary must not be a reparse point'
+          }
+          $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $auditableSource).Hash.ToLowerInvariant()
+          if ($sourceHash -cne $env:BINARY_SHA256) {
+            throw "cargo-auditable binary checksum mismatch: $sourceHash"
+          }
+          $cargoHome = if ($env:CARGO_HOME) {
+            $env:CARGO_HOME
+          } else {
+            Join-Path $HOME '.cargo'
+          }
+          $cargoBin = Join-Path $cargoHome 'bin'
+          $null = New-Item -ItemType Directory -Path $cargoBin -Force
+          $cargoBinFile = Get-Item -LiteralPath $cargoBin -Force
+          if (($cargoBinFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Cargo binary directory must not be a reparse point'
+          }
+          $auditablePath = Join-Path $cargoBin 'cargo-auditable.exe'
+          if (Test-Path -LiteralPath $auditablePath) {
+            $existingFile = Get-Item -LiteralPath $auditablePath -Force
+            if (($existingFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw 'existing cargo-auditable binary must not be a reparse point'
+            }
+          }
+          Copy-Item -LiteralPath $auditableSource -Destination $auditablePath -Force
+          if (-not (Test-Path -LiteralPath $auditablePath -PathType Leaf)) {
+            throw "cargo-auditable binary was not installed at $auditablePath"
+          }
+          $auditableFile = Get-Item -LiteralPath $auditablePath -Force
+          if (($auditableFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'cargo-auditable binary must not be a reparse point'
+          }
+          $installedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $auditablePath).Hash.ToLowerInvariant()
+          if ($installedHash -cne $env:BINARY_SHA256) {
+            throw "installed cargo-auditable checksum mismatch: $installedHash"
           }
       - name: Install verified WiX Toolset on Windows
         if: runner.os == 'Windows'

@@ -283,7 +283,15 @@ Attach the reproducible benchmark report rather than estimating subjectively.
   updates only that range. Hidden delimiters, escapes, and character references
   are never split by a visual caret or selection; unsafe synthesis falls back
   to visible source.
-- [ ] MD-04 Each formatting action and safe fix is one minimal undo transaction.
+- [ ] MD-04 Paragraph and all six ATX heading levels are exact idempotent style
+  choices; each changed style, formatting action, and safe fix is one minimal
+  undo transaction. Choosing the current style creates no edit or selection
+  reversal. Indented markers, tab separators, and optional closing ATX
+  sequences preserve rendered content; code, setext headings, nested blocks,
+  unsupported structures, and paragraphs with ambiguous leading whitespace or
+  trailing closing-style hash runs show Unavailable and remain byte-exact. At
+  the 420 by 300 minimum viewport, all compact Format actions and the nested
+  style choices remain visibly reachable.
 - [ ] MD-05 Diagnostics are revision-tagged, non-mutating, and accessible.
 - [ ] MD-06 Format shows an accurate diff and requires confirmation.
 - [ ] MD-07 Format is idempotent, parsed-document equivalent, and preserves BOM

@@ -253,10 +253,13 @@ Sources reviewed on 2026-07-31:
 
 Product implications:
 
-- Markdown formatting buttons keep stable accessible names, expose toggled
-  state, and use one reversible command path for pointer and keyboard actions.
-  Full composite-toolbar arrow navigation remains an M6 accessibility gap; the
-  current prototype still exposes separately focusable buttons.
+- The paragraph-style selector exposes its current, mixed, or unavailable state
+  with a stable accessible name. Parser-verified source ownership keeps style
+  changes out of code and unsupported structures. Markdown toggle buttons keep
+  stable accessible names, expose pressed state, and use one reversible command
+  path for pointer and keyboard actions. Full composite-toolbar arrow navigation
+  remains an M6 accessibility gap; the current slice still exposes separately
+  focusable controls.
 - An optional spelling feature must use an explicit local provider adapter,
   explicit language selection, revision-tagged results, and user-triggered
   replacement. It must not become a remote dictionary service or background

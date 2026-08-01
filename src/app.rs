@@ -4247,7 +4247,7 @@ mod tests {
             app.show_format_toolbar(ui, &mut view_command);
         });
         let text = rendered_text(&markdown_output);
-        let graphic_labels = ["H1", "H2", "B", "</>"];
+        let graphic_labels = ["Style", "B", "</>"];
         let visible_graphic_labels = text
             .iter()
             .map(|(label, _)| label.as_str())
@@ -4258,8 +4258,7 @@ mod tests {
         assert!(!text.iter().any(|(label, _)| label == "Bold"));
 
         let expected_accessible_labels = [
-            "Heading 1",
-            "Heading 2",
+            "Paragraph style",
             "Bold",
             "Italic",
             "Link",
@@ -4277,6 +4276,10 @@ mod tests {
             .filter(|label| expected_accessible_labels.contains(label))
             .collect::<Vec<_>>();
         assert_eq!(relevant, expected_accessible_labels);
+        assert_eq!(
+            accesskit_value(&markdown_output, "Paragraph style"),
+            "Style"
+        );
         assert!(!labels.iter().any(|label| label == "Mode"));
     }
 
