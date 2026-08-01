@@ -76,6 +76,11 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
+- Make Windows benchmark-command termination synchronous and bounded. After
+  terminating a Job Object, the harness now waits for its active process count
+  to reach zero before returning the ordinary output-limit or deadline error.
+  A distinct bounded shutdown failure reports descendants that do not exit in
+  time instead of claiming cleanup succeeded.
 - Refine Markdown Mode into a direct word-editor surface. The continuous canvas
   now uses the available window width with only the ordinary editor inset.
   Bold, Italic, headings, links, inline code, lists, and quotes expose real
