@@ -860,6 +860,11 @@ corpus and build artifacts by SHA-256, and validate canonical bounded JSON
 before exclusive promotion. Windows orchestration creates commands suspended,
 assigns them to a kill-on-close Job Object, and resumes them only after
 association so deadlines and output limits cannot orphan ordinary descendants.
+Termination queries the Job Object's active process count and waits, within a
+fixed deadline, for every associated process to exit before returning the
+ordinary output-limit or command-deadline error. Failure to drain within that
+deadline is reported separately, and closing the kill-on-close Job Object
+remains the final bounded cleanup request.
 The first canonical reference and its unauthenticated-local provenance limits
 are recorded in [M1_BASELINE_EVIDENCE.md](M1_BASELINE_EVIDENCE.md).
 

@@ -250,6 +250,46 @@ class DependencyTests(unittest.TestCase):
 
 
 class OrchestrationTests(unittest.TestCase):
+    def test_windows_job_termination_waits_for_all_processes(self):
+        class Kernel32:
+            def __init__(self):
+                self.terminations = []
+
+            def TerminateJobObject(self, handle, exit_code):
+                self.terminations.append((handle, exit_code))
+                return True
+
+        job = object.__new__(baseline._WindowsProcessJob)
+        job._handle = 41
+        job._kernel32 = Kernel32()
+
+        with (
+            patch.object(job, "_active_process_count", side_effect=[2, 1, 0]),
+            patch.object(baseline.time, "monotonic", return_value=0.0),
+            patch.object(baseline.time, "sleep") as sleep,
+        ):
+            job.terminate()
+
+        self.assertEqual(job._kernel32.terminations, [(41, 1)])
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_windows_job_termination_has_a_bounded_wait(self):
+        class Kernel32:
+            @staticmethod
+            def TerminateJobObject(_handle, _exit_code):
+                return True
+
+        job = object.__new__(baseline._WindowsProcessJob)
+        job._handle = 43
+        job._kernel32 = Kernel32()
+
+        with (
+            patch.object(job, "_active_process_count", return_value=1),
+            patch.object(baseline.time, "monotonic", side_effect=[0.0, 31.0]),
+            self.assertRaisesRegex(RuntimeError, "did not terminate within"),
+        ):
+            job.terminate()
+
     def test_checked_command_reports_success_and_bounded_failure(self):
         self.assertEqual(
             baseline._run_checked([sys.executable, "-c", "print('result')"]),

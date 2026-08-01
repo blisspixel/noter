@@ -31,6 +31,8 @@ MAXIMUM_WARMUP = 100
 MAXIMUM_ARTIFACT_BYTES = 4 * MIB
 MAXIMUM_COMMAND_OUTPUT_BYTES = 16 * MIB
 WINDOWS_CREATE_SUSPENDED = 0x00000004
+WINDOWS_JOB_TERMINATION_TIMEOUT_SECONDS = 30.0
+WINDOWS_JOB_POLL_INTERVAL_SECONDS = 0.01
 SUPPORTED_TARGETS = (
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -494,6 +496,18 @@ class _WindowsProcessJob:
                 ("peak_job_memory_used", ctypes.c_size_t),
             ]
 
+        class BasicAccountingInformation(ctypes.Structure):
+            _fields_ = [
+                ("total_user_time", ctypes.c_longlong),
+                ("total_kernel_time", ctypes.c_longlong),
+                ("this_period_total_user_time", ctypes.c_longlong),
+                ("this_period_total_kernel_time", ctypes.c_longlong),
+                ("total_page_fault_count", wintypes.DWORD),
+                ("total_processes", wintypes.DWORD),
+                ("active_processes", wintypes.DWORD),
+                ("total_terminated_processes", wintypes.DWORD),
+            ]
+
         class ThreadEntry(ctypes.Structure):
             _fields_ = [
                 ("size", wintypes.DWORD),
@@ -515,6 +529,14 @@ class _WindowsProcessJob:
             wintypes.DWORD,
         ]
         kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.QueryInformationJobObject.restype = wintypes.BOOL
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel32.OpenProcess.restype = wintypes.HANDLE
         kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
@@ -542,6 +564,7 @@ class _WindowsProcessJob:
 
         self._ctypes = ctypes
         self._kernel32 = kernel32
+        self._accounting_type = BasicAccountingInformation
         self._thread_entry_type = ThreadEntry
         self._handle = kernel32.CreateJobObjectW(None, None)
         if not self._handle:
@@ -652,9 +675,34 @@ class _WindowsProcessJob:
                 "new Windows command did not expose exactly one primary thread"
             )
 
+    def _active_process_count(self) -> int:
+        information = self._accounting_type()
+        if not self._kernel32.QueryInformationJobObject(
+            self._handle,
+            1,
+            self._ctypes.byref(information),
+            self._ctypes.sizeof(information),
+            None,
+        ):
+            raise OSError(
+                self._ctypes.get_last_error(),
+                "QueryInformationJobObject failed",
+            )
+        return information.active_processes
+
     def terminate(self) -> None:
+        """Terminate every assigned process and wait for complete shutdown."""
         if self._handle and not self._kernel32.TerminateJobObject(self._handle, 1):
             raise OSError(self._ctypes.get_last_error(), "TerminateJobObject failed")
+        deadline = time.monotonic() + WINDOWS_JOB_TERMINATION_TIMEOUT_SECONDS
+        while self._handle and self._active_process_count() != 0:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    "Windows command descendants did not terminate within "
+                    f"{WINDOWS_JOB_TERMINATION_TIMEOUT_SECONDS:g} seconds"
+                )
+            time.sleep(min(WINDOWS_JOB_POLL_INTERVAL_SECONDS, remaining))
 
     def close(self) -> None:
         if not self._handle:
