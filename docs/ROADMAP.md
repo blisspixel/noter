@@ -106,17 +106,18 @@ progress arithmetic. Each defect has a focused regression. The historical
 741-candidate supported-platform union is recorded in
 [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md).
 
-The latest verified implementation checkpoint is commit `bfdeb55`. Protected
-main-branch run
-[30612842346](https://github.com/blisspixel/noter/actions/runs/30612842346)
+The latest verified implementation checkpoint is commit `08fd8a5`.
+Exact-commit workflow-dispatch run
+[30702655806](https://github.com/blisspixel/noter/actions/runs/30702655806)
 passes all nine Windows, macOS, Linux, documentation, dependency, coverage, and
 mutation contexts for exact commit
-`bfdeb55fb5b903421dd2db6aa093b76e4130ac55`. Hosted Linux line coverage is
-93.38 percent for the workspace and 94.44 percent for the trust kernel. The
-current platform mutation scopes report 967 Linux candidates, 901 Windows
+`08fd8a5e074da6a88e12e5fcc9c7908d148b088c`. Hosted Linux line coverage is
+93.02 percent for the workspace and 94.36 percent for the trust kernel. The
+current platform mutation scopes report 970 Linux candidates, 939 Windows
 candidates across two required shards, and 47 macOS candidates, with no miss or
 timeout. The infrastructure validator reports no recognized tool, compiler,
-linker, process, or storage failure hidden as unviable.
+linker, process, or storage failure hidden as unviable. These scopes overlap and
+are not claimed as a newly deduplicated cross-platform union.
 
 The schema-v2 reproducible benchmark harness is implemented at commit
 `580f164`. A 30-sample Windows reference from that clean detached commit records
@@ -143,9 +144,9 @@ settled campaign catches all 20 candidates with no unviable, missed, or timed-
 out result, and its infrastructure validator passes. The
 [machine-readable record](evidence/m1-windows-private-security-mutation-2026-07-31.json)
 binds the commands, source trees, candidate set, equivalence exclusion,
-outcomes, and local artifact hashes. Current Windows validation passes 425
-workspace tests with 93.49 percent whole-workspace, 95.23 percent trust-kernel,
-and 92.14 percent platform-adapter line coverage.
+outcomes, and local artifact hashes. That `994e0a3` checkpoint passes 425
+Windows-local workspace tests with 93.49 percent whole-workspace, 95.23 percent
+trust-kernel, and 92.14 percent platform-adapter line coverage.
 
 Current detailed evidence and known gaps are maintained in:
 
@@ -195,8 +196,10 @@ that a release exists when the repository has no published artifact.
 System, Light, Dark, Green Screen, and Amber Screen themes, working About and
 update-status dialogs, source install helpers, a responsive upper-right Mode
 control and Theme menu, a contextual Markdown document bar, a bundled variable
-document typeface, and deterministic native README screenshots are implemented
-locally. Specialty palettes have deterministic enhanced-contrast checks.
+document typeface, and a deterministic five-capture native README set are
+implemented locally. That set pairs the same Light document in Text and
+Markdown modes and gives Dark, Green Screen, and Amber Screen their own Markdown
+evidence. Specialty palettes have deterministic enhanced-contrast checks.
 Built-in palette extension is data-driven and invalid palettes fail closed to
 Dark. The safe custom-theme contract is documented;
 runtime theme-file loading, persistence, and error UX remain open work.
@@ -416,7 +419,9 @@ content, activates one source range for direct editing without exposing
 supported delimiters, and maps eight formatting actions back to ordinary
 Markdown source. Those actions are selection-aware toggles, avoid invented
 link text and targets, expose accessible pressed state, and provide focused
-keyboard paths for Bold, Italic, and Link. Click-and-drag selection maps
+keyboard paths for Bold, Italic, and Link. The permanent non-modal formatting
+bar has no Done state; Escape returns a focused active range to rendered form
+after synchronizing its pending edit. Click-and-drag selection maps
 rendered characters to complete source spans, including hidden delimiters,
 escapes, and supported character
 references; synthesis without a safe mapping falls back to visible source. A
@@ -459,6 +464,9 @@ supported systems, with verifiable artifacts and honest release evidence.
 - per-user installation without elevation by default;
 - package-manager ownership and update behavior;
 - checksums, SBOM, build provenance, and signing where credentials exist;
+- parity-verified consolidation of release-critical Python automation into a
+  Rust `xtask`, beginning with validators and generators and retaining mature
+  platform benchmark tooling until a Rust replacement is demonstrably simpler;
 - clean-machine install, upgrade, rollback, portable-use, and uninstall tests;
 - complete user, troubleshooting, privacy, stewardship, and release notes; and
 - a minimum 14-day release-candidate dogfood period on multiple platforms.

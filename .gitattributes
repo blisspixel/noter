@@ -3,7 +3,9 @@
 *.png binary
 
 # Preserve upstream license text verbatim even when it contains trailing spaces.
-THIRD-PARTY-LICENSES.html binary -whitespace
+# This deterministic legal inventory is generated release material, not an HTML
+# application surface, so GitHub Linguist must not count it as product code.
+THIRD-PARTY-LICENSES.html binary -whitespace linguist-generated=true
 
 # The deterministic Windows Installer sidecar requires byte-exact CRLF records.
 wix/License.rtf binary

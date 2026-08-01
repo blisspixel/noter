@@ -515,10 +515,11 @@ a separately reviewed diff with semantic equivalence, idempotence, byte-policy
 preservation, and one-step undo.
 
 For visual quality, Noter uses separate document and UI type scales, fixed
-control metrics, an 840-point reading measure, theme-specific contrast, and
-deterministic Light and Dark captures from the native release renderer. Low-level
-rasterization preferences are not exposed as feature clutter until native
-platform testing demonstrates a user benefit.
+control metrics, one borderless canvas with the Text Mode outer gutter,
+theme-specific contrast, and deterministic Light Text, Light Markdown, Dark,
+Green Screen, and Amber Screen captures from the native release renderer.
+Low-level rasterization preferences are not exposed as feature clutter until
+native platform testing demonstrates a user benefit.
 
 ## 2026-07-30 installation and documentation update
 

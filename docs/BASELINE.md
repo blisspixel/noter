@@ -2,26 +2,26 @@
 
 **M0 measured:** 2026-07-26
 
-**Latest verified implementation checkpoint:** 2026-07-31
+**Latest verified implementation checkpoint:** 2026-08-01
 
 **M0 source state:** Evidence commit `7512534` after dependency cleanup. These
 measurements are a development baseline, not release evidence.
 
 ## Latest exact implementation checkpoint
 
-Commit `bfdeb55` is the latest verified implementation checkpoint. Protected
-main-branch run
-[30612842346](https://github.com/blisspixel/noter/actions/runs/30612842346)
+Commit `08fd8a5` is the latest verified implementation checkpoint. Exact-commit
+workflow-dispatch run
+[30702655806](https://github.com/blisspixel/noter/actions/runs/30702655806)
 completed all nine required jobs successfully for exact commit
-`bfdeb55fb5b903421dd2db6aa093b76e4130ac55`.
+`08fd8a5e074da6a88e12e5fcc9c7908d148b088c`.
 
 | Measure | Result |
 | --- | --- |
-| Hosted Linux Rust tests | 411 passed, 0 failed |
-| Whole-workspace line coverage | 93.38 percent, 14,736 of 15,781 lines |
-| Trust-kernel line coverage | 94.44 percent, 7,387 of 7,822 lines |
-| Linux mutation scope | 967 total, 718 caught, 249 unviable, 0 missed, 0 timed out |
-| Windows mutation scope | 901 total across two required shards, 656 caught, 245 unviable, 0 missed, 0 timed out |
+| Hosted Linux Rust tests | 444 passed, 0 failed |
+| Whole-workspace line coverage | 93.02 percent, 16,708 of 17,962 lines |
+| Trust-kernel line coverage | 94.36 percent, 7,429 of 7,873 lines |
+| Linux mutation scope | 970 total, 719 caught, 251 unviable, 0 missed, 0 timed out |
+| Windows mutation scope | 939 total across two required shards, 686 caught, 253 unviable, 0 missed, 0 timed out |
 | macOS mutation scope | 47 total, 41 caught, 6 unviable, 0 missed, 0 timed out |
 | Mutation infrastructure validation | Pass in all four mutation jobs; no recognized compiler, linker, process, storage, or tool failure hidden as unviable |
 | Source installers | Pass on Windows, macOS, and Linux using custom roots containing spaces |

@@ -3157,10 +3157,16 @@ mod tests {
     }
 
     #[test]
-    fn markdown_canvas_starts_at_the_editor_gutter_instead_of_centering_a_page() {
+    fn text_and_markdown_canvases_share_the_same_editor_gutter() {
         let source = "Full-width paragraph";
-        let mut app = NoterApp {
+        let mut markdown_app = NoterApp {
             view: DocumentView::Markdown,
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            ..NoterApp::default()
+        };
+        let mut text_app = NoterApp {
+            view: DocumentView::Text,
             text: source.to_owned(),
             document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
             ..NoterApp::default()
@@ -3168,12 +3174,19 @@ mod tests {
         let context = egui::Context::default();
         theme::configure_styles(&context);
 
-        let output = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
-            let _ = app.show_markdown_editor(ui);
+        let markdown_output = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+            let _ = markdown_app.show_markdown_editor(ui);
         });
-        let text = text_position(&rendered_text(&output), source);
+        let text_output = context.run_ui(ui_input(1_200.0, 760.0, 0.1), |ui| {
+            let _ = text_app.show_text_editor(ui);
+        });
+        let markdown_x = text_position(&rendered_text(&markdown_output), source).x;
+        let text_x = text_position(&rendered_text(&text_output), source).x;
 
-        assert!(text.x < 40.0, "Markdown content began at x={}", text.x);
+        assert!(
+            (markdown_x - text_x).abs() <= 4.0,
+            "Text began at x={text_x}, but Markdown began at x={markdown_x}"
+        );
     }
 
     #[test]

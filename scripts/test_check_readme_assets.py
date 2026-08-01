@@ -14,6 +14,7 @@ from check_readme_assets import (
     png_dimensions,
     screenshot_source_digest,
 )
+from readme_screenshot_contract import SCREENSHOTS, SCREENSHOT_SPECS
 from update_readme_screenshots import validate_generated_screenshot
 
 
@@ -107,6 +108,25 @@ class GeneratedScreenshotTests(unittest.TestCase):
 
 
 class ScreenshotSourceDigestTests(unittest.TestCase):
+    def test_capture_matrix_proves_dual_view_and_specialty_themes(self) -> None:
+        expected = {
+            ("light", "text", Path("docs/assets/noter-light-text.png")),
+            ("light", "markdown", Path("docs/assets/noter-light.png")),
+            ("dark", "markdown", Path("docs/assets/noter-dark.png")),
+            ("green", "markdown", Path("docs/assets/noter-green-screen.png")),
+            ("amber", "markdown", Path("docs/assets/noter-amber-screen.png")),
+        }
+
+        self.assertEqual(
+            {(spec.theme, spec.view, spec.path) for spec in SCREENSHOT_SPECS},
+            expected,
+        )
+        self.assertEqual(
+            SCREENSHOTS,
+            tuple(spec.path for spec in SCREENSHOT_SPECS),
+        )
+        self.assertEqual(len(SCREENSHOTS), len(set(SCREENSHOTS)))
+
     def test_digest_frames_paths_and_contents_deterministically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

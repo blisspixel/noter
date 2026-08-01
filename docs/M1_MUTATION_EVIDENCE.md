@@ -2,7 +2,7 @@
 
 **Executed:** 2026-07-26
 
-**Latest hosted continuation:** 2026-07-28
+**Latest hosted continuation:** 2026-08-01
 
 **Scope:** `src/core/*.rs` and `crates/noter-platform/src/*.rs`, the document,
 durable I/O, and native adapter trust kernel
@@ -35,12 +35,21 @@ Linux common scope:
 cargo mutants -vV --in-place --colors never --workspace \
   --exclude-re '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|TemporaryFile::discard|TemporaryFile::preserve_artifact|Drop for TemporaryFile|closed_temporary_matches_intended|remove_verified_backup|[Ww]indows|[Mm]acos)'
 
-Windows-applicable scope:
+Windows-applicable scope, invoked as two required shards:
 cargo mutants -vV --in-place --colors never --workspace \
   --minimum-test-timeout 60 \
+  --shard 0/2 \
+  --exclude-re '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|[Mm]acos)'
+
+cargo mutants -vV --in-place --colors never --workspace \
+  --minimum-test-timeout 60 \
+  --shard 1/2 \
   --exclude-re '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|[Mm]acos)'
 
 macOS native-adapter scope:
+export CARGO_BUILD_JOBS=1
+export CARGO_PROFILE_TEST_DEBUG=0
+export CARGO_INCREMENTAL=1
 cargo mutants -vV --in-place --colors never --workspace \
   -p noter-platform --re '[Mm]acos'
 ```
@@ -52,11 +61,12 @@ names.
 The [cargo-mutants CI guidance](https://mutants.rs/ci.html) recommends
 `--in-place` for a disposable CI checkout. The tool documents that
 [`--in-place` cannot be combined with `--jobs`](https://mutants.rs/in-place.html),
-so each CI gate runs serially and uploads `mutants.out` even on failure. The
-current Linux job covers 617 candidates, the Windows job covers 557, and the
-macOS adapter job covers 49 macOS-specific candidates. The scopes overlap where
-the common runner assignments require it;
-deduplicating exact mutation descriptions produces all 741 configured
+so each CI gate runs serially and uploads `mutants.out` even on failure. At the
+reconciled `97371d8` baseline, the Linux job covered 617 candidates, the
+Windows job covered 557, and the macOS adapter job covered 49 macOS-specific
+candidates. The scopes overlapped where the common runner assignments required
+it;
+deduplicating exact mutation descriptions produced all 741 configured
 supported-platform candidates with no missing entry. The filters are runner
 assignments, not a claim that every exclusion is inactive. Linux assigns several
 active cross-platform decisions with Windows-specific branches to the Windows
@@ -112,10 +122,10 @@ snapshots, and manual accessibility verification in later milestones.
 
 `Unviable` means the mutation did not compile. It is distinct from a survivor.
 The completed local Windows core and predecessor adapter results have no missed
-mutation and no timeout. The current source enumerates 66 Windows native-adapter
-candidates, all included in the clean exact Windows scope above. Earlier lower
-mutant counts reflect removal of redundant branches and mutation-prone loop
-bookkeeping, not an excluded source path.
+mutation and no timeout. At the point recorded by that campaign, the source
+enumerated 66 Windows native-adapter candidates, all included in its clean exact
+Windows scope. Earlier lower mutant counts reflect removal of redundant
+branches and mutation-prone loop bookkeeping, not an excluded source path.
 
 The first hosted Linux run at commit `958cf2d` is intentionally retained as
 negative evidence in
@@ -261,13 +271,14 @@ compiler rejections, the applicable Unix platform correction as 51 caught and
 one genuine compiler rejection, and ownership application as four caught. No
 focused campaign missed or timed out a viable mutation.
 
-The settled worktree now enumerates 741 candidates: 617 assigned to Linux, 557
-to Windows, and 49 macOS-specific candidates assigned to macOS. Deduplicating
-the three scopes yields all 741
+At the reconciled `97371d8` checkpoint, the settled worktree enumerated 741
+candidates: 617 assigned to Linux, 557 to Windows, and 49 macOS-specific
+candidates assigned to macOS. Deduplicating the three scopes yielded all 741
 configured candidates with no missing or outside entry. The focused Windows
-adapter scope is 66 candidates. The ten-site reduction from the preceding 751
-total comes from removing repeated inline native decisions and mutable scanner
-progress arithmetic, not from excluding a source path or supported platform.
+adapter scope at that checkpoint was 66 candidates. The ten-site reduction from
+the preceding 751 total came from removing repeated inline native decisions and
+mutable scanner progress arithmetic, not from excluding a source path or
+supported platform.
 
 The final focused Markdown diagnostics run enumerated 58 candidates. It caught
 54 and initially labeled four unviable, but the infrastructure validator found
@@ -374,3 +385,39 @@ the Apple linker crash seen when several workspace test binaries linked
 concurrently. These per-platform scopes overlap and are not described as a new
 deduplicated cross-platform union. The implementation does not change in the
 documentation-only reconciliation commit that records this result.
+
+## 2026-08-01 exact implementation checkpoint
+
+Commit `08fd8a5` is verified by exact-commit workflow-dispatch run
+[30702655806](https://github.com/blisspixel/noter/actions/runs/30702655806).
+All nine required contexts pass on exact commit
+`08fd8a5e074da6a88e12e5fcc9c7908d148b088c`. Hosted Linux line coverage is
+93.02 percent for the whole workspace and 94.36 percent for the
+UI-independent trust kernel.
+
+Linux reports 970 candidates: 719 caught and 251 genuine compiler rejections.
+The two independently required Windows shards classify the complete 939-item
+Windows list: shard 0 reports 325 caught and 145 compiler rejections, while
+shard 1 reports 361 caught and 108 compiler rejections. macOS reports 47
+candidates: 41 caught and 6 compiler rejections. Every scope has zero missed
+and zero timed out. The infrastructure validator passes all four retained
+mutation artifacts.
+
+The preceding run
+[30697013444](https://github.com/blisspixel/noter/actions/runs/30697013444)
+is retained as negative evidence. Its Linux scope incorrectly selected an
+inactive Windows-only local-string guard because the guard's generated mutation
+description had no Windows-identifying name. Windows shard 1 independently
+demonstrated that the same guard's `LocalFree` dispatch was not directly
+observable. Windows shard 1 also reported four behaviorally equivalent
+OR-to-XOR mutations across documented disjoint access, sharing, and
+security-information masks. The repair gives the guard a Windows-identifying
+name, makes its deallocation dispatch directly observable, and combines those
+disjoint masks through one invariant-checked helper. A focused five-candidate
+Windows campaign then caught the guard and constant-result mutations and
+classified both invariant-breaking arithmetic variants as compile-time
+rejections before the complete hosted matrix passed.
+
+These hosted scopes overlap and are not presented as a new deduplicated
+cross-platform union. The manual native-filesystem and crash-persistence limits
+in this report and the roadmap remain open.

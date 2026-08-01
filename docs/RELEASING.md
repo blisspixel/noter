@@ -36,8 +36,9 @@ not describe unsigned artifacts as signed.
    macOS, X11, and Wayland environments.
 5. Clean install, reinstall, upgrade, rollback, and uninstall checks pass as a
    standard user.
-6. Light and Dark README screenshots are regenerated from the candidate and
-   reviewed at 100 and 150 percent scale.
+6. The complete README capture set is regenerated from the candidate and
+   reviewed at 100 and 150 percent scale: identical-document Light Text and
+   Markdown plus Dark, Green Screen, and Amber Screen Markdown.
 7. Runtime inspection finds no unexpected network activity or sensitive logs.
 8. No unresolved critical or high security or data-safety defect exists.
 9. The release-candidate dogfood period and independent-user requirement in the
