@@ -76,14 +76,28 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
-- Polish Markdown Mode into one continuous borderless reading canvas with a
-  centered 760-point measure on wide windows, responsive gutters, deliberate
-  line height and block rhythm, calmer formatting groups, and an accessible
-  inline zoom cluster that uses the existing bounded document-view commands.
-  Keep active and inactive block geometry stable, expose the live zoom value to
-  assistive technology, and preserve document-bar focus for repeated zoom
-  operation. Regenerate and visually review the native Light and Dark
-  screenshots.
+- Refine Markdown Mode into a direct word-editor surface. The continuous canvas
+  now uses the available window width with only the ordinary editor inset.
+  Bold, Italic, headings, links, inline code, lists, and quotes expose real
+  toggle state and apply only to the current selection or selected lines.
+  Repeated formatting removes only parser-verified simple syntax; malformed,
+  asymmetric, multi-backtick, deeper repeated-star, and empty-caret delimiter
+  cases fail closed. Empty selections insert blank delimiters instead of
+  invented prose. Link never preloads a fake label or URL, validates the exact
+  candidate, and preserves complete code-bearing labels when toggled off. Bold,
+  Italic, and Link also provide standard focused-editor keyboard paths.
+- Let the pointer wheel over the live zoom percentage change document zoom
+  through the same bounded, non-editing command path used by its buttons,
+  keyboard shortcuts, and menu. Clicking the percentage still resets to 100
+  percent, and its accessibility value remains current.
+- Give Green Screen and Amber Screen deliberate CRT treatment with native
+  monospace type, square controls, bounded static scanlines, a restrained edge
+  vignette, and theme-specific glass borders. Standard themes reset every
+  specialty style. Preserve the complete default font fallback chain so
+  Unicode and emoji bytes remain supported while M5 retains native emoji
+  appearance validation.
+- Regenerate and visually review the native Light and Dark screenshots after
+  removing the centered page-like Markdown measure.
 - Canonicalize third-party license generation from bounded cargo-about JSON and
   the legal files packaged in every locked dependency. Component expressions
   remain separate from preserved copyright and notice text, and target-gated

@@ -215,12 +215,12 @@ impl MarkdownCommand {
 
     const fn description(self) -> &'static str {
         match self {
-            Self::Heading1 => "Format the active content as a level-one heading",
-            Self::Heading2 => "Format the active content as a level-two heading",
-            Self::Bold => "Wrap the selection in strong emphasis",
-            Self::Italic => "Wrap the selection in emphasis",
-            Self::Link => "Insert a standard Markdown link",
-            Self::InlineCode => "Wrap the selection as inline code",
+            Self::Heading1 => "Toggle a level-one heading on the selected lines",
+            Self::Heading2 => "Toggle a level-two heading on the selected lines",
+            Self::Bold => "Toggle strong emphasis on the selection",
+            Self::Italic => "Toggle emphasis on the selection",
+            Self::Link => "Toggle a Markdown link without inventing text or a URL",
+            Self::InlineCode => "Toggle inline code on the selection",
             Self::BulletedList => "Toggle bullet markers on the active lines",
             Self::Quote => "Toggle quote markers on the active lines",
         }
@@ -259,6 +259,33 @@ impl MarkdownCommand {
 
     const fn ends_group(self) -> bool {
         matches!(self, Self::Heading2 | Self::Italic | Self::InlineCode)
+    }
+
+    const fn shortcut(self) -> Option<egui::KeyboardShortcut> {
+        let key = match self {
+            Self::Bold => egui::Key::B,
+            Self::Italic => egui::Key::I,
+            Self::Link => egui::Key::K,
+            Self::Heading1
+            | Self::Heading2
+            | Self::InlineCode
+            | Self::BulletedList
+            | Self::Quote => return None,
+        };
+        Some(egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, key))
+    }
+
+    fn hover_text(self, context: &egui::Context) -> String {
+        self.shortcut().map_or_else(
+            || self.description().to_owned(),
+            |shortcut| {
+                format!(
+                    "{} ({})",
+                    self.description(),
+                    context.format_shortcut(&shortcut)
+                )
+            },
+        )
     }
 
     fn paint_icon(self, ui: &egui::Ui, response: &egui::Response, enabled: bool) {
@@ -377,6 +404,10 @@ impl ActiveBlock {
         self.dirty = true;
         self.pending_origin = Some(EditOrigin::MarkdownFormatting);
         self.request_focus = true;
+    }
+
+    fn command_is_active(&self, command: MarkdownCommand) -> bool {
+        markdown_command_is_active(&self.draft, self.selection.ordered_range(), command)
     }
 }
 
@@ -500,18 +531,28 @@ impl MarkdownEditor {
 
         let enabled = self.active.is_some();
         for command in MarkdownCommand::ALL {
+            let selected = self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.command_is_active(command));
             let button = command
                 .button_text()
-                .map_or_else(|| egui::Button::new(""), egui::Button::new);
+                .map_or_else(|| egui::Button::new(""), egui::Button::new)
+                .selected(selected);
             let response = ui
                 .add_enabled(enabled, button.min_size(command.button_size()))
                 .on_hover_text(if enabled {
-                    command.description()
+                    command.hover_text(ui.ctx())
                 } else {
-                    "Click or drag in formatted text to activate formatting"
+                    "Click or drag in formatted text to activate formatting".to_owned()
                 });
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, command.menu_label())
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::Button,
+                    enabled,
+                    selected,
+                    command.menu_label(),
+                )
             });
             command.paint_icon(ui, &response, enabled);
             if response.clicked() {
@@ -539,8 +580,16 @@ impl MarkdownEditor {
             .add_enabled_ui(enabled, |ui| {
                 ui.menu_button("Format", |ui| {
                     for command in MarkdownCommand::ALL {
+                        let selected = self
+                            .active
+                            .as_ref()
+                            .is_some_and(|active| active.command_is_active(command));
+                        let mut button = egui::Button::selectable(selected, command.menu_label());
+                        if let Some(shortcut) = command.shortcut() {
+                            button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+                        }
                         if ui
-                            .button(command.menu_label())
+                            .add(button)
                             .on_hover_text(command.description())
                             .clicked()
                         {
@@ -887,6 +936,21 @@ impl MarkdownEditor {
     }
 
     fn show_active_editor(&mut self, ui: &mut egui::Ui, maximum_draft_bytes: usize) -> bool {
+        let editor_id = self.active.as_ref().map(ActiveBlock::editor_id);
+        let format_command = editor_id
+            .filter(|editor_id| ui.memory(|memory| memory.has_focus(*editor_id)))
+            .and_then(|_| {
+                ui.input_mut(|input| {
+                    MarkdownCommand::ALL.into_iter().find(|command| {
+                        command
+                            .shortcut()
+                            .is_some_and(|shortcut| consume_format_shortcut(input, shortcut))
+                    })
+                })
+            });
+        if let Some(command) = format_command {
+            self.apply_command(command);
+        }
         let Some(active) = self.active.as_mut() else {
             return false;
         };
@@ -958,6 +1022,22 @@ impl MarkdownEditor {
         output.state.store(ui.ctx(), output.response.id);
         changed
     }
+}
+
+fn consume_format_shortcut(input: &mut egui::InputState, shortcut: egui::KeyboardShortcut) -> bool {
+    let pressed_once = input.events.iter().any(|event| {
+        matches!(
+            event,
+            egui::Event::Key {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            } if *key == shortcut.logical_key && modifiers.matches_logically(shortcut.modifiers)
+        )
+    });
+    pressed_once && input.consume_shortcut(&shortcut)
 }
 
 fn restorable_source_block_range(source: &str, selection: Selection) -> Option<Range<usize>> {
@@ -1262,9 +1342,16 @@ fn semantic_target_at_selection(source: &str, selection: &Range<usize>) -> Optio
                 return None;
             };
             let raw = source.get(source_range.clone())?;
-            let offset = raw.rfind(destination.as_ref())?;
-            let target =
-                source_range.start + offset..source_range.start + offset + destination.len();
+            let target = if destination.is_empty() {
+                let opening = raw.rfind("](")? + 1;
+                if raw.as_bytes().get(opening + 1) != Some(&b')') {
+                    return None;
+                }
+                source_range.start + opening..source_range.start + opening + 2
+            } else {
+                let offset = raw.rfind(destination.as_ref())?;
+                source_range.start + offset..source_range.start + offset + destination.len()
+            };
             let selected = if selection.start == selection.end {
                 (target.start..=target.end).contains(&selection.start)
             } else {
@@ -1591,114 +1678,573 @@ fn apply_markdown_command(
     command: MarkdownCommand,
 ) -> CommandResult {
     match command {
-        MarkdownCommand::Heading1 => set_heading(source, 1),
-        MarkdownCommand::Heading2 => set_heading(source, 2),
-        MarkdownCommand::Bold => wrap_selection(source, selection, "**", "**", "bold text"),
-        MarkdownCommand::Italic => wrap_selection(source, selection, "*", "*", "italic text"),
-        MarkdownCommand::InlineCode => wrap_selection(source, selection, "`", "`", "code"),
+        MarkdownCommand::Heading1 => set_heading(source, selection, 1),
+        MarkdownCommand::Heading2 => set_heading(source, selection, 2),
+        MarkdownCommand::Bold => toggle_inline_marker(source, selection, "**"),
+        MarkdownCommand::Italic => toggle_inline_marker(source, selection, "*"),
+        MarkdownCommand::InlineCode => toggle_inline_marker(source, selection, "`"),
         MarkdownCommand::Link => insert_link(source, selection),
-        MarkdownCommand::BulletedList => toggle_line_prefix(source, "- "),
-        MarkdownCommand::Quote => toggle_line_prefix(source, "> "),
+        MarkdownCommand::BulletedList => toggle_line_prefix(source, selection, "- "),
+        MarkdownCommand::Quote => toggle_line_prefix(source, selection, "> "),
     }
 }
 
-fn set_heading(source: &str, level: usize) -> CommandResult {
-    let content = source
-        .trim_end_matches(['\r', '\n'])
-        .trim_start_matches('#')
-        .trim_start();
-    let prefix = format!("{} ", "#".repeat(level));
-    let text = format!("{prefix}{content}");
-    let end = text.chars().count();
-    CommandResult {
-        text,
-        selection: prefix.chars().count()..end,
-    }
-}
-
-fn wrap_selection(
+fn markdown_command_is_active(
     source: &str,
     selection: Range<usize>,
-    prefix: &str,
-    suffix: &str,
-    empty_text: &str,
-) -> CommandResult {
+    command: MarkdownCommand,
+) -> bool {
+    match command {
+        MarkdownCommand::Heading1 => selected_lines_all(source, selection, |content| {
+            heading_marker(content).is_some_and(|(level, _)| level == 1)
+        }),
+        MarkdownCommand::Heading2 => selected_lines_all(source, selection, |content| {
+            heading_marker(content).is_some_and(|(level, _)| level == 2)
+        }),
+        MarkdownCommand::Bold => inline_marker_location(source, selection, "**").is_some(),
+        MarkdownCommand::Italic => inline_marker_location(source, selection, "*").is_some(),
+        MarkdownCommand::InlineCode => inline_marker_location(source, selection, "`").is_some(),
+        MarkdownCommand::Link => link_span_at_selection(source, selection).is_some(),
+        MarkdownCommand::BulletedList => {
+            selected_lines_all(source, selection, |content| content.starts_with("- "))
+        }
+        MarkdownCommand::Quote => {
+            selected_lines_all(source, selection, |content| content.starts_with("> "))
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum InlineMarkerLocation {
+    Outside {
+        prefix: Range<usize>,
+        suffix: Range<usize>,
+    },
+    Inside {
+        prefix: Range<usize>,
+        suffix: Range<usize>,
+    },
+}
+
+fn toggle_inline_marker(source: &str, selection: Range<usize>, marker: &str) -> CommandResult {
     let selection = bounded_char_range(source, selection);
+    if let Some(location) = inline_marker_location(source, selection.clone(), marker) {
+        return remove_inline_markers(source, selection, marker, location);
+    }
     let byte_range = char_range_to_byte_range(source, selection.clone());
     let selected = &source[byte_range.clone()];
-    let content = if selected.is_empty() {
-        empty_text
-    } else {
-        selected
-    };
-    let mut text =
-        String::with_capacity(source.len() + prefix.len() + suffix.len() + content.len());
+    if inline_marker_insertion_is_ambiguous(source, &byte_range, marker) {
+        return CommandResult {
+            text: source.to_owned(),
+            selection,
+        };
+    }
+    let mut text = String::with_capacity(source.len() + 2 * marker.len());
     text.push_str(&source[..byte_range.start]);
-    text.push_str(prefix);
-    text.push_str(content);
-    text.push_str(suffix);
+    text.push_str(marker);
+    text.push_str(selected);
+    text.push_str(marker);
     text.push_str(&source[byte_range.end..]);
-    let start = selection.start + prefix.chars().count();
+    let semantic_range = byte_range.start..byte_range.end + 2 * marker.len();
+    if !selected.is_empty() && !inline_marker_range_is_semantic(&text, marker, &semantic_range) {
+        return CommandResult {
+            text: source.to_owned(),
+            selection,
+        };
+    }
+    let start = selection.start + marker.chars().count();
     CommandResult {
         text,
-        selection: start..start + content.chars().count(),
+        selection: start..selection.end + marker.chars().count(),
     }
+}
+
+fn inline_marker_insertion_is_ambiguous(
+    source: &str,
+    selected: &Range<usize>,
+    marker: &str,
+) -> bool {
+    let marker_bytes = marker.as_bytes();
+    let Some(&needle) = marker_bytes.first() else {
+        return true;
+    };
+    if marker_bytes.iter().any(|byte| *byte != needle) {
+        return true;
+    }
+    let bytes = source.as_bytes();
+    let left_run = repeated_byte_before(bytes, selected.start, needle);
+    let right_run = repeated_byte_after(bytes, selected.end, needle);
+    if left_run == 0 && right_run == 0 {
+        return false;
+    }
+    if selected.is_empty() {
+        return true;
+    }
+    match (needle, marker.len()) {
+        (b'*', 1) => left_run != 2 || right_run != 2,
+        (b'*', 2) => left_run != 1 || right_run != 1,
+        _ => true,
+    }
+}
+
+fn remove_inline_markers(
+    source: &str,
+    selection: Range<usize>,
+    marker: &str,
+    location: InlineMarkerLocation,
+) -> CommandResult {
+    let marker_characters = marker.chars().count();
+    let (prefix, suffix, adjusted_selection) = match location {
+        InlineMarkerLocation::Outside { prefix, suffix } => {
+            let start = selection.start.saturating_sub(marker_characters);
+            let end = selection.end.saturating_sub(marker_characters);
+            (prefix, suffix, start..end)
+        }
+        InlineMarkerLocation::Inside { prefix, suffix } => (
+            prefix,
+            suffix,
+            selection.start..selection.end.saturating_sub(2 * marker_characters),
+        ),
+    };
+    let mut text = String::with_capacity(source.len().saturating_sub(2 * marker.len()));
+    text.push_str(&source[..prefix.start]);
+    text.push_str(&source[prefix.end..suffix.start]);
+    text.push_str(&source[suffix.end..]);
+    CommandResult {
+        text,
+        selection: adjusted_selection,
+    }
+}
+
+fn inline_marker_location(
+    source: &str,
+    selection: Range<usize>,
+    marker: &str,
+) -> Option<InlineMarkerLocation> {
+    let selection = bounded_char_range(source, selection);
+    let bytes = source.as_bytes();
+    let selected = char_range_to_byte_range(source, selection);
+    let width = marker.len();
+    if width == 0 {
+        return None;
+    }
+
+    let repeated_marker = marker
+        .as_bytes()
+        .first()
+        .is_some_and(|first| marker.as_bytes().iter().all(|byte| byte == first));
+    let outside_active = if marker.as_bytes().iter().all(|byte| *byte == b'*') {
+        star_marker_is_active(
+            repeated_byte_before(bytes, selected.start, b'*'),
+            repeated_byte_after(bytes, selected.end, b'*'),
+            width,
+        )
+    } else if repeated_marker {
+        let needle = marker.as_bytes()[0];
+        repeated_byte_before(bytes, selected.start, needle) == width
+            && repeated_byte_after(bytes, selected.end, needle) == width
+    } else {
+        selected.start >= width
+            && selected.end + width <= source.len()
+            && bytes.get(selected.start - width..selected.start) == Some(marker.as_bytes())
+            && bytes.get(selected.end..selected.end + width) == Some(marker.as_bytes())
+    };
+    if outside_active {
+        let location = InlineMarkerLocation::Outside {
+            prefix: selected.start - width..selected.start,
+            suffix: selected.end..selected.end + width,
+        };
+        if !selected.is_empty() && inline_marker_location_is_semantic(source, marker, &location) {
+            return Some(location);
+        }
+    }
+
+    if selected.is_empty() || selected.end.saturating_sub(selected.start) < 2 * width {
+        return None;
+    }
+    let inside_active = if marker.as_bytes().iter().all(|byte| *byte == b'*') {
+        star_marker_is_active(
+            repeated_byte_after(bytes, selected.start, b'*'),
+            repeated_byte_before(bytes, selected.end, b'*'),
+            width,
+        )
+    } else if repeated_marker {
+        let needle = marker.as_bytes()[0];
+        repeated_byte_after(bytes, selected.start, needle) == width
+            && repeated_byte_before(bytes, selected.end, needle) == width
+    } else {
+        bytes.get(selected.start..selected.start + width) == Some(marker.as_bytes())
+            && bytes.get(selected.end - width..selected.end) == Some(marker.as_bytes())
+    };
+    let location = InlineMarkerLocation::Inside {
+        prefix: selected.start..selected.start + width,
+        suffix: selected.end - width..selected.end,
+    };
+    (inside_active && inline_marker_location_is_semantic(source, marker, &location))
+        .then_some(location)
+}
+
+fn inline_marker_location_is_semantic(
+    source: &str,
+    marker: &str,
+    location: &InlineMarkerLocation,
+) -> bool {
+    let (prefix, suffix) = match location {
+        InlineMarkerLocation::Outside { prefix, suffix }
+        | InlineMarkerLocation::Inside { prefix, suffix } => (prefix, suffix),
+    };
+    inline_marker_range_is_semantic(source, marker, &(prefix.start..suffix.end))
+}
+
+fn inline_marker_range_is_semantic(
+    source: &str,
+    marker: &str,
+    expected_range: &Range<usize>,
+) -> bool {
+    let Some(fragment) = source.get(expected_range.clone()) else {
+        return false;
+    };
+    let fragment_is_semantic = Parser::new_ext(fragment, markdown_parser_options())
+        .into_offset_iter()
+        .any(|(event, source_range)| {
+            source_range == (0..fragment.len()) && inline_event_matches_marker(marker, &event)
+        });
+    fragment_is_semantic
+        && Parser::new_ext(source, markdown_parser_options())
+            .into_offset_iter()
+            .any(|(event, source_range)| {
+                let range_matches = if marker == "`" {
+                    source_range.start == expected_range.start
+                        && source_range.end == expected_range.end
+                } else {
+                    source_range.start <= expected_range.start
+                        && source_range.end >= expected_range.end
+                };
+                range_matches && inline_event_matches_marker(marker, &event)
+            })
+}
+
+fn inline_event_matches_marker(marker: &str, event: &Event<'_>) -> bool {
+    matches!(
+        (marker, event),
+        ("**", Event::Start(Tag::Strong))
+            | ("*", Event::Start(Tag::Emphasis))
+            | ("`", Event::Code(_))
+    )
+}
+
+const fn star_marker_is_active(left_run: usize, right_run: usize, width: usize) -> bool {
+    if left_run != right_run {
+        return false;
+    }
+    match width {
+        1 => left_run == 1 || left_run == 3,
+        2 => left_run == 2 || left_run == 3,
+        _ => false,
+    }
+}
+
+fn repeated_byte_before(bytes: &[u8], index: usize, needle: u8) -> usize {
+    bytes[..index]
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == needle)
+        .count()
+}
+
+fn repeated_byte_after(bytes: &[u8], index: usize, needle: u8) -> usize {
+    bytes[index..]
+        .iter()
+        .take_while(|byte| **byte == needle)
+        .count()
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct LinkSpan {
+    entire: Range<usize>,
+    label: Range<usize>,
 }
 
 fn insert_link(source: &str, selection: Range<usize>) -> CommandResult {
     let selection = bounded_char_range(source, selection);
+    if let Some(link) = link_span_at_selection(source, selection.clone()) {
+        let label = &source[link.label.clone()];
+        let label_characters = label.chars().count();
+        let selection_start = source[..link.entire.start].chars().count();
+        let mut text = source.to_owned();
+        text.replace_range(link.entire, label);
+        return CommandResult {
+            text,
+            selection: selection_start..selection_start + label_characters,
+        };
+    }
+    if selected_link_source_range(source, selection.clone()).is_some() {
+        return CommandResult {
+            text: source.to_owned(),
+            selection,
+        };
+    }
     let byte_range = char_range_to_byte_range(source, selection.clone());
     let selected = &source[byte_range.clone()];
-    let label = if selected.is_empty() {
-        "link text"
-    } else {
-        selected
-    };
-    let target = "https://example.com";
-    let replacement = format!("[{label}]({target})");
+    let replacement = format!("[{selected}]()");
     let mut text = source.to_owned();
-    text.replace_range(byte_range, &replacement);
+    text.replace_range(byte_range.clone(), &replacement);
+    let label_start = selection.start + 1;
+    let label_selection = label_start..label_start + selected.chars().count();
+    let expected_entire = byte_range.start..byte_range.start + replacement.len();
+    let expected_label = byte_range.start + 1..byte_range.start + 1 + selected.len();
+    let candidate_is_valid = link_span_at_selection(&text, label_selection)
+        .is_some_and(|link| link.entire == expected_entire && link.label == expected_label);
+    if !candidate_is_valid {
+        return CommandResult {
+            text: source.to_owned(),
+            selection,
+        };
+    }
     let selection_start = if selected.is_empty() {
         selection.start + 1
     } else {
-        selection.start + label.chars().count() + 3
-    };
-    let selection_length = if selected.is_empty() {
-        label.chars().count()
-    } else {
-        target.chars().count()
+        selection.start + selected.chars().count() + 3
     };
     CommandResult {
         text,
-        selection: selection_start..selection_start + selection_length,
+        selection: selection_start..selection_start,
     }
 }
 
-fn toggle_line_prefix(source: &str, prefix: &str) -> CommandResult {
-    let lines = logical_lines(source).collect::<Vec<_>>();
-    let remove = !lines.is_empty()
-        && lines
-            .iter()
-            .all(|line| line.content().is_empty() || line.content().starts_with(prefix));
-    let mut text = String::with_capacity(source.len() + prefix.len() * lines.len());
-    for line in lines {
-        let content = line.content();
-        if !content.is_empty() {
-            if remove {
-                text.push_str(content.strip_prefix(prefix).unwrap_or(content));
-            } else {
-                text.push_str(prefix);
-                text.push_str(content);
-            }
+fn link_span_at_selection(source: &str, selection: Range<usize>) -> Option<LinkSpan> {
+    let entire = selected_link_source_range(source, selection)?;
+    let raw = source.get(entire.clone())?;
+    if !raw.starts_with('[') {
+        return None;
+    }
+    let mut nested_brackets = 0_usize;
+    let mut escaped = false;
+    let bytes = raw.as_bytes();
+    let mut protected_inline_ranges = Parser::new_ext(raw, markdown_parser_options())
+        .into_offset_iter()
+        .filter_map(|(event, range)| {
+            matches!(event, Event::Code(_) | Event::InlineHtml(_)).then_some(range)
+        })
+        .collect::<Vec<_>>();
+    protected_inline_ranges.sort_unstable_by_key(|range| (range.start, range.end));
+    let mut protected_index = 0_usize;
+    for index in 1..bytes.len().saturating_sub(1) {
+        let byte = bytes[index];
+        while protected_inline_ranges
+            .get(protected_index)
+            .is_some_and(|range| range.end <= index)
+        {
+            protected_index += 1;
         }
-        if let Some(ending) = line.ending() {
-            text.push_str(ending.as_str());
+        if protected_inline_ranges
+            .get(protected_index)
+            .is_some_and(|range| range.start <= index && index < range.end)
+        {
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' {
+            escaped = true;
+            continue;
+        }
+        if byte == b'[' {
+            nested_brackets += 1;
+            continue;
+        }
+        if byte != b']' {
+            continue;
+        }
+        if nested_brackets > 0 {
+            nested_brackets -= 1;
+        } else if bytes.get(index + 1) == Some(&b'(') {
+            return Some(LinkSpan {
+                label: entire.start + 1..entire.start + index,
+                entire,
+            });
         }
     }
-    let end = text.chars().count();
+    None
+}
+
+fn selected_link_source_range(source: &str, selection: Range<usize>) -> Option<Range<usize>> {
+    let selected = char_range_to_byte_range(source, bounded_char_range(source, selection));
+    Parser::new_ext(source, markdown_parser_options())
+        .into_offset_iter()
+        .find_map(|(event, source_range)| {
+            if !matches!(event, Event::Start(Tag::Link { .. })) {
+                return None;
+            }
+            let contained = if selected.is_empty() {
+                selected.start > source_range.start && selected.end < source_range.end
+            } else {
+                selected.start >= source_range.start && selected.end <= source_range.end
+            };
+            contained.then_some(source_range)
+        })
+}
+
+fn set_heading(source: &str, selection: Range<usize>, level: usize) -> CommandResult {
+    if source.is_empty() {
+        let text = format!("{} ", "#".repeat(level));
+        let caret = text.chars().count();
+        return CommandResult {
+            text,
+            selection: caret..caret,
+        };
+    }
+    let remove = selected_lines_all(source, selection.clone(), |content| {
+        heading_marker(content).is_some_and(|(current, _)| current == level)
+    });
+    let prefix = format!("{} ", "#".repeat(level));
+    rewrite_selected_lines(source, selection, |content| {
+        let marker_length = heading_marker(content).map_or(0, |(_, length)| length);
+        let plain = &content[marker_length..];
+        if remove {
+            (plain.to_owned(), 0)
+        } else {
+            (format!("{prefix}{plain}"), prefix.len())
+        }
+    })
+}
+
+fn heading_marker(content: &str) -> Option<(usize, usize)> {
+    let level = content
+        .as_bytes()
+        .iter()
+        .take(6)
+        .take_while(|byte| **byte == b'#')
+        .count();
+    (level > 0 && content.as_bytes().get(level) == Some(&b' ')).then_some((level, level + 1))
+}
+
+fn toggle_line_prefix(source: &str, selection: Range<usize>, prefix: &str) -> CommandResult {
+    let remove = selected_lines_all(source, selection.clone(), |content| {
+        content.starts_with(prefix)
+    });
+    rewrite_selected_lines(source, selection, |content| {
+        if content.is_empty() {
+            return (String::new(), 0);
+        }
+        if remove {
+            (
+                content.strip_prefix(prefix).unwrap_or(content).to_owned(),
+                0,
+            )
+        } else {
+            (format!("{prefix}{content}"), prefix.len())
+        }
+    })
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct LogicalLineRange {
+    content: Range<usize>,
+    full: Range<usize>,
+}
+
+fn logical_line_ranges(source: &str) -> Vec<LogicalLineRange> {
+    let mut offset = 0;
+    logical_lines(source)
+        .map(|line| {
+            let content = offset..offset + line.content().len();
+            let ending_length = line.ending().map_or(0, |ending| ending.as_str().len());
+            let full = offset..content.end + ending_length;
+            offset = full.end;
+            LogicalLineRange { content, full }
+        })
+        .collect()
+}
+
+fn selected_line_indexes(
+    source: &str,
+    selection: Range<usize>,
+    lines: &[LogicalLineRange],
+) -> Vec<usize> {
+    let selected = char_range_to_byte_range(source, bounded_char_range(source, selection));
+    if selected.is_empty() {
+        return lines
+            .iter()
+            .position(|line| {
+                selected.start >= line.full.start
+                    && (selected.start < line.full.end
+                        || (selected.start == line.full.end && line.content.end == line.full.end))
+            })
+            .into_iter()
+            .collect();
+    }
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            (line.full.start < selected.end && selected.start < line.full.end).then_some(index)
+        })
+        .collect()
+}
+
+fn selected_lines_all(
+    source: &str,
+    selection: Range<usize>,
+    predicate: impl Fn(&str) -> bool,
+) -> bool {
+    let lines = logical_line_ranges(source);
+    let selected = selected_line_indexes(source, selection, &lines);
+    let mut nonempty = 0;
+    for index in selected {
+        let content = &source[lines[index].content.clone()];
+        if content.is_empty() {
+            continue;
+        }
+        nonempty += 1;
+        if !predicate(content) {
+            return false;
+        }
+    }
+    nonempty > 0
+}
+
+fn rewrite_selected_lines(
+    source: &str,
+    selection: Range<usize>,
+    rewrite: impl Fn(&str) -> (String, usize),
+) -> CommandResult {
+    let selection = bounded_char_range(source, selection);
+    let lines = logical_line_ranges(source);
+    let selected = selected_line_indexes(source, selection.clone(), &lines);
+    if selected.is_empty() {
+        return CommandResult {
+            text: source.to_owned(),
+            selection,
+        };
+    }
+    let mut is_selected = vec![false; lines.len()];
+    for index in selected {
+        is_selected[index] = true;
+    }
+    let mut text = String::with_capacity(source.len());
+    let mut selection_start = None;
+    let mut selection_end = 0;
+    for (index, line) in lines.iter().enumerate() {
+        let content = &source[line.content.clone()];
+        if is_selected[index] {
+            let (rewritten, prefix_length) = rewrite(content);
+            selection_start.get_or_insert_with(|| text.len() + prefix_length.min(rewritten.len()));
+            text.push_str(&rewritten);
+            selection_end = text.len();
+        } else {
+            text.push_str(content);
+        }
+        text.push_str(&source[line.content.end..line.full.end]);
+    }
+    let selection_start = selection_start.unwrap_or(0);
+    let start = text[..selection_start].chars().count();
+    let end = text[..selection_end].chars().count();
     CommandResult {
         text,
-        selection: 0..end,
+        selection: start..end,
     }
 }
 
@@ -1761,6 +2307,21 @@ mod tests {
                     .flatten()
             })
             .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}` with bounds"))
+    }
+
+    fn accesskit_toggled(
+        output: &egui::FullOutput,
+        label: &str,
+    ) -> Option<egui::accesskit::Toggled> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled")
+            .nodes
+            .iter()
+            .find_map(|(_, node)| (node.label() == Some(label)).then(|| node.toggled()))
+            .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}`"))
     }
 
     fn first_text_rect(shape: &egui::Shape) -> Option<egui::Rect> {
@@ -2025,85 +2586,419 @@ mod tests {
 
     #[test]
     fn inline_commands_preserve_unicode_selection_boundaries() {
-        let result = apply_markdown_command("cafe cafe", 0..4, MarkdownCommand::Bold);
+        let result = apply_markdown_command("caf\u{e9} cafe", 0..4, MarkdownCommand::Bold);
 
-        assert_eq!(result.text, "**cafe** cafe");
+        assert_eq!(result.text, "**caf\u{e9}** cafe");
         assert_eq!(result.selection, 2..6);
+
+        let after_unicode = apply_markdown_command("\u{e9}cafe", 1..5, MarkdownCommand::InlineCode);
+        assert_eq!(after_unicode.text, "\u{e9}`cafe`");
+        assert_eq!(after_unicode.selection, 2..6);
+
+        let before_unicode =
+            apply_markdown_command("cafe\u{e9}", 0..4, MarkdownCommand::InlineCode);
+        assert_eq!(before_unicode.text, "`cafe`\u{e9}");
+        assert_eq!(before_unicode.selection, 1..5);
     }
 
     #[test]
-    fn empty_inline_selection_inserts_editable_text() {
+    fn empty_inline_selection_inserts_only_markdown_delimiters() {
         let result = apply_markdown_command("Text ", 5..5, MarkdownCommand::Italic);
 
-        assert_eq!(result.text, "Text *italic text*");
-        assert_eq!(&result.text[6..17], "italic text");
+        assert_eq!(result.text, "Text **");
+        assert_eq!(result.selection, 6..6);
     }
 
     #[test]
-    fn empty_link_selection_selects_the_inserted_label() {
+    fn inline_commands_toggle_existing_markers_without_losing_the_selection() {
+        let bold = apply_markdown_command("cafe", 0..4, MarkdownCommand::Bold);
+        let plain = apply_markdown_command(&bold.text, bold.selection, MarkdownCommand::Bold);
+        assert_eq!(plain.text, "cafe");
+        assert_eq!(plain.selection, 0..4);
+
+        let both = apply_markdown_command("**cafe**", 2..6, MarkdownCommand::Italic);
+        assert_eq!(both.text, "***cafe***");
+        assert_eq!(both.selection, 3..7);
+        let strong = apply_markdown_command(&both.text, both.selection, MarkdownCommand::Italic);
+        assert_eq!(strong.text, "**cafe**");
+        assert_eq!(strong.selection, 2..6);
+
+        let empty = apply_markdown_command("Text ", 5..5, MarkdownCommand::Bold);
+        assert_eq!(empty.text, "Text ****");
+        assert_eq!(empty.selection, 7..7);
+        let restored =
+            apply_markdown_command(&empty.text, empty.selection.clone(), MarkdownCommand::Bold);
+        assert_eq!(restored, empty);
+    }
+
+    #[test]
+    fn inline_commands_do_not_remove_literal_or_malformed_marker_runs() {
+        let source = "** text **";
+        let selection = 2..8;
+
+        assert!(!markdown_command_is_active(
+            source,
+            selection.clone(),
+            MarkdownCommand::Bold,
+        ));
+        assert_eq!(
+            apply_markdown_command(source, selection.clone(), MarkdownCommand::Bold),
+            CommandResult {
+                text: source.to_owned(),
+                selection,
+            }
+        );
+    }
+
+    #[test]
+    fn inline_commands_fail_closed_for_ambiguous_delimiter_depths() {
+        for (source, selection, command) in [
+            ("``code``", 2..6, MarkdownCommand::InlineCode),
+            ("``code`x``", 2..8, MarkdownCommand::InlineCode),
+            ("`` `x` ``", 4..5, MarkdownCommand::InlineCode),
+            ("****text****", 4..8, MarkdownCommand::Bold),
+            ("*****text*****", 5..9, MarkdownCommand::Italic),
+        ] {
+            assert!(
+                !markdown_command_is_active(source, selection.clone(), command,),
+                "{source}"
+            );
+            assert_eq!(
+                apply_markdown_command(source, selection.clone(), command),
+                CommandResult {
+                    text: source.to_owned(),
+                    selection,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn empty_caret_commands_never_remove_unparsed_literal_delimiters() {
+        for (source, selection, command) in [
+            ("**", 1..1, MarkdownCommand::Italic),
+            ("****", 2..2, MarkdownCommand::Bold),
+            ("``", 1..1, MarkdownCommand::InlineCode),
+        ] {
+            assert!(!markdown_command_is_active(
+                source,
+                selection.clone(),
+                command,
+            ));
+            assert_eq!(
+                apply_markdown_command(source, selection.clone(), command),
+                CommandResult {
+                    text: source.to_owned(),
+                    selection,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn empty_link_selection_inserts_blank_label_and_target() {
         let result = apply_markdown_command("before after", 7..7, MarkdownCommand::Link);
 
-        assert_eq!(result.text, "before [link text](https://example.com)after");
-        assert_eq!(result.selection, 8..17);
-        assert_eq!(&result.text[result.selection], "link text");
+        assert_eq!(result.text, "before []()after");
+        assert_eq!(result.selection, 8..8);
     }
 
     #[test]
-    fn heading_command_replaces_existing_atx_marker() {
+    fn heading_command_replaces_existing_atx_marker_and_toggles_to_paragraph() {
         let result = apply_markdown_command("#### Details", 0..0, MarkdownCommand::Heading2);
 
         assert_eq!(result.text, "## Details");
         assert_eq!(result.selection, 3..10);
+
+        let paragraph =
+            apply_markdown_command(&result.text, result.selection, MarkdownCommand::Heading2);
+        assert_eq!(paragraph.text, "Details");
+        assert_eq!(paragraph.selection, 0..7);
     }
 
     #[test]
     fn line_commands_toggle_without_losing_final_newline() {
-        let added = apply_markdown_command("one\ntwo\n", 0..0, MarkdownCommand::BulletedList);
+        let added = apply_markdown_command("one\ntwo\n", 0..7, MarkdownCommand::BulletedList);
         assert_eq!(added.text, "- one\n- two\n");
 
-        let removed = apply_markdown_command(&added.text, 0..0, MarkdownCommand::BulletedList);
+        let removed = apply_markdown_command(
+            &added.text,
+            0..added.text.chars().count(),
+            MarkdownCommand::BulletedList,
+        );
         assert_eq!(removed.text, "one\ntwo\n");
+    }
+
+    #[test]
+    fn line_commands_change_only_the_selected_logical_lines() {
+        let result = apply_markdown_command("one\ntwo\nthree", 4..7, MarkdownCommand::Quote);
+
+        assert_eq!(result.text, "one\n> two\nthree");
+        assert_eq!(result.selection, 6..9);
     }
 
     #[test]
     fn line_commands_preserve_crlf_cr_and_mixed_endings() {
         for source in ["one\r\ntwo\r\n", "one\rtwo\r", "one\r\ntwo\nthree\r"] {
-            let added = apply_markdown_command(source, 0..0, MarkdownCommand::Quote);
-            let removed = apply_markdown_command(&added.text, 0..0, MarkdownCommand::Quote);
+            let added =
+                apply_markdown_command(source, 0..source.chars().count(), MarkdownCommand::Quote);
+            let removed = apply_markdown_command(
+                &added.text,
+                0..added.text.chars().count(),
+                MarkdownCommand::Quote,
+            );
 
             assert_eq!(removed.text, source);
         }
     }
 
     #[test]
-    fn selected_link_keeps_label_and_selects_target() {
+    fn selected_link_keeps_label_without_inventing_a_target_and_toggles_off() {
         let result = apply_markdown_command("Read Noter", 5..10, MarkdownCommand::Link);
 
-        assert_eq!(result.text, "Read [Noter](https://example.com)");
-        let target = result
-            .text
-            .chars()
-            .skip(result.selection.start)
-            .take(result.selection.len())
-            .collect::<String>();
-        assert_eq!(target, "https://example.com");
+        assert_eq!(result.text, "Read [Noter]()");
+        assert_eq!(result.selection, 13..13);
+
+        let plain = apply_markdown_command(&result.text, 6..11, MarkdownCommand::Link);
+        assert_eq!(plain.text, "Read Noter");
+        assert_eq!(plain.selection, 5..10);
+
+        let balanced = "Read [Noter](https://example.com/a_(b))";
+        let plain = apply_markdown_command(balanced, 6..11, MarkdownCommand::Link);
+        assert_eq!(plain.text, "Read Noter");
+        assert_eq!(plain.selection, 5..10);
+    }
+
+    #[test]
+    fn link_toggle_ignores_destination_like_text_inside_a_code_span_label() {
+        for (source, selection, expected) in [
+            ("[a `](` b](https://example.com)", 1..9, "a `](` b"),
+            ("[a `[oops` b](https://example.com)", 1..12, "a `[oops` b"),
+        ] {
+            assert!(markdown_command_is_active(
+                source,
+                selection.clone(),
+                MarkdownCommand::Link,
+            ));
+
+            let plain = apply_markdown_command(source, selection, MarkdownCommand::Link);
+            assert_eq!(plain.text, expected);
+            assert_eq!(plain.selection, 0..expected.chars().count());
+        }
+    }
+
+    #[test]
+    fn link_command_at_an_existing_link_boundary_does_not_remove_the_link() {
+        let source = "[Noter](https://example.com)";
+
+        let before = apply_markdown_command(source, 0..0, MarkdownCommand::Link);
+        assert_eq!(before.text, "[]()[Noter](https://example.com)");
+
+        let end = source.chars().count();
+        let after = apply_markdown_command(source, end..end, MarkdownCommand::Link);
+        assert_eq!(after.text, "[Noter](https://example.com)[]()");
+    }
+
+    #[test]
+    fn unsupported_link_forms_do_not_claim_a_reversible_active_state() {
+        let reference = "[Noter][site]\n\n[site]: https://example.com";
+        assert!(!markdown_command_is_active(
+            reference,
+            1..6,
+            MarkdownCommand::Link,
+        ));
+        assert_eq!(
+            apply_markdown_command(reference, 1..6, MarkdownCommand::Link).text,
+            reference,
+        );
+
+        let autolink = "<https://example.com>";
+        assert!(!markdown_command_is_active(
+            autolink,
+            2..10,
+            MarkdownCommand::Link,
+        ));
+        assert_eq!(
+            apply_markdown_command(autolink, 2..10, MarkdownCommand::Link).text,
+            autolink,
+        );
+    }
+
+    #[test]
+    fn link_command_fails_closed_when_selected_source_breaks_the_label() {
+        for source in ["a]b", "a\\"] {
+            let selection = 0..source.chars().count();
+            assert_eq!(
+                apply_markdown_command(source, selection.clone(), MarkdownCommand::Link),
+                CommandResult {
+                    text: source.to_owned(),
+                    selection,
+                }
+            );
+        }
     }
 
     #[test]
     fn selected_link_target_is_visible_while_it_is_being_edited() {
         let style = egui::Style::default();
-        let result = apply_markdown_command("Read Noter", 5..10, MarkdownCommand::Link);
-        let selection = char_range_to_byte_range(&result.text, result.selection);
-        let reveal = semantic_target_at_selection(&result.text, &selection)
+        let source = "[Noter](https://example.com)";
+        let target_start = source.find("https://").expect("fixture contains a URL");
+        let selection = target_start..target_start + "https://example.com".len();
+        let reveal = semantic_target_at_selection(source, &selection)
             .expect("the selected URL must be recognized as editable semantic content");
 
-        let job = markdown_edit_layout(&result.text, &style, Some(reveal.clone()));
+        let job = markdown_edit_layout(source, &style, Some(reveal.clone()));
         let target = job.format_at_byte(egui::text::ByteIndex(reveal.start));
 
         assert_ne!(target.color, egui::Color32::TRANSPARENT);
         assert!(target.font_id.size > MARKER_FONT_SIZE);
         assert_eq!(target.color, style.visuals.hyperlink_color);
         assert_ne!(target.underline, egui::Stroke::NONE);
+    }
+
+    #[test]
+    fn empty_link_target_reveals_only_its_editable_parentheses() {
+        let style = egui::Style::default();
+        let result = apply_markdown_command("Read Noter", 5..10, MarkdownCommand::Link);
+        let selection = char_range_to_byte_range(&result.text, result.selection);
+        let reveal = semantic_target_at_selection(&result.text, &selection)
+            .expect("the empty destination delimiters must be editable");
+
+        assert_eq!(&result.text[reveal.clone()], "()");
+        let job = markdown_edit_layout(&result.text, &style, Some(reveal.clone()));
+        let opening = job.format_at_byte(egui::text::ByteIndex(reveal.start));
+        assert_ne!(opening.color, egui::Color32::TRANSPARENT);
+        assert!(opening.font_id.size > MARKER_FONT_SIZE);
+        assert_eq!(opening.color, style.visuals.hyperlink_color);
+    }
+
+    #[test]
+    fn formatting_active_state_matches_markers_and_selected_lines() {
+        assert!(markdown_command_is_active(
+            "**strong**",
+            2..8,
+            MarkdownCommand::Bold,
+        ));
+        assert!(!markdown_command_is_active(
+            "**strong**",
+            2..8,
+            MarkdownCommand::Italic,
+        ));
+        assert!(markdown_command_is_active(
+            "***both***",
+            3..7,
+            MarkdownCommand::Italic,
+        ));
+        assert!(markdown_command_is_active(
+            "# Heading",
+            2..9,
+            MarkdownCommand::Heading1,
+        ));
+        assert!(markdown_command_is_active(
+            "one\n- two\nthree",
+            6..9,
+            MarkdownCommand::BulletedList,
+        ));
+        assert!(markdown_command_is_active(
+            "Read [Noter]()",
+            6..11,
+            MarkdownCommand::Link,
+        ));
+    }
+
+    #[test]
+    fn formatting_buttons_expose_stable_accessible_toggle_state() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut editor = MarkdownEditor::default();
+        editor.activate_with_selection(0..8, "**text**".to_owned(), CharSelection::new(2, 6));
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            editor.toolbar(ui);
+        });
+
+        assert_eq!(
+            accesskit_toggled(&output, "Bold"),
+            Some(egui::accesskit::Toggled::True)
+        );
+        assert_eq!(
+            accesskit_toggled(&output, "Italic"),
+            Some(egui::accesskit::Toggled::False)
+        );
+    }
+
+    #[test]
+    fn focused_editor_shortcuts_use_the_same_reversible_formatting_path() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "text".to_owned();
+        editor.activate_with_selection(0..4, source.clone(), CharSelection::new(0, 4));
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            assert!(!editor.show(ui, &mut source).changed());
+        });
+        let mut pressed = egui::RawInput::default();
+        pressed.events.push(egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        let _ = context.run_ui(pressed, |ui| {
+            ui.set_width(800.0);
+            assert_eq!(
+                editor.show(ui, &mut source),
+                MarkdownShowOutcome::Changed(EditOrigin::MarkdownFormatting)
+            );
+        });
+        assert_eq!(source, "**text**");
+
+        let mut repeated = egui::RawInput::default();
+        repeated.events.push(egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        let _ = context.run_ui(repeated, |ui| {
+            ui.set_width(800.0);
+            assert!(!editor.show(ui, &mut source).changed());
+        });
+        assert_eq!(source, "**text**");
+
+        let mut released = egui::RawInput::default();
+        released.events.push(egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        let _ = context.run_ui(released, |ui| {
+            ui.set_width(800.0);
+            assert!(!editor.show(ui, &mut source).changed());
+        });
+
+        let mut pressed_again = egui::RawInput::default();
+        pressed_again.events.push(egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        let _ = context.run_ui(pressed_again, |ui| {
+            ui.set_width(800.0);
+            assert_eq!(
+                editor.show(ui, &mut source),
+                MarkdownShowOutcome::Changed(EditOrigin::MarkdownFormatting)
+            );
+        });
+        assert_eq!(source, "text");
     }
 
     #[test]

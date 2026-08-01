@@ -224,6 +224,47 @@ Release tests must include NVDA on Windows, VoiceOver on macOS, and Orca on Linu
 plus real CJK IME composition, dead keys, emoji, combining marks, RTL samples,
 high contrast, keyboard-only operation, and 125 to 200 percent scaling.
 
+## 2026-07-31 editor-control, spelling, and emoji review
+
+Sources reviewed on 2026-07-31:
+
+- The W3C ARIA Authoring Practices
+  [Button Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/button/) requires a
+  toggle button to keep a stable label and expose its pressed state. The
+  [Toolbar Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/toolbar/) treats a
+  toolbar as a composite control with documented keyboard movement and careful
+  focus management.
+- The Microsoft
+  [Spell Checking API overview](https://learn.microsoft.com/en-us/windows/win32/intl/about-the-spell-checker-api)
+  and
+  [`ISpellCheckerFactory::CreateSpellChecker`](https://learn.microsoft.com/en-us/windows/win32/api/spellcheck/nf-spellcheck-ispellcheckerfactory-createspellchecker)
+  expose installed local spell providers by BCP 47 language and allow an
+  application to capability-check a language before creating a checker.
+- Apple's
+  [`NSSpellChecker`](https://developer.apple.com/documentation/appkit/nsspellchecker)
+  is the native shared spelling service and exposes available and preferred
+  languages. Linux needs a separately selected local provider rather than an
+  assumed cross-platform operating-system API.
+- The current egui 0.35
+  [`FontDefinitions`](https://docs.rs/egui/0.35.0/egui/struct.FontDefinitions.html)
+  default includes emoji fallback fonts, but egui's bundled emoji rendering is
+  monochrome. Preserving those fallbacks protects character coverage; it does
+  not prove acceptable platform-native emoji appearance.
+
+Product implications:
+
+- Markdown formatting buttons keep stable accessible names, expose toggled
+  state, and use one reversible command path for pointer and keyboard actions.
+  Full composite-toolbar arrow navigation remains an M6 accessibility gap; the
+  current prototype still exposes separately focusable buttons.
+- An optional spelling feature must use an explicit local provider adapter,
+  explicit language selection, revision-tagged results, and user-triggered
+  replacement. It must not become a remote dictionary service or background
+  document upload.
+- Pasted emoji remains ordinary UTF-8 and the complete default fallback chain
+  stays installed. M5 must still validate native appearance, shaping, cursor
+  movement, selection, and round-trip behavior on every supported platform.
+
 ## Markdown scope
 
 Markdown formatting is not a small renderer feature. The

@@ -7,6 +7,9 @@ const NOTER_PROPORTIONAL_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/Int
 const ENHANCED_TEXT_CONTRAST: f64 = 7.0;
 const TEXT_CONTRAST: f64 = 4.5;
 const CONTROL_CONTRAST: f64 = 3.0;
+const CRT_SCANLINE_SPACING: f32 = 4.0;
+const CRT_MAX_SCANLINES: usize = 1_024;
+const CRT_VIGNETTE_WIDTH: f32 = 10.0;
 
 /// A bounded, local-only idle effect associated with a built-in theme.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -90,6 +93,12 @@ impl AppTheme {
     }
 
     pub fn apply(self, context: &egui::Context) {
+        let text_family = if matches!(self, Self::GreenScreen | Self::AmberScreen) {
+            egui::FontFamily::Monospace
+        } else {
+            egui::FontFamily::Proportional
+        };
+        apply_text_family(context, &text_family);
         match self {
             Self::System => {
                 apply_palette(context, egui::Theme::Light, VisualPalette::Light);
@@ -114,6 +123,90 @@ impl AppTheme {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct CrtOverlay {
+    scanline: egui::Color32,
+    border: egui::Color32,
+    vignette: egui::Color32,
+}
+
+fn crt_overlay(theme: AppTheme) -> Option<CrtOverlay> {
+    match theme {
+        AppTheme::GreenScreen => Some(CrtOverlay {
+            scanline: egui::Color32::from_rgba_unmultiplied(0, 12, 2, 42),
+            border: egui::Color32::from_rgba_unmultiplied(77, 190, 91, 110),
+            vignette: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 46),
+        }),
+        AppTheme::AmberScreen => Some(CrtOverlay {
+            scanline: egui::Color32::from_rgba_unmultiplied(18, 8, 0, 45),
+            border: egui::Color32::from_rgba_unmultiplied(215, 147, 42, 110),
+            vignette: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 48),
+        }),
+        AppTheme::System | AppTheme::Light | AppTheme::Dark => None,
+    }
+}
+
+/// Paints a bounded, noninteractive glass-layer treatment for CRT themes.
+pub fn paint_crt_overlay(context: &egui::Context, theme: AppTheme) {
+    let Some(overlay) = crt_overlay(theme) else {
+        return;
+    };
+    let rect = context.content_rect();
+    if !rect.is_finite() || rect.is_negative() {
+        return;
+    }
+    let painter = context.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("noter-crt-glass"),
+    ));
+    for line in 0..CRT_MAX_SCANLINES {
+        let y = rect.top() + (line as f32).mul_add(CRT_SCANLINE_SPACING, 0.5);
+        if y >= rect.bottom() {
+            break;
+        }
+        painter.line_segment(
+            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+            egui::Stroke::new(1.0, overlay.scanline),
+        );
+    }
+
+    let edge = CRT_VIGNETTE_WIDTH
+        .min(rect.width() / 2.0)
+        .min(rect.height() / 2.0);
+    painter.rect_filled(
+        egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), rect.top() + edge)),
+        egui::CornerRadius::ZERO,
+        overlay.vignette,
+    );
+    painter.rect_filled(
+        egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - edge), rect.max),
+        egui::CornerRadius::ZERO,
+        overlay.vignette,
+    );
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(rect.left(), rect.top() + edge),
+            egui::pos2(rect.left() + edge, rect.bottom() - edge),
+        ),
+        egui::CornerRadius::ZERO,
+        overlay.vignette,
+    );
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(rect.right() - edge, rect.top() + edge),
+            egui::pos2(rect.right(), rect.bottom() - edge),
+        ),
+        egui::CornerRadius::ZERO,
+        overlay.vignette,
+    );
+    painter.rect_stroke(
+        rect.shrink(1.0),
+        egui::CornerRadius::ZERO,
+        egui::Stroke::new(1.0, overlay.border),
+        egui::StrokeKind::Inside,
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -187,6 +280,21 @@ fn configure_visual_details(visuals: &mut egui::Visuals) {
     visuals.widgets.hovered.corner_radius = 4.into();
     visuals.widgets.active.corner_radius = 4.into();
     visuals.widgets.open.corner_radius = 4.into();
+}
+
+fn apply_text_family(context: &egui::Context, family: &egui::FontFamily) {
+    context.all_styles_mut(|style| {
+        for text_style in [
+            egui::TextStyle::Body,
+            egui::TextStyle::Button,
+            egui::TextStyle::Small,
+            egui::TextStyle::Heading,
+        ] {
+            if let Some(font_id) = style.text_styles.get_mut(&text_style) {
+                font_id.family = family.clone();
+            }
+        }
+    });
 }
 
 fn apply_light_palette(visuals: &mut egui::Visuals) {
@@ -327,6 +435,8 @@ fn apply_terminal_palette(visuals: &mut egui::Visuals, palette: TerminalPalette)
     visuals.warn_fg_color = palette.warning;
     visuals.error_fg_color = palette.error;
     visuals.window_stroke = egui::Stroke::new(1.0, palette.outline);
+    visuals.window_corner_radius = egui::CornerRadius::ZERO;
+    visuals.menu_corner_radius = egui::CornerRadius::ZERO;
 
     configure_widget(
         &mut visuals.widgets.noninteractive,
@@ -363,6 +473,15 @@ fn apply_terminal_palette(visuals: &mut egui::Visuals, palette: TerminalPalette)
         palette.outline,
         palette.selected_text,
     );
+    for widget in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.open,
+    ] {
+        widget.corner_radius = egui::CornerRadius::ZERO;
+    }
 }
 
 fn contrast_ratio(first: egui::Color32, second: egui::Color32) -> f64 {
@@ -402,6 +521,10 @@ fn configure_widget(
 }
 
 fn configure_fonts(context: &egui::Context) {
+    context.set_fonts(noter_font_definitions());
+}
+
+fn noter_font_definitions() -> egui::FontDefinitions {
     let mut definitions = egui::FontDefinitions::default();
     definitions.font_data.insert(
         NOTER_PROPORTIONAL_FONT.to_owned(),
@@ -412,7 +535,7 @@ fn configure_fonts(context: &egui::Context) {
         .entry(egui::FontFamily::Proportional)
         .or_default()
         .insert(0, NOTER_PROPORTIONAL_FONT.to_owned());
-    context.set_fonts(definitions);
+    definitions
 }
 
 #[cfg(test)]
@@ -579,5 +702,63 @@ mod tests {
 
         assert!(weight.range.min <= 400.0);
         assert!(weight.range.max >= 700.0);
+    }
+
+    #[test]
+    fn bundled_font_keeps_the_complete_default_fallback_chain() {
+        let defaults = egui::FontDefinitions::default();
+        let configured = noter_font_definitions();
+        let proportional = &configured.families[&egui::FontFamily::Proportional];
+
+        assert_eq!(
+            proportional.first().map(String::as_str),
+            Some(NOTER_PROPORTIONAL_FONT)
+        );
+        assert_eq!(
+            &proportional[1..],
+            defaults.families[&egui::FontFamily::Proportional].as_slice()
+        );
+        assert_eq!(
+            configured.families[&egui::FontFamily::Monospace],
+            defaults.families[&egui::FontFamily::Monospace]
+        );
+    }
+
+    #[test]
+    fn specialty_themes_use_terminal_type_and_square_controls_then_reset_cleanly() {
+        let context = egui::Context::default();
+        configure_styles(&context);
+
+        for theme in [AppTheme::GreenScreen, AppTheme::AmberScreen] {
+            theme.apply(&context);
+            let style = context.style_of(egui::Theme::Dark);
+            assert_eq!(
+                style.text_styles[&egui::TextStyle::Body].family,
+                egui::FontFamily::Monospace
+            );
+            assert_eq!(
+                style.text_styles[&egui::TextStyle::Heading].family,
+                egui::FontFamily::Monospace
+            );
+            assert_eq!(
+                style.visuals.widgets.inactive.corner_radius,
+                egui::CornerRadius::ZERO
+            );
+            assert!(crt_overlay(theme).is_some());
+        }
+
+        AppTheme::Dark.apply(&context);
+        let restored = context.style_of(egui::Theme::Dark);
+        assert_eq!(
+            restored.text_styles[&egui::TextStyle::Body].family,
+            egui::FontFamily::Proportional
+        );
+        assert_eq!(
+            restored.visuals.widgets.inactive.corner_radius,
+            egui::CornerRadius::same(4)
+        );
+        for theme in [AppTheme::System, AppTheme::Light, AppTheme::Dark] {
+            assert!(crt_overlay(theme).is_none());
+        }
     }
 }

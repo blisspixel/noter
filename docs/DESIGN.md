@@ -331,8 +331,22 @@ exact source selection through the same editor-state boundary used by Undo and
 Find. Word wrap changes only Text Mode layout. Keyboard, menu, and supported
 pointer magnification over the document surface scale document type, including
 native Markdown headings, from 50 to 300 percent without changing menus, status
-controls, source bytes, or revision identity. Wrap and zoom preferences accept
-only canonical bounded persisted values.
+controls, source bytes, or revision identity. The Markdown document bar also
+maps vertical wheel motion over its live percentage to one bounded zoom command
+per frame; clicking that value resets to 100 percent. Horizontal-only,
+non-finite, and zero motion do nothing. Wrap and zoom preferences accept only
+canonical bounded persisted values.
+
+Optional spell checking is an M5 platform adapter, not a network service or a
+Markdown rewrite. The preference is explicit and off when no supported local
+provider exists. An adapter accepts a BCP 47 language, bounded visible text,
+and an exact document revision; it returns ranges and suggestions tagged with
+that revision. Stale results are discarded. Suggestions never replace text
+without a user action, and no adapter may upload, retain, or train on document
+content. Windows and macOS use their native local spell services where
+available. A Linux provider must be installed locally, capability-checked, and
+covered by the same privacy and unavailable-provider tests before support is
+claimed.
 
 ## 6. Durable file I/O
 
@@ -709,12 +723,16 @@ replaced individually rather than discarding the whole file. Config and recent
 files use the durable state-file writer. Recovery content never enters config.
 
 Theme preference is System, Light, Dark, Green Screen, or Amber Screen. The two
-specialty palettes use the dark rendering path without changing font shaping or
-document semantics. Returning to Dark or System reconstructs the standard
-palette instead of retaining specialty colors. System changes are delivered by
-platform events where available and checked on focus elsewhere. Contrast,
-selection, focus, disabled state, and error state are tested, not selected only
-for appearance.
+specialty palettes use the dark rendering path and the same native shaping and
+fallback engine while selecting monospace application type, square controls,
+and a bounded static CRT glass overlay. The overlay contains at most 1,024
+scanlines plus four fixed edge regions and one border; it is noninteractive and
+has no timer, document inspection, or network path. Returning to Light, Dark,
+or System restores proportional application type and the complete standard
+visual state instead of retaining specialty details. System changes are
+delivered by platform events where available and checked on focus elsewhere.
+Contrast, selection, focus, disabled state, and error state are tested, not
+selected only for appearance.
 
 Specialty palettes are complete data values passed through one runtime
 validator. Primary, secondary, link, warning, error, selection, active-control,
@@ -747,17 +765,26 @@ The inactive document and active source-backed editor use the same explicit
 body, heading, emphasis, link, and code style mapping. Supported heading and
 inline delimiters remain in source while being visually suppressed, and a link
 target is revealed only while it is edited. Eight core formatting actions map
-back to ordinary Markdown. The responsive top row keeps the primary Mode and
+back to ordinary Markdown as selection-aware toggles. Repeating a command
+removes only a parser-verified simple construct, while malformed, asymmetric,
+multi-backtick, and deeper repeated-star syntax fails closed. Empty-caret
+commands never remove literal delimiters. Line commands touch only selected
+logical lines. Link never invents label text or a destination, validates the
+complete candidate through the parser, and excludes parser-recognized code and
+inline HTML ranges while locating the label boundary. Bold, Italic, and Link have
+focused-editor keyboard commands. Toggle buttons keep stable accessible labels
+and expose pressed state. The responsive top row keeps the primary Mode and
 Theme controls opposite the application menus. Markdown uses the same
 continuous borderless editor fill as Text Mode, with no page card, border, or
-shadow. A 760-point maximum reading measure is centered on wide windows, and
-24-point inner gutters collapse responsively on constrained windows. The
-separate Markdown document bar keeps whitespace-grouped formatting actions on
+shadow. Content consumes the available canvas with only the ordinary editor
+inset instead of a centered page measure. The separate Markdown document bar
+keeps whitespace-grouped formatting actions on
 the left and a distinct bounded zoom cluster on the right when space permits.
 Construction order matches visual order so keyboard focus and
 accessibility-tree traversal do not reverse controls. Its reset control exposes
-the live percentage as an accessibility value, and document-bar zoom commands
-preserve control focus without activating a source-backed editor. Text Mode
+the live percentage as an accessibility value, accepts vertical pointer-wheel
+zoom, and preserves control focus without activating a source-backed editor.
+Text Mode
 exposes every delimiter, and five conservative diagnostics operate directly on
 source. A narrowly recoverable line-wide emphasis spacing mistake is projected
 with the intended style while MD037 reports that portable Markdown requires
