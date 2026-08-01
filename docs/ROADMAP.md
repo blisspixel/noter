@@ -416,9 +416,15 @@ completion contract is [MARKDOWN.md](MARKDOWN.md).
 The current vertical slice builds a borderless native layout before shaping,
 uses real body, heading, and strong-emphasis weights in inactive and active
 content, activates one source range for direct editing without exposing
-supported delimiters, and maps eight formatting actions back to ordinary
-Markdown source. Those actions are selection-aware toggles, avoid invented
-link text and targets, expose accessible pressed state, and provide focused
+supported delimiters, and maps one paragraph-style selector with Paragraph and
+all six ATX heading levels, plus six formatting actions, back to ordinary
+Markdown source. Paragraph and heading choices are exact idempotent styles;
+the remaining actions are selection-aware toggles. Paragraph styles use
+parser-verified top-level blocks and fail closed for code, setext headings,
+nested blocks, unsupported structures, and paragraph content that cannot round
+trip through ATX syntax byte-exact, including ambiguous leading whitespace and
+trailing closing-style hashes. Controls avoid invented link text and targets,
+expose accessible current or pressed state, and provide focused
 keyboard paths for Bold, Italic, and Link. The permanent non-modal formatting
 bar has no Done state; Escape returns a focused active range to rendered form
 after synchronizing its pending edit. Click-and-drag selection maps

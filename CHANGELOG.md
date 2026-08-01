@@ -77,6 +77,23 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
+- Replace the separate H1 and H2 Markdown buttons with one fixed-width
+  paragraph-style selector for Paragraph and all six ATX heading levels. The
+  selector reports the current style accessibly, marks mixed selections
+  honestly, and applies idempotent source-backed line edits without changing
+  native or mixed line endings. Parser-verified indentation, tab separators,
+  and closing sequences preserve visible content; unsupported block structures
+  remain byte-exact. Paragraph promotion additionally requires an exact style
+  round trip, so ambiguous leading whitespace and trailing closing-style hashes
+  report Unavailable instead of losing source. Directional selections remain
+  directional, and compact windows place styles in a bounded submenu instead
+  of clipping later actions.
+- Make the release rehearsal install the Windows cargo-auditable binary from an
+  independently checksum-pinned official archive and verify the extracted and
+  installed executable hashes. POSIX targets retain their checksum-aware pinned
+  installer and versioned receipt validation. This avoids mistaking Cargo
+  1.97's own version response for the subcommand version while keeping every
+  downloaded payload fail closed.
 - Mark the generated third-party HTML license inventory as generated legal
   material for GitHub language analysis. Noter remains a compiled Rust desktop
   application with no WebView, browser engine, HTML interface, JavaScript
@@ -98,8 +115,9 @@ release, so current work remains under Unreleased.
   not exit in time instead of claiming cleanup succeeded.
 - Refine Markdown Mode into a direct word-editor surface. The continuous canvas
   now uses the available window width with only the ordinary editor inset.
-  Bold, Italic, headings, links, inline code, lists, and quotes expose real
-  toggle state and apply only to the current selection or selected lines.
+  Paragraph and heading styles use one conventional style selector; Bold,
+  Italic, links, inline code, lists, and quotes expose real toggle state. Every
+  control applies only to the current selection or selected lines.
   Repeated formatting removes only parser-verified simple syntax; malformed,
   asymmetric, multi-backtick, deeper repeated-star, and empty-caret delimiter
   cases fail closed. Empty selections insert blank delimiters instead of

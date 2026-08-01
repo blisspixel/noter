@@ -12,6 +12,7 @@ const ACTIVE_EDITOR_ID: &str = "noter-markdown-active-block";
 const EXPANDED_FORMAT_MIN_WIDTH: f32 = 480.0;
 const FORMAT_BUTTON_SIZE: egui::Vec2 = egui::vec2(32.0, 28.0);
 const CODE_BUTTON_SIZE: egui::Vec2 = egui::vec2(38.0, 28.0);
+const BLOCK_STYLE_BUTTON_WIDTH: f32 = 112.0;
 const BLOCK_HORIZONTAL_PADDING: i8 = 0;
 const BLOCK_VERTICAL_PADDING: i8 = 3;
 const BLOCK_GAP: f32 = 3.0;
@@ -190,9 +191,94 @@ fn count_projection_block(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MarkdownCommand {
+enum BlockStyle {
+    Paragraph,
     Heading1,
     Heading2,
+    Heading3,
+    Heading4,
+    Heading5,
+    Heading6,
+}
+
+impl BlockStyle {
+    const ALL: [Self; 7] = [
+        Self::Paragraph,
+        Self::Heading1,
+        Self::Heading2,
+        Self::Heading3,
+        Self::Heading4,
+        Self::Heading5,
+        Self::Heading6,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Paragraph => "Paragraph",
+            Self::Heading1 => "Heading 1",
+            Self::Heading2 => "Heading 2",
+            Self::Heading3 => "Heading 3",
+            Self::Heading4 => "Heading 4",
+            Self::Heading5 => "Heading 5",
+            Self::Heading6 => "Heading 6",
+        }
+    }
+
+    const fn heading_level(self) -> Option<usize> {
+        match self {
+            Self::Paragraph => None,
+            Self::Heading1 => Some(1),
+            Self::Heading2 => Some(2),
+            Self::Heading3 => Some(3),
+            Self::Heading4 => Some(4),
+            Self::Heading5 => Some(5),
+            Self::Heading6 => Some(6),
+        }
+    }
+
+    const fn from_heading_level(level: u8) -> Option<Self> {
+        match level {
+            1 => Some(Self::Heading1),
+            2 => Some(Self::Heading2),
+            3 => Some(Self::Heading3),
+            4 => Some(Self::Heading4),
+            5 => Some(Self::Heading5),
+            6 => Some(Self::Heading6),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BlockStyleState {
+    Uniform(BlockStyle),
+    Mixed,
+    Unavailable,
+}
+
+impl BlockStyleState {
+    const fn current(self) -> Option<BlockStyle> {
+        match self {
+            Self::Uniform(style) => Some(style),
+            Self::Mixed | Self::Unavailable => None,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Uniform(style) => style.label(),
+            Self::Mixed => "Mixed",
+            Self::Unavailable => "Unavailable",
+        }
+    }
+
+    const fn is_available(self) -> bool {
+        !matches!(self, Self::Unavailable)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MarkdownCommand {
     Bold,
     Italic,
     Link,
@@ -202,9 +288,9 @@ pub enum MarkdownCommand {
 }
 
 impl MarkdownCommand {
-    const ALL: [Self; 8] = [
-        Self::Heading1,
-        Self::Heading2,
+    const WITH_SHORTCUTS: [Self; 3] = [Self::Bold, Self::Italic, Self::Link];
+
+    const INLINE_AND_LINE: [Self; 6] = [
         Self::Bold,
         Self::Italic,
         Self::Link,
@@ -215,8 +301,6 @@ impl MarkdownCommand {
 
     const fn description(self) -> &'static str {
         match self {
-            Self::Heading1 => "Toggle a level-one heading on the selected lines",
-            Self::Heading2 => "Toggle a level-two heading on the selected lines",
             Self::Bold => "Toggle strong emphasis on the selection",
             Self::Italic => "Toggle emphasis on the selection",
             Self::Link => "Toggle a Markdown link without inventing text or a URL",
@@ -228,8 +312,6 @@ impl MarkdownCommand {
 
     const fn menu_label(self) -> &'static str {
         match self {
-            Self::Heading1 => "Heading 1",
-            Self::Heading2 => "Heading 2",
             Self::Bold => "Bold",
             Self::Italic => "Italic",
             Self::Link => "Link",
@@ -241,8 +323,6 @@ impl MarkdownCommand {
 
     fn button_text(self) -> Option<egui::RichText> {
         match self {
-            Self::Heading1 => Some(egui::RichText::new("H1").strong().size(12.0)),
-            Self::Heading2 => Some(egui::RichText::new("H2").strong().size(12.0)),
             Self::Bold => Some(egui::RichText::new("B").strong().size(16.0)),
             Self::InlineCode => Some(egui::RichText::new("</>").monospace().size(11.0)),
             Self::Italic | Self::Link | Self::BulletedList | Self::Quote => None,
@@ -258,7 +338,7 @@ impl MarkdownCommand {
     }
 
     const fn ends_group(self) -> bool {
-        matches!(self, Self::Heading2 | Self::Italic | Self::InlineCode)
+        matches!(self, Self::Italic | Self::InlineCode)
     }
 
     const fn shortcut(self) -> Option<egui::KeyboardShortcut> {
@@ -266,11 +346,7 @@ impl MarkdownCommand {
             Self::Bold => egui::Key::B,
             Self::Italic => egui::Key::I,
             Self::Link => egui::Key::K,
-            Self::Heading1
-            | Self::Heading2
-            | Self::InlineCode
-            | Self::BulletedList
-            | Self::Quote => return None,
+            Self::InlineCode | Self::BulletedList | Self::Quote => return None,
         };
         Some(egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, key))
     }
@@ -363,7 +439,7 @@ impl MarkdownCommand {
                     );
                 }
             }
-            Self::Heading1 | Self::Heading2 | Self::Bold | Self::InlineCode => {}
+            Self::Bold | Self::InlineCode => {}
         }
     }
 }
@@ -400,14 +476,30 @@ impl ActiveBlock {
     fn apply(&mut self, command: MarkdownCommand) {
         let result = apply_markdown_command(&self.draft, self.selection.ordered_range(), command);
         self.draft = result.text;
-        self.selection = CharSelection::new(result.selection.start, result.selection.end);
+        self.selection = self.selection.with_ordered_range(result.selection);
         self.dirty = true;
         self.pending_origin = Some(EditOrigin::MarkdownFormatting);
         self.request_focus = true;
     }
 
+    fn apply_block_style(&mut self, style: BlockStyle) {
+        let result = apply_block_style(&self.draft, self.selection.ordered_range(), style);
+        let changed = result.text != self.draft;
+        self.draft = result.text;
+        self.selection = self.selection.with_ordered_range(result.selection);
+        if changed {
+            self.dirty = true;
+            self.pending_origin = Some(EditOrigin::MarkdownFormatting);
+        }
+        self.request_focus = true;
+    }
+
     fn command_is_active(&self, command: MarkdownCommand) -> bool {
         markdown_command_is_active(&self.draft, self.selection.ordered_range(), command)
+    }
+
+    fn block_style(&self) -> BlockStyleState {
+        selected_block_style(&self.draft, self.selection.ordered_range())
     }
 }
 
@@ -428,6 +520,14 @@ impl CharSelection {
 
     fn ordered_range(self) -> Range<usize> {
         self.anchor.min(self.active)..self.anchor.max(self.active)
+    }
+
+    const fn with_ordered_range(self, range: Range<usize>) -> Self {
+        if self.anchor <= self.active {
+            Self::new(range.start, range.end)
+        } else {
+            Self::new(range.end, range.start)
+        }
     }
 }
 
@@ -528,7 +628,9 @@ impl MarkdownEditor {
         }
 
         let enabled = self.active.is_some();
-        for command in MarkdownCommand::ALL {
+        self.block_style_selector(ui, enabled);
+        ui.add_space(8.0);
+        for command in MarkdownCommand::INLINE_AND_LINE {
             let selected = self
                 .active
                 .as_ref()
@@ -562,12 +664,79 @@ impl MarkdownEditor {
         }
     }
 
+    fn block_style_selector(&mut self, ui: &mut egui::Ui, enabled: bool) {
+        let state = self.active.as_ref().map(ActiveBlock::block_style);
+        let style_enabled = state.is_some_and(BlockStyleState::is_available);
+        let current = state.and_then(BlockStyleState::current);
+        let visible_label = state.map_or("Style", BlockStyleState::label);
+        let mut requested = None;
+        let response = ui
+            .add_enabled_ui(style_enabled, |ui| {
+                egui::ComboBox::from_id_salt("markdown-block-style")
+                    .width(BLOCK_STYLE_BUTTON_WIDTH)
+                    .selected_text(visible_label)
+                    .show_ui(ui, |ui| {
+                        ui.set_min_width(BLOCK_STYLE_BUTTON_WIDTH);
+                        requested = show_block_style_options(ui, current);
+                    })
+                    .response
+            })
+            .inner;
+        response.widget_info(|| {
+            let mut info = egui::WidgetInfo::labeled(
+                egui::WidgetType::ComboBox,
+                style_enabled,
+                "Paragraph style",
+            );
+            info.current_text_value = Some(visible_label.to_owned());
+            info
+        });
+        if style_enabled {
+            response.on_hover_text("Set paragraph style");
+        } else if enabled {
+            response.on_disabled_hover_text(
+                "Paragraph styles are unavailable for this Markdown structure",
+            );
+        } else {
+            response
+                .on_disabled_hover_text("Click or drag in formatted text to activate formatting");
+        }
+        if let Some(style) = requested {
+            self.apply_block_style(style);
+        }
+    }
+
     fn compact_toolbar(&mut self, ui: &mut egui::Ui) {
         let enabled = self.active.is_some();
+        let style_state = self.active.as_ref().map(ActiveBlock::block_style);
+        let current_style = style_state.and_then(BlockStyleState::current);
+        let style_enabled = style_state.is_some_and(BlockStyleState::is_available);
+        let style_value = style_state.map_or("Style", BlockStyleState::label);
+        let style_label = format!("Paragraph style: {style_value}");
+        let mut requested_style = None;
+        let mut requested_command = None;
         let response = ui
             .add_enabled_ui(enabled, |ui| {
                 ui.menu_button("Format", |ui| {
-                    for command in MarkdownCommand::ALL {
+                    let style_response = ui
+                        .add_enabled_ui(style_enabled, |ui| {
+                            ui.menu_button(style_label, |ui| {
+                                requested_style = show_block_style_options(ui, current_style);
+                            })
+                            .response
+                        })
+                        .inner;
+                    style_response.widget_info(|| {
+                        let mut info = egui::WidgetInfo::labeled(
+                            egui::WidgetType::ComboBox,
+                            style_enabled,
+                            "Paragraph style",
+                        );
+                        info.current_text_value = Some(style_value.to_owned());
+                        info
+                    });
+                    ui.separator();
+                    for command in MarkdownCommand::INLINE_AND_LINE {
                         let selected = self
                             .active
                             .as_ref()
@@ -581,7 +750,7 @@ impl MarkdownEditor {
                             .on_hover_text(command.description())
                             .clicked()
                         {
-                            self.apply_command(command);
+                            requested_command = Some(command);
                             ui.close();
                         }
                     }
@@ -592,11 +761,22 @@ impl MarkdownEditor {
             response
                 .on_disabled_hover_text("Click or drag in formatted text to activate formatting");
         }
+        if let Some(style) = requested_style {
+            self.apply_block_style(style);
+        } else if let Some(command) = requested_command {
+            self.apply_command(command);
+        }
     }
 
     fn apply_command(&mut self, command: MarkdownCommand) {
         if let Some(active) = self.active.as_mut() {
             active.apply(command);
+        }
+    }
+
+    fn apply_block_style(&mut self, style: BlockStyle) {
+        if let Some(active) = self.active.as_mut() {
+            active.apply_block_style(style);
         }
     }
 
@@ -932,7 +1112,7 @@ impl MarkdownEditor {
             .filter(|editor_id| ui.memory(|memory| memory.has_focus(*editor_id)))
             .and_then(|_| {
                 ui.input_mut(|input| {
-                    MarkdownCommand::ALL.into_iter().find(|command| {
+                    MarkdownCommand::WITH_SHORTCUTS.into_iter().find(|command| {
                         command
                             .shortcut()
                             .is_some_and(|shortcut| consume_format_shortcut(input, shortcut))
@@ -1018,6 +1198,31 @@ impl MarkdownEditor {
         output.state.store(ui.ctx(), output.response.id);
         (changed, finish_requested)
     }
+}
+
+fn show_block_style_options(ui: &mut egui::Ui, current: Option<BlockStyle>) -> Option<BlockStyle> {
+    for style in BlockStyle::ALL {
+        if ui
+            .add(egui::Button::selectable(
+                current == Some(style),
+                style.label(),
+            ))
+            .on_hover_text(match style {
+                BlockStyle::Paragraph => "Remove an ATX heading marker from the selected lines",
+                BlockStyle::Heading1 => "Set the selected lines to level-one headings",
+                BlockStyle::Heading2 => "Set the selected lines to level-two headings",
+                BlockStyle::Heading3 => "Set the selected lines to level-three headings",
+                BlockStyle::Heading4 => "Set the selected lines to level-four headings",
+                BlockStyle::Heading5 => "Set the selected lines to level-five headings",
+                BlockStyle::Heading6 => "Set the selected lines to level-six headings",
+            })
+            .clicked()
+        {
+            ui.close();
+            return Some(style);
+        }
+    }
+    None
 }
 
 fn prepare_escape_finish(ui: &egui::Ui, editor_id: egui::Id) -> bool {
@@ -1715,8 +1920,6 @@ fn apply_markdown_command(
     command: MarkdownCommand,
 ) -> CommandResult {
     match command {
-        MarkdownCommand::Heading1 => set_heading(source, selection, 1),
-        MarkdownCommand::Heading2 => set_heading(source, selection, 2),
         MarkdownCommand::Bold => toggle_inline_marker(source, selection, "**"),
         MarkdownCommand::Italic => toggle_inline_marker(source, selection, "*"),
         MarkdownCommand::InlineCode => toggle_inline_marker(source, selection, "`"),
@@ -1726,18 +1929,51 @@ fn apply_markdown_command(
     }
 }
 
+fn apply_block_style(source: &str, selection: Range<usize>, style: BlockStyle) -> CommandResult {
+    let selection = bounded_char_range(source, selection);
+    let state = selected_block_style(source, selection.clone());
+    if state == BlockStyleState::Uniform(style) || state == BlockStyleState::Unavailable {
+        return CommandResult {
+            text: source.to_owned(),
+            selection,
+        };
+    }
+    set_heading_style(source, selection, style.heading_level())
+}
+
+fn selected_block_style(source: &str, selection: Range<usize>) -> BlockStyleState {
+    if source.is_empty() {
+        return BlockStyleState::Uniform(BlockStyle::Paragraph);
+    }
+    let lines = logical_line_ranges(source);
+    let selected = selected_line_indexes(source, selection, &lines);
+    let styles = styleable_line_styles(source, &lines);
+    let mut current = None;
+    let mut mixed = false;
+    for index in selected {
+        let style = match styles[index] {
+            StyleableLine::Paragraph => BlockStyle::Paragraph,
+            StyleableLine::Heading { style, .. } => style,
+            StyleableLine::Unavailable => return BlockStyleState::Unavailable,
+        };
+        if current.is_some_and(|current| current != style) {
+            mixed = true;
+        }
+        current = Some(style);
+    }
+    if mixed {
+        BlockStyleState::Mixed
+    } else {
+        BlockStyleState::Uniform(current.unwrap_or(BlockStyle::Paragraph))
+    }
+}
+
 fn markdown_command_is_active(
     source: &str,
     selection: Range<usize>,
     command: MarkdownCommand,
 ) -> bool {
     match command {
-        MarkdownCommand::Heading1 => selected_lines_all(source, selection, |content| {
-            heading_marker(content).is_some_and(|(level, _)| level == 1)
-        }),
-        MarkdownCommand::Heading2 => selected_lines_all(source, selection, |content| {
-            heading_marker(content).is_some_and(|(level, _)| level == 2)
-        }),
         MarkdownCommand::Bold => inline_marker_location(source, selection, "**").is_some(),
         MarkdownCommand::Italic => inline_marker_location(source, selection, "*").is_some(),
         MarkdownCommand::InlineCode => inline_marker_location(source, selection, "`").is_some(),
@@ -2124,45 +2360,129 @@ fn selected_link_source_range(source: &str, selection: Range<usize>) -> Option<R
         })
 }
 
-fn set_heading(source: &str, selection: Range<usize>, level: usize) -> CommandResult {
+fn set_heading_style(source: &str, selection: Range<usize>, level: Option<usize>) -> CommandResult {
+    let selection = bounded_char_range(source, selection);
     if source.is_empty() {
-        let text = format!("{} ", "#".repeat(level));
+        let text = level.map_or_else(String::new, |level| format!("{} ", "#".repeat(level)));
         let caret = text.chars().count();
         return CommandResult {
             text,
             selection: caret..caret,
         };
     }
-    let remove = selected_lines_all(source, selection.clone(), |content| {
-        heading_marker(content).is_some_and(|(current, _)| current == level)
-    });
-    let prefix = format!("{} ", "#".repeat(level));
-    rewrite_selected_lines(source, selection, |content| {
-        let marker_length = heading_marker(content).map_or(0, |(_, length)| length);
-        let plain = &content[marker_length..];
-        if remove {
-            (plain.to_owned(), 0)
-        } else {
-            (format!("{prefix}{plain}"), prefix.len())
+    let lines = logical_line_ranges(source);
+    let selected = selected_line_indexes(source, selection.clone(), &lines);
+    let styles = styleable_line_styles(source, &lines);
+    if selected
+        .iter()
+        .any(|index| styles[*index] == StyleableLine::Unavailable)
+    {
+        return CommandResult {
+            text: source.to_owned(),
+            selection,
+        };
+    }
+    let prefix = level.map_or_else(String::new, |level| format!("{} ", "#".repeat(level)));
+    rewrite_selected_lines(source, selection, |index, content| {
+        match (level, styles[index]) {
+            (Some(level), StyleableLine::Heading { style, syntax })
+                if style.heading_level() == Some(level) =>
+            {
+                (content.to_owned(), syntax.opening_end)
+            }
+            (Some(_), StyleableLine::Heading { syntax, .. }) => (
+                format!("{prefix}{}", &content[syntax.opening_end..]),
+                prefix.len(),
+            ),
+            (Some(_), StyleableLine::Paragraph) => (format!("{prefix}{content}"), prefix.len()),
+            (None, StyleableLine::Heading { syntax, .. }) => {
+                let content_end = syntax.closing_start.unwrap_or(content.len());
+                (content[syntax.opening_end..content_end].to_owned(), 0)
+            }
+            (None, StyleableLine::Paragraph) => (content.to_owned(), 0),
+            (_, StyleableLine::Unavailable) => {
+                unreachable!("unsupported lines are rejected before rewriting")
+            }
         }
     })
 }
 
-fn heading_marker(content: &str) -> Option<(usize, usize)> {
-    let level = content
-        .as_bytes()
-        .iter()
-        .take(6)
-        .take_while(|byte| **byte == b'#')
-        .count();
-    (level > 0 && content.as_bytes().get(level) == Some(&b' ')).then_some((level, level + 1))
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct AtxHeadingSyntax {
+    level: u8,
+    opening_end: usize,
+    closing_start: Option<usize>,
+}
+
+fn atx_heading_syntax(content: &str) -> Option<AtxHeadingSyntax> {
+    let bytes = content.as_bytes();
+    let mut marker_start = 0;
+    while marker_start < bytes.len() && bytes[marker_start] == b' ' {
+        marker_start += 1;
+    }
+    if marker_start > 3 {
+        return None;
+    }
+
+    let mut marker_end = marker_start;
+    while marker_end < bytes.len() && bytes[marker_end] == b'#' {
+        marker_end += 1;
+    }
+    let level = marker_end.saturating_sub(marker_start);
+    if !(1..=6).contains(&level) {
+        return None;
+    }
+    if marker_end < bytes.len() && !matches!(bytes[marker_end], b' ' | b'\t') {
+        return None;
+    }
+
+    let mut opening_end = marker_end;
+    while opening_end < bytes.len() && matches!(bytes[opening_end], b' ' | b'\t') {
+        opening_end += 1;
+    }
+
+    let mut trimmed_end = bytes.len();
+    while trimmed_end > opening_end && matches!(bytes[trimmed_end - 1], b' ' | b'\t') {
+        trimmed_end -= 1;
+    }
+    let mut closing_hash_start = trimmed_end;
+    while closing_hash_start > opening_end && bytes[closing_hash_start - 1] == b'#' {
+        closing_hash_start -= 1;
+    }
+    let has_closing_sequence = closing_hash_start < trimmed_end
+        && closing_hash_start > 0
+        && matches!(bytes[closing_hash_start - 1], b' ' | b'\t');
+    let closing_start = has_closing_sequence.then(|| {
+        let mut start = closing_hash_start;
+        while start > opening_end && matches!(bytes[start - 1], b' ' | b'\t') {
+            start -= 1;
+        }
+        start
+    });
+
+    Some(AtxHeadingSyntax {
+        level: level as u8,
+        opening_end,
+        closing_start,
+    })
+}
+
+fn paragraph_round_trips_through_heading(content: &str) -> bool {
+    let candidate = format!("# {content}");
+    let Some(syntax) = atx_heading_syntax(&candidate) else {
+        return false;
+    };
+    let content_end = syntax.closing_start.unwrap_or(candidate.len());
+    candidate
+        .get(syntax.opening_end..content_end)
+        .is_some_and(|round_tripped| round_tripped == content)
 }
 
 fn toggle_line_prefix(source: &str, selection: Range<usize>, prefix: &str) -> CommandResult {
     let remove = selected_lines_all(source, selection.clone(), |content| {
         content.starts_with(prefix)
     });
-    rewrite_selected_lines(source, selection, |content| {
+    rewrite_selected_lines(source, selection, |_, content| {
         if content.is_empty() {
             return (String::new(), 0);
         }
@@ -2183,6 +2503,16 @@ struct LogicalLineRange {
     full: Range<usize>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StyleableLine {
+    Paragraph,
+    Heading {
+        style: BlockStyle,
+        syntax: AtxHeadingSyntax,
+    },
+    Unavailable,
+}
+
 fn logical_line_ranges(source: &str) -> Vec<LogicalLineRange> {
     let mut offset = 0;
     logical_lines(source)
@@ -2192,6 +2522,91 @@ fn logical_line_ranges(source: &str) -> Vec<LogicalLineRange> {
             let full = offset..content.end + ending_length;
             offset = full.end;
             LogicalLineRange { content, full }
+        })
+        .collect()
+}
+
+fn styleable_line_styles(source: &str, lines: &[LogicalLineRange]) -> Vec<StyleableLine> {
+    let parser = Parser::new_ext(source, markdown_parser_options()).into_offset_iter();
+    let mut unsupported_ranges = parser
+        .reference_definitions()
+        .iter()
+        .map(|(_, definition)| definition.span.clone())
+        .collect::<Vec<_>>();
+    let mut paragraph_ranges = Vec::new();
+    let mut heading_ranges = Vec::new();
+    let mut depth = 0_usize;
+
+    for (event, range) in parser {
+        match event {
+            Event::Start(tag) => {
+                if depth == 0 {
+                    match tag {
+                        Tag::Paragraph => paragraph_ranges.push(range),
+                        Tag::Heading { level, .. } => {
+                            let style = BlockStyle::from_heading_level(heading_level_number(level))
+                                .expect(
+                                    "pulldown-cmark exposes only heading levels one through six",
+                                );
+                            heading_ranges.push((style, range));
+                        }
+                        _ => unsupported_ranges.push(range),
+                    }
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ if depth == 0 => unsupported_ranges.push(range),
+            _ => {}
+        }
+    }
+
+    lines
+        .iter()
+        .map(|line| {
+            let content = &source[line.content.clone()];
+            let probe = if content.is_empty() {
+                &line.full
+            } else {
+                &line.content
+            };
+            if let Some((style, _)) = heading_ranges
+                .iter()
+                .find(|(_, range)| ranges_overlap(probe, range))
+            {
+                return match atx_heading_syntax(content) {
+                    Some(syntax)
+                        if BlockStyle::from_heading_level(syntax.level) == Some(*style) =>
+                    {
+                        StyleableLine::Heading {
+                            style: *style,
+                            syntax,
+                        }
+                    }
+                    _ => StyleableLine::Unavailable,
+                };
+            }
+            if paragraph_ranges
+                .iter()
+                .any(|range| ranges_overlap(probe, range))
+            {
+                return if paragraph_round_trips_through_heading(content) {
+                    StyleableLine::Paragraph
+                } else {
+                    StyleableLine::Unavailable
+                };
+            }
+            if unsupported_ranges
+                .iter()
+                .any(|range| ranges_overlap(probe, range))
+            {
+                return StyleableLine::Unavailable;
+            }
+            if content.is_empty() {
+                StyleableLine::Paragraph
+            } else {
+                StyleableLine::Unavailable
+            }
         })
         .collect()
 }
@@ -2246,7 +2661,7 @@ fn selected_lines_all(
 fn rewrite_selected_lines(
     source: &str,
     selection: Range<usize>,
-    rewrite: impl Fn(&str) -> (String, usize),
+    rewrite: impl Fn(usize, &str) -> (String, usize),
 ) -> CommandResult {
     let selection = bounded_char_range(source, selection);
     let lines = logical_line_ranges(source);
@@ -2267,7 +2682,7 @@ fn rewrite_selected_lines(
     for (index, line) in lines.iter().enumerate() {
         let content = &source[line.content.clone()];
         if is_selected[index] {
-            let (rewritten, prefix_length) = rewrite(content);
+            let (rewritten, prefix_length) = rewrite(index, content);
             selection_start.get_or_insert_with(|| text.len() + prefix_length.min(rewritten.len()));
             text.push_str(&rewritten);
             selection_end = text.len();
@@ -2331,6 +2746,29 @@ mod tests {
     use super::*;
 
     fn accesskit_bounds(output: &egui::FullOutput, label: &str) -> egui::accesskit::Rect {
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled")
+            .nodes;
+        nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .unwrap_or_else(|| {
+                let labels = nodes
+                    .iter()
+                    .filter_map(|(_, node)| node.label())
+                    .collect::<Vec<_>>();
+                panic!("expected an AccessKit node labeled `{label}` with bounds among {labels:?}")
+            })
+    }
+
+    fn accesskit_node_id(output: &egui::FullOutput, label: &str) -> egui::accesskit::NodeId {
         output
             .platform_output
             .accesskit_update
@@ -2338,12 +2776,37 @@ mod tests {
             .expect("AccessKit must produce an update when enabled")
             .nodes
             .iter()
+            .find_map(|(id, node)| (node.label() == Some(label)).then_some(*id))
+            .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}`"))
+    }
+
+    fn accesskit_bounds_starting_with(
+        output: &egui::FullOutput,
+        prefix: &str,
+    ) -> egui::accesskit::Rect {
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled")
+            .nodes;
+        nodes
+            .iter()
             .find_map(|(_, node)| {
-                (node.label() == Some(label))
+                node.label()
+                    .is_some_and(|label| label.starts_with(prefix))
                     .then(|| node.bounds())
                     .flatten()
             })
-            .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}` with bounds"))
+            .unwrap_or_else(|| {
+                let labels = nodes
+                    .iter()
+                    .filter_map(|(_, node)| node.label())
+                    .collect::<Vec<_>>();
+                panic!(
+                    "expected an AccessKit node starting with `{prefix}` with bounds among {labels:?}"
+                )
+            })
     }
 
     fn accesskit_toggled(
@@ -2358,6 +2821,24 @@ mod tests {
             .nodes
             .iter()
             .find_map(|(_, node)| (node.label() == Some(label)).then(|| node.toggled()))
+            .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}`"))
+    }
+
+    fn accesskit_role_and_value(
+        output: &egui::FullOutput,
+        label: &str,
+    ) -> (egui::accesskit::Role, Option<String>) {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled")
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| (node.role(), node.value().map(str::to_owned)))
+            })
             .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}`"))
     }
 
@@ -2388,6 +2869,16 @@ mod tests {
                 pressed,
                 modifiers: egui::Modifiers::NONE,
             });
+        }
+    }
+
+    fn viewport_input(width: f32, height: f32) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, height),
+            )),
+            ..Default::default()
         }
     }
 
@@ -2500,8 +2991,7 @@ mod tests {
             editor.toolbar(ui);
         });
         for label in [
-            "Heading 1",
-            "Heading 2",
+            "Paragraph style",
             "Bold",
             "Italic",
             "Link",
@@ -2521,6 +3011,109 @@ mod tests {
                 .iter()
                 .all(|shape| text_rect(&shape.shape, "Done").is_none()),
             "the permanent format bar must not expose a modal Done control"
+        );
+    }
+
+    #[test]
+    fn compact_format_submenus_keep_every_action_inside_the_minimum_viewport() {
+        const WIDTH: f32 = 420.0;
+        const HEIGHT: f32 = 300.0;
+
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        crate::theme::configure_styles(&context);
+        let mut editor = MarkdownEditor::default();
+        editor.activate(0..1, "x".to_owned());
+
+        let initial = context.run_ui(viewport_input(WIDTH, HEIGHT), |ui| {
+            ui.set_width(WIDTH);
+            editor.toolbar(ui);
+        });
+        let format_position = initial
+            .shapes
+            .iter()
+            .find_map(|shape| text_rect(&shape.shape, "Format"))
+            .expect("the compact toolbar must render Format")
+            .center();
+        let mut open_format = viewport_input(WIDTH, HEIGHT);
+        append_primary_click(&mut open_format, format_position);
+        let format_menu = context.run_ui(open_format, |ui| {
+            ui.set_width(WIDTH);
+            editor.toolbar(ui);
+        });
+
+        let top_level_labels = [
+            "Paragraph style",
+            "Bold",
+            "Italic",
+            "Link",
+            "Inline code",
+            "Bulleted list",
+            "Quote",
+        ];
+        for label in top_level_labels {
+            let bounds = accesskit_bounds_starting_with(&format_menu, label);
+            assert!(
+                bounds.y0 >= 0.0 && bounds.y1 <= f64::from(HEIGHT),
+                "compact action `{label}` is outside the minimum viewport: {bounds:?}"
+            );
+        }
+        assert_eq!(
+            accesskit_role_and_value(&format_menu, "Paragraph style"),
+            (
+                egui::accesskit::Role::ComboBox,
+                Some("Paragraph".to_owned())
+            )
+        );
+
+        let style_node = accesskit_node_id(&format_menu, "Paragraph style");
+        let mut open_style = viewport_input(WIDTH, HEIGHT);
+        open_style.events.push(egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Click,
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: style_node,
+                data: None,
+            },
+        ));
+        let style_menu = context.run_ui(open_style, |ui| {
+            ui.set_width(WIDTH);
+            editor.toolbar(ui);
+        });
+        for style in BlockStyle::ALL {
+            let label = style.label();
+            let bounds = accesskit_bounds(&style_menu, label);
+            assert!(
+                bounds.x0 >= 0.0
+                    && bounds.x1 <= f64::from(WIDTH)
+                    && bounds.y0 >= 0.0
+                    && bounds.y1 <= f64::from(HEIGHT),
+                "compact style `{label}` is outside the minimum viewport: {bounds:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn paragraph_style_selector_exposes_the_current_style_accessibly() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut editor = MarkdownEditor::default();
+        editor.activate_with_selection(0..9, "# Heading".to_owned(), CharSelection::new(2, 9));
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(EXPANDED_FORMAT_MIN_WIDTH);
+            editor.toolbar(ui);
+        });
+
+        assert!(
+            accesskit_bounds(&output, "Paragraph style").x1 <= f64::from(EXPANDED_FORMAT_MIN_WIDTH)
+        );
+        assert_eq!(
+            accesskit_role_and_value(&output, "Paragraph style"),
+            (
+                egui::accesskit::Role::ComboBox,
+                Some("Heading 1".to_owned())
+            )
         );
     }
 
@@ -2747,16 +3340,184 @@ mod tests {
     }
 
     #[test]
-    fn heading_command_replaces_existing_atx_marker_and_toggles_to_paragraph() {
-        let result = apply_markdown_command("#### Details", 0..0, MarkdownCommand::Heading2);
+    fn paragraph_styles_are_exact_idempotent_operations() {
+        let source = "one\n## two\n";
+        let selection = 0..source.chars().count();
 
-        assert_eq!(result.text, "## Details");
-        assert_eq!(result.selection, 3..10);
+        let heading = apply_block_style(source, selection, BlockStyle::Heading1);
+        assert_eq!(heading.text, "# one\n# two\n");
+        let repeated = apply_block_style(
+            &heading.text,
+            heading.selection.clone(),
+            BlockStyle::Heading1,
+        );
+        assert_eq!(repeated, heading);
 
-        let paragraph =
-            apply_markdown_command(&result.text, result.selection, MarkdownCommand::Heading2);
-        assert_eq!(paragraph.text, "Details");
-        assert_eq!(paragraph.selection, 0..7);
+        let paragraph = apply_block_style(&heading.text, heading.selection, BlockStyle::Paragraph);
+        assert_eq!(paragraph.text, "one\ntwo\n");
+        let repeated = apply_block_style(
+            &paragraph.text,
+            paragraph.selection.clone(),
+            BlockStyle::Paragraph,
+        );
+        assert_eq!(repeated, paragraph);
+    }
+
+    #[test]
+    fn every_atx_heading_level_is_an_exact_idempotent_style() {
+        for (level, style) in BlockStyle::ALL.iter().copied().skip(1).enumerate() {
+            let level = level + 1;
+            let heading = apply_block_style("plain", 0..5, style);
+            assert_eq!(heading.text, format!("{} plain", "#".repeat(level)));
+            assert_eq!(
+                selected_block_style(&heading.text, heading.selection.clone()),
+                BlockStyleState::Uniform(style)
+            );
+
+            let repeated = apply_block_style(&heading.text, heading.selection.clone(), style);
+            assert_eq!(repeated, heading);
+        }
+    }
+
+    #[test]
+    fn paragraph_styles_preserve_native_and_mixed_line_endings() {
+        for source in ["one\r\n## two\r\n", "one\rtwo\r", "one\r\n## two\nthree\r"] {
+            let selection = 0..source.chars().count();
+            let heading = apply_block_style(source, selection, BlockStyle::Heading2);
+            let paragraph =
+                apply_block_style(&heading.text, heading.selection, BlockStyle::Paragraph);
+
+            assert_eq!(paragraph.text, source.replace("## ", ""));
+        }
+    }
+
+    #[test]
+    fn paragraph_style_state_is_exact_and_reports_mixed_content() {
+        assert_eq!(
+            selected_block_style("plain", 0..5),
+            BlockStyleState::Uniform(BlockStyle::Paragraph)
+        );
+        assert_eq!(
+            selected_block_style("# one\n# two", 0..11),
+            BlockStyleState::Uniform(BlockStyle::Heading1)
+        );
+        assert_eq!(
+            selected_block_style("### three", 0..9),
+            BlockStyleState::Uniform(BlockStyle::Heading3)
+        );
+        assert_eq!(
+            selected_block_style("###### six", 0..10),
+            BlockStyleState::Uniform(BlockStyle::Heading6)
+        );
+        assert_eq!(
+            selected_block_style("# one\ntwo", 0..9),
+            BlockStyleState::Mixed
+        );
+        assert_eq!(
+            selected_block_style("### three\n#### four", 0..19),
+            BlockStyleState::Mixed
+        );
+        let mixed_with_code = "plain\n# heading\n```\ncode\n```";
+        assert_eq!(
+            selected_block_style(mixed_with_code, 0..mixed_with_code.chars().count()),
+            BlockStyleState::Unavailable
+        );
+    }
+
+    #[test]
+    fn mixed_style_application_preserves_existing_target_lines_byte_exact() {
+        let source = " # keep\n## change";
+        let result = apply_block_style(source, 0..source.chars().count(), BlockStyle::Heading1);
+
+        assert_eq!(result.text, " # keep\n# change");
+        assert_eq!(
+            selected_block_style(&result.text, result.selection.clone()),
+            BlockStyleState::Uniform(BlockStyle::Heading1)
+        );
+    }
+
+    #[test]
+    fn choosing_the_current_paragraph_style_preserves_a_backward_selection() {
+        let mut active = ActiveBlock::new(0..5, "plain".to_owned(), 1);
+        active.selection = CharSelection::new(4, 1);
+        active.request_focus = false;
+
+        active.apply_block_style(BlockStyle::Paragraph);
+
+        assert!(!active.dirty);
+        assert_eq!(active.pending_origin, None);
+        assert!(active.request_focus);
+        assert_eq!(active.draft, "plain");
+        assert_eq!(active.selection, CharSelection::new(4, 1));
+    }
+
+    #[test]
+    fn paragraph_styles_follow_parser_verified_atx_syntax() {
+        let cases = [
+            (" # Heading", BlockStyle::Heading1, "Heading"),
+            ("#\tHeading", BlockStyle::Heading1, "Heading"),
+            ("## Heading ##", BlockStyle::Heading2, "Heading"),
+            ("  ####\tHeading  ### \t", BlockStyle::Heading4, "Heading"),
+            ("######", BlockStyle::Heading6, ""),
+        ];
+
+        for (source, style, expected_paragraph) in cases {
+            let selection = 0..source.chars().count();
+            assert_eq!(
+                selected_block_style(source, selection.clone()),
+                BlockStyleState::Uniform(style),
+                "unexpected style for {source:?}"
+            );
+            assert_eq!(
+                apply_block_style(source, selection.clone(), style),
+                CommandResult {
+                    text: source.to_owned(),
+                    selection: selection.clone(),
+                },
+                "reselecting {style:?} must be byte-exact for {source:?}"
+            );
+            assert_eq!(
+                apply_block_style(source, selection, BlockStyle::Paragraph).text,
+                expected_paragraph,
+                "demoting {source:?} must remove only parser-owned ATX syntax"
+            );
+        }
+    }
+
+    #[test]
+    fn paragraph_styles_fail_closed_outside_top_level_paragraphs_and_atx_headings() {
+        for (source, selection) in [
+            ("```\n# keep\n```", 4..10),
+            ("    # keep", 0..10),
+            ("Heading\n=======", 0..15),
+            ("> # keep", 0..8),
+            ("x ###", 0..5),
+            ("#######", 0..7),
+            ("trailing ## \t", 0..13),
+            ("  leading", 0..9),
+        ] {
+            assert_eq!(
+                selected_block_style(source, selection.clone()),
+                BlockStyleState::Unavailable,
+                "unsupported structure must be reported for {source:?}"
+            );
+            assert_eq!(
+                apply_block_style(source, selection.clone(), BlockStyle::Paragraph),
+                CommandResult {
+                    text: source.to_owned(),
+                    selection: selection.clone(),
+                },
+                "unsupported structure must remain byte-exact for {source:?}"
+            );
+            assert_eq!(
+                apply_block_style(source, selection.clone(), BlockStyle::Heading1),
+                CommandResult {
+                    text: source.to_owned(),
+                    selection,
+                },
+                "unsafe promotion must remain byte-exact for {source:?}"
+            );
+        }
     }
 
     #[test]
@@ -2931,11 +3692,6 @@ mod tests {
             "***both***",
             3..7,
             MarkdownCommand::Italic,
-        ));
-        assert!(markdown_command_is_active(
-            "# Heading",
-            2..9,
-            MarkdownCommand::Heading1,
         ));
         assert!(markdown_command_is_active(
             "one\n- two\nthree",

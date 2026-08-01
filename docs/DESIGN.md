@@ -776,17 +776,27 @@ The current M2 slice is deliberately bounded. It parses through
 The inactive document and active source-backed editor use the same explicit
 body, heading, emphasis, link, and code style mapping. Supported heading and
 inline delimiters remain in source while being visually suppressed, and a link
-target is revealed only while it is edited. Eight core formatting actions map
-back to ordinary Markdown as selection-aware toggles. Repeating a command
-removes only a parser-verified simple construct, while malformed, asymmetric,
-multi-backtick, and deeper repeated-star syntax fails closed. Empty-caret
-commands never remove literal delimiters. Line commands touch only selected
-logical lines. Link never invents label text or a destination, validates the
-complete candidate through the parser, and excludes parser-recognized code and
-inline HTML ranges while locating the label boundary. Bold, Italic, and Link have
-focused-editor keyboard commands. Toggle buttons keep stable accessible labels
-and expose pressed state. The responsive top row keeps the primary Mode and
-Theme controls opposite the application menus. Markdown uses the same
+target is revealed only while it is edited. One native paragraph-style
+selector exposes Paragraph and all six ATX heading levels; six inline and line
+actions remain selection-aware toggles. Style changes are idempotent, preserve
+directional selections on no-op, and replace only parser-verified top-level
+paragraph or ATX-heading syntax. Indented headings, tab separators, and
+optional closing ATX sequences follow the parser's model; code, setext
+headings, nested blocks, other unsupported structures, and paragraphs whose
+leading whitespace or literal trailing hashes cannot round trip through ATX
+syntax report Unavailable and remain byte-exact. Repeating a toggle removes only
+a parser-verified simple
+construct, while malformed, asymmetric, multi-backtick, and deeper
+repeated-star syntax fails closed. Empty-caret commands never remove literal
+delimiters. Line commands touch only selected logical lines. Link never invents
+label text or a destination, validates the complete candidate through the
+parser, and excludes parser-recognized code and inline HTML ranges while
+locating the label boundary. Bold, Italic, and Link have focused-editor
+keyboard commands. The selector exposes a stable ComboBox name and current
+value; toggle buttons expose stable labels and pressed state. The compact
+Format control nests paragraph styles instead of placing thirteen actions in
+one clipped popup. The responsive top row keeps the primary Mode and Theme
+controls opposite the application menus. Markdown uses the same
 continuous borderless editor fill as Text Mode, with no page card, border, or
 shadow. Content consumes the available canvas with only the ordinary editor
 inset instead of a centered page measure. The separate Markdown document bar

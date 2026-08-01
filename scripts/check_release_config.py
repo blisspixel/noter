@@ -25,17 +25,18 @@ APPROVED_RELEASE_TARGETS = {
 APPROVED_SBOM_ARTIFACTS = {
     f"noter_{target}.cdx.xml" for target in APPROVED_RELEASE_TARGETS
 }
-PINNED_INSTALLERS = {
+PINNED_RELEASE_TOOL_DIGESTS = {
     "b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5",
     "a3435e9944f1a1297add11c6a8ac1f543c14a5ea88879ee05b24ff8218d46d87",
     "ffaafe99087affa66e3202ebb78fb0aeea6c6ff4019f941c82040502442f770a",
-    "2cb2764f6f5e339a1dee20051c02f53b6ed712ef3a79aca2de495762108cdb64",
+    "83a7d5955c7ac96ede5d896ac9ede5f7ecce9ece0e95d9e47acd766b09e2ef1b",
+    "eeb2592233ffaa8536ca809ea50706618cc67b3e26684c5194e79cd642d91b0e",
     "fb8dbee9f182173e062a64a387b21a0badc6fab8b2abf9294973f012972bf6d8",
     "6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31",
 }
 PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 REVIEWED_RELEASE_WORKFLOW_SHA256 = (
-    "c39972289876cca69a61373cfc71abc2027e221a8bb0227e05fe393fb0b1b9f4"
+    "88acb9efe083ade4f378a230f35128374cf989fb54b72f8e373432e975ff0d67"
 )
 REVIEWED_WIX_SHA256 = "777e3bbc058b30611dc274390eb44059a97375c2ca49cf2af910bc386e2cfada"
 REVIEWED_CI_WORKFLOW_SHA256 = (
@@ -267,6 +268,21 @@ def validate_workflow(text: str) -> list[str]:
         "3.14.1.8722": "verified WiX Toolset version",
         "cargo-cyclonedx-0.5.9": "current pinned CycloneDX generator",
         'exec shasum -a 256 "$@"': "macOS archive-checksum compatibility shim",
+        "cargo-auditable-receipt.json": "cargo-auditable install receipt verification",
+        'test ! -L "$auditable_bin"': "non-symlink POSIX cargo-auditable binary",
+        "[IO.FileAttributes]::ReparsePoint": (
+            "non-reparse-point Windows cargo-auditable files"
+        ),
+        '"version":"0.7.5"': "pinned POSIX cargo-auditable receipt version",
+        "cargo-auditable-x86_64-pc-windows-msvc.zip": (
+            "pinned Windows cargo-auditable archive"
+        ),
+        "$sourceHash -cne $env:BINARY_SHA256": (
+            "verified extracted Windows cargo-auditable binary"
+        ),
+        "$installedHash -cne $env:BINARY_SHA256": (
+            "verified installed Windows cargo-auditable binary"
+        ),
         "^v[0-9]+\\.[0-9]+\\.[0-9]+-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*$": (
             "prerelease-only tag validation"
         ),
@@ -308,6 +324,10 @@ def validate_workflow(text: str) -> list[str]:
         "announcement_github_body": "unreviewed generated release notes",
         "brew install noter": "unverified Homebrew installation guidance",
         '--target "$RELEASE_COMMIT"': "target-commit hint for a possibly existing tag",
+        "cargo auditable --version": "ambiguous Cargo self-version probe",
+        "cargo-auditable-installer.ps1": (
+            "unverified Windows cargo-auditable installer"
+        ),
     }
     for token, description in forbidden.items():
         if token in text:
@@ -349,8 +369,8 @@ def validate_workflow(text: str) -> list[str]:
         errors.append(
             "release tag binding checks must be executable in their host steps"
         )
-    for digest in PINNED_INSTALLERS:
-        require_text(text, digest, f"pinned installer digest {digest[:12]}", errors)
+    for digest in PINNED_RELEASE_TOOL_DIGESTS:
+        require_text(text, digest, f"pinned release-tool digest {digest[:12]}", errors)
 
     uses = re.findall(r"^\s*-\s+uses:\s+([^\s#]+)", text, flags=re.MULTILINE)
     if not uses:

@@ -37,10 +37,21 @@ authoritative. Changing modes never rewrites a file.
   substring remains visible and editable as raw source.
 - A selected link destination is temporarily revealed and underlined while it
   is edited, then hidden again after the caret leaves that target.
-- H1, H2, Bold, Italic, Link, Code, List, and Quote actions are selection-aware
-  toggles. Repeating a command removes only a simple parser-verified construct,
-  headings toggle back to paragraphs, and line commands change only selected
-  logical lines. Malformed, asymmetric, multi-backtick, or deeper repeated-star
+- One fixed-width paragraph-style selector sets selected logical lines to
+  Paragraph or any of the six ATX heading levels and exposes the current or
+  mixed state to assistive technology. Style selection is idempotent and
+  preserves selection direction plus native or mixed line endings. Only
+  parser-verified top-level paragraphs and ATX headings are styleable. Code,
+  setext headings, nested blocks, and other unsupported structures report
+  Unavailable and remain byte-exact. Paragraph promotion also requires an exact
+  style round trip; ambiguous leading whitespace or content that would become
+  closing ATX syntax fails closed so changing styles cannot discard source.
+  Indented and tab-separated ATX markers and optional closing sequences are
+  handled without exposing syntax as content.
+  Bold, Italic, Link, Code, List, and Quote actions are selection-aware toggles.
+  Repeating a command removes only a simple parser-verified construct, and line
+  commands change only selected logical lines. Malformed, asymmetric,
+  multi-backtick, or deeper repeated-star
   delimiters fail closed instead of being partially removed. Empty inline
   selections insert paired delimiters with the caret between them, but an empty
   caret alone does not claim ownership of existing literal delimiters.
