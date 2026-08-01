@@ -2,13 +2,14 @@
 
 **Initial reviewed revision:** `3830cdd6e487a35bdd2adeecb3d45bb080ade114`
 
-**Latest follow-up revision:** `efb8675994a4fbb11893ff7c0ab721b8d702c397`
+**Latest follow-up revision:** `994e0a3dc66a67cc22b1c0590436b92953a42747`
 
 **Review date:** 2026-07-25
 
 **Follow-ups:** 2026-07-26 macOS staging review and remediation; 2026-07-27
 repository-wide review and final-entry race hardening; 2026-07-28 macOS
-retained-recovery ACL verification
+retained-recovery ACL verification; 2026-07-31 Windows private-owner and
+cross-filesystem verification plus exact token-length boundary validation
 
 **Coverage:** Partial repository review with full-file inspection of the runtime
 document, observation, save, platform, GUI lifecycle, dependency, and CI paths.
@@ -37,11 +38,31 @@ that entry on the live staging file, and read the exact synthetic staged bytes
 through a second handle.
 
 The remediation moves exclusive private creation into the platform adapter.
-Windows passes a protected DACL at `CreateFileW` time, granting full control only
-to SYSTEM and the object owner. A native test converts the live descriptor back
-to SDDL and verifies the exact protected owner-and-system DACL, writable creation,
-exact bytes, exclusive refusal of an existing path, and denial of competing write
+Windows reads the process token user SID and passes that explicit owner plus a
+protected DACL at `CreateFileW` time, granting full control only to that user and
+SYSTEM. A native test converts the live descriptor back to canonical SDDL and
+verifies the exact protected user-and-system policy, writable creation, exact
+bytes, exclusive refusal of an existing path, and denial of competing write
 handles. Unix continues to create siblings at mode 0600.
+
+### Windows-to-WSL creation could violate owner-only privacy
+
+Severity was medium. A local cross-filesystem fixture found that Windows Save As
+could create a new document through the WSL UNC bridge with Linux mode 0644.
+Supplying Windows security attributes was therefore not sufficient evidence
+that the target filesystem had enforced Noter's owner-only policy.
+
+The remediation verifies the created handle's owner and exact protected DACL
+before any document byte is written. It canonicalizes the expected DACL SDDL
+through native conversion so well-known service SID aliases do not produce
+false mismatches, but it rejects broader access, an unexpected owner, or a DACL
+whose canonical string differs. A failed verification deletes that exact
+zero-byte handle and preserves both the verification and cleanup causes if
+removal also fails. The post-fix bridge fixture returns `NotCommitted` at
+`CreateTemporary`, preserves an existing document and dirty state, leaves a new
+destination absent, and retains no temporary artifact. Native NTFS fixtures
+prove that supported local creation still produces the exact
+process-user-and-SYSTEM policy.
 
 ### macOS staging files could inherit broader directory permissions
 
@@ -204,3 +225,22 @@ reports owner-only recovery access. Exact-commit run
 passes all eight required jobs, including the expanded per-platform mutation
 scopes and infrastructure validation. The manual filesystem and crash-persistence
 gaps above remain open.
+
+The 2026-07-31 filesystem fixtures are source-equivalent to `65ac25f`. The latest
+follow-up at exact commit `994e0a3` passes 425 Windows-local workspace tests,
+strict lint and documentation validation, 93.49 percent whole-workspace line
+coverage, 95.23 percent trust-kernel line coverage, and 92.14 percent platform-
+adapter line coverage. The native WSL2 ext4 source-equivalent run remains 428
+passing tests.
+
+The first clean-detached Windows owner and descriptor campaign against
+`65ac25f` caught 17 of 20 candidates and exposed three token-length boundary
+survivors. Exact boundary assertions closed that test gap. The clean-detached
+`994e0a3` repeat caught all 20 candidates with no unviable, missed, or timed-out
+result, and its infrastructure validator passed. The full commands, candidate
+set, equivalence exclusion, source trees, outcomes, and local artifact hashes
+are recorded in the
+[focused mutation artifact](evidence/m1-windows-private-security-mutation-2026-07-31.json).
+The exact local NTFS, ext4, and Windows-to-WSL observations are recorded in
+[M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md). Hosted exact-head CI and
+the remaining environment gaps are still required.

@@ -119,6 +119,15 @@ source identifiers, and harness. It cannot authenticate the historical timing
 event. M1 also remains open until required native and weaker-filesystem fixtures
 are executed and reported without overstating durability.
 
+Separate local evidence now covers native NTFS, native WSL2 ext4, and a
+fail-closed Windows-to-WSL boundary against source bytes later committed
+unchanged as `65ac25f`; see
+[M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md). That record does not
+cover the remaining macOS, SMB, cloud, removable, weak-filesystem,
+second-identity, or crash-persistence fixtures.
+The related exact focused Windows private-security validation is retained in a
+[machine-readable mutation record](evidence/m1-windows-private-security-mutation-2026-07-31.json).
+
 ## Reproduce and validate
 
 Run a new reference under an unused JSON filename from a clean checkout:

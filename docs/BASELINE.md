@@ -66,7 +66,30 @@ literal search, serialization, exclusive save, and atomic replacement.
 The complete raw samples, corpus manifest, environment, binary hashes,
 dependency counts, method, and limitations are retained in the canonical JSON.
 This is a self-reported local trust-kernel baseline, not authenticated telemetry
-or M5 GUI and input evidence. Required M1 filesystem fixtures remain open.
+or M5 GUI and input evidence. The required M1 filesystem fixture set remains
+open.
+
+## 2026-07-31 filesystem evidence checkpoint
+
+Source bytes later committed unchanged as `65ac25f` have local synthetic fixture
+evidence for native NTFS, native WSL2 ext4, and the Windows-to-WSL UNC boundary.
+The record includes exact byte checksums, NTFS DACL, stream and compression
+observations, ext4 mode and extended-attribute observations, warning and
+durability classifications, and a fail-closed cross-filesystem privacy
+regression. See
+[M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
+
+Exact clean-detached follow-up validation at `994e0a3` passes 425 Windows
+workspace tests with 93.49 percent whole-workspace, 95.23 percent trust-kernel,
+and 92.14 percent platform-adapter line coverage. Its focused Windows private-
+security mutation campaign catches all 20 candidates with no unviable, missed,
+or timed-out result after the initial campaign exposed three token-length
+boundary survivors. Commands, candidates, outcomes, and artifact hashes are in
+the [machine-readable mutation record](evidence/m1-windows-private-security-mutation-2026-07-31.json).
+
+This checkpoint narrows the manual M1 gap but does not close it. Native macOS,
+SMB, cloud-synchronized, removable, weak-filesystem, second-identity, and crash
+persistence evidence remains unavailable or unsafe to obtain on this host.
 
 ## Repository health
 

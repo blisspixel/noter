@@ -34,8 +34,8 @@ not verification.
 ## Next checkpoint: correctness alpha
 
 The next product checkpoint is a dogfoodable correctness alpha, not a relabeling
-of incomplete work. It requires the remaining M1 benchmark and filesystem
-evidence, installed-product M2 checks, completion of the ordinary M3 text
+of incomplete work. It requires the remaining M1 filesystem evidence,
+installed-product M2 checks, completion of the ordinary M3 text
 commands, and the M4 recovery and external-change safety path. M5 through M7
 remain first-release work after that checkpoint.
 
@@ -43,7 +43,7 @@ The current implementation closes three earlier blockers: deterministic Undo
 coalescing, bounded literal Find and Replace, and the pure destructive-action
 lifecycle reducer. The shortest path to correctness alpha is now:
 
-1. finish the reproducible M1 benchmark and manual filesystem fixtures;
+1. finish the remaining M1 manual filesystem fixtures;
 2. prove About, updates, themes, and source installation in installed builds;
 3. finish cross-platform navigation and clipboard policy, Markdown
    document-selection parity, and long-session M3 evidence;
@@ -124,13 +124,35 @@ all raw latency and peak-working-set samples, the exact deterministic corpus,
 release binary size and hash, and a four-target dependency summary. Its
 self-reported local provenance and complete limitations are recorded in
 [M1_BASELINE_EVIDENCE.md](M1_BASELINE_EVIDENCE.md). Exact-head hosted validation
-and the required native and weaker-filesystem fixtures remain open.
+and the remaining platform fixtures remain open.
+
+A 2026-07-31 local fixture record against source bytes later committed
+unchanged as `65ac25f` now covers native NTFS replacement, new-file privacy,
+and read-only failure; native WSL2 ext4
+replacement and metadata retention; and the Windows-to-WSL UNC boundary. The
+bridge exposed a broader-than-owner Linux mode, and the repaired source now
+fails closed before writing document bytes when the requested Windows owner and
+DACL cannot be verified. [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md)
+records exact checksums, classifications, provenance, and limitations. Native
+macOS, SMB, cloud-synchronized, removable, weak-filesystem, second-identity,
+and crash-persistence fixtures remain open.
+
+Exact clean-detached mutation validation at `994e0a3` closes three token-length
+boundary survivors exposed by the first focused private-security campaign. The
+settled campaign catches all 20 candidates with no unviable, missed, or timed-
+out result, and its infrastructure validator passes. The
+[machine-readable record](evidence/m1-windows-private-security-mutation-2026-07-31.json)
+binds the commands, source trees, candidate set, equivalence exclusion,
+outcomes, and local artifact hashes. Current Windows validation passes 425
+workspace tests with 93.49 percent whole-workspace, 95.23 percent trust-kernel,
+and 92.14 percent platform-adapter line coverage.
 
 Current detailed evidence and known gaps are maintained in:
 
 - [M1_SECURITY_REVIEW.md](M1_SECURITY_REVIEW.md)
 - [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md)
 - [M1_BASELINE_EVIDENCE.md](M1_BASELINE_EVIDENCE.md)
+- [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md)
 - [BASELINE.md](BASELINE.md)
 - [adr/0003-durable-replacement.md](adr/0003-durable-replacement.md)
 
@@ -267,9 +289,7 @@ parity are still open.
 
 Deterministic 512-case properties cover single replacements, ordered disjoint
 multi-edit transactions, arbitrary edit sequences, literal search, and
-lifecycle decisions against independent reference models. The current local
-source checkpoint has 413 Rust tests, 93.49 percent whole-workspace line
-coverage, and 95.58 percent UI-independent trust-kernel line coverage. Its
+lifecycle decisions against independent reference models. The
 [exact-commit M3 editing record](M3_EDITING_EVIDENCE.md) reports 256 generated
 mutations: 216 caught, 40 compiler-unviable, zero missed, and zero timed out,
 with no recognized infrastructure failure. This is focused Windows-local
@@ -474,8 +494,11 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 2. Complete: build the reproducible M1 benchmark harness and record the
    canonical 30-sample Windows reference. Evidence:
    [M1_BASELINE_EVIDENCE.md](M1_BASELINE_EVIDENCE.md).
-3. Execute and report the remaining manual native, network, cloud, removable,
-   and weaker-filesystem fixtures without overstating unavailable evidence.
+3. Partially complete: native NTFS and WSL2 ext4 fixtures pass, and the
+   Windows-to-WSL boundary now fails closed. Continue the remaining native
+   macOS, SMB, cloud, removable, weak-filesystem, second-identity, and
+   crash-persistence fixtures without overstating unavailable evidence.
+   Evidence: [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
 4. Complete M2 evidence for installed About and update actions, theme
    persistence, cross-platform visual behavior, and disposable source installs.
 5. Complete the remaining M3 navigation, clipboard, Markdown document-selection,

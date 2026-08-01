@@ -67,9 +67,9 @@ The current development checkpoint has:
 - one pure lifecycle reducer used by dirty New, Open, Reload, Close, and Quit,
   with Save, Discard, and Cancel effects shared by menu and native-close paths
   and correlated to the exact document revision that authorized them;
-- 413 Rust tests in the current local suite, 95.58 percent UI-independent
-  trust-kernel line coverage, and 93.49 percent whole-workspace line coverage
-  against respective 90 and 80 percent gates;
+- current local Rust tests and whole-workspace and trust-kernel coverage above
+  their respective 80 and 90 percent gates, with volatile measurements kept in
+  the dedicated evidence records rather than duplicated here;
 - a 256-candidate exact-commit M3 editing-core mutation campaign with 216
   caught, 40 compiler-unviable, zero missed, zero timed out, and no recognized
   infrastructure failure, recorded in
@@ -82,9 +82,10 @@ The current development checkpoint has:
 The latest verified implementation checkpoint passes all nine required jobs in
 exact-commit run
 [30612842346](https://github.com/blisspixel/noter/actions/runs/30612842346)
-for commit `bfdeb55fb5b903421dd2db6aa093b76e4130ac55`. It still requires the
-manual metadata and weaker-filesystem evidence named by ADR-003 plus the
-reproducible benchmark baseline. The edit foundation still requires complete
+for commit `bfdeb55fb5b903421dd2db6aa093b76e4130ac55`. A reproducible local
+trust-kernel benchmark baseline now exists; exact-head validation, the manual
+metadata and weaker-filesystem evidence named by ADR-003, and later M5 GUI and
+input benchmarks remain open. The edit foundation still requires complete
 navigation and clipboard policy, Markdown parity for document-wide selection,
 long-session fixtures, and cross-platform evidence. Recovery, external-change
 handling, configuration, accessibility evidence, and release performance

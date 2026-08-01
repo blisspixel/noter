@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "evidence_class": "self-reported-local-run",
+  "authentication": "none",
+  "observed_local_date": "2026-07-31",
+  "settled_run_started_utc": "2026-08-01T07:27:07Z",
+  "tool": {
+    "name": "cargo-mutants",
+    "version": "27.1.0"
+  },
+  "settled_source": {
+    "commit": "994e0a3dc66a67cc22b1c0590436b92953a42747",
+    "tree": "2517b56a67d41bfb5860370feefdb312dbda50d5",
+    "checkout": "clean detached worktree"
+  },
+  "settled_command": "$env:CARGO_TARGET_DIR='C:\\GitHub\\noter\\.agent\\target-mutants-cycle26-exact-994e0a3-locked'; $env:CARGO_INCREMENTAL='0'; cargo mutants --no-config -C --locked --workspace --all-features --colors never --minimum-test-timeout 60 --jobs 1 -p noter-platform -f crates/noter-platform/src/lib.rs --re 'imp::windows_(private_security_policy|private_security_policy_for_sid|current_process_user_sid|token_user_buffer_length|validate_token_user_returned_length|finalize_private_creation|verify_private_file_security|sid_string|descriptor_dacl_sddl)$' --exclude-re 'replace \\| with \\^ in imp::windows_verify_private_file_security' -o C:\\GitHub\\noter\\.agent\\mutants-cycle26-exact-994e0a3-locked",
+  "declared_scope": {
+    "file": "crates/noter-platform/src/lib.rs",
+    "functions": [
+      "imp::windows_private_security_policy",
+      "imp::windows_private_security_policy_for_sid",
+      "imp::windows_current_process_user_sid",
+      "imp::windows_token_user_buffer_length",
+      "imp::windows_validate_token_user_returned_length",
+      "imp::windows_finalize_private_creation",
+      "imp::windows_verify_private_file_security",
+      "imp::windows_sid_string",
+      "imp::windows_descriptor_dacl_sddl"
+    ],
+    "excluded_mutants": [
+      {
+        "name": "replace | with ^ in imp::windows_verify_private_file_security",
+        "reason": "OWNER_SECURITY_INFORMATION is 0x00000001 and DACL_SECURITY_INFORMATION is 0x00000004. The operands have no common set bit, so bitwise OR and XOR both produce 0x00000005 for this expression."
+      }
+    ]
+  },
+  "settled_outcome": {
+    "baseline": "passed",
+    "total": 20,
+    "caught": 20,
+    "unviable": 0,
+    "missed": 0,
+    "timed_out": 0,
+    "infrastructure_validation": "passed",
+    "mutants": [
+      "crates/noter-platform/src/lib.rs:2329:43: replace == with != in imp::windows_private_security_policy_for_sid",
+      "crates/noter-platform/src/lib.rs:2351:28: replace < with == in imp::windows_token_user_buffer_length",
+      "crates/noter-platform/src/lib.rs:2351:28: replace < with > in imp::windows_token_user_buffer_length",
+      "crates/noter-platform/src/lib.rs:2351:28: replace < with <= in imp::windows_token_user_buffer_length",
+      "crates/noter-platform/src/lib.rs:2364:28: replace > with == in imp::windows_validate_token_user_returned_length",
+      "crates/noter-platform/src/lib.rs:2364:28: replace > with < in imp::windows_validate_token_user_returned_length",
+      "crates/noter-platform/src/lib.rs:2364:28: replace > with >= in imp::windows_validate_token_user_returned_length",
+      "crates/noter-platform/src/lib.rs:2378:94: replace == with != in imp::windows_current_process_user_sid",
+      "crates/noter-platform/src/lib.rs:2395:11: replace != with == in imp::windows_current_process_user_sid",
+      "crates/noter-platform/src/lib.rs:2403:40: replace != with == in imp::windows_current_process_user_sid",
+      "crates/noter-platform/src/lib.rs:2426:11: replace == with != in imp::windows_current_process_user_sid",
+      "crates/noter-platform/src/lib.rs:2508:44: replace | with & in imp::windows_verify_private_file_security",
+      "crates/noter-platform/src/lib.rs:2516:19: replace != with == in imp::windows_verify_private_file_security",
+      "crates/noter-platform/src/lib.rs:2525:44: replace || with && in imp::windows_verify_private_file_security",
+      "crates/noter-platform/src/lib.rs:2525:22: replace != with == in imp::windows_verify_private_file_security",
+      "crates/noter-platform/src/lib.rs:2525:57: replace != with == in imp::windows_verify_private_file_security",
+      "crates/noter-platform/src/lib.rs:2545:65: replace == with != in imp::windows_sid_string",
+      "crates/noter-platform/src/lib.rs:2552:43: replace == with != in imp::windows_sid_string",
+      "crates/noter-platform/src/lib.rs:2585:11: replace == with != in imp::windows_descriptor_dacl_sddl",
+      "crates/noter-platform/src/lib.rs:2601:36: replace == with != in imp::windows_descriptor_dacl_sddl"
+    ],
+    "local_artifact_sha256": {
+      "caught.txt": "ea753a0b5d9b95de4112a5e98275f5fa9a744ab4fcc013b8d14cf421ab828df2",
+      "mutants.json": "33c546d425d0d74229ae02db2e9d01e4a783a81a580c828c246839287c27db3c",
+      "outcomes.json": "5fa8cac5a2702087afdcc8476585bf19a192f94379c448461eb643d4c06280da"
+    }
+  },
+  "initial_campaign": {
+    "source_commit": "65ac25f1b6c83a75bc4b00abe177aff98a4f2c03",
+    "source_tree": "299aa791e8e7f15a893e21143a278f1873878c17",
+    "checkout": "clean detached worktree",
+    "run_started_utc": "2026-08-01T07:28:19Z",
+    "command": "$env:CARGO_TARGET_DIR='C:\\GitHub\\noter\\.agent\\target-mutants-cycle26-exact-65ac25f-locked'; $env:CARGO_INCREMENTAL='0'; cargo mutants --no-config -C --locked --workspace --all-features --colors never --minimum-test-timeout 60 --jobs 1 -p noter-platform -f crates/noter-platform/src/lib.rs --re 'imp::windows_(private_security_policy|private_security_policy_for_sid|current_process_user_sid|finalize_private_creation|verify_private_file_security|sid_string|descriptor_dacl_sddl)$' --exclude-re 'replace \\| with \\^ in imp::windows_verify_private_file_security' -o C:\\GitHub\\noter\\.agent\\mutants-cycle26-exact-65ac25f-locked",
+    "outcome": {
+      "baseline": "passed",
+      "total": 20,
+      "caught": 17,
+      "unviable": 0,
+      "missed": 3,
+      "timed_out": 0,
+      "missed_mutants": [
+        "crates/noter-platform/src/lib.rs:2383:28: replace < with == in imp::windows_current_process_user_sid",
+        "crates/noter-platform/src/lib.rs:2383:28: replace < with <= in imp::windows_current_process_user_sid",
+        "crates/noter-platform/src/lib.rs:2412:28: replace > with < in imp::windows_current_process_user_sid"
+      ],
+      "local_artifact_sha256": {
+        "missed.txt": "f345f148f4eb21c7f28a6132ecc240b572f92d969c438609b71605c152e008c7",
+        "mutants.json": "8a93fd9da0c26324312f57e758c1d545565181cb2148044a21c0c5bfd015369c",
+        "outcomes.json": "5e94e87f43e4deb8f6af31c61ca7cc6f8fe839463b40475b11dd60e216bc7f8b"
+      }
+    }
+  },
+  "limitations": [
+    "The report hashes bind ignored local cargo-mutants artifacts but do not make those artifacts independently authenticated.",
+    "The scope is intentionally limited to Windows process-user SID acquisition, private-security policy construction, DACL conversion and verification, and their length-validation decisions.",
+    "This evidence does not replace the complete supported-platform mutation matrix required for M1."
+  ]
+}
