@@ -12,6 +12,10 @@ homepage = "https://github.com/blisspixel/noter"
 keywords = ["notepad", "text-editor", "plain-text", "markdown", "cross-platform"]
 categories = ["gui", "text-editors"]
 
+[[bench]]
+name = "m1_baseline"
+harness = false
+
 [package.metadata.wix]
 # These product identifiers are permanent once an MSI is published.
 upgrade-guid = "04EFB570-9D04-49E1-B908-F5CEBD979E1B"
