@@ -7,6 +7,9 @@ release, so current work remains under Unreleased.
 
 ### Added
 
+- Add exact-checksum local M1 filesystem evidence for native NTFS, native WSL2
+  ext4, and the Windows-to-WSL boundary, including explicit provenance,
+  durability limits, unavailable environments, and remaining milestone gaps.
 - Add a reproducible M1 trust-kernel benchmark harness with an exact synthetic
   corpus, process-cold and warm raw samples, recomputable nearest-rank
   percentiles, platform-named peak memory, release binary and four-target
@@ -150,6 +153,10 @@ release, so current work remains under Unreleased.
   report the requested private policy now fail closed and remove the exact open
   zero-byte file; a cleanup failure preserves both native causes and reports the
   possible private artifact separately.
+- Add exact token-buffer length boundary tests after focused mutation testing
+  exposed three survivors in Windows process-user SID acquisition. The settled
+  clean-detached campaign catches all 20 private-security candidates with no
+  unviable, missed, or timed-out result and retains machine-readable provenance.
 - Bind the complete release workflow, CI workflow, and WiX authoring source to
   reviewed digests, with an independently isolated release-validator step and
   a separate cross-platform test-job digest. This makes commented-out gates,

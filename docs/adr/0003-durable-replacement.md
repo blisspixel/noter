@@ -6,7 +6,7 @@
 
 **Date:** 2026-07-25
 
-**Latest evidence:** 2026-07-28
+**Latest evidence:** 2026-07-31
 
 ## Context
 
@@ -246,9 +246,10 @@ historical Windows core campaign and the focused Windows native-adapter campaign
 have zero missed mutants and zero timeouts, as recorded in
 [M1 Mutation Evidence](../M1_MUTATION_EVIDENCE.md). A pinned three-platform CI
 gate passes the expanded 741-candidate union at `97371d8` with zero misses,
-timeouts, infrastructure misclassifications, or scope gaps. The manual platform
-and weak-filesystem matrix plus the reproducible benchmark baseline remain
-required before M1 is Verified.
+timeouts, infrastructure misclassifications, or scope gaps. A reproducible local
+trust-kernel benchmark baseline now exists. The manual platform and weak-
+filesystem matrix, exact-head validation, and later M5 GUI and input benchmarks
+remain required without conflating those separate evidence scopes.
 
 The 2026-07-28 implementation follow-up, commit `efb8675`, adds native proof
 that macOS retained-recovery ACL removal produces verified ACL absence. The
@@ -257,3 +258,21 @@ corresponding exact-commit
 passes all eight required jobs and the expanded per-platform mutation gates with
 no miss, timeout, or recognized infrastructure failure. This does not close the
 remaining manual and benchmark requirements above.
+
+The 2026-07-31 [filesystem evidence](../M1_FILESYSTEM_EVIDENCE.md) records native
+NTFS replacement and private creation, native WSL2 ext4 replacement, and a
+fail-closed Windows-to-WSL boundary against source bytes later committed
+unchanged as `65ac25f`. The evidence run exposed that a successful Windows
+security request did not guarantee owner-only Linux permissions through the
+bridge. The repaired adapter now requires the created handle to report the
+process user as owner and the exact protected user-and-SYSTEM DACL before
+writing. The remaining environment and destructive fault fixtures above stay
+open.
+
+Exact clean-detached follow-up validation at `994e0a3` closes three token-length
+boundary survivors exposed by the initial focused Windows private-security
+campaign. The settled campaign catches all 20 candidates with no unviable,
+missed, or timed-out result, and the infrastructure validator passes. Its
+commands, source trees, candidates, equivalence exclusion, outcomes, and local
+artifact hashes are retained in the
+[machine-readable mutation record](../evidence/m1-windows-private-security-mutation-2026-07-31.json).

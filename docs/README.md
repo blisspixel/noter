@@ -54,6 +54,9 @@ each topic.
 - [M1 security review](M1_SECURITY_REVIEW.md) and
   [mutation evidence](M1_MUTATION_EVIDENCE.md) record durable-save review
   results.
+- [M1 filesystem evidence](M1_FILESYSTEM_EVIDENCE.md) records native NTFS,
+  native WSL2 ext4, and Windows-to-WSL boundary observations and remaining
+  fixture gaps.
 - [M3 editing evidence](M3_EDITING_EVIDENCE.md) records the exact-commit
   transaction, Undo, search, navigation, and lifecycle mutation campaign.
 - [Architecture and product review](RIGOROUS_REVIEW.md) tracks the highest-risk

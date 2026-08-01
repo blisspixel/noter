@@ -154,17 +154,18 @@ byte-policy-preserving, and equivalent under the supported parser model.
 
 ### 6. Build reproducible performance evidence, not performance adjectives
 
-**Evidence:** requirements contain concrete launch, input, scroll, Markdown,
-memory, and binary-size budgets, but the repository has no benchmark harness or
-published raw benchmark report. M1 remains open for this reason.
+**Evidence:** the repository now has a schema-validated deterministic M1
+trust-kernel harness and a canonical 30-sample Windows record with raw latency,
+peak-memory, binary-size, dependency, corpus, and environment evidence. The
+record is self-reported local evidence, not authenticated telemetry, cross-
+platform comparison, or M5 GUI and input evidence.
 
 **Risk:** current full-document copies, parsing, diagnostics, and layout can
 regress without a gate even while all functional tests pass.
 
-**Completion standard:** Add the stable deterministic harness already specified
-in the design, publish corpus checksums and raw samples, name reference hardware,
-gate like-for-like regressions, and include adversarial long-line and malformed
-Markdown cases.
+**Completion standard:** Validate the committed harness and record at exact
+head, add the supported-platform comparisons, then complete the separate M5
+startup, input, scroll, Markdown-frame, and interactive-memory measurements.
 
 ### 7. Centralize commands, effects, enabled state, and shortcuts
 
@@ -242,8 +243,9 @@ post-commit sync failure.
 **Disposition:** Accepted and substantially implemented.
 [ADR-0003](adr/0003-durable-replacement.md) requires an injected storage
 boundary, explicit commit outcomes, pre-commit revalidation, platform semantics,
-and fault evidence. Its remaining manual filesystem and benchmark evidence is
-tracked under M1.
+and fault evidence. Its remaining manual filesystem evidence is tracked under
+M1; the trust-kernel benchmark record now exists while M5 GUI and input
+performance evidence remains open.
 
 ### R-02 Recovery was not a protocol
 

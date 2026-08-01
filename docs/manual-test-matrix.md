@@ -46,6 +46,13 @@ filesystem effects, and window-manager behavior still require these rows.
 
 ## 2. Open, Save, and byte fidelity
 
+The partial 2026-07-31 local record in
+[M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md) covers native NTFS and
+WSL2 ext4 fixtures plus a fail-closed Windows-to-WSL boundary. It does not mark
+the rows below complete because Windows encryption, creation and identifier
+policy, macOS, network, cloud, removable, weak-filesystem, cross-identity, and
+crash-persistence cases remain unproved.
+
 - [ ] IO-01 Open uses the system file dialog and cancellation changes no state.
 - [ ] IO-02 Save As cancellation preserves the prior path and dirty state.
 - [ ] IO-03 Save As failure preserves the prior path, original file, and content.
