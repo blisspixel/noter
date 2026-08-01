@@ -73,6 +73,14 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
+- Polish Markdown Mode into one continuous borderless reading canvas with a
+  centered 760-point measure on wide windows, responsive gutters, deliberate
+  line height and block rhythm, calmer formatting groups, and an accessible
+  inline zoom cluster that uses the existing bounded document-view commands.
+  Keep active and inactive block geometry stable, expose the live zoom value to
+  assistive technology, and preserve document-bar focus for repeated zoom
+  operation. Regenerate and visually review the native Light and Dark
+  screenshots.
 - Canonicalize third-party license generation from bounded cargo-about JSON and
   the legal files packaged in every locked dependency. Component expressions
   remain separate from preserved copyright and notice text, and target-gated
@@ -105,8 +113,9 @@ release, so current work remains under Unreleased.
   the same form as the PowerShell installer.
 - Place the responsive Text and Markdown mode control and the current Theme
   menu on the upper-right of the application menu row. The second toolbar now
-  appears only in Markdown Mode and contains formatting actions only. Visual,
-  keyboard, and accessibility-tree order follow the same left-to-right sequence.
+  appears only in Markdown Mode and separates formatting actions from document
+  zoom. Visual, keyboard, and accessibility-tree order follow the same
+  left-to-right sequence.
 - Keep Edit, View, and Help pointer reachable through a compact More menu at the
   420-pixel minimum viewport width.
 - Preserve the current directional source selection across Undo, Redo, editing

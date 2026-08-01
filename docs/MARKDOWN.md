@@ -20,8 +20,12 @@ authoritative. Changing modes never rewrites a file.
 - `.md` and `.markdown` files open in Markdown Mode by default; any supported
   file can be viewed in Text Mode.
 - Markdown is projected into borderless native egui text layouts before
-  shaping. The inactive document and active editor share explicit Inter body,
-  heading, and strong-emphasis weights rather than simulated bold.
+  shaping. One continuous editor background owns the window, without a nested
+  page card, border, or shadow. Wide windows center a 760-point reading measure;
+  narrow windows retain at least 24-point inner gutters until the viewport can
+  no longer provide them. The inactive document and active editor share
+  explicit Inter body, heading, and strong-emphasis weights, deliberate line
+  height, and stable block spacing rather than simulated bold.
 - Selecting formatted content keeps supported heading and inline syntax
   visually formatted while editing the exact backing source range. Markdown
   delimiters remain in the edit buffer and on disk even when they are not
@@ -36,7 +40,9 @@ authoritative. Changing modes never rewrites a file.
 - H1, H2, Bold, Italic, Link, Code, List, and Quote actions update the selected
   block's Markdown source immediately.
 - The primary Text and Markdown switch remains in the upper-right application
-  row. The contextual formatting bar appears only in Markdown Mode.
+  row. The contextual document bar appears only in Markdown Mode, with
+  formatting groups on the left and a visually separated zoom cluster on the
+  right when space permits.
 - Switching to Text Mode exposes the exact source produced by those edits.
 - Source diagnostics currently report skipped heading levels, spaces that
   prevent portable emphasis, unsafe trailing spaces, repeated blank lines, and
@@ -47,9 +53,15 @@ authoritative. Changing modes never rewrites a file.
   rewrites the spacing.
 - System, Light, Dark, Green Screen, and Amber Screen themes share the same
   document model.
-- Editor zoom scales formatted body, heading, emphasis, and code type together
-  from 50 to 300 percent. Formatted content remains wrapped by design; the Text
-  Mode word-wrap preference does not change Markdown source or layout policy.
+- Editor zoom scales formatted body, heading, emphasis, code type, and their
+  line heights together from 50 to 300 percent while preserving hierarchy. The
+  Markdown document bar, View menu, standard keyboard shortcuts, supported
+  pointer gesture, and status indicator all use the same bounded zoom state.
+  The document-bar reset control reports the live percentage to assistive
+  technology, and document-bar zoom activation preserves control focus for
+  repeated operation instead of activating document content. Formatted content
+  remains wrapped by design; the Text Mode word-wrap preference does not change
+  Markdown source or layout policy.
 - Remote images are not loaded, raw HTML is not executed, and no content is
   fetched in the background. Markdown-link opening is not implemented in this
   bounded slice; the final command requires an explicit user action.

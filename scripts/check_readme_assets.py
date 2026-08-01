@@ -36,15 +36,15 @@ SCREENSHOT_SOURCE_GLOBS = (
     "src/**/*.rs",
 )
 EXPECTED_SCREENSHOT_SOURCE_SHA256 = (
-    "ea1e3959a23db65ce9ccb5d3f5b74472c984218a1b93ad25602eb240411157a0"
+    "749e888e6e72299958a8c1b6867f0e49cbb647b18077a68524e345b1e4ac7cb1"
 )
 EXPECTED_SHA256 = {
     Path(
         "docs/assets/noter-light.png"
-    ): "f3f4d2eec69af701987f0ef5f93c1e5e88b062ad8bbe42780eb2bf8f6e324204",
+    ): "a74b4a16dbbe6f29950f71811e3728805d16a3e822b8e4d8702efcfcf02c1d9b",
     Path(
         "docs/assets/noter-dark.png"
-    ): "47f73d80461a6a86b88473b9ba9db6ce86c681af17e0b6505b3ea2cc282c233e",
+    ): "dbdf52c03d85b43f84f0a85cfc3c0f611efab5c871ce01e03ea17a4a50b6b778",
 }
 
 

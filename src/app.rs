@@ -42,11 +42,37 @@ const STATUS_BAR_HEIGHT: f32 = 26.0;
 const EXPANDED_TOP_CONTROLS_MIN_WIDTH: f32 = 600.0;
 const EXPANDED_TOP_CONTROLS_WIDTH: f32 = 326.0;
 const COMPACT_TOP_CONTROLS_WIDTH: f32 = 280.0;
+const MARKDOWN_READING_MAX_WIDTH: f32 = 760.0;
+const MARKDOWN_READING_MIN_GUTTER: f32 = 24.0;
+const MARKDOWN_READING_TOP_PADDING: f32 = 16.0;
+const MARKDOWN_READING_BOTTOM_PADDING: f32 = 48.0;
+const INLINE_ZOOM_MIN_WIDTH: f32 = 180.0;
 const INTERACTIVE_TEXT_MAX_BYTES: usize = 8 << 20;
 const INTERACTIVE_TEXT_MAX_LABEL: &str = "8 MiB";
 const TEXT_INPUT_LIMIT_PREFIX: &str =
     "Input was limited to keep this document within its supported";
 const MARKDOWN_INPUT_LIMIT_MESSAGE: &str = "Markdown Mode limited this input to keep the source within its 1 MiB safety budget. Text within the remaining budget was preserved.";
+
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+struct MarkdownCanvasGeometry {
+    content_width: f32,
+    left_gutter: f32,
+}
+
+fn markdown_canvas_geometry(available_width: f32) -> MarkdownCanvasGeometry {
+    let available_width = if available_width.is_finite() {
+        available_width.max(0.0)
+    } else {
+        0.0
+    };
+    let content_width = 2.0_f32
+        .mul_add(-MARKDOWN_READING_MIN_GUTTER, available_width)
+        .clamp(0.0, MARKDOWN_READING_MAX_WIDTH);
+    MarkdownCanvasGeometry {
+        content_width,
+        left_gutter: (available_width - content_width) / 2.0,
+    }
+}
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum DocumentView {
@@ -212,6 +238,34 @@ enum ViewCommand {
     ZoomIn,
     ZoomOut,
     ResetZoom,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ViewCommandFocus {
+    RestoreDocument,
+    PreserveControl,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ViewCommandRequest {
+    command: ViewCommand,
+    focus: ViewCommandFocus,
+}
+
+impl ViewCommandRequest {
+    const fn restore_document(command: ViewCommand) -> Self {
+        Self {
+            command,
+            focus: ViewCommandFocus::RestoreDocument,
+        }
+    }
+
+    const fn preserve_control(command: ViewCommand) -> Self {
+        Self {
+            command,
+            focus: ViewCommandFocus::PreserveControl,
+        }
+    }
 }
 
 impl ViewCommand {
@@ -738,7 +792,7 @@ impl NoterApp {
         command
     }
 
-    fn collect_view_shortcut(ui: &egui::Ui) -> Option<ViewCommand> {
+    fn collect_view_shortcut(ui: &egui::Ui) -> Option<ViewCommandRequest> {
         let mut command = None;
         ui.input_mut(|input| {
             if input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_RESET) {
@@ -751,7 +805,7 @@ impl NoterApp {
                 command = Some(ViewCommand::ZoomOut);
             }
         });
-        command
+        command.map(ViewCommandRequest::restore_document)
     }
 
     fn execute_file_command(&mut self, command: FileCommand, ctx: &egui::Context) {
@@ -818,7 +872,8 @@ impl NoterApp {
         }
     }
 
-    fn execute_view_command(&mut self, command: ViewCommand) {
+    fn execute_view_command(&mut self, request: ViewCommandRequest) {
+        let ViewCommandRequest { command, focus } = request;
         match command {
             ViewCommand::ToggleWordWrap if self.view == DocumentView::Text => {
                 self.text_wrap.toggle();
@@ -834,8 +889,10 @@ impl NoterApp {
                 let _ = self.editor_zoom.reset();
             }
         }
-        self.pending_selection_restore = Some(self.selection);
-        self.preserve_focus_on_selection_restore = false;
+        if focus == ViewCommandFocus::RestoreDocument {
+            self.pending_selection_restore = Some(self.selection);
+            self.preserve_focus_on_selection_restore = false;
+        }
     }
 
     fn synchronize_after_history(&mut self, outcome: HistoryApplyOutcome) {
@@ -1058,7 +1115,7 @@ impl NoterApp {
         ui: &mut egui::Ui,
         file_command: &mut Option<FileCommand>,
         edit_command: &mut Option<EditCommand>,
-        view_command: &mut Option<ViewCommand>,
+        view_command: &mut Option<ViewCommandRequest>,
     ) {
         egui::Panel::top("menu_bar")
             .exact_size(MENU_BAR_HEIGHT)
@@ -1253,7 +1310,7 @@ impl NoterApp {
         }
     }
 
-    fn show_view_menu(&mut self, ui: &mut egui::Ui, command: &mut Option<ViewCommand>) {
+    fn show_view_menu(&mut self, ui: &mut egui::Ui, command: &mut Option<ViewCommandRequest>) {
         ui.label("Mode");
         self.show_document_mode_choices(ui);
         ui.separator();
@@ -1263,7 +1320,7 @@ impl NoterApp {
         self.show_view_preferences(ui, command);
     }
 
-    fn show_view_preferences(&self, ui: &mut egui::Ui, command: &mut Option<ViewCommand>) {
+    fn show_view_preferences(&self, ui: &mut egui::Ui, command: &mut Option<ViewCommandRequest>) {
         let wrap = ui.add_enabled(
             self.view == DocumentView::Text,
             egui::Button::selectable(
@@ -1276,7 +1333,9 @@ impl NoterApp {
                 .on_disabled_hover_text("Markdown Mode wraps formatted content by design");
         }
         if wrap.clicked() {
-            command.get_or_insert(ViewCommand::ToggleWordWrap);
+            command.get_or_insert(ViewCommandRequest::restore_document(
+                ViewCommand::ToggleWordWrap,
+            ));
             ui.close();
         }
         ui.menu_button(format!("Zoom: {}%", self.editor_zoom.percent()), |ui| {
@@ -1290,7 +1349,7 @@ impl NoterApp {
                     button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
                 }
                 if ui.add(button).clicked() {
-                    command.get_or_insert(candidate);
+                    command.get_or_insert(ViewCommandRequest::restore_document(candidate));
                     ui.close();
                 }
             }
@@ -1680,7 +1739,11 @@ impl NoterApp {
         snapshot
     }
 
-    fn show_format_toolbar(&mut self, ui: &mut egui::Ui) {
+    fn show_format_toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
+        view_command: &mut Option<ViewCommandRequest>,
+    ) {
         if self.view != DocumentView::Markdown {
             return;
         }
@@ -1690,13 +1753,91 @@ impl NoterApp {
             .show(ui, |ui| {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     self.markdown_editor.toolbar(ui);
-                    if !self.markdown_editor.is_editing() && ui.available_width() >= 180.0 {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.weak("Click or drag in formatted text to edit or format");
-                        });
+                    let editor_is_active = self.markdown_editor.is_editing();
+                    let zoom = self.editor_zoom;
+                    if !editor_is_active && ui.available_width() >= INLINE_ZOOM_MIN_WIDTH + 300.0 {
+                        ui.weak("Click or drag in formatted text to edit or format");
+                    }
+                    if ui.available_width() >= INLINE_ZOOM_MIN_WIDTH {
+                        ui.add_space(ui.available_width() - INLINE_ZOOM_MIN_WIDTH);
+                        Self::show_inline_zoom_controls(ui, zoom, view_command);
                     }
                 });
             });
+    }
+
+    fn show_inline_zoom_controls(
+        ui: &mut egui::Ui,
+        zoom: EditorZoom,
+        command: &mut Option<ViewCommandRequest>,
+    ) {
+        if ui.available_width() < INLINE_ZOOM_MIN_WIDTH {
+            return;
+        }
+
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.weak("Zoom");
+        if Self::inline_zoom_button(
+            ui,
+            "-",
+            ViewCommand::ZoomOut,
+            zoom.can_zoom_out(),
+            "Decrease document zoom",
+        ) {
+            command.get_or_insert(ViewCommandRequest::preserve_control(ViewCommand::ZoomOut));
+        }
+        if Self::inline_zoom_button(
+            ui,
+            &format!("{}%", zoom.percent()),
+            ViewCommand::ResetZoom,
+            true,
+            "Reset document zoom to 100%",
+        ) {
+            command.get_or_insert(ViewCommandRequest::preserve_control(ViewCommand::ResetZoom));
+        }
+        if Self::inline_zoom_button(
+            ui,
+            "+",
+            ViewCommand::ZoomIn,
+            zoom.can_zoom_in(),
+            "Increase document zoom",
+        ) {
+            command.get_or_insert(ViewCommandRequest::preserve_control(ViewCommand::ZoomIn));
+        }
+    }
+
+    fn inline_zoom_button(
+        ui: &mut egui::Ui,
+        visible_label: &str,
+        command: ViewCommand,
+        enabled: bool,
+        hover_text: &str,
+    ) -> bool {
+        let width = if command == ViewCommand::ResetZoom {
+            54.0
+        } else {
+            30.0
+        };
+        let response = ui.add_enabled(
+            enabled,
+            egui::Button::new(visible_label).min_size(egui::vec2(width, 28.0)),
+        );
+        let accessible_label = if command == ViewCommand::ResetZoom {
+            format!("{visible_label}, {}", command.label())
+        } else {
+            command.label().to_owned()
+        };
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &accessible_label)
+        });
+        if command == ViewCommand::ResetZoom {
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_value(visible_label);
+            });
+        }
+        let clicked = response.clicked();
+        response.on_hover_text(hover_text);
+        clicked
     }
 
     fn show_find_bar(&mut self, ui: &mut egui::Ui) {
@@ -1934,17 +2075,20 @@ impl NoterApp {
         }
         let outcome = egui::ScrollArea::vertical()
             .show(ui, |ui| {
-                let content_width = ui.available_width().min(840.0);
-                let left_margin = ((ui.available_width() - content_width) / 2.0).max(0.0);
-                ui.horizontal_top(|ui| {
-                    ui.add_space(left_margin);
-                    ui.vertical(|ui| {
-                        ui.set_width(content_width);
-                        self.markdown_editor.show(ui, &mut self.text)
+                ui.add_space(MARKDOWN_READING_TOP_PADDING);
+                let geometry = markdown_canvas_geometry(ui.available_width());
+                let outcome = ui
+                    .horizontal_top(|ui| {
+                        ui.add_space(geometry.left_gutter);
+                        ui.vertical(|ui| {
+                            ui.set_width(geometry.content_width);
+                            self.markdown_editor.show(ui, &mut self.text)
+                        })
+                        .inner
                     })
-                    .inner
-                })
-                .inner
+                    .inner;
+                ui.add_space(MARKDOWN_READING_BOTTOM_PADDING);
+                outcome
             })
             .inner;
         let input_was_limited = self.markdown_editor.take_input_was_limited();
@@ -1992,11 +2136,11 @@ impl NoterApp {
         } else {
             false
         };
+        self.show_find_bar(ui);
+        self.show_format_toolbar(ui, &mut view_command);
         if commands_enabled && let Some(command) = view_command {
             self.execute_view_command(command);
         }
-        self.show_find_bar(ui);
-        self.show_format_toolbar(ui);
         self.show_status(ui);
         self.show_editor(ui);
         self.apply_pending_document_view();
@@ -2409,6 +2553,35 @@ mod tests {
             .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}` with bounds"))
     }
 
+    fn accesskit_value(output: &egui::FullOutput, label: &str) -> String {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled")
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| node.value())
+                    .flatten()
+            })
+            .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}` with a value"))
+            .to_owned()
+    }
+
+    fn accesskit_node_id(output: &egui::FullOutput, label: &str) -> egui::accesskit::NodeId {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled")
+            .nodes
+            .iter()
+            .find_map(|(id, node)| (node.label() == Some(label)).then_some(*id))
+            .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}`"))
+    }
+
     fn text_position(text: &[(String, egui::Pos2)], label: &str) -> egui::Pos2 {
         text.iter()
             .find_map(|(candidate, position)| (candidate == label).then_some(*position))
@@ -2516,7 +2689,7 @@ mod tests {
         command
     }
 
-    fn collect_view_shortcut_from_input(input: egui::RawInput) -> Option<ViewCommand> {
+    fn collect_view_shortcut_from_input(input: egui::RawInput) -> Option<ViewCommandRequest> {
         let context = egui::Context::default();
         let mut command = None;
         let _ = context.run_ui(input, |ui| {
@@ -2982,9 +3155,55 @@ mod tests {
         ] {
             assert_eq!(
                 collect_view_shortcut_from_input(shortcut_input(command, key)),
-                Some(expected)
+                Some(ViewCommandRequest::restore_document(expected))
             );
         }
+    }
+
+    #[test]
+    fn markdown_canvas_centers_a_readable_measure_with_responsive_gutters() {
+        let wide = markdown_canvas_geometry(1_200.0);
+        assert_eq!(wide.content_width.to_bits(), 760.0_f32.to_bits());
+        assert_eq!(wide.left_gutter.to_bits(), 220.0_f32.to_bits());
+
+        let narrow = markdown_canvas_geometry(420.0);
+        assert_eq!(narrow.content_width.to_bits(), 372.0_f32.to_bits());
+        assert_eq!(narrow.left_gutter.to_bits(), 24.0_f32.to_bits());
+
+        let constrained = markdown_canvas_geometry(30.0);
+        assert_eq!(constrained.content_width.to_bits(), 0.0_f32.to_bits());
+        assert_eq!(constrained.left_gutter.to_bits(), 15.0_f32.to_bits());
+    }
+
+    #[test]
+    fn markdown_toolbar_zoom_uses_the_shared_view_command_without_editing_source() {
+        let source = "# Zoom sample";
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            ..NoterApp::default()
+        };
+        let revision = app.document.revision();
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::configure_styles(&context);
+        let initial = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| app.render_frame(ui));
+        let zoom_out = text_position(&rendered_text(&initial), "-");
+        let reset = text_position(&rendered_text(&initial), "100%");
+        let zoom_in = text_position(&rendered_text(&initial), "+");
+        assert!(zoom_out.x < reset.x);
+        assert!(reset.x < zoom_in.x);
+
+        let _ = context.run_ui(
+            click_input(1_200.0, 760.0, 0.1, zoom_in + egui::vec2(4.0, 4.0)),
+            |ui| app.render_frame(ui),
+        );
+
+        assert_eq!(app.editor_zoom.percent(), 110);
+        assert_eq!(app.document.revision(), revision);
+        assert_eq!(String::from(app.document.rope()), source);
+        assert!(!app.document.is_dirty());
     }
 
     #[test]
@@ -3233,11 +3452,13 @@ mod tests {
         };
         let revision = app.document.revision();
 
-        app.execute_view_command(ViewCommand::ToggleWordWrap);
+        app.execute_view_command(ViewCommandRequest::restore_document(
+            ViewCommand::ToggleWordWrap,
+        ));
         assert_eq!(app.text_wrap, TextWrap::Unwrapped);
-        app.execute_view_command(ViewCommand::ZoomIn);
+        app.execute_view_command(ViewCommandRequest::restore_document(ViewCommand::ZoomIn));
         assert_eq!(app.editor_zoom.percent(), 110);
-        app.execute_view_command(ViewCommand::ResetZoom);
+        app.execute_view_command(ViewCommandRequest::restore_document(ViewCommand::ResetZoom));
 
         assert_eq!(app.editor_zoom.percent(), 100);
         assert_eq!(app.document.revision(), revision);
@@ -3254,7 +3475,9 @@ mod tests {
             ..NoterApp::default()
         };
 
-        app.execute_view_command(ViewCommand::ToggleWordWrap);
+        app.execute_view_command(ViewCommandRequest::restore_document(
+            ViewCommand::ToggleWordWrap,
+        ));
         app.execute_edit_command(EditCommand::SelectAll);
 
         assert_eq!(app.text_wrap, TextWrap::Wrapped);
@@ -3938,17 +4161,19 @@ mod tests {
         let context = egui::Context::default();
         context.enable_accesskit();
         theme::configure_styles(&context);
+        let mut view_command = None;
 
         let text_output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(1_200.0);
-            app.show_format_toolbar(ui);
+            app.show_format_toolbar(ui, &mut view_command);
         });
         assert!(rendered_text(&text_output).is_empty());
+        assert_eq!(view_command, None);
 
         app.select_document_view(DocumentView::Markdown);
         let markdown_output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(1_200.0);
-            app.show_format_toolbar(ui);
+            app.show_format_toolbar(ui, &mut view_command);
         });
         let text = rendered_text(&markdown_output);
         let graphic_labels = ["H1", "H2", "B", "</>"];
@@ -3970,6 +4195,9 @@ mod tests {
             "Inline code",
             "Bulleted list",
             "Quote",
+            "Zoom Out",
+            "100%, Reset Zoom",
+            "Zoom In",
         ];
         let labels = accesskit_labels(&markdown_output);
         let relevant = labels
@@ -3979,6 +4207,83 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(relevant, expected_accessible_labels);
         assert!(!labels.iter().any(|label| label == "Mode"));
+    }
+
+    #[test]
+    fn compact_markdown_document_bar_keeps_format_and_zoom_inside_the_viewport() {
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            ..NoterApp::default()
+        };
+        assert!(app.editor_zoom.zoom_in());
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::configure_styles(&context);
+        let mut command = None;
+
+        let output = context.run_ui(ui_input(420.0, 100.0, 0.0), |ui| {
+            app.show_format_toolbar(ui, &mut command);
+        });
+        let format = accesskit_bounds(&output, "Format");
+        let zoom_out = accesskit_bounds(&output, "Zoom Out");
+        let reset_label = "110%, Reset Zoom";
+        let reset = accesskit_bounds(&output, reset_label);
+        let zoom_in = accesskit_bounds(&output, "Zoom In");
+
+        assert_eq!(accesskit_value(&output, reset_label), "110%");
+        assert!(format.x1 <= zoom_out.x0);
+        assert!(zoom_out.x1 <= reset.x0);
+        assert!(reset.x1 <= zoom_in.x0);
+        assert!(zoom_in.x1 <= 420.0);
+        assert_eq!(command, None);
+    }
+
+    #[test]
+    fn markdown_document_bar_zoom_preserves_control_focus_without_activating_content() {
+        let source = "# Heading";
+        let mut app = NoterApp {
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            text: source.to_owned(),
+            selection: Selection::caret(2),
+            view: DocumentView::Markdown,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::configure_styles(&context);
+        let viewport = egui::vec2(420.0, 300.0);
+
+        let initial = context.run_ui(ui_input(viewport.x, viewport.y, 0.0), |ui| {
+            app.render_frame(ui);
+        });
+        let zoom_in = accesskit_node_id(&initial, "Zoom In");
+        let mut input = ui_input(viewport.x, viewport.y, 0.1);
+        for action in [
+            egui::accesskit::Action::Focus,
+            egui::accesskit::Action::Click,
+        ] {
+            input.events.push(egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: zoom_in,
+                    data: None,
+                },
+            ));
+        }
+        let activated = context.run_ui(input, |ui| app.render_frame(ui));
+        let update = activated
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled");
+
+        assert_eq!(app.editor_zoom.percent(), 110);
+        assert_eq!(update.focus, zoom_in);
+        assert!(!app.markdown_editor.is_editing());
+        assert_eq!(app.pending_selection_restore, None);
+        assert_eq!(app.text, source);
+        assert!(!app.document.is_dirty());
     }
 
     #[test]

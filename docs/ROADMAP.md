@@ -172,7 +172,7 @@ that a release exists when the repository has no published artifact.
 
 System, Light, Dark, Green Screen, and Amber Screen themes, working About and
 update-status dialogs, source install helpers, a responsive upper-right Mode
-control and Theme menu, a contextual Markdown format bar, a bundled variable
+control and Theme menu, a contextual Markdown document bar, a bundled variable
 document typeface, and deterministic native README screenshots are implemented
 locally. Specialty palettes have deterministic enhanced-contrast checks.
 Built-in palette extension is data-driven and invalid palettes fail closed to
@@ -258,7 +258,10 @@ bounded before widget processing. Document-only zoom is available in both modes
 from 50 to 300 percent through keyboard, menu, and supported pointer gestures
 without scaling application controls or changing source bytes. At the 420-pixel
 minimum width, a compact More menu keeps Edit, View, and Help commands pointer
-reachable. Markdown Mode keeps formatted content wrapped by design.
+reachable. Markdown Mode now uses a continuous borderless canvas, centered
+760-point reading measure, responsive gutters, deliberate vertical rhythm, and
+a document-bar zoom cluster wired to the same bounded state. Formatted content
+remains wrapped by design.
 Document-wide Markdown selection and the remaining clipboard and navigation
 parity are still open.
 
