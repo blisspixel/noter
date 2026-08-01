@@ -45,10 +45,12 @@ content outside the measured interval so correctness checks do not inflate the
 reported operation latency. Windows commands are created suspended, assigned
 to a kill-on-close Job Object, and activated only after association. Command
 output, samples, warmups, artifacts, deadlines, and temporary paths are bounded.
-The later command-runner hardening waits within a fixed deadline for the Job
-Object's active process count to reach zero before returning an ordinary
-output-limit or command-deadline error. That wait was not present at recorded
-commit `580f164` and does not alter the historical timing artifact.
+The later command-runner hardening uses bounded terminate-and-rescan waves to
+retain identity-checked handles, stop assigned processes, and wait for their
+process objects to signal. A final Job Object termination and active-count
+check run under the same fixed deadline before returning an ordinary
+output-limit or command-deadline error. That shutdown protocol was not present
+at recorded commit `580f164` and does not alter the historical timing artifact.
 
 ## Reference environment
 

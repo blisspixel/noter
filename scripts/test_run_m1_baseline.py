@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -250,7 +251,73 @@ class DependencyTests(unittest.TestCase):
 
 
 class OrchestrationTests(unittest.TestCase):
+    def test_windows_process_list_counts_require_a_complete_bounded_snapshot(self):
+        self.assertEqual(
+            baseline._validate_windows_process_list_counts(
+                baseline.WINDOWS_MAXIMUM_JOB_PROCESSES,
+                baseline.WINDOWS_MAXIMUM_JOB_PROCESSES,
+            ),
+            baseline.WINDOWS_MAXIMUM_JOB_PROCESSES,
+        )
+        for assigned, returned in (
+            (2, 1),
+            (1, 2),
+            (
+                baseline.WINDOWS_MAXIMUM_JOB_PROCESSES + 1,
+                baseline.WINDOWS_MAXIMUM_JOB_PROCESSES + 1,
+            ),
+        ):
+            with (
+                self.subTest(assigned=assigned, returned=returned),
+                self.assertRaisesRegex(RuntimeError, "incomplete or invalid"),
+            ):
+                baseline._validate_windows_process_list_counts(assigned, returned)
+
     def test_windows_job_termination_waits_for_all_processes(self):
+        class Kernel32:
+            def __init__(self):
+                self.terminations = []
+                self.waits = []
+                self.closed = []
+
+            def TerminateJobObject(self, handle, exit_code):
+                self.terminations.append((handle, exit_code))
+                return True
+
+            def TerminateProcess(self, handle, exit_code):
+                self.terminations.append((handle, exit_code))
+                return True
+
+            def WaitForSingleObject(self, handle, timeout_ms):
+                self.waits.append((handle, timeout_ms))
+                return 0
+
+            def CloseHandle(self, handle):
+                self.closed.append(handle)
+                return True
+
+        job = object.__new__(baseline._WindowsProcessJob)
+        job._handle = 41
+        job._kernel32 = Kernel32()
+
+        with (
+            patch.object(
+                job,
+                "_open_process_handles",
+                side_effect=[(2, [47, 49]), (0, [])],
+            ),
+            patch.object(job, "_active_process_count", side_effect=[2, 1, 0]),
+            patch.object(baseline.time, "monotonic", return_value=0.0),
+            patch.object(baseline.time, "sleep") as sleep,
+        ):
+            job.terminate()
+
+        self.assertEqual(job._kernel32.terminations, [(47, 1), (49, 1), (41, 1)])
+        self.assertEqual(job._kernel32.waits, [(47, 30_000), (49, 30_000)])
+        self.assertEqual(job._kernel32.closed, [47, 49])
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_windows_job_rescans_a_nonempty_snapshot_without_openable_handles(self):
         class Kernel32:
             def __init__(self):
                 self.terminations = []
@@ -259,19 +326,35 @@ class OrchestrationTests(unittest.TestCase):
                 self.terminations.append((handle, exit_code))
                 return True
 
+            def TerminateProcess(self, handle, exit_code):
+                self.terminations.append((handle, exit_code))
+                return True
+
+            @staticmethod
+            def WaitForSingleObject(_handle, _timeout_ms):
+                return 0
+
+            @staticmethod
+            def CloseHandle(_handle):
+                return True
+
         job = object.__new__(baseline._WindowsProcessJob)
-        job._handle = 41
+        job._handle = 51
         job._kernel32 = Kernel32()
 
         with (
-            patch.object(job, "_active_process_count", side_effect=[2, 1, 0]),
+            patch.object(
+                job,
+                "_open_process_handles",
+                side_effect=[(1, []), (1, [57]), (0, [])],
+            ) as capture,
+            patch.object(job, "_active_process_count", return_value=0),
             patch.object(baseline.time, "monotonic", return_value=0.0),
-            patch.object(baseline.time, "sleep") as sleep,
         ):
             job.terminate()
 
-        self.assertEqual(job._kernel32.terminations, [(41, 1)])
-        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(capture.call_count, 3)
+        self.assertEqual(job._kernel32.terminations, [(57, 1), (51, 1)])
 
     def test_windows_job_termination_has_a_bounded_wait(self):
         class Kernel32:
@@ -284,11 +367,76 @@ class OrchestrationTests(unittest.TestCase):
         job._kernel32 = Kernel32()
 
         with (
+            patch.object(job, "_open_process_handles", return_value=(0, [])),
             patch.object(job, "_active_process_count", return_value=1),
-            patch.object(baseline.time, "monotonic", side_effect=[0.0, 31.0]),
+            patch.object(baseline.time, "monotonic", side_effect=[0.0, 0.0, 31.0]),
             self.assertRaisesRegex(RuntimeError, "did not terminate within"),
         ):
             job.terminate()
+
+    def test_windows_job_process_handle_wait_is_bounded_and_closed(self):
+        class Kernel32:
+            def __init__(self):
+                self.closed = []
+
+            @staticmethod
+            def TerminateJobObject(_handle, _exit_code):
+                return True
+
+            @staticmethod
+            def TerminateProcess(_handle, _exit_code):
+                return True
+
+            @staticmethod
+            def WaitForSingleObject(_handle, _timeout_ms):
+                return 258
+
+            def CloseHandle(self, handle):
+                self.closed.append(handle)
+                return True
+
+        job = object.__new__(baseline._WindowsProcessJob)
+        job._handle = 53
+        job._kernel32 = Kernel32()
+
+        with (
+            patch.object(
+                job,
+                "_open_process_handles",
+                side_effect=[(1, [59]), (0, [])],
+            ),
+            patch.object(baseline.time, "monotonic", return_value=0.0),
+            self.assertRaisesRegex(RuntimeError, "did not terminate within"),
+        ):
+            job.terminate()
+
+        self.assertEqual(job._kernel32.closed, [59])
+
+    def test_windows_job_capture_failure_still_terminates_the_job(self):
+        class Kernel32:
+            def __init__(self):
+                self.terminations = []
+
+            def TerminateJobObject(self, handle, exit_code):
+                self.terminations.append((handle, exit_code))
+                return True
+
+        job = object.__new__(baseline._WindowsProcessJob)
+        job._handle = 61
+        job._kernel32 = Kernel32()
+
+        with (
+            patch.object(
+                job,
+                "_open_process_handles",
+                side_effect=OSError(5, "capture failed"),
+            ),
+            patch.object(job, "_active_process_count", return_value=0),
+            self.assertRaisesRegex(RuntimeError, "could not be retained"),
+        ):
+            job.terminate()
+
+        self.assertEqual(job._kernel32.terminations, [(61, 1)])
 
     def test_checked_command_reports_success_and_bounded_failure(self):
         self.assertEqual(
@@ -336,7 +484,7 @@ class OrchestrationTests(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 5)
 
     @unittest.skipUnless(os.name == "nt", "Win32 process-tree behavior is required")
-    def test_output_limit_terminates_windows_descendants(self):
+    def test_output_limit_waits_for_the_original_windows_descendant(self):
         import ctypes
         from ctypes import wintypes
 
@@ -348,46 +496,210 @@ class OrchestrationTests(unittest.TestCase):
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
 
-        def process_is_running(process_id):
-            synchronize = 0x00100000
-            wait_timeout = 258
-            handle = kernel32.OpenProcess(synchronize, False, process_id)
-            if not handle:
-                return False
-            try:
-                return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
-            finally:
-                kernel32.CloseHandle(handle)
-
         launcher = (
             "import pathlib, subprocess, sys, time\n"
             "child = subprocess.Popen([sys.executable, '-c', "
             "'import time; time.sleep(30)'])\n"
-            "pathlib.Path(sys.argv[2]).write_text(str(child.pid), encoding='ascii')\n"
-            "stream = sys.stderr if sys.argv[1] == 'stderr' else sys.stdout\n"
-            "while True:\n"
-            "    stream.write('x' * 4096)\n"
-            "    stream.flush()\n"
+            "pid_path = pathlib.Path(sys.argv[1])\n"
+            "pid_path.write_text(str(child.pid), encoding='ascii')\n"
+            "release_path = pathlib.Path(sys.argv[2])\n"
+            "deadline = time.monotonic() + 5\n"
+            "while not release_path.exists():\n"
+            "    if time.monotonic() >= deadline:\n"
+            "        raise RuntimeError('output release was not received')\n"
             "    time.sleep(0.001)\n"
+            "while True:\n"
+            "    sys.stdout.write('x' * 4096)\n"
+            "    sys.stdout.flush()\n"
         )
-        for stream in ("stdout", "stderr"):
-            child_pid = None
-            with tempfile.TemporaryDirectory() as directory:
-                pid_path = Path(directory, "child.pid")
+        synchronize = 0x00100000
+        wait_object_0 = 0
+        wait_timeout = 258
+        with tempfile.TemporaryDirectory() as directory:
+            pid_path = Path(directory, "child.pid")
+            release_path = Path(directory, "release-output")
+            retained = {}
+            watcher_failures = []
+
+            def retain_child_handle():
+                deadline = time.monotonic() + 5
                 try:
-                    with (
-                        self.subTest(stream=stream),
-                        patch.object(baseline, "MAXIMUM_COMMAND_OUTPUT_BYTES", 8_192),
-                        self.assertRaisesRegex(RuntimeError, "bounded output limit"),
-                    ):
-                        baseline._run_checked(
-                            [sys.executable, "-c", launcher, stream, str(pid_path)],
-                            timeout=10,
+                    while "pid" not in retained:
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError(
+                                "child process identifier was not published"
+                            )
+                        try:
+                            retained["pid"] = int(pid_path.read_text(encoding="ascii"))
+                        except (FileNotFoundError, ValueError):
+                            time.sleep(0.001)
+                    retained["handle"] = kernel32.OpenProcess(
+                        synchronize,
+                        False,
+                        retained["pid"],
+                    )
+                    if not retained["handle"]:
+                        raise OSError(
+                            ctypes.get_last_error(),
+                            "could not retain the child process handle",
                         )
-                    child_pid = int(pid_path.read_text(encoding="ascii"))
-                    self.assertFalse(process_is_running(child_pid))
+                except (OSError, RuntimeError) as error:
+                    watcher_failures.append(str(error))
                 finally:
-                    if child_pid is not None and process_is_running(child_pid):
+                    release_path.touch()
+
+            watcher = threading.Thread(target=retain_child_handle, daemon=True)
+            watcher.start()
+            try:
+                with (
+                    patch.object(baseline, "MAXIMUM_COMMAND_OUTPUT_BYTES", 8_192),
+                    self.assertRaisesRegex(RuntimeError, "bounded output limit"),
+                ):
+                    baseline._run_checked(
+                        [
+                            sys.executable,
+                            "-c",
+                            launcher,
+                            str(pid_path),
+                            str(release_path),
+                        ],
+                        timeout=10,
+                    )
+                watcher.join(timeout=10)
+                self.assertFalse(watcher.is_alive())
+                self.assertEqual(watcher_failures, [])
+                self.assertIn("handle", retained)
+                self.assertEqual(
+                    kernel32.WaitForSingleObject(retained["handle"], 0),
+                    wait_object_0,
+                )
+            finally:
+                release_path.touch()
+                watcher.join(timeout=10)
+                child_handle = retained.get("handle")
+                if (
+                    child_handle
+                    and kernel32.WaitForSingleObject(child_handle, 0) == wait_timeout
+                ):
+                    subprocess.run(
+                        ["taskkill", "/PID", str(retained["pid"]), "/T", "/F"],
+                        check=False,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=10,
+                    )
+                    kernel32.WaitForSingleObject(child_handle, 10_000)
+                if child_handle:
+                    kernel32.CloseHandle(child_handle)
+
+    @unittest.skipUnless(os.name == "nt", "Win32 process-tree behavior is required")
+    def test_windows_job_termination_waits_for_descendant_exit(self):
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        launcher = (
+            "import pathlib, subprocess, sys, time\n"
+            "spawn_path = pathlib.Path(sys.argv[1])\n"
+            "spawn_deadline = time.monotonic() + 5\n"
+            "while not spawn_path.exists():\n"
+            "    if time.monotonic() >= spawn_deadline:\n"
+            "        raise RuntimeError('descendant spawn was not released')\n"
+            "    time.sleep(0.001)\n"
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(30)'])\n"
+            "pid_path = pathlib.Path(sys.argv[2])\n"
+            "pid_path.write_text(str(child.pid), encoding='ascii')\n"
+        )
+        synchronize = 0x00100000
+        wait_object_0 = 0
+        wait_timeout = 258
+        with tempfile.TemporaryDirectory() as directory:
+            spawn_path = Path(directory, "spawn-descendant")
+            pid_path = Path(directory, "child.pid")
+            child_pid = None
+            child_handle = None
+            capture_count = 0
+            with baseline._WindowsProcessJob() as job:
+                process = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        launcher,
+                        str(spawn_path),
+                        str(pid_path),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=(
+                        subprocess.CREATE_NEW_PROCESS_GROUP
+                        | baseline.WINDOWS_CREATE_SUSPENDED
+                    ),
+                )
+                try:
+                    job.activate(process)
+                    open_process_handles = job._open_process_handles
+
+                    def capture_process_handles():
+                        nonlocal capture_count, child_handle, child_pid
+                        member_count, batch = open_process_handles()
+                        capture_count += 1
+                        if capture_count != 1:
+                            return member_count, batch
+                        spawn_path.touch()
+                        marker_deadline = time.monotonic() + 5
+                        while child_pid is None:
+                            if time.monotonic() >= marker_deadline:
+                                self.fail("child process identifier was not published")
+                            try:
+                                child_pid = int(pid_path.read_text(encoding="ascii"))
+                            except (FileNotFoundError, ValueError):
+                                pass
+                            time.sleep(0.001)
+                        child_handle = kernel32.OpenProcess(
+                            synchronize,
+                            False,
+                            child_pid,
+                        )
+                        if not child_handle:
+                            self.fail(
+                                "could not retain the child process handle: "
+                                f"Win32 error {ctypes.get_last_error()}"
+                            )
+                        process.wait(timeout=5)
+                        close_failure = job._close_process_handles(batch)
+                        if close_failure is not None:
+                            raise close_failure
+                        return member_count, []
+
+                    with patch.object(
+                        job,
+                        "_open_process_handles",
+                        side_effect=capture_process_handles,
+                    ):
+                        job.terminate()
+
+                    self.assertGreaterEqual(capture_count, 3)
+                    self.assertEqual(
+                        kernel32.WaitForSingleObject(child_handle, 0),
+                        wait_object_0,
+                    )
+                    process.wait(timeout=10)
+                finally:
+                    if (
+                        child_handle
+                        and kernel32.WaitForSingleObject(child_handle, 0)
+                        == wait_timeout
+                    ):
                         subprocess.run(
                             ["taskkill", "/PID", str(child_pid), "/T", "/F"],
                             check=False,
@@ -396,6 +708,11 @@ class OrchestrationTests(unittest.TestCase):
                             stderr=subprocess.DEVNULL,
                             timeout=10,
                         )
+                        kernel32.WaitForSingleObject(child_handle, 10_000)
+                    if child_handle:
+                        kernel32.CloseHandle(child_handle)
+                    if process.poll() is None:
+                        baseline._terminate_process_tree(process, job)
 
     @unittest.skipUnless(os.name == "nt", "Win32 process-tree behavior is required")
     def test_windows_command_cannot_run_before_job_activation(self):
