@@ -76,6 +76,10 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
+- Bound macOS mutation-test linker input by disabling test-profile debug
+  information in that job after Apple clang 21 crashed while linking a mutant
+  even with serialized Cargo builds. Ordinary macOS tests retain their normal
+  debug profile, and infrastructure-failure validation remains fail closed.
 - Make Windows benchmark-command termination synchronous and bounded. The
   harness uses bounded terminate-and-rescan waves to retain identity-checked
   process handles, stop each captured Job Object member, and wait for its

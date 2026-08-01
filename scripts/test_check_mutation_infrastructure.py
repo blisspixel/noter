@@ -9,6 +9,8 @@ from pathlib import Path
 
 from check_mutation_infrastructure import infrastructure_failures
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
 
 class MutationInfrastructureTests(unittest.TestCase):
     """Exercise clean, corrupted, and infrastructure-failure reports."""
@@ -95,6 +97,20 @@ class MutationInfrastructureTests(unittest.TestCase):
                     "log/mutation.log"
                 ],
             )
+
+    def test_macos_mutation_job_bounds_linker_debug_payload(self) -> None:
+        """Keep the reviewed mitigation beside serialized macOS linking."""
+        workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "          CARGO_BUILD_JOBS: 1\n"
+            "          CARGO_PROFILE_TEST_DEBUG: '0'\n"
+            "          CARGO_INCREMENTAL: 1\n",
+            workflow,
+        )
+        self.assertEqual(workflow.count("CARGO_PROFILE_TEST_DEBUG: '0'"), 1)
 
     def test_caught_mutant_log_is_not_reclassified(self) -> None:
         """Only build failures already labeled unviable are inspected."""
