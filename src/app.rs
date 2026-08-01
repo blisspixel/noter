@@ -42,8 +42,6 @@ const STATUS_BAR_HEIGHT: f32 = 26.0;
 const EXPANDED_TOP_CONTROLS_MIN_WIDTH: f32 = 600.0;
 const EXPANDED_TOP_CONTROLS_WIDTH: f32 = 326.0;
 const COMPACT_TOP_CONTROLS_WIDTH: f32 = 280.0;
-const MARKDOWN_READING_MAX_WIDTH: f32 = 760.0;
-const MARKDOWN_READING_MIN_GUTTER: f32 = 24.0;
 const MARKDOWN_READING_TOP_PADDING: f32 = 16.0;
 const MARKDOWN_READING_BOTTOM_PADDING: f32 = 48.0;
 const INLINE_ZOOM_MIN_WIDTH: f32 = 180.0;
@@ -52,27 +50,6 @@ const INTERACTIVE_TEXT_MAX_LABEL: &str = "8 MiB";
 const TEXT_INPUT_LIMIT_PREFIX: &str =
     "Input was limited to keep this document within its supported";
 const MARKDOWN_INPUT_LIMIT_MESSAGE: &str = "Markdown Mode limited this input to keep the source within its 1 MiB safety budget. Text within the remaining budget was preserved.";
-
-#[derive(Clone, Copy, Default, PartialEq, Debug)]
-struct MarkdownCanvasGeometry {
-    content_width: f32,
-    left_gutter: f32,
-}
-
-fn markdown_canvas_geometry(available_width: f32) -> MarkdownCanvasGeometry {
-    let available_width = if available_width.is_finite() {
-        available_width.max(0.0)
-    } else {
-        0.0
-    };
-    let content_width = 2.0_f32
-        .mul_add(-MARKDOWN_READING_MIN_GUTTER, available_width)
-        .clamp(0.0, MARKDOWN_READING_MAX_WIDTH);
-    MarkdownCanvasGeometry {
-        content_width,
-        left_gutter: (available_width - content_width) / 2.0,
-    }
-}
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum DocumentView {
@@ -238,6 +215,17 @@ enum ViewCommand {
     ZoomIn,
     ZoomOut,
     ResetZoom,
+}
+
+fn zoom_command_from_wheel_delta(delta: egui::Vec2) -> Option<ViewCommand> {
+    if !delta.y.is_finite() || delta.y == 0.0 {
+        return None;
+    }
+    Some(if delta.y > 0.0 {
+        ViewCommand::ZoomIn
+    } else {
+        ViewCommand::ZoomOut
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1783,17 +1771,34 @@ impl NoterApp {
             ViewCommand::ZoomOut,
             zoom.can_zoom_out(),
             "Decrease document zoom",
-        ) {
+        )
+        .clicked()
+        {
             command.get_or_insert(ViewCommandRequest::preserve_control(ViewCommand::ZoomOut));
         }
-        if Self::inline_zoom_button(
+        let reset = Self::inline_zoom_button(
             ui,
             &format!("{}%", zoom.percent()),
             ViewCommand::ResetZoom,
             true,
-            "Reset document zoom to 100%",
-        ) {
+            "Click to reset document zoom to 100%. Scroll to zoom in or out.",
+        );
+        if reset.clicked() {
             command.get_or_insert(ViewCommandRequest::preserve_control(ViewCommand::ResetZoom));
+        } else if reset.hovered() {
+            let wheel_delta = ui.input(|input| {
+                input
+                    .events
+                    .iter()
+                    .filter_map(|event| match event {
+                        egui::Event::MouseWheel { delta, .. } => Some(*delta),
+                        _ => None,
+                    })
+                    .fold(egui::Vec2::ZERO, |total, delta| total + delta)
+            });
+            if let Some(wheel_command) = zoom_command_from_wheel_delta(wheel_delta) {
+                command.get_or_insert(ViewCommandRequest::preserve_control(wheel_command));
+            }
         }
         if Self::inline_zoom_button(
             ui,
@@ -1801,7 +1806,9 @@ impl NoterApp {
             ViewCommand::ZoomIn,
             zoom.can_zoom_in(),
             "Increase document zoom",
-        ) {
+        )
+        .clicked()
+        {
             command.get_or_insert(ViewCommandRequest::preserve_control(ViewCommand::ZoomIn));
         }
     }
@@ -1812,7 +1819,7 @@ impl NoterApp {
         command: ViewCommand,
         enabled: bool,
         hover_text: &str,
-    ) -> bool {
+    ) -> egui::Response {
         let width = if command == ViewCommand::ResetZoom {
             54.0
         } else {
@@ -1835,9 +1842,7 @@ impl NoterApp {
                 node.set_value(visible_label);
             });
         }
-        let clicked = response.clicked();
-        response.on_hover_text(hover_text);
-        clicked
+        response.on_hover_text(hover_text)
     }
 
     fn show_find_bar(&mut self, ui: &mut egui::Ui) {
@@ -2076,17 +2081,7 @@ impl NoterApp {
         let outcome = egui::ScrollArea::vertical()
             .show(ui, |ui| {
                 ui.add_space(MARKDOWN_READING_TOP_PADDING);
-                let geometry = markdown_canvas_geometry(ui.available_width());
-                let outcome = ui
-                    .horizontal_top(|ui| {
-                        ui.add_space(geometry.left_gutter);
-                        ui.vertical(|ui| {
-                            ui.set_width(geometry.content_width);
-                            self.markdown_editor.show(ui, &mut self.text)
-                        })
-                        .inner
-                    })
-                    .inner;
+                let outcome = self.markdown_editor.show(ui, &mut self.text);
                 ui.add_space(MARKDOWN_READING_BOTTOM_PADDING);
                 outcome
             })
@@ -2433,6 +2428,7 @@ impl eframe::App for NoterApp {
         if !self.idle_screen.show(ui.ctx(), self.theme.idle_effect()) {
             self.render_frame(ui);
         }
+        theme::paint_crt_overlay(ui.ctx(), self.theme);
         #[cfg(feature = "screenshot-qa")]
         self.advance_screenshot_capture(ui.ctx());
     }
@@ -3161,18 +3157,47 @@ mod tests {
     }
 
     #[test]
-    fn markdown_canvas_centers_a_readable_measure_with_responsive_gutters() {
-        let wide = markdown_canvas_geometry(1_200.0);
-        assert_eq!(wide.content_width.to_bits(), 760.0_f32.to_bits());
-        assert_eq!(wide.left_gutter.to_bits(), 220.0_f32.to_bits());
+    fn markdown_canvas_starts_at_the_editor_gutter_instead_of_centering_a_page() {
+        let source = "Full-width paragraph";
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
 
-        let narrow = markdown_canvas_geometry(420.0);
-        assert_eq!(narrow.content_width.to_bits(), 372.0_f32.to_bits());
-        assert_eq!(narrow.left_gutter.to_bits(), 24.0_f32.to_bits());
+        let output = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+            let _ = app.show_markdown_editor(ui);
+        });
+        let text = text_position(&rendered_text(&output), source);
 
-        let constrained = markdown_canvas_geometry(30.0);
-        assert_eq!(constrained.content_width.to_bits(), 0.0_f32.to_bits());
-        assert_eq!(constrained.left_gutter.to_bits(), 15.0_f32.to_bits());
+        assert!(text.x < 40.0, "Markdown content began at x={}", text.x);
+    }
+
+    #[test]
+    fn zoom_wheel_direction_uses_vertical_motion_and_rejects_invalid_input() {
+        assert_eq!(
+            zoom_command_from_wheel_delta(egui::vec2(0.0, 12.0)),
+            Some(ViewCommand::ZoomIn)
+        );
+        assert_eq!(
+            zoom_command_from_wheel_delta(egui::vec2(0.0, -12.0)),
+            Some(ViewCommand::ZoomOut)
+        );
+        assert_eq!(
+            zoom_command_from_wheel_delta(egui::vec2(2.0, 12.0)),
+            Some(ViewCommand::ZoomIn)
+        );
+        for delta in [
+            egui::Vec2::ZERO,
+            egui::vec2(12.0, 0.0),
+            egui::vec2(0.0, f32::NAN),
+            egui::vec2(0.0, f32::INFINITY),
+        ] {
+            assert_eq!(zoom_command_from_wheel_delta(delta), None);
+        }
     }
 
     #[test]
@@ -3199,6 +3224,39 @@ mod tests {
             click_input(1_200.0, 760.0, 0.1, zoom_in + egui::vec2(4.0, 4.0)),
             |ui| app.render_frame(ui),
         );
+
+        assert_eq!(app.editor_zoom.percent(), 110);
+        assert_eq!(app.document.revision(), revision);
+        assert_eq!(String::from(app.document.rope()), source);
+        assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn scrolling_over_the_zoom_percentage_uses_the_shared_document_zoom_path() {
+        let source = "# Zoom sample";
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            ..NoterApp::default()
+        };
+        let revision = app.document.revision();
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+        let initial = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| app.render_frame(ui));
+        let reset = text_position(&rendered_text(&initial), "100%") + egui::vec2(4.0, 4.0);
+        let mut wheel = ui_input(1_200.0, 760.0, 0.1);
+        wheel.events.extend([
+            egui::Event::PointerMoved(reset),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 12.0),
+                modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+            },
+        ]);
+
+        let _ = context.run_ui(wheel, |ui| app.render_frame(ui));
 
         assert_eq!(app.editor_zoom.percent(), 110);
         assert_eq!(app.document.revision(), revision);

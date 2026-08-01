@@ -280,10 +280,11 @@ bounded before widget processing. Document-only zoom is available in both modes
 from 50 to 300 percent through keyboard, menu, and supported pointer gestures
 without scaling application controls or changing source bytes. At the 420-pixel
 minimum width, a compact More menu keeps Edit, View, and Help commands pointer
-reachable. Markdown Mode now uses a continuous borderless canvas, centered
-760-point reading measure, responsive gutters, deliberate vertical rhythm, and
-a document-bar zoom cluster wired to the same bounded state. Formatted content
-remains wrapped by design.
+reachable. Markdown Mode now uses the complete continuous borderless canvas
+with only the ordinary editor inset, deliberate vertical rhythm, and a
+document-bar zoom cluster wired to the same bounded state. The live percentage
+accepts vertical pointer-wheel zoom and remains a click target for reset.
+Formatted content remains wrapped by design.
 Document-wide Markdown selection and the remaining clipboard and navigation
 parity are still open.
 
@@ -350,7 +351,10 @@ large-file requirements needed by both text and native Markdown editing.
 - accessibility semantics and editable-text actions;
 - native shaping and fallback, stable font metrics, theme-correct coverage
   transfer, hinting, and subpixel positioning validated across display scales;
-- high-DPI, high-contrast, bidirectional text, combining marks, and emoji; and
+- high-DPI, high-contrast, bidirectional text, combining marks, and emoji;
+- an optional local spell-check adapter with explicit language and enablement,
+  no document upload, no background network access, and a clean unavailable
+  state on platforms without a supported local provider; and
 - reproducible cold-start, typing, scrolling, search, memory, and size
   benchmarks.
 
@@ -363,6 +367,10 @@ interface therefore refuses files above 8 MiB before creating the mirror,
 preserves the open document, and explains the limit. The same 64 MiB run then
 peaked at 196 MiB without entering the editor. This is defensive containment,
 not M5 completion; the release still requires a measured 50 MiB editable path.
+The current bundled Inter configuration retains egui's complete default
+fallback chain, including its emoji fonts, so pasted Unicode remains intact.
+The current renderer's emoji output is monochrome and is not accepted as final
+cross-platform appearance evidence. No spell-check provider is implemented.
 
 ### Exit criteria
 
@@ -406,8 +414,11 @@ The current vertical slice builds a borderless native layout before shaping,
 uses real body, heading, and strong-emphasis weights in inactive and active
 content, activates one source range for direct editing without exposing
 supported delimiters, and maps eight formatting actions back to ordinary
-Markdown source. Click-and-drag selection maps rendered characters to complete
-source spans, including hidden delimiters, escapes, and supported character
+Markdown source. Those actions are selection-aware toggles, avoid invented
+link text and targets, expose accessible pressed state, and provide focused
+keyboard paths for Bold, Italic, and Link. Click-and-drag selection maps
+rendered characters to complete source spans, including hidden delimiters,
+escapes, and supported character
 references; synthesis without a safe mapping falls back to visible source. A
 link target is revealed while it is edited and hidden again
 after the caret leaves it. Text Mode always exposes exact source. Shared bounded

@@ -122,6 +122,12 @@ Feature presence alone is not verification.
 - **FR-027 Word wrap:** Toggle wrapping without changing document bytes.
 - **FR-028 Long operations:** Search, indexing, and formatting cannot commit a
   stale result to a newer document revision.
+- **FR-029 Optional spell checking:** Spell checking is an explicit, persisted
+  preference backed only by a supported local operating-system or installed
+  dictionary provider. Language selection is explicit. Unavailable providers
+  fail without changing text, and suggestions never replace text without a
+  user action. Document content is never uploaded, retained by Noter as a
+  dictionary corpus, or sent through background network access.
 
 ### 2.3 Lifecycle and recovery
 
@@ -393,7 +399,7 @@ milestone. The minimum mapping is:
 | Contract area | Milestone | Primary evidence |
 | --- | --- | --- |
 | FR-010 to FR-019, NFR-REL-01 to 03 | M1 | golden bytes, property tests, injected I/O failures |
-| FR-020 to FR-028, NFR-REL-04 | M3 | reference-model edit and undo tests |
+| FR-020 to FR-029, NFR-REL-04 | M3 and M5 | reference-model edit and undo tests; local spell-provider capability, privacy, and platform matrices |
 | FR-060 to FR-069, NFR-REL-05 to 07 | M4 | state-machine, recovery, conflict, and crash tests |
 | FR-030 to FR-036 | M2, M3, and M5 | shell, command, status, and production-editor UI tests |
 | FR-080 to FR-086 | M5 | semantic accessibility, IME, display, and platform matrices |

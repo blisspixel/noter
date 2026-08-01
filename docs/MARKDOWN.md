@@ -21,11 +21,11 @@ authoritative. Changing modes never rewrites a file.
   file can be viewed in Text Mode.
 - Markdown is projected into borderless native egui text layouts before
   shaping. One continuous editor background owns the window, without a nested
-  page card, border, or shadow. Wide windows center a 760-point reading measure;
-  narrow windows retain at least 24-point inner gutters until the viewport can
-  no longer provide them. The inactive document and active editor share
-  explicit Inter body, heading, and strong-emphasis weights, deliberate line
-  height, and stable block spacing rather than simulated bold.
+  page card, border, or shadow. Content uses the available canvas with only the
+  ordinary editor inset, so Markdown does not begin at an artificial centered
+  page offset. The inactive document and active editor share explicit Inter
+  body, heading, and strong-emphasis weights, deliberate line height, and
+  stable block spacing rather than simulated bold.
 - Selecting formatted content keeps supported heading and inline syntax
   visually formatted while editing the exact backing source range. Markdown
   delimiters remain in the edit buffer and on disk even when they are not
@@ -37,8 +37,20 @@ authoritative. Changing modes never rewrites a file.
   substring remains visible and editable as raw source.
 - A selected link destination is temporarily revealed and underlined while it
   is edited, then hidden again after the caret leaves that target.
-- H1, H2, Bold, Italic, Link, Code, List, and Quote actions update the selected
-  block's Markdown source immediately.
+- H1, H2, Bold, Italic, Link, Code, List, and Quote actions are selection-aware
+  toggles. Repeating a command removes only a simple parser-verified construct,
+  headings toggle back to paragraphs, and line commands change only selected
+  logical lines. Malformed, asymmetric, multi-backtick, or deeper repeated-star
+  delimiters fail closed instead of being partially removed. Empty inline
+  selections insert paired delimiters with the caret between them, but an empty
+  caret alone does not claim ownership of existing literal delimiters.
+  Link inserts `[]()` or `[selected text]()` without inventing a label or URL,
+  rejects a selection that would not parse as the exact new link, and toggling
+  a supported inline link preserves its complete source label, including code
+  spans. Bold, Italic, and Link use
+  Ctrl+B, Ctrl+I, and Ctrl+K on Windows and Linux and the corresponding Command
+  shortcuts on macOS while the Markdown editor owns focus. Toolbar buttons
+  expose their active state to assistive technology.
 - The primary Text and Markdown switch remains in the upper-right application
   row. The contextual document bar appears only in Markdown Mode, with
   formatting groups on the left and a visually separated zoom cluster on the
@@ -52,16 +64,20 @@ authoritative. Changing modes never rewrites a file.
   MD037 reports the non-portable source. Merely changing or viewing modes never
   rewrites the spacing.
 - System, Light, Dark, Green Screen, and Amber Screen themes share the same
-  document model.
+  document model. Green and Amber use native monospace text, square controls,
+  and a bounded static scanline and edge treatment without animation, document
+  inspection, or network access. Standard themes restore their proportional
+  application type and rounded controls completely.
 - Editor zoom scales formatted body, heading, emphasis, code type, and their
   line heights together from 50 to 300 percent while preserving hierarchy. The
   Markdown document bar, View menu, standard keyboard shortcuts, supported
   pointer gesture, and status indicator all use the same bounded zoom state.
   The document-bar reset control reports the live percentage to assistive
-  technology, and document-bar zoom activation preserves control focus for
-  repeated operation instead of activating document content. Formatted content
-  remains wrapped by design; the Text Mode word-wrap preference does not change
-  Markdown source or layout policy.
+  technology, accepts vertical pointer-wheel motion for zoom, and still resets
+  to 100 percent when clicked. Document-bar zoom activation preserves control
+  focus for repeated operation instead of activating document content.
+  Formatted content remains wrapped by design; the Text Mode word-wrap
+  preference does not change Markdown source or layout policy.
 - Remote images are not loaded, raw HTML is not executed, and no content is
   fetched in the background. Markdown-link opening is not implemented in this
   bounded slice; the final command requires an explicit user action.
