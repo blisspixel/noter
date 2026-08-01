@@ -744,15 +744,22 @@ body, heading, emphasis, link, and code style mapping. Supported heading and
 inline delimiters remain in source while being visually suppressed, and a link
 target is revealed only while it is edited. Eight core formatting actions map
 back to ordinary Markdown. The responsive top row keeps the primary Mode and
-Theme controls opposite the application menus, while the separate format bar
-exists only in Markdown Mode. The top-row construction order matches its visual
-order so keyboard focus and accessibility-tree traversal do not reverse the
-right-aligned controls. Text Mode exposes every delimiter, and five conservative
-diagnostics operate directly on source. A narrowly recoverable line-wide
-emphasis spacing mistake is projected with the intended style while MD037
-reports that portable Markdown requires moving the whitespace outside the
-closing marker. Viewing never changes those source bytes. This establishes the
-interaction direction but does not satisfy M6.
+Theme controls opposite the application menus. Markdown uses the same
+continuous borderless editor fill as Text Mode, with no page card, border, or
+shadow. A 760-point maximum reading measure is centered on wide windows, and
+24-point inner gutters collapse responsively on constrained windows. The
+separate Markdown document bar keeps whitespace-grouped formatting actions on
+the left and a distinct bounded zoom cluster on the right when space permits.
+Construction order matches visual order so keyboard focus and
+accessibility-tree traversal do not reverse controls. Its reset control exposes
+the live percentage as an accessibility value, and document-bar zoom commands
+preserve control focus without activating a source-backed editor. Text Mode
+exposes every delimiter, and five conservative diagnostics operate directly on
+source. A narrowly recoverable line-wide emphasis spacing mistake is projected
+with the intended style while MD037 reports that portable Markdown requires
+moving the whitespace outside the closing marker. Viewing never changes those
+source bytes. This establishes the interaction direction but does not satisfy
+M6.
 
 Because the current slice discovers and renders the complete block set
 synchronously, it enforces prototype ceilings of 1 MiB of source, 8,192 logical

@@ -193,13 +193,20 @@ Required real readers:
 - [ ] UI-03 Selection, caret, focus, disabled controls, links, errors, and
   conflicts meet contrast expectations.
 - [ ] UI-04 100, 125, 150, 175, and 200 percent scaling remain crisp and usable.
-- [ ] UI-05 Zoom works from keyboard, menu, and supported pointer gesture.
+- [ ] UI-05 Zoom works from keyboard, menu, the Markdown document-bar controls,
+  and supported pointer gesture. Every route uses the same 50 to 300 percent
+  state and scales document typography without scaling application chrome. The
+  document-bar reset control announces the current percentage, and repeated
+  keyboard or screen-reader activation retains control focus without activating
+  formatted content.
 - [ ] UI-06 Window state restores on the same display.
 - [ ] UI-07 Removed or rearranged displays cannot restore the window off screen.
 - [ ] UI-08 System dialogs, Command versus Control shortcuts, and window close
   behavior match the platform.
 - [ ] UI-09 The Markdown document uses the same borderless editor surface as
-  Text Mode, without a card or document box, in both Light and Dark.
+  Text Mode, without a card or document box, in both Light and Dark. At ordinary
+  widths the reading measure is centered; at narrow widths the gutters collapse
+  without clipping or creating a nested surface.
 - [ ] UI-10 Command or Control plus Shift plus S invokes Save As rather than
   Save, and every displayed shortcut uses the platform convention.
 - [ ] UI-11 Markdown files at the exact source-byte ceiling, including UTF-8
@@ -211,7 +218,8 @@ Required real readers:
   Theme align right on the same row. At the 420-pixel minimum width, labeled
   mode and theme menus remain visible without overlap. The formatting row is
   absent in Text Mode. Keyboard focus and screen-reader traversal follow the
-  same left-to-right sequence as the visible controls.
+  same left-to-right sequence as the visible controls, including Zoom Out,
+  the current-percentage Reset Zoom control, and Zoom In.
 - [ ] UI-13 Invalid declarative custom themes fail closed to Dark with an
   actionable explanation and no partially applied colors or external access.
 

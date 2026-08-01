@@ -41,6 +41,14 @@ impl EditorZoom {
         self.0
     }
 
+    pub const fn can_zoom_in(self) -> bool {
+        self.0 < MAXIMUM_ZOOM_PERCENT
+    }
+
+    pub const fn can_zoom_out(self) -> bool {
+        self.0 > MINIMUM_ZOOM_PERCENT
+    }
+
     pub fn scale(self) -> f32 {
         f32::from(self.0) / 100.0
     }
@@ -187,17 +195,23 @@ mod tests {
     #[test]
     fn zoom_is_bounded_and_resettable() {
         let mut zoom = EditorZoom::default();
+        assert!(zoom.can_zoom_in());
+        assert!(zoom.can_zoom_out());
         assert!(!zoom.reset());
         for _ in 0..100 {
             let _ = zoom.zoom_in();
         }
         assert_eq!(zoom.percent(), MAXIMUM_ZOOM_PERCENT);
+        assert!(!zoom.can_zoom_in());
+        assert!(zoom.can_zoom_out());
         assert!(!zoom.zoom_in());
 
         for _ in 0..100 {
             let _ = zoom.zoom_out();
         }
         assert_eq!(zoom.percent(), MINIMUM_ZOOM_PERCENT);
+        assert!(zoom.can_zoom_in());
+        assert!(!zoom.can_zoom_out());
         assert!(!zoom.zoom_out());
         assert!(zoom.reset());
         assert_eq!(zoom.percent(), DEFAULT_ZOOM_PERCENT);

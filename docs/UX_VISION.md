@@ -27,7 +27,9 @@ legible:
 
 - a tested monospace stack for exact source and a bundled document face with
   real weights for formatted Markdown;
-- comfortable line height and margins;
+- comfortable line height and stable block rhythm;
+- one continuous borderless Markdown canvas, with a centered readable measure
+  on wide windows and responsive gutters instead of a simulated paper card;
 - obvious caret, selection, focus, modified, error, and conflict states;
 - five restrained built-in themes with measured contrast, including Green
   Screen and Amber Screen specialty palettes;
@@ -74,8 +76,9 @@ malformed or a construct is unsupported. Markdown Mode is a native editor and
 viewer, not a web preview or proprietary rich-text document.
 
 Mode and Theme are quiet top-level controls, aligned opposite the application
-menus. Markdown formatting actions use a contextual row that disappears in Text
-Mode instead of reserving empty document space.
+menus. Markdown formatting actions and their separated document-zoom cluster
+use a contextual row that disappears in Text Mode instead of reserving empty
+document space.
 
 Diagnostics do not mutate text. Whole-document formatting requires an explicit
 command, a diff, a supported semantic-equivalence check, and confirmation. Text

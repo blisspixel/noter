@@ -12,10 +12,15 @@ const ACTIVE_EDITOR_ID: &str = "noter-markdown-active-block";
 const EXPANDED_FORMAT_MIN_WIDTH: f32 = 480.0;
 const FORMAT_BUTTON_SIZE: egui::Vec2 = egui::vec2(32.0, 28.0);
 const CODE_BUTTON_SIZE: egui::Vec2 = egui::vec2(38.0, 28.0);
+const BLOCK_HORIZONTAL_PADDING: i8 = 8;
+const BLOCK_VERTICAL_PADDING: i8 = 3;
+const BLOCK_GAP: f32 = 3.0;
 const MARKER_FONT_SIZE: f32 = 0.1;
 const BODY_WEIGHT: f32 = 400.0;
 const HEADING_WEIGHT: f32 = 600.0;
 const STRONG_WEIGHT: f32 = 700.0;
+const BODY_LINE_HEIGHT_RATIO: f32 = 4.0 / 3.0;
+const HEADING_LINE_HEIGHT_RATIO: f32 = 1.2;
 const HEADING_SIZE_RATIOS: [f32; 6] = [
     28.0 / 15.0,
     24.0 / 15.0,
@@ -513,7 +518,7 @@ impl MarkdownEditor {
                 self.apply_command(command);
             }
             if command.ends_group() {
-                ui.separator();
+                ui.add_space(8.0);
             }
         }
         if enabled {
@@ -692,6 +697,7 @@ impl MarkdownEditor {
                     return MarkdownShowOutcome::ProjectionLimitExceeded { limit, origin };
                 }
             }
+            ui.add_space(BLOCK_GAP);
             self.finish_active_if_requested();
             return changed_origin
                 .map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed);
@@ -713,6 +719,7 @@ impl MarkdownEditor {
                     let maximum_draft_bytes =
                         self.maximum_active_draft_bytes(source, maximum_source_bytes);
                     let _ = self.show_active_editor(ui, maximum_draft_bytes);
+                    ui.add_space(BLOCK_GAP);
                     active_shown = true;
                 }
                 continue;
@@ -808,7 +815,10 @@ impl MarkdownEditor {
     ) -> Option<RenderedActivation> {
         let block = &source[range.clone()];
         let frame = egui::Frame::NONE
-            .inner_margin(egui::Margin::symmetric(8, 2))
+            .inner_margin(egui::Margin::symmetric(
+                BLOCK_HORIZONTAL_PADDING,
+                BLOCK_VERTICAL_PADDING,
+            ))
             .corner_radius(4);
         let label = frame
             .show(ui, |ui| {
@@ -872,7 +882,7 @@ impl MarkdownEditor {
             }
         });
 
-        ui.add_space(2.0);
+        ui.add_space(BLOCK_GAP);
         activation
     }
 
@@ -916,8 +926,10 @@ impl MarkdownEditor {
                 .font(egui::TextStyle::Body)
                 .desired_width(f32::INFINITY)
                 .desired_rows(rows)
-                .frame(egui::Frame::NONE)
-                .margin(egui::Margin::symmetric(8, 2))
+                .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(
+                    BLOCK_HORIZONTAL_PADDING,
+                    BLOCK_VERTICAL_PADDING,
+                )))
                 .layouter(&mut layouter);
             let output = editor.show(ui);
             (output, buffer.was_limited())
@@ -1110,6 +1122,10 @@ fn reference_definition_projection(source: &str, style: &egui::Style) -> Markdow
     let mut job = egui::text::LayoutJob::default();
     let format = egui::TextFormat {
         font_id: style.text_styles[&egui::TextStyle::Monospace].clone(),
+        line_height: Some(markdown_line_height(
+            style.text_styles[&egui::TextStyle::Body].size,
+            false,
+        )),
         color: style.visuals.text_color(),
         ..Default::default()
     };
@@ -1417,13 +1433,18 @@ fn markdown_text_format(
     if !source_style.has(STYLE_VISIBLE) {
         return egui::TextFormat {
             font_id: egui::FontId::new(MARKER_FONT_SIZE, egui::FontFamily::Proportional),
+            line_height: Some(markdown_line_height(
+                style.text_styles[&egui::TextStyle::Body].size,
+                false,
+            )),
             color: egui::Color32::TRANSPARENT,
             ..Default::default()
         };
     }
 
     let mut font_id = style.text_styles[&egui::TextStyle::Body].clone();
-    let heading_weight = if source_style.heading_level > 0 {
+    let is_heading = source_style.heading_level > 0;
+    let heading_weight = if is_heading {
         let ratio = HEADING_SIZE_RATIOS
             .get(usize::from(source_style.heading_level.saturating_sub(1)))
             .copied()
@@ -1433,6 +1454,7 @@ fn markdown_text_format(
     } else {
         BODY_WEIGHT
     };
+    let line_height = markdown_line_height(font_id.size, is_heading);
     if source_style.has(STYLE_CODE) {
         font_id = style.text_styles[&egui::TextStyle::Monospace].clone();
     }
@@ -1451,6 +1473,7 @@ fn markdown_text_format(
     };
     let mut format = egui::TextFormat {
         font_id,
+        line_height: Some(line_height),
         color,
         background: if source_style.has(STYLE_CODE) {
             style.visuals.code_bg_color
@@ -1472,6 +1495,15 @@ fn markdown_text_format(
     };
     format.coords.push("wght", weight);
     format
+}
+
+fn markdown_line_height(font_size: f32, is_heading: bool) -> f32 {
+    let ratio = if is_heading {
+        HEADING_LINE_HEIGHT_RATIO
+    } else {
+        BODY_LINE_HEIGHT_RATIO
+    };
+    (font_size * ratio).round()
 }
 
 const fn ranges_overlap(left: &Range<usize>, right: &Range<usize>) -> bool {
@@ -1830,6 +1862,9 @@ mod tests {
             style.text_styles[&egui::TextStyle::Monospace]
         );
         assert_eq!(format.color, style.visuals.text_color());
+        assert!(format.line_height.is_some_and(
+            |line_height| line_height > style.text_styles[&egui::TextStyle::Body].size
+        ));
         assert_eq!(
             projection
                 .source_map
@@ -2120,6 +2155,49 @@ mod tests {
         assert_eq!(source, original);
         assert!(!editor.is_editing());
         assert!(!output.shapes.is_empty());
+    }
+
+    #[test]
+    fn active_and_rendered_blocks_keep_identical_text_bounds_and_wrapping() {
+        let source = "A deliberately long paragraph that wraps at a narrow reading width.";
+        let width = 240.0;
+
+        let context = egui::Context::default();
+        let mut rendered_editor = MarkdownEditor::default();
+        let mut rendered_source = source.to_owned();
+        let rendered = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(width);
+            assert!(!rendered_editor.show(ui, &mut rendered_source).changed());
+        });
+        let rendered_bounds = rendered
+            .shapes
+            .iter()
+            .find_map(|shape| text_rect(&shape.shape, source))
+            .expect("the rendered block should emit its text bounds");
+
+        let context = egui::Context::default();
+        let mut active_editor = MarkdownEditor::default();
+        active_editor.activate_first_block(source);
+        let mut active_source = source.to_owned();
+        let active = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(width);
+            assert!(!active_editor.show(ui, &mut active_source).changed());
+        });
+        let active_bounds = active
+            .shapes
+            .iter()
+            .find_map(|shape| text_rect(&shape.shape, source))
+            .expect("the active block should emit its text bounds");
+
+        assert_eq!(active_source, source);
+        assert!(
+            (active_bounds.left() - rendered_bounds.left()).abs() <= f32::EPSILON,
+            "editing shifted the block horizontally: rendered={rendered_bounds:?}, active={active_bounds:?}"
+        );
+        assert!(
+            (active_bounds.size() - rendered_bounds.size()).length() <= f32::EPSILON,
+            "editing changed the block's wrapping: rendered={rendered_bounds:?}, active={active_bounds:?}"
+        );
     }
 
     #[test]
@@ -2735,6 +2813,28 @@ mod tests {
         assert!(body.coords.as_ref().iter().any(|(tag, value)| {
             tag.to_be_bytes() == *b"wght" && value.to_bits() == BODY_WEIGHT.to_bits()
         }));
+        assert!(
+            body.line_height
+                .is_some_and(|line_height| line_height > body.font_id.size)
+        );
+    }
+
+    #[test]
+    fn markdown_line_height_preserves_heading_hierarchy_and_code_rhythm() {
+        let style = egui::Style::default();
+        let heading = markdown_edit_layout("# Heading", &style, None)
+            .format_at_byte(egui::text::ByteIndex(2))
+            .clone();
+        let body = markdown_edit_layout("Body", &style, None)
+            .format_at_byte(egui::text::ByteIndex(0))
+            .clone();
+        let code = markdown_edit_layout("`code`", &style, None)
+            .format_at_byte(egui::text::ByteIndex(1))
+            .clone();
+
+        assert!(heading.font_id.size > body.font_id.size);
+        assert!(heading.line_height > body.line_height);
+        assert_eq!(code.line_height, body.line_height);
     }
 
     #[cfg(feature = "screenshot-qa")]
