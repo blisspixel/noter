@@ -69,8 +69,10 @@ release, so current work remains under Unreleased.
 - Add a pure lifecycle reducer for dirty New, Open, Reload, Quit, and native
   close requests, backed by exhaustive transition tests and a fixed-seed
   reference-model property.
-- Add Text Mode Select All and a validated Go To Line dialog that navigates LF,
-  CRLF, CR, and mixed files without allocating a line index.
+- Add Select All to Text Mode and Markdown Mode plus a validated Go To Line
+  dialog for Text Mode that navigates LF, CRLF, CR, and mixed files without
+  allocating a line index. Markdown selections can span parsed blocks, retain
+  direction and exact line endings, and replace only the selected source bytes.
 - Add persistent Text Mode word wrap and editor-only zoom from 50 to 300 percent
   with View-menu controls, standard zoom shortcuts, supported pointer
   magnification over the document surface, and a status indication.
@@ -316,10 +318,10 @@ release, so current work remains under Unreleased.
   vector.
 - Replace the dirty-document close trap with a Save, Discard Changes, and Cancel
   decision for New, Open, Quit, and native window close.
-- Preserve cross-block Text Mode selections when Markdown Mode cannot yet map
-  them safely, explain the current one-block editing boundary, and restore
-  same-block selections so Bold and the other formatting actions work
-  immediately after switching modes.
+- Carry valid Text Mode selections across parsed blocks into one contiguous
+  source-backed Markdown edit region, preserving direction and exact UTF-8
+  boundaries. Invalid or out-of-bounds selections keep Text Mode and leave the
+  source unchanged.
 - Correlate destructive intents, save completions, and native-close
   authorization with the exact document revision. Unsolicited or stale save
   completions can no longer authorize abandonment.

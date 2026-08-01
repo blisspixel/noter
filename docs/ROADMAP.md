@@ -277,8 +277,11 @@ field Undo remains local, and closing the bar restores immediate document input.
 The status bar reports modified state, one-based logical line and Unicode-scalar
 column, and selection size from a revision-and-selection keyed cache.
 
-Text Mode now includes Select All, validated allocation-free Go To Line across
-LF, CRLF, CR, and mixed files, and persistent word wrap. Go To Line input is
+Text and Markdown modes now include Select All. A valid directional selection
+can move from Text Mode into one contiguous source-backed Markdown edit region
+across parsed blocks without changing UTF-8 bytes or native and mixed line
+endings. Text Mode includes validated allocation-free Go To Line across LF,
+CRLF, CR, and mixed files plus persistent word wrap. Go To Line input is
 bounded before widget processing. Document-only zoom is available in both modes
 from 50 to 300 percent through keyboard, menu, and supported pointer gestures
 without scaling application controls or changing source bytes. At the 420-pixel
@@ -287,9 +290,9 @@ reachable. Markdown Mode now uses the complete continuous borderless canvas
 with only the ordinary editor inset, deliberate vertical rhythm, and a
 document-bar zoom cluster wired to the same bounded state. The live percentage
 accepts vertical pointer-wheel zoom and remains a click target for reset.
-Formatted content remains wrapped by design.
-Document-wide Markdown selection and the remaining clipboard and navigation
-parity are still open.
+Formatted content remains wrapped by design. Cross-block pointer dragging in
+inactive Markdown content and the remaining clipboard and navigation parity are
+still open.
 
 Deterministic 512-case properties cover single replacements, ordered disjoint
 multi-edit transactions, arbitrary edit sequences, literal search, and
@@ -431,6 +434,10 @@ after synchronizing its pending edit. Click-and-drag selection maps
 rendered characters to complete source spans, including hidden delimiters,
 escapes, and supported character
 references; synthesis without a safe mapping falls back to visible source. A
+Text Mode selection may span parsed blocks and restores as one contiguous
+source-backed active region with its direction and line endings intact. Select
+All uses the same path in either view. Pointer dragging across separate inactive
+blocks remains open.
 link target is revealed while it is edited and hidden again
 after the caret leaves it. Text Mode always exposes exact source. Shared bounded
 Undo and Redo use the deterministic intent and coalescing policy. Continuous
