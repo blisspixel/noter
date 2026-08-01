@@ -7,6 +7,11 @@ release, so current work remains under Unreleased.
 
 ### Added
 
+- Add a reproducible M1 trust-kernel benchmark harness with an exact synthetic
+  corpus, process-cold and warm raw samples, recomputable nearest-rank
+  percentiles, platform-named peak memory, release binary and four-target
+  dependency evidence, bounded schema validation, and a canonical 30-sample
+  Windows reference from a clean detached commit.
 - Add a pinned cross-platform release workflow with archives, POSIX and
   PowerShell installers, MSI and Homebrew packaging, SHA-256 checksums, a
   target-specific CycloneDX 1.5 SBOM for each release platform, GitHub artifact

@@ -816,6 +816,14 @@ release corpus without sacrificing IME or accessibility.
 
 Benchmark reports include OS, CPU, memory, storage, display refresh, build
 profile, commit, corpus checksum, sample count, warm or cold state, and raw data.
+Schema-v2 reference runs execute the recorded clean commit in a detached linked
+worktree, use nearest-rank percentiles over at least 30 samples, bind the exact
+corpus and build artifacts by SHA-256, and validate canonical bounded JSON
+before exclusive promotion. Windows orchestration creates commands suspended,
+assigns them to a kill-on-close Job Object, and resumes them only after
+association so deadlines and output limits cannot orphan ordinary descendants.
+The first canonical reference and its unauthenticated-local provenance limits
+are recorded in [M1_BASELINE_EVIDENCE.md](M1_BASELINE_EVIDENCE.md).
 
 ## 14. Errors, diagnostics, and privacy
 

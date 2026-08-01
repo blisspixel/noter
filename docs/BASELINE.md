@@ -44,6 +44,30 @@ evolve with implementation.
 | Cargo | 1.97.1 |
 | Build profile | `release`, LTO, stripped, panic abort |
 
+## 2026-07-31 reproducible M1 trust-kernel reference
+
+Commit `580f164` adds the reproducible M1 harness. Its canonical Windows run
+uses a clean detached worktree, an exact seven-file corpus, 30 raw samples per
+set, five warmups for warm sets, and 22 result sets across stable-handle load,
+literal search, serialization, exclusive save, and atomic replacement.
+
+| Measure | Result |
+| --- | --- |
+| Reference artifact | [M1_BASELINE_EVIDENCE.md](M1_BASELINE_EVIDENCE.md) |
+| Artifact SHA-256 | `5da4643bf7f84c2ae37605c35a91c52e6e4f85fb0f06052f8ddfc0161bfd47e8` |
+| 50 MiB source load p95 | 104.96 ms process cold, 103.06 ms warm in process |
+| 50 MiB log load p95 | 101.70 ms process cold, 111.16 ms warm in process |
+| 50 MiB literal search p95 | 2.61 to 4.49 ms across early, middle, late, absent, and adversarial cases |
+| 1 MiB save p95 | 13.64 ms exclusive new file, 17.93 ms atomic replacement |
+| Maximum observed worker peak working set | 173.07 MiB |
+| Release binary | 9,299,456 bytes, 8.87 MiB |
+| Four-target resolved package union | 344 packages from 416 locked records |
+
+The complete raw samples, corpus manifest, environment, binary hashes,
+dependency counts, method, and limitations are retained in the canonical JSON.
+This is a self-reported local trust-kernel baseline, not authenticated telemetry
+or M5 GUI and input evidence. Required M1 filesystem fixtures remain open.
+
 ## Repository health
 
 | Measure | Result |
@@ -72,8 +96,10 @@ semantic UI and manual platform tests.
 - Semantic command and state tests now cover the implemented GUI surface, but
   installed-product accessibility and cross-platform visual evidence remain
   required for v0.1.
-- Startup, input latency, open latency, RSS, and long-file measurements do not
-  yet have a reproducible harness.
+- GUI startup, painted-frame input latency, IME, accessibility, and interactive
+  long-file measurements still require the M5 harness. M1 trust-kernel load,
+  search, save, memory, binary-size, and dependency measurements now have a
+  reproducible reference.
 - Duplicate target-specific dependency families remain in the GUI stack and
   require a release audit.
 
