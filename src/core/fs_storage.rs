@@ -33,10 +33,14 @@ enum RetainedCreationCause {
         inspection_kind: io::ErrorKind,
         cleanup_kind: io::ErrorKind,
     },
-    SecurityFinalization {
-        failure_kind: io::ErrorKind,
-        os_code: Option<i32>,
-    },
+    SecurityFinalization(RetainedSecurityFinalization),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RetainedSecurityFinalization {
+    failure_kind: io::ErrorKind,
+    os_code: Option<i32>,
+    cleanup: Option<(io::ErrorKind, Option<i32>)>,
 }
 
 impl RetainedCreationArtifact {
@@ -50,10 +54,11 @@ impl RetainedCreationArtifact {
                     "inspect the identity of the new private sibling failed with {inspection_kind:?}"
                 ),
             ),
-            RetainedCreationCause::SecurityFinalization {
+            RetainedCreationCause::SecurityFinalization(RetainedSecurityFinalization {
                 failure_kind,
                 os_code,
-            } => {
+                ..
+            }) => {
                 let os_code = os_code.map_or_else(String::new, |code| format!(", OS code {code}"));
                 StorageError::new(
                     SaveStage::CreateTemporary,
@@ -71,10 +76,17 @@ impl RetainedCreationArtifact {
                 "handle-bound cleanup failed with {cleanup_kind:?}; the newly created private sibling `{}` may remain beside the destination. Noter had not written application bytes, but a same-authority process could have changed it. Inspect it before retrying or removing it.",
                 self.basename
             ),
-            RetainedCreationCause::SecurityFinalization { .. } => format!(
-                "the zero-byte sibling created with the requested private no-inherit ACL may remain as `{}` beside the destination. A same-authority process could have changed it. Inspect it before retrying or removing it.",
-                self.basename
-            ),
+            RetainedCreationCause::SecurityFinalization(failure) => {
+                let cleanup = failure.cleanup.map_or_else(String::new, |(kind, os_code)| {
+                    let os_code =
+                        os_code.map_or_else(String::new, |code| format!(", OS code {code}"));
+                    format!("handle-bound cleanup failed with {kind:?}{os_code}; ")
+                });
+                format!(
+                    "{cleanup}the zero-byte sibling created while establishing the requested private access policy may remain as `{}` beside the destination. A same-authority process could have changed it. Inspect it before retrying or removing it.",
+                    self.basename
+                )
+            }
         };
         StorageError::new(SaveStage::Cleanup, message)
     }
@@ -300,7 +312,9 @@ impl Drop for TemporaryFile {
 ///
 /// The sibling starts owner-only on Unix and is opened for both reading and
 /// writing. macOS suppresses inherited ACLs atomically and removes its bootstrap
-/// ACL before this function can return a writable sibling. Existing-file
+/// ACL before this function can return a writable sibling. Windows verifies the
+/// explicit process-user owner and exact protected user-and-SYSTEM DACL through
+/// the created handle before this function can return it. Existing-file
 /// metadata is finalized only after atomic exchange, so staged bytes are never
 /// exposed through a widened precommit mode. Its name contains 128 bits from the
 /// operating-system random source.
@@ -309,10 +323,10 @@ impl Drop for TemporaryFile {
 ///
 /// Returns an error when the destination has no filename, the operating-system
 /// random source fails, or an exclusive sibling cannot be created after a
-/// bounded number of collisions. On macOS, creation also fails when the private
-/// mode or bootstrap ACL cannot be finalized and verified. Such a failure can
-/// carry a retained-artifact warning because the random zero-byte sibling was
-/// already created.
+/// bounded number of collisions. On macOS and Windows, creation also fails when
+/// the private access policy cannot be finalized and verified. Such a failure
+/// can carry a retained-artifact warning because the random zero-byte sibling
+/// was already created and handle-bound cleanup may not have succeeded.
 pub fn create_unique_sibling(destination: &Path) -> io::Result<TemporaryFile> {
     create_unique_sibling_with(destination, &mut OsRandom)
 }
@@ -381,7 +395,12 @@ fn create_unique_sibling_with_identity(
             }
             Err(error) => {
                 let retained_cause = noter_platform::retained_private_file_creation_cause(&error)
-                    .map(|cause| (cause.kind(), cause.raw_os_error()));
+                    .map(|cause| RetainedSecurityFinalization {
+                        failure_kind: cause.kind(),
+                        os_code: cause.raw_os_error(),
+                        cleanup: noter_platform::retained_private_file_cleanup_cause(&error)
+                            .map(|cleanup| (cleanup.kind(), cleanup.raw_os_error())),
+                    });
                 classify_exclusive_creation_failure(basename, error, retained_cause)?;
             }
         }
@@ -396,17 +415,14 @@ fn create_unique_sibling_with_identity(
 fn classify_exclusive_creation_failure(
     basename: String,
     error: io::Error,
-    retained_cause: Option<(io::ErrorKind, Option<i32>)>,
+    retained_cause: Option<RetainedSecurityFinalization>,
 ) -> io::Result<()> {
-    if let Some((failure_kind, os_code)) = retained_cause {
+    if let Some(failure) = retained_cause {
         return Err(io::Error::new(
-            failure_kind,
+            failure.failure_kind,
             RetainedCreationArtifact {
                 basename,
-                cause: RetainedCreationCause::SecurityFinalization {
-                    failure_kind,
-                    os_code,
-                },
+                cause: RetainedCreationCause::SecurityFinalization(failure),
             },
         ));
     }
@@ -2639,15 +2655,16 @@ mod tests {
     fn retained_security_finalization_message_is_exact_and_actionable() {
         let artifact = RetainedCreationArtifact {
             basename: ".noter-save-00112233445566778899aabbccddeeff.tmp".to_owned(),
-            cause: RetainedCreationCause::SecurityFinalization {
+            cause: RetainedCreationCause::SecurityFinalization(RetainedSecurityFinalization {
                 failure_kind: io::ErrorKind::InvalidData,
                 os_code: Some(22),
-            },
+                cleanup: None,
+            }),
         };
 
         assert_eq!(
             artifact.to_string(),
-            "finalize private sibling security failed with InvalidData, OS code 22; the zero-byte sibling created with the requested private no-inherit ACL may remain as `.noter-save-00112233445566778899aabbccddeeff.tmp` beside the destination. A same-authority process could have changed it. Inspect it before retrying or removing it."
+            "finalize private sibling security failed with InvalidData, OS code 22; the zero-byte sibling created while establishing the requested private access policy may remain as `.noter-save-00112233445566778899aabbccddeeff.tmp` beside the destination. A same-authority process could have changed it. Inspect it before retrying or removing it."
         );
         assert_eq!(
             artifact.primary_error().message(),
@@ -2664,12 +2681,17 @@ mod tests {
         let retained = classify_exclusive_creation_failure(
             basename.to_owned(),
             io::Error::other("outer marker"),
-            Some((io::ErrorKind::InvalidData, Some(22))),
+            Some(RetainedSecurityFinalization {
+                failure_kind: io::ErrorKind::InvalidData,
+                os_code: Some(22),
+                cleanup: Some((io::ErrorKind::Unsupported, Some(50))),
+            }),
         )
         .expect_err("security finalization must preserve the random sibling");
         assert_eq!(retained.kind(), io::ErrorKind::InvalidData);
         assert!(retained.to_string().contains(basename));
         assert!(retained.to_string().contains("OS code 22"));
+        assert!(retained.to_string().contains("Unsupported, OS code 50"));
 
         assert!(
             classify_exclusive_creation_failure(

@@ -36,9 +36,9 @@ The current development checkpoint has:
   prohibition while wrapping the required native identity, metadata, commit,
   and synchronization operations;
 - 128-bit random, exclusive, owner-tracked sibling files with bounded collision
-  handling, owner-only Unix mode, atomic macOS ACL-inheritance suppression, a
-  protected Windows DACL, strongest supported file synchronization, and
-  identity-and-content-safe cleanup;
+  handling, owner-only Unix mode, atomic macOS ACL-inheritance suppression, an
+  explicit-user-owned and handle-verified protected Windows DACL, strongest
+  supported file synchronization, and identity-and-content-safe cleanup;
 - a production `FilesystemStorage` adapter with metadata transfer, atomic
   existing-file replacement, exclusive new-file installation, documented
   Windows partial-state reconciliation, parent barriers, and exact destination
@@ -497,10 +497,13 @@ allocated empty ACL. At runtime, Noter defensively applies the native remove-ACL
 sentinel through the live descriptor and verifies absence before any document
 bytes are written. Failure
 closes the descriptor and reports the possible random zero-byte artifact without
-unlinking an unverified pathname. Windows temporary and new files use a
-protected DACL granting full control only to the object owner and SYSTEM and deny
-competing write handles while owned, so permissive parent entries never expose
-or modify staged document bytes. Existing
+unlinking an unverified pathname. Windows temporary and new files explicitly set
+the process user's SID as owner and request a protected DACL granting full
+control only to that SID and SYSTEM. Noter verifies the owner and exact DACL
+through the created handle before writing. Unsupported or ignored ACL semantics
+fail closed, with handle-bound removal of the zero-byte object where supported.
+Verified files deny competing write handles while owned, so permissive parent
+entries never expose or modify staged document bytes. Existing
 Windows replacements still receive the destination metadata merged by
 `ReplaceFileW`. Existing Unix replacements remain mode 0600 through the exchange;
 the adapter captures required metadata into an immutable snapshot before commit,
