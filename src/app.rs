@@ -53,7 +53,7 @@ const MAX_SAVE_RECOVERY_MESSAGE_BYTES: usize = 4 << 10;
 const MAX_SAVE_RECOVERY_DESTINATION_BYTES: usize = 128 << 10;
 const MAX_SAVE_RECOVERY_LABEL_BYTES: usize = 1 << 10;
 const SAVE_RECOVERY_BLOCK_MESSAGE: &str = "Another save cannot start while an uncertain save outcome remains. Inspect the destination and retained recovery artifact, preserve the version you need, and explicitly reconcile the listed outcome first.";
-const SAVE_RECOVERY_CAPACITY_MESSAGE: &str = "Another save cannot start because Noter is already retaining the maximum number of unresolved save outcomes. Reconcile and preserve the listed recovery artifacts before retrying any save.";
+const SAVE_RECOVERY_RESERVATION_FAILURE_MESSAGE: &str = "Save stopped before writing because Noter could not safely retain the recovery evidence required if the commit outcome became uncertain. Preserve and reconcile any listed recovery artifacts before retrying.";
 const SAVE_RECOVERY_PATH_LIMIT_MESSAGE: &str = "Save stopped before writing because the selected destination path is too large to retain safely if the commit outcome becomes uncertain.";
 const SAVE_RECOVERY_TRUNCATION_SUFFIX: &str = "... Recovery detail was shortened to bound memory. Do not save again. Inspect the destination and every retained `.noter-save-*.tmp` sibling before explicit reconciliation.";
 const TEXT_INPUT_LIMIT_PREFIX: &str =
@@ -728,7 +728,7 @@ impl NoterApp {
     ) -> Option<SaveRecoveryReservation> {
         if self.save_recoveries.len() >= MAX_SAVE_RECOVERY_RECORDS {
             self.show_active_save_recovery_messages();
-            self.error_msg = Some(SAVE_RECOVERY_CAPACITY_MESSAGE.to_owned());
+            self.error_msg = Some(SAVE_RECOVERY_RESERVATION_FAILURE_MESSAGE.to_owned());
             return None;
         }
         if self.save_is_blocked() {
@@ -744,7 +744,7 @@ impl NoterApp {
         }
         if self.save_recoveries.try_reserve(1).is_err() {
             self.show_active_save_recovery_messages();
-            self.error_msg = Some(SAVE_RECOVERY_CAPACITY_MESSAGE.to_owned());
+            self.error_msg = Some(SAVE_RECOVERY_RESERVATION_FAILURE_MESSAGE.to_owned());
             return None;
         }
         let mut message = String::new();
@@ -753,11 +753,11 @@ impl NoterApp {
             .is_err()
         {
             self.show_active_save_recovery_messages();
-            self.error_msg = Some(SAVE_RECOVERY_CAPACITY_MESSAGE.to_owned());
+            self.error_msg = Some(SAVE_RECOVERY_RESERVATION_FAILURE_MESSAGE.to_owned());
             return None;
         }
         let Some(destination_label) = bounded_destination_label(attempt.destination()) else {
-            self.error_msg = Some(SAVE_RECOVERY_CAPACITY_MESSAGE.to_owned());
+            self.error_msg = Some(SAVE_RECOVERY_RESERVATION_FAILURE_MESSAGE.to_owned());
             return None;
         };
         Some(SaveRecoveryReservation {
@@ -5950,7 +5950,7 @@ mod tests {
         );
         assert_eq!(
             app.error_msg.as_deref(),
-            Some(SAVE_RECOVERY_CAPACITY_MESSAGE)
+            Some(SAVE_RECOVERY_RESERVATION_FAILURE_MESSAGE)
         );
         Ok(())
     }
