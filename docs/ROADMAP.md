@@ -39,14 +39,15 @@ installed-product M2 checks, completion of the ordinary M3 text
 commands, and the M4 recovery and external-change safety path. M5 through M7
 remain first-release work after that checkpoint.
 
-The current implementation closes three earlier blockers: deterministic Undo
-coalescing, bounded literal Find and Replace, and the pure destructive-action
-lifecycle reducer. The shortest path to correctness alpha is now:
+The current implementation closes earlier blockers including deterministic Undo
+coalescing, bounded literal Find and Replace, the pure destructive-action
+lifecycle reducer, and Markdown document-wide plus cross-block selection. The
+shortest path to correctness alpha is now:
 
 1. finish the remaining M1 manual filesystem fixtures;
 2. prove About, updates, themes, and source installation in installed builds;
-3. finish cross-platform navigation and clipboard policy, Markdown
-   document-selection parity, and long-session M3 evidence;
+3. finish cross-platform navigation and clipboard policy, plus long-session M3
+   evidence;
 4. implement private recovery records and external-change decisions through the
    M4 reducer; and
 5. run the cross-platform correctness matrix on one immutable green commit.
