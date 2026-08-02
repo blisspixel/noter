@@ -2,7 +2,7 @@
 
 **Version:** 0.3
 
-**Reviewed:** 2026-07-31
+**Reviewed:** 2026-08-02
 
 **Status:** Active architecture contract
 
@@ -597,8 +597,11 @@ authorize abandonment. Dirty or still-interactive save outcomes return to an
 explicit decision, a clean save with a blocking warning stops for review, and
 only Quit authorizes one native close for the exact saved revision. Exhaustive
 transition tests and a fixed-seed 512-case command-sequence property compare
-the reducer with a separate reference model. Private recovery records and
-external asynchronous effect correlation remain later M4 slices.
+the reducer with a separate reference model. A pure `ConflictState` reducer
+classifies focus and timer observations against the trusted save baseline and
+offers Reload, Keep Editing, and Save As without silent overwrite. Private
+restart-spanning recovery records and overwrite-with-second-confirm remain later
+M4 slices.
 
 Dialogs cannot directly mutate document state. They emit commands to the same
 dispatcher used by keyboard shortcuts and menus. Repeated close events are

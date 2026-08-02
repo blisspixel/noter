@@ -1,5 +1,7 @@
 //! UI-independent document and editing logic.
 
+/// Pure external-change classification and conflict decisions.
+pub mod conflict;
 /// Plain-text document loading, representation, and saving.
 pub mod document;
 /// Revision-checked, reversible source transactions.

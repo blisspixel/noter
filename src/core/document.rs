@@ -135,6 +135,15 @@ impl Document {
         self.path.as_deref()
     }
 
+    /// Returns the trusted destination expectation captured at load or save.
+    ///
+    /// External-change detection compares live observations with this baseline.
+    /// Keep Editing and ordinary editing never mutate it; only a successful save
+    /// or a new load may replace it.
+    pub const fn saved_target(&self) -> Option<TargetExpectation> {
+        self.saved_target
+    }
+
     /// Returns the exact detected line-ending profile and insertion fallback.
     pub const fn line_endings(&self) -> &LineEndingProfile {
         &self.line_endings
