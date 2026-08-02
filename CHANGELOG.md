@@ -84,6 +84,16 @@ release, so current work remains under Unreleased.
   with View-menu controls, standard zoom shortcuts, supported pointer
   magnification over the document surface, and a status indication.
 
+### Added
+
+- Add pure external-change classification and a conflict decision reducer that
+  compare the trusted load or save baseline with focus-regain and bounded
+  focused-timer inspections. Changed, deleted, special, and unreadable outcomes
+  prompt Reload Disk Version, Keep Editing, or Save As. Keep Editing never
+  rebaselines the expectation, so ordinary Save still fails closed through the
+  durable save protocol when the disk version differs. Ordinary Save is paused
+  only while the prompt is visible; Save As remains available.
+
 ### Changed
 
 - Commit dirty Markdown drafts before selection restore so toolbar formatting

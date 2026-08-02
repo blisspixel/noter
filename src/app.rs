@@ -3,17 +3,21 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use eframe::egui;
+use noter::core::conflict::{
+    ConflictCommand, ConflictDecision, ConflictEffect, ConflictState, classify_external_change,
+};
 use noter::core::document::{Document, PreparedSaveAs};
 use noter::core::edit::{
     AppliedTransaction, EditError, EditOrigin, EditTimestamp, EditTransaction, Selection, TextRange,
 };
+use noter::core::file_observation::inspect_target;
 use noter::core::lifecycle::{
     DestructiveIntent as PendingAbandonAction, DirtyDecision, LifecycleCommand, LifecycleEffect,
     LifecycleState, SaveContinuation,
 };
 use noter::core::markdown::count_markdown_diagnostics;
 use noter::core::revision::Revision;
-use noter::core::save::SaveOutcome;
+use noter::core::save::{SaveOutcome, SaveStage};
 use noter::core::search::SearchDirection;
 use noter::core::undo::{HistoryApplyOutcome, HistoryRecordOutcome, UndoHistory};
 use noter::error::NoterError;
@@ -48,6 +52,8 @@ const MARKDOWN_READING_BOTTOM_PADDING: f32 = 48.0;
 const INLINE_ZOOM_MIN_WIDTH: f32 = 180.0;
 const INTERACTIVE_TEXT_MAX_BYTES: usize = 8 << 20;
 const INTERACTIVE_TEXT_MAX_LABEL: &str = "8 MiB";
+const EXTERNAL_INSPECT_INTERVAL_SECS: f64 = 2.0;
+const EXTERNAL_CHANGE_SAVE_BLOCK_MESSAGE: &str = "Ordinary Save is paused while an external file change needs a decision. Choose Reload Disk Version, Keep Editing, or Save As first.";
 const MAX_SAVE_RECOVERY_RECORDS: usize = 16;
 const MAX_SAVE_RECOVERY_MESSAGE_BYTES: usize = 4 << 10;
 const MAX_SAVE_RECOVERY_DESTINATION_BYTES: usize = 128 << 10;
@@ -399,6 +405,8 @@ pub struct NoterApp {
     updates_open: bool,
     pending_hard_link_save: Option<PendingHardLinkSave>,
     lifecycle: LifecycleState,
+    conflict: ConflictState,
+    last_external_inspect_at: Option<f64>,
     #[cfg(feature = "screenshot-qa")]
     screenshot: Option<ScreenshotCapture>,
 }
@@ -432,6 +440,8 @@ impl Default for NoterApp {
             updates_open: false,
             pending_hard_link_save: None,
             lifecycle: LifecycleState::default(),
+            conflict: ConflictState::default(),
+            last_external_inspect_at: None,
             #[cfg(feature = "screenshot-qa")]
             screenshot: None,
         }
@@ -513,6 +523,7 @@ impl NoterApp {
                 self.markdown_editor.reset();
                 self.markdown_issue_cache = None;
                 self.error_msg = None;
+                self.reset_external_conflict_state();
                 self.view = DocumentView::Text;
                 self.select_document_view(
                     requested_view.unwrap_or_else(|| preferred_view_for_path(path)),
@@ -550,6 +561,10 @@ impl NoterApp {
     }
 
     fn do_save(&mut self) {
+        if self.conflict.blocks_ordinary_save() {
+            self.error_msg = Some(EXTERNAL_CHANGE_SAVE_BLOCK_MESSAGE.to_owned());
+            return;
+        }
         if self.save_is_blocked() {
             self.show_active_save_recovery_messages();
             self.error_msg = Some(SAVE_RECOVERY_BLOCK_MESSAGE.to_owned());
@@ -663,8 +678,12 @@ impl NoterApp {
             mut message,
         } = reservation;
         self.error_msg = match result {
-            Ok(SaveOutcome::Committed { ref warnings, .. }) if warnings.is_empty() => None,
+            Ok(SaveOutcome::Committed { ref warnings, .. }) if warnings.is_empty() => {
+                self.reset_external_conflict_state();
+                None
+            }
             Ok(SaveOutcome::Committed { warnings, .. }) => {
+                self.reset_external_conflict_state();
                 let mut details: Vec<String> =
                     warnings.cleanup().iter().map(ToString::to_string).collect();
                 details.extend(warnings.durability().iter().map(ToString::to_string));
@@ -709,11 +728,16 @@ impl NoterApp {
     }
 
     const fn ordinary_save_is_blocked(&self) -> bool {
-        self.save_is_blocked()
+        self.save_is_blocked() || self.conflict.blocks_ordinary_save()
     }
 
     const fn save_is_blocked(&self) -> bool {
         !self.save_recoveries.is_empty()
+    }
+
+    fn reset_external_conflict_state(&mut self) {
+        let _ = self.conflict.reduce(ConflictCommand::Reset);
+        self.last_external_inspect_at = None;
     }
 
     fn show_active_save_recovery_messages(&mut self) {
@@ -781,6 +805,7 @@ impl NoterApp {
         self.markdown_editor.reset();
         self.markdown_issue_cache = None;
         self.error_msg = None;
+        self.reset_external_conflict_state();
     }
 
     fn request_new_document(&mut self, ctx: &egui::Context) {
@@ -871,6 +896,115 @@ impl NoterApp {
                 self.continue_pending_abandon_if_clean(ctx);
             }
             LifecycleEffect::Continue(action) => self.execute_abandon_action(action, ctx),
+        }
+    }
+
+    fn maybe_inspect_external_change(&mut self, ctx: &egui::Context) {
+        if self.lifecycle.pending_intent().is_some()
+            || self.pending_hard_link_save.is_some()
+            || self.pending_recovery_reconciliation.is_some()
+            || self.about_open
+            || self.updates_open
+        {
+            return;
+        }
+        let Some(path) = self.document.path().map(Path::to_path_buf) else {
+            return;
+        };
+        let Some(expected) = self.document.saved_target() else {
+            return;
+        };
+
+        let (now, focus_regained, window_focused) = ctx.input(|input| {
+            (
+                input.time,
+                input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::WindowFocused(true))),
+                input.viewport().focused.unwrap_or(true),
+            )
+        });
+        let interval_elapsed = self
+            .last_external_inspect_at
+            .is_none_or(|last| now - last >= EXTERNAL_INSPECT_INTERVAL_SECS);
+        if !(focus_regained || (window_focused && interval_elapsed)) {
+            if window_focused {
+                ctx.request_repaint_after(Duration::from_secs_f64(EXTERNAL_INSPECT_INTERVAL_SECS));
+            }
+            return;
+        }
+
+        self.last_external_inspect_at = Some(now);
+        if window_focused {
+            ctx.request_repaint_after(Duration::from_secs_f64(EXTERNAL_INSPECT_INTERVAL_SECS));
+        }
+        let observed = Some(inspect_target(&path, SaveStage::InspectInitial).map_err(|_| ()));
+        let kind = classify_external_change(Some(expected), observed);
+        let _ = self.conflict.reduce(ConflictCommand::Observed {
+            kind,
+            revision: self.document.revision(),
+        });
+    }
+
+    fn apply_conflict_effect(&mut self, effect: ConflictEffect, ctx: &egui::Context) {
+        match effect {
+            ConflictEffect::None | ConflictEffect::Prompt(_) => {}
+            ConflictEffect::RequestReload => self.request_reload(ctx),
+            ConflictEffect::RequestSaveAs => self.do_save_as(),
+        }
+    }
+
+    fn show_external_change_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(kind) = self.conflict.prompt_kind() else {
+            return;
+        };
+        let mut reload = false;
+        let mut keep = false;
+        let mut save_as = false;
+        let recovery_blocked = self.save_is_blocked();
+
+        let response =
+            egui::Modal::new(egui::Id::new("external-change-confirmation")).show(ctx, |ui| {
+                ui.set_min_width(440.0);
+                ui.set_max_width(560.0);
+                ui.heading("File changed on disk");
+                ui.label(kind.description());
+                ui.label(
+                    "Noter has not overwritten the disk version. Choose how to continue with the current in-memory document.",
+                );
+                if recovery_blocked {
+                    ui.separator();
+                    ui.label(SAVE_RECOVERY_BLOCK_MESSAGE);
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    reload = ui.button("Reload Disk Version").clicked();
+                    keep = ui.button("Keep Editing").clicked();
+                    save_as = ui
+                        .add_enabled(!recovery_blocked, egui::Button::new("Save As…"))
+                        .on_disabled_hover_text(
+                            "Save As is blocked until the uncertain save state is reconciled",
+                        )
+                        .clicked();
+                });
+            });
+
+        if reload {
+            let effect = self
+                .conflict
+                .reduce(ConflictCommand::Decide(ConflictDecision::ReloadDisk));
+            self.apply_conflict_effect(effect, ctx);
+        } else if keep || response.should_close() {
+            let effect = self
+                .conflict
+                .reduce(ConflictCommand::Decide(ConflictDecision::KeepEditing));
+            self.apply_conflict_effect(effect, ctx);
+        } else if save_as {
+            let effect = self
+                .conflict
+                .reduce(ConflictCommand::Decide(ConflictDecision::SaveAs));
+            self.apply_conflict_effect(effect, ctx);
         }
     }
 
@@ -1406,6 +1540,13 @@ impl NoterApp {
                 response
                     .clone()
                     .on_disabled_hover_text("Available after this document has been saved");
+            } else if !enabled
+                && candidate == FileCommand::Save
+                && self.conflict.blocks_ordinary_save()
+            {
+                response.clone().on_disabled_hover_text(
+                    "Choose how to handle the external file change before ordinary Save",
+                );
             } else if !enabled && matches!(candidate, FileCommand::Save | FileCommand::SaveAs) {
                 response.clone().on_disabled_hover_text(
                     "Reconcile every uncertain save outcome before saving again",
@@ -1426,7 +1567,8 @@ impl NoterApp {
     fn file_command_enabled(&self, command: FileCommand) -> bool {
         match command {
             FileCommand::Reload => self.document.path().is_some(),
-            FileCommand::Save | FileCommand::SaveAs => !self.save_is_blocked(),
+            FileCommand::Save => !self.ordinary_save_is_blocked(),
+            FileCommand::SaveAs => !self.save_is_blocked(),
             FileCommand::New | FileCommand::Open | FileCommand::Quit => true,
         }
     }
@@ -2389,8 +2531,9 @@ impl NoterApp {
         self.show_menu(ui, &mut file_command, &mut edit_command, &mut view_command);
         self.show_error(ui);
         self.show_save_recovery_notice(ui);
-        let commands_enabled =
-            self.pending_hard_link_save.is_none() && self.lifecycle.pending_intent().is_none();
+        let commands_enabled = self.pending_hard_link_save.is_none()
+            && self.lifecycle.pending_intent().is_none()
+            && !self.conflict.is_prompting();
         let edit_executed = if commands_enabled {
             edit_command.take().is_some_and(|command| {
                 self.execute_edit_command(command);
@@ -2413,6 +2556,7 @@ impl NoterApp {
         {
             self.execute_file_command(command, ui.ctx());
         }
+        self.maybe_inspect_external_change(ui.ctx());
         self.protect_native_close(ui.ctx());
         self.update_title(ui.ctx());
         self.show_about(ui.ctx());
@@ -2422,8 +2566,10 @@ impl NoterApp {
             self.show_save_recovery_reconciliation(ui.ctx());
         } else if self.pending_hard_link_save.is_some() {
             self.show_hard_link_confirmation(ui.ctx());
-        } else {
+        } else if self.lifecycle.pending_intent().is_some() {
             self.show_unsaved_changes_confirmation(ui.ctx());
+        } else if self.conflict.is_prompting() {
+            self.show_external_change_confirmation(ui.ctx());
         }
     }
 
@@ -2954,6 +3100,7 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use noter::core::conflict::ExternalChangeKind;
     use tempfile::tempdir;
 
     fn collect_text_shapes(shape: &egui::Shape, text: &mut Vec<(String, egui::Pos2)>) {
@@ -6310,6 +6457,101 @@ mod tests {
             app.lifecycle.pending_intent(),
             Some(PendingAbandonAction::New)
         );
+    }
+
+    #[test]
+    fn external_rewrite_prompts_and_keep_editing_preserves_save_conflict()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let path = directory.path().join("shared.txt");
+        fs::write(&path, b"original")?;
+        let document = Document::from_path(&path)?;
+        let mut app = NoterApp {
+            text: String::from(document.rope()),
+            document,
+            ..NoterApp::default()
+        };
+        fs::write(&path, b"external revision")?;
+
+        let context = egui::Context::default();
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            app.maybe_inspect_external_change(ui.ctx());
+        });
+        assert!(app.conflict.is_prompting());
+        assert_eq!(
+            app.conflict.prompt_kind(),
+            Some(ExternalChangeKind::ContentOrIdentityChanged)
+        );
+        assert!(app.ordinary_save_is_blocked());
+        assert!(!app.save_is_blocked());
+
+        let effect = app
+            .conflict
+            .reduce(ConflictCommand::Decide(ConflictDecision::KeepEditing));
+        assert_eq!(effect, ConflictEffect::None);
+        assert!(!app.conflict.is_prompting());
+        assert!(!app.ordinary_save_is_blocked());
+
+        let outcome = app.document.save()?;
+        assert!(matches!(outcome, SaveOutcome::Conflict { .. }));
+        assert_eq!(fs::read(&path)?, b"external revision");
+        assert_eq!(app.text, "original");
+        Ok(())
+    }
+
+    #[test]
+    fn external_delete_prompts_and_reload_uses_lifecycle() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        let path = directory.path().join("vanished.txt");
+        fs::write(&path, b"present")?;
+        let document = Document::from_path(&path)?;
+        let mut app = NoterApp {
+            text: String::from(document.rope()),
+            document,
+            ..NoterApp::default()
+        };
+        fs::remove_file(&path)?;
+
+        let context = egui::Context::default();
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            app.maybe_inspect_external_change(ui.ctx());
+        });
+        assert_eq!(
+            app.conflict.prompt_kind(),
+            Some(ExternalChangeKind::Deleted)
+        );
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            let effect = app
+                .conflict
+                .reduce(ConflictCommand::Decide(ConflictDecision::ReloadDisk));
+            app.apply_conflict_effect(effect, ui.ctx());
+        });
+        // Reload of a missing path surfaces an open failure and leaves recovery
+        // free of a silent overwrite.
+        assert!(!app.conflict.is_prompting());
+        assert!(
+            app.error_msg
+                .as_deref()
+                .is_some_and(|message| message.contains("Failed to open file"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn untitled_documents_skip_external_inspection() {
+        let mut app = NoterApp::default();
+        app.document
+            .replace_text("scratch")
+            .expect("fixture edit should advance the revision");
+        app.text = "scratch".to_owned();
+        let context = egui::Context::default();
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            app.maybe_inspect_external_change(ui.ctx());
+        });
+        assert!(!app.conflict.is_prompting());
+        assert!(!app.ordinary_save_is_blocked());
     }
 
     #[test]

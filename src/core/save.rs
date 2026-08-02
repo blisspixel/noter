@@ -202,7 +202,8 @@ pub enum TargetExpectation {
 }
 
 impl TargetExpectation {
-    fn matches(self, state: TargetState) -> bool {
+    /// Returns whether a freshly observed destination still matches this expectation.
+    pub fn matches_state(self, state: TargetState) -> bool {
         matches!(
             (self, state),
             (Self::Missing, TargetState::Missing) | (Self::Existing(_), TargetState::Regular(_))
@@ -210,6 +211,10 @@ impl TargetExpectation {
             (Self::Existing(expected), TargetState::Regular(actual)) => expected == actual,
             _ => true,
         }
+    }
+
+    fn matches(self, state: TargetState) -> bool {
+        self.matches_state(state)
     }
 }
 

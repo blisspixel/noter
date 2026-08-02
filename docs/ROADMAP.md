@@ -48,8 +48,8 @@ shortest path to correctness alpha is now:
 2. prove About, updates, themes, and source installation in installed builds;
 3. finish cross-platform navigation and clipboard policy, plus long-session M3
    evidence;
-4. implement private recovery records and external-change decisions through the
-   M4 reducer; and
+4. implement private restart-spanning recovery records and complete remaining
+   external-change overwrite confirmation through the M4 path; and
 5. run the cross-platform correctness matrix on one immutable green commit.
 
 ## Product boundaries
@@ -355,8 +355,14 @@ clears only its stale block error. Save availability is a constant-time
 in-memory decision with no repaint-time filesystem inspection. Exhaustive
 transition tests and a
 fixed-seed 512-case command-sequence property compare the reducer with an
-independent model. Durable restart-spanning recovery records, external-change
-handling through the reducer, and crash-fault evidence remain open.
+independent model. A pure external-change classifier and conflict reducer now
+compare the trusted load or save baseline with focus-regain and bounded
+focused-timer inspections. Changed, deleted, special, and unreadable outcomes
+prompt Reload Disk Version, Keep Editing, or Save As. Keep Editing never
+rebaselines the expectation, so ordinary Save still fails closed through the
+durable save protocol. Ordinary Save is paused only while the prompt is visible.
+Durable restart-spanning recovery records, overwrite-with-second-confirm,
+and crash-fault evidence remain open.
 
 ### Exit criteria
 
@@ -565,8 +571,9 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
    cross-platform keyboard, and long-session requirements atop the implemented
    Undo, Find and Replace, Go To Line, wrap, zoom, and Markdown document and
    cross-block selection foundation.
-6. Complete M4 recovery records and external-change decisions through the pure
-   lifecycle reducer, including fault and stale-effect evidence.
+6. Complete M4 durable recovery records and remaining external-change overwrite
+   confirmation through the pure decision path, including fault and stale-effect
+   evidence. The first external-change prompt and Keep Editing path is landed.
 7. Execute the M5 editor feasibility gate, including native typography, IME,
    accessibility, display-scale, and large-file evidence. Keep the early
    block-focused Markdown slice bounded until the transaction, lifecycle, and
