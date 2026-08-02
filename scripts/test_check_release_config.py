@@ -171,6 +171,25 @@ class ReleaseConfigurationTests(unittest.TestCase):
 
         self.assertIn("CI workflow differs from its reviewed source", errors)
 
+    def test_rejects_unbounded_macos_mutation_codegen_units(self) -> None:
+        changed = self.ci_workflow.replace(
+            "CARGO_PROFILE_TEST_CODEGEN_UNITS: '16'",
+            "CARGO_PROFILE_TEST_CODEGEN_UNITS: '256'",
+            1,
+        )
+        self.assertNotEqual(changed, self.ci_workflow)
+
+        errors = validate_license_inventory(
+            self.manifest,
+            self.platform_manifest,
+            self.about_config,
+            self.license_generator,
+            self.inventory,
+            changed,
+        )
+
+        self.assertIn("missing bounded macOS mutation codegen units", errors)
+
     def test_rejects_a_floating_release_tool(self) -> None:
         changed = self.workflow.replace(
             "releases/download/v0.7.5", "releases/latest/download", 1

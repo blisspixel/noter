@@ -186,9 +186,12 @@ jobs:
         env:
           # Apple clang 21 crashed even after workspace links were serialized
           # while repeatedly linking test binaries with full debug information.
-          # The ordinary macOS test job retains that coverage; mutation verdicts
-          # do not depend on debug information, so this job bounds linker input.
+          # It later crashed once more while linking 107 stripped test objects.
+          # Keep the complete workspace test scope and incremental rebuilds, but
+          # cap codegen units so every repeated linker invocation is bounded.
+          # The ordinary macOS test job retains its normal debug profile.
           CARGO_BUILD_JOBS: 1
+          CARGO_PROFILE_TEST_CODEGEN_UNITS: '16'
           CARGO_PROFILE_TEST_DEBUG: '0'
           CARGO_INCREMENTAL: 1
         run: >

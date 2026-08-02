@@ -105,9 +105,12 @@ release, so current work remains under Unreleased.
   automatic crash uploads, or background activity logging, with no spyware or
   bloatware capabilities hidden behind opt-out settings.
 - Bound macOS mutation-test linker input by disabling test-profile debug
-  information in that job after Apple clang 21 crashed while linking a mutant
-  even with serialized Cargo builds. Ordinary macOS tests retain their normal
-  debug profile, and infrastructure-failure validation remains fail closed.
+  information and limiting test-profile codegen units to 16 in that job after
+  Apple clang 21 crashed while linking a mutant even with serialized Cargo
+  builds. A second fail-closed crash with stripped objects is retained as
+  negative evidence. The complete workspace test scope and 47-candidate
+  inventory remain unchanged, ordinary macOS tests retain their normal debug
+  profile, and infrastructure-failure validation remains fail closed.
 - Make Windows benchmark-command termination synchronous and bounded. The
   harness uses bounded terminate-and-rescan waves to retain identity-checked
   process handles, stop each captured Job Object member, and wait for its
