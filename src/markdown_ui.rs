@@ -501,6 +501,18 @@ impl ActiveBlock {
     fn block_style(&self) -> BlockStyleState {
         selected_block_style(&self.draft, self.selection.ordered_range())
     }
+
+    fn source_selection(&self) -> Option<Selection> {
+        let anchor = self
+            .source_range
+            .start
+            .checked_add(char_index_to_byte(&self.draft, self.selection.anchor))?;
+        let active = self
+            .source_range
+            .start
+            .checked_add(char_index_to_byte(&self.draft, self.selection.active))?;
+        Some(Selection::new(anchor, active))
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -601,9 +613,16 @@ impl RenderedBlockLabel {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ToolbarAction {
+    BlockStyle(BlockStyle),
+    Command(MarkdownCommand),
+}
+
 #[derive(Default)]
 pub struct MarkdownEditor {
     active: Option<ActiveBlock>,
+    finished_selection: Option<Selection>,
     next_editor_serial: u64,
     rendered_drag: Option<RenderedDragSelection>,
     input_was_limited: bool,
@@ -612,6 +631,7 @@ pub struct MarkdownEditor {
 impl MarkdownEditor {
     pub fn reset(&mut self) {
         self.active = None;
+        self.finished_selection = None;
         self.rendered_drag = None;
         self.input_was_limited = false;
         self.next_editor_serial = self.next_editor_serial.wrapping_add(1);
@@ -623,12 +643,15 @@ impl MarkdownEditor {
 
     pub fn toolbar(&mut self, ui: &mut egui::Ui) {
         if !expanded_toolbar_fits(ui.available_width()) {
-            self.compact_toolbar(ui);
+            let action = self.compact_toolbar(ui);
+            self.apply_toolbar_action(action);
             return;
         }
 
         let enabled = self.active.is_some();
-        self.block_style_selector(ui, enabled);
+        let mut requested_action = self
+            .block_style_selector(ui, enabled)
+            .map(ToolbarAction::BlockStyle);
         ui.add_space(8.0);
         for command in MarkdownCommand::INLINE_AND_LINE {
             let selected = self
@@ -656,15 +679,16 @@ impl MarkdownEditor {
             });
             command.paint_icon(ui, &response, enabled);
             if response.clicked() {
-                self.apply_command(command);
+                requested_action.get_or_insert(ToolbarAction::Command(command));
             }
             if command.ends_group() {
                 ui.add_space(8.0);
             }
         }
+        self.apply_toolbar_action(requested_action);
     }
 
-    fn block_style_selector(&mut self, ui: &mut egui::Ui, enabled: bool) {
+    fn block_style_selector(&self, ui: &mut egui::Ui, enabled: bool) -> Option<BlockStyle> {
         let state = self.active.as_ref().map(ActiveBlock::block_style);
         let style_enabled = state.is_some_and(BlockStyleState::is_available);
         let current = state.and_then(BlockStyleState::current);
@@ -701,12 +725,10 @@ impl MarkdownEditor {
             response
                 .on_disabled_hover_text("Click or drag in formatted text to activate formatting");
         }
-        if let Some(style) = requested {
-            self.apply_block_style(style);
-        }
+        requested
     }
 
-    fn compact_toolbar(&mut self, ui: &mut egui::Ui) {
+    fn compact_toolbar(&self, ui: &mut egui::Ui) -> Option<ToolbarAction> {
         let enabled = self.active.is_some();
         let style_state = self.active.as_ref().map(ActiveBlock::block_style);
         let current_style = style_state.and_then(BlockStyleState::current);
@@ -761,22 +783,27 @@ impl MarkdownEditor {
             response
                 .on_disabled_hover_text("Click or drag in formatted text to activate formatting");
         }
-        if let Some(style) = requested_style {
-            self.apply_block_style(style);
-        } else if let Some(command) = requested_command {
-            self.apply_command(command);
+        requested_style
+            .map(ToolbarAction::BlockStyle)
+            .or_else(|| requested_command.map(ToolbarAction::Command))
+    }
+
+    fn apply_toolbar_action(&mut self, action: Option<ToolbarAction>) {
+        let Some(active) = self.active.as_mut() else {
+            return;
+        };
+        let Some(action) = action else {
+            return;
+        };
+        match action {
+            ToolbarAction::BlockStyle(style) => active.apply_block_style(style),
+            ToolbarAction::Command(command) => active.apply(command),
         }
     }
 
     fn apply_command(&mut self, command: MarkdownCommand) {
         if let Some(active) = self.active.as_mut() {
             active.apply(command);
-        }
-    }
-
-    fn apply_block_style(&mut self, style: BlockStyle) {
-        if let Some(active) = self.active.as_mut() {
-            active.apply_block_style(style);
         }
     }
 
@@ -833,16 +860,10 @@ impl MarkdownEditor {
     }
 
     pub fn source_selection(&self) -> Option<Selection> {
-        let active = self.active.as_ref()?;
-        let anchor = active
-            .source_range
-            .start
-            .checked_add(char_index_to_byte(&active.draft, active.selection.anchor))?;
-        let caret = active
-            .source_range
-            .start
-            .checked_add(char_index_to_byte(&active.draft, active.selection.active))?;
-        Some(Selection::new(anchor, caret))
+        self.active
+            .as_ref()
+            .and_then(ActiveBlock::source_selection)
+            .or(self.finished_selection)
     }
 
     pub fn can_restore_source_selection(source: &str, selection: Selection) -> bool {
@@ -888,6 +909,7 @@ impl MarkdownEditor {
         maximum_source_bytes: usize,
     ) -> MarkdownShowOutcome {
         self.input_was_limited = false;
+        self.finished_selection = None;
         let mut finish_after_frame = false;
         let mut changed_origin = self.sync_pending_command(source);
         if let Some(origin) = changed_origin
@@ -902,19 +924,19 @@ impl MarkdownEditor {
                 self.activate(0..0, String::new());
             }
             let maximum_draft_bytes = self.maximum_active_draft_bytes(source, maximum_source_bytes);
-            let (active_changed, finish_requested) =
+            let (active_changed, finish_requested, active_draft_limit) =
                 self.show_active_editor(ui, maximum_draft_bytes);
             finish_after_frame |= finish_requested;
             if active_changed && let Some(origin) = self.sync_pending_command(source) {
                 changed_origin.get_or_insert(origin);
-                if let Some(limit) = markdown_projection_limit(source) {
+                if let Some(limit) =
+                    active_draft_limit.or_else(|| markdown_projection_limit(source))
+                {
                     return MarkdownShowOutcome::ProjectionLimitExceeded { limit, origin };
                 }
             }
             ui.add_space(BLOCK_GAP);
-            if finish_after_frame {
-                self.finish_active();
-            }
+            self.finish_if_requested(finish_after_frame);
             return changed_origin
                 .map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed);
         }
@@ -925,6 +947,7 @@ impl MarkdownEditor {
             .map(|active| active.source_range.clone());
         let mut active_shown = false;
         let mut pending_activation = None;
+        let mut active_draft_limit = None;
 
         for range in ranges {
             let overlaps_active = active_range
@@ -934,8 +957,10 @@ impl MarkdownEditor {
                 if !active_shown {
                     let maximum_draft_bytes =
                         self.maximum_active_draft_bytes(source, maximum_source_bytes);
-                    let (_, finish_requested) = self.show_active_editor(ui, maximum_draft_bytes);
+                    let (_, finish_requested, projection_limit) =
+                        self.show_active_editor(ui, maximum_draft_bytes);
                     finish_after_frame |= finish_requested;
+                    active_draft_limit = active_draft_limit.or(projection_limit);
                     ui.add_space(BLOCK_GAP);
                     active_shown = true;
                 }
@@ -962,7 +987,7 @@ impl MarkdownEditor {
         let synchronized = self.sync_pending_command(source);
         if let Some(origin) = synchronized {
             changed_origin.get_or_insert(origin);
-            if let Some(limit) = markdown_projection_limit(source) {
+            if let Some(limit) = active_draft_limit.or_else(|| markdown_projection_limit(source)) {
                 return MarkdownShowOutcome::ProjectionLimitExceeded { limit, origin };
             }
         }
@@ -985,9 +1010,7 @@ impl MarkdownEditor {
                 self.activate_with_selection(source_range, block.to_owned(), activation.selection);
             }
         }
-        if finish_after_frame {
-            self.finish_active();
-        }
+        self.finish_if_requested(finish_after_frame);
         changed_origin.map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed)
     }
 
@@ -999,8 +1022,18 @@ impl MarkdownEditor {
     }
 
     fn finish_active(&mut self) {
-        self.active = None;
+        self.finished_selection = self
+            .active
+            .take()
+            .as_ref()
+            .and_then(ActiveBlock::source_selection);
         self.rendered_drag = None;
+    }
+
+    fn finish_if_requested(&mut self, requested: bool) {
+        if requested {
+            self.finish_active();
+        }
     }
 
     fn sync_pending_command(&mut self, source: &mut String) -> Option<EditOrigin> {
@@ -1106,7 +1139,7 @@ impl MarkdownEditor {
         &mut self,
         ui: &mut egui::Ui,
         maximum_draft_bytes: usize,
-    ) -> (bool, bool) {
+    ) -> (bool, bool, Option<MarkdownProjectionLimit>) {
         let editor_id = self.active.as_ref().map(ActiveBlock::editor_id);
         let format_command = editor_id
             .filter(|editor_id| ui.memory(|memory| memory.has_focus(*editor_id)))
@@ -1123,7 +1156,7 @@ impl MarkdownEditor {
             self.apply_command(command);
         }
         let Some(active) = self.active.as_mut() else {
-            return (false, false);
+            return (false, false, None);
         };
         let editor_id = active.editor_id();
         let finish_requested = prepare_escape_finish(ui, editor_id);
@@ -1146,14 +1179,14 @@ impl MarkdownEditor {
         self.input_was_limited |=
             sanitize_bounded_text_events(ui, editor_id, &active.draft, maximum_draft_bytes);
 
+        let mut live_projection_limit = None;
         let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
             let source = buffer.as_str();
             let selection =
                 char_range_to_byte_range(source, bounded_char_range(source, selection.clone()));
-            let reveal = semantic_target_at_selection(source, &selection);
-            let mut job = markdown_edit_layout(source, ui.style(), reveal);
-            job.wrap.max_width = wrap_width;
-            ui.fonts_mut(|fonts| fonts.layout_job(job))
+            let layout = active_edit_layout(source, ui.style(), selection, wrap_width);
+            live_projection_limit = live_projection_limit.or(layout.projection_limit);
+            ui.fonts_mut(|fonts| fonts.layout_job(layout.job))
         };
         let (mut output, buffer_was_limited) = {
             let mut buffer = BoundedTextBuffer::new(&mut active.draft, maximum_draft_bytes);
@@ -1196,7 +1229,42 @@ impl MarkdownEditor {
         // snapshots so an active block cannot retain an independent history.
         output.state.clear_undoer();
         output.state.store(ui.ctx(), output.response.id);
-        (changed, finish_requested)
+        (changed, finish_requested, live_projection_limit)
+    }
+}
+
+struct ActiveEditLayout {
+    job: egui::text::LayoutJob,
+    projection_limit: Option<MarkdownProjectionLimit>,
+}
+
+fn active_edit_layout(
+    source: &str,
+    style: &egui::Style,
+    selection: Range<usize>,
+    wrap_width: f32,
+) -> ActiveEditLayout {
+    if let Some(limit) = markdown_projection_limit(source) {
+        let font_id = egui::TextStyle::Body.resolve(style);
+        let text_color = style
+            .visuals
+            .override_text_color
+            .unwrap_or_else(|| style.visuals.widgets.inactive.text_color());
+        let mut job =
+            egui::text::LayoutJob::simple(source.to_owned(), font_id, text_color, wrap_width);
+        job.keep_trailing_whitespace = true;
+        return ActiveEditLayout {
+            job,
+            projection_limit: Some(limit),
+        };
+    }
+
+    let reveal = semantic_target_at_selection(source, &selection);
+    let mut job = markdown_edit_layout(source, style, reveal);
+    job.wrap.max_width = wrap_width;
+    ActiveEditLayout {
+        job,
+        projection_limit: None,
     }
 }
 
@@ -2048,7 +2116,11 @@ fn toggle_inline_marker(source: &str, selection: Range<usize>, marker: &str) -> 
     text.push_str(marker);
     text.push_str(&source[byte_range.end..]);
     let semantic_range = byte_range.start..byte_range.end + 2 * marker.len();
-    if !selected.is_empty() && !inline_marker_range_is_semantic(&text, marker, &semantic_range) {
+    if !selected.is_empty()
+        && !semantic_candidate_is_valid_or_requires_text_fallback(&text, || {
+            inline_marker_range_is_semantic(&text, marker, &semantic_range)
+        })
+    {
         return CommandResult {
             text: source.to_owned(),
             selection,
@@ -2295,8 +2367,10 @@ fn insert_link(source: &str, selection: Range<usize>) -> CommandResult {
     let label_selection = label_start..label_start + selected.chars().count();
     let expected_entire = byte_range.start..byte_range.start + replacement.len();
     let expected_label = byte_range.start + 1..byte_range.start + 1 + selected.len();
-    let candidate_is_valid = link_span_at_selection(&text, label_selection)
-        .is_some_and(|link| link.entire == expected_entire && link.label == expected_label);
+    let candidate_is_valid = semantic_candidate_is_valid_or_requires_text_fallback(&text, || {
+        link_span_at_selection(&text, label_selection)
+            .is_some_and(|link| link.entire == expected_entire && link.label == expected_label)
+    });
     if !candidate_is_valid {
         return CommandResult {
             text: source.to_owned(),
@@ -2312,6 +2386,13 @@ fn insert_link(source: &str, selection: Range<usize>) -> CommandResult {
         text,
         selection: selection_start..selection_start,
     }
+}
+
+fn semantic_candidate_is_valid_or_requires_text_fallback(
+    source: &str,
+    validate: impl FnOnce() -> bool,
+) -> bool {
+    markdown_projection_limit(source).is_some() || validate()
 }
 
 fn link_span_at_selection(source: &str, selection: Range<usize>) -> Option<LinkSpan> {
@@ -3180,6 +3261,38 @@ mod tests {
     }
 
     #[test]
+    fn inline_formatting_preflights_an_expanded_candidate_before_semantic_parsing() {
+        use std::cell::Cell;
+
+        let source = format!("{}\n\n", "x".repeat(4_094)).repeat(256);
+        assert_eq!(source.len(), PROTOTYPE_MARKDOWN_MAX_BYTES);
+        assert_eq!(markdown_projection_limit(&source), None);
+        let end = source.chars().count();
+
+        for command in [
+            MarkdownCommand::Bold,
+            MarkdownCommand::Italic,
+            MarkdownCommand::InlineCode,
+            MarkdownCommand::Link,
+        ] {
+            let result = apply_markdown_command(&source, end - 1..end, command);
+            assert_eq!(
+                markdown_projection_limit(&result.text),
+                Some(MarkdownProjectionLimit::SourceBytes)
+            );
+            let semantic_parser_called = Cell::new(false);
+            assert!(semantic_candidate_is_valid_or_requires_text_fallback(
+                &result.text,
+                || {
+                    semantic_parser_called.set(true);
+                    false
+                }
+            ));
+            assert!(!semantic_parser_called.get());
+        }
+    }
+
+    #[test]
     fn projection_budget_bounds_lines_blocks_and_parser_events() {
         let too_many_lines = "x\n".repeat(PROTOTYPE_MARKDOWN_MAX_LOGICAL_LINES + 1);
         let overlong_line = "x".repeat(PROTOTYPE_MARKDOWN_MAX_LINE_BYTES + 1);
@@ -3207,6 +3320,36 @@ mod tests {
             markdown_projection_limit(&too_many_events),
             Some(MarkdownProjectionLimit::ParserEvents)
         );
+    }
+
+    #[test]
+    fn toolbar_style_mutation_checks_the_complete_synchronized_document() {
+        let retained_blocks = 200;
+        let formatted_blocks = 400;
+        let prefix = "# retained\n\n".repeat(retained_blocks);
+        let draft = "plain line\n".repeat(formatted_blocks);
+        let mut source = format!("{prefix}{draft}");
+        let mut editor = MarkdownEditor::default();
+        let draft_start = prefix.len();
+        editor.activate_with_selection(
+            draft_start..source.len(),
+            draft.clone(),
+            CharSelection::new(0, draft.chars().count()),
+        );
+
+        editor.apply_toolbar_action(Some(ToolbarAction::BlockStyle(BlockStyle::Heading1)));
+        let formatted_draft = &editor.active.as_ref().expect("active block").draft;
+        assert_eq!(markdown_projection_limit(formatted_draft), None);
+        let context = egui::Context::default();
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(
+                editor.show(ui, &mut source),
+                MarkdownShowOutcome::ProjectionLimitExceeded {
+                    limit: MarkdownProjectionLimit::Blocks,
+                    origin: EditOrigin::MarkdownFormatting,
+                }
+            );
+        });
     }
 
     #[test]
@@ -4592,6 +4735,7 @@ mod tests {
         active.apply(MarkdownCommand::Bold);
         let mut editor = MarkdownEditor {
             active: Some(active),
+            finished_selection: None,
             next_editor_serial: 1,
             rendered_drag: None,
             input_was_limited: false,
@@ -4741,6 +4885,7 @@ mod tests {
         active.apply(MarkdownCommand::Quote);
         let mut editor = MarkdownEditor {
             active: Some(active),
+            finished_selection: None,
             next_editor_serial: 1,
             rendered_drag: None,
             input_was_limited: false,
@@ -4773,6 +4918,7 @@ mod tests {
         active.selection = CharSelection::new(0, 3);
         let mut editor = MarkdownEditor {
             active: Some(active),
+            finished_selection: None,
             next_editor_serial: 1,
             rendered_drag: None,
             input_was_limited: false,
@@ -4802,6 +4948,7 @@ mod tests {
         active.selection = CharSelection::new(0, 3);
         let mut editor = MarkdownEditor {
             active: Some(active),
+            finished_selection: None,
             next_editor_serial: 1,
             rendered_drag: None,
             input_was_limited: false,
@@ -4846,6 +4993,7 @@ mod tests {
         active.selection = CharSelection::new(0, 3);
         let mut editor = MarkdownEditor {
             active: Some(active),
+            finished_selection: None,
             next_editor_serial: 1,
             rendered_drag: None,
             input_was_limited: false,
@@ -4913,15 +5061,16 @@ mod tests {
         for (label, edit_event, expected_origin) in cases {
             for escape_first in [false, true] {
                 let context = egui::Context::default();
-                let mut active = ActiveBlock::new(0..3, "# A".to_owned(), 1);
+                let mut active = ActiveBlock::new(0..6, "abcXYZ".to_owned(), 1);
                 active.selection = CharSelection::new(0, 3);
                 let mut editor = MarkdownEditor {
                     active: Some(active),
+                    finished_selection: None,
                     next_editor_serial: 1,
                     rendered_drag: None,
                     input_was_limited: false,
                 };
-                let mut source = "# A".to_owned();
+                let mut source = "abcXYZ".to_owned();
 
                 let _ = context.run_ui(egui::RawInput::default(), |ui| {
                     ui.set_width(800.0);
@@ -4946,8 +5095,13 @@ mod tests {
                 });
 
                 assert_eq!(
-                    source, "x",
+                    source, "xXYZ",
                     "{label} must reach source regardless of same-frame event order"
+                );
+                assert_eq!(
+                    editor.source_selection(),
+                    Some(Selection::caret(1)),
+                    "{label} must carry the final caret through Escape"
                 );
                 assert!(
                     !editor.is_editing(),
@@ -4970,6 +5124,7 @@ mod tests {
             let active = ActiveBlock::new(0..3, "# A".to_owned(), 1);
             let mut editor = MarkdownEditor {
                 active: Some(active),
+                finished_selection: None,
                 next_editor_serial: 1,
                 rendered_drag: None,
                 input_was_limited: false,
@@ -5090,5 +5245,58 @@ mod tests {
         assert_eq!(source, "text1234");
         assert!(editor.take_input_was_limited());
         assert!(!editor.take_input_was_limited());
+    }
+
+    #[test]
+    fn over_budget_active_layout_fails_closed_to_one_plain_text_section() {
+        let source = "*x* ".repeat(3_000);
+        assert_eq!(
+            markdown_projection_limit(&source),
+            Some(MarkdownProjectionLimit::ParserEvents)
+        );
+
+        let layout = active_edit_layout(
+            &source,
+            &egui::Style::default(),
+            source.len()..source.len(),
+            640.0,
+        );
+
+        assert_eq!(
+            layout.projection_limit,
+            Some(MarkdownProjectionLimit::ParserEvents)
+        );
+        assert_eq!(layout.job.text, source);
+        assert_eq!(layout.job.sections.len(), 1);
+    }
+
+    #[test]
+    fn same_frame_adversarial_paste_reports_the_limit_after_bounded_layout() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        editor.activate(0..4, "text".to_owned());
+        let mut source = "text".to_owned();
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(640.0);
+            assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
+        });
+        let paste = "*x* ".repeat(3_000);
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Paste(paste.clone()));
+        let mut outcome = MarkdownShowOutcome::Unchanged;
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(640.0);
+            outcome = editor.show(ui, &mut source);
+        });
+
+        assert_eq!(
+            outcome,
+            MarkdownShowOutcome::ProjectionLimitExceeded {
+                limit: MarkdownProjectionLimit::ParserEvents,
+                origin: EditOrigin::Paste,
+            }
+        );
+        assert_eq!(source, format!("text{paste}"));
     }
 }

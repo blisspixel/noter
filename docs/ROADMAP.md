@@ -200,6 +200,9 @@ document typeface, and a deterministic five-capture native README set are
 implemented locally. That set pairs the same Light document in Text and
 Markdown modes and gives Dark, Green Screen, and Amber Screen their own Markdown
 evidence. Specialty palettes have deterministic enhanced-contrast checks.
+Standard Light and Dark error text now uses palette-owned colors with automated
+4.5:1 checks against the actual panel and window surfaces. File command state
+also reflects document state: Reload is unavailable for an untitled document.
 Built-in palette extension is data-driven and invalid palettes fail closed to
 Dark. The safe custom-theme contract is documented;
 runtime theme-file loading, persistence, and error UX remain open work.
@@ -294,6 +297,11 @@ Formatted content remains wrapped by design. Cross-block pointer dragging in
 inactive Markdown content and the remaining clipboard and navigation parity are
 still open.
 
+Escape now commits same-frame Markdown input before leaving the active range
+and carries the final directional source selection into shared history. Go To
+Line discards its document-specific input and focus state when a document is
+replaced or the application leaves Text Mode.
+
 Deterministic 512-case properties cover single replacements, ordered disjoint
 multi-edit transactions, arbitrary edit sequences, literal search, and
 lifecycle decisions against independent reference models. The
@@ -328,11 +336,24 @@ created it. Repeated requests cannot replace the active intent, and stale or
 unsolicited completions cannot authorize destructive work. A cancelled, failed,
 or still-interactive save preserves the document and returns to a safe explicit
 decision. Indeterminate-save recovery guidance survives these decisions and
-Cancel, and ordinary Save remains blocked until the state is reconciled or the
-user chooses Save As. Exhaustive transition tests and a fixed-seed 512-case
-command-sequence property compare the reducer with an independent model.
-Recovery records, external-change handling, and crash-fault evidence remain
-open.
+Cancel. Independent in-memory records retain every unresolved destination and
+instruction instead of allowing a later Save As to replace earlier evidence.
+An indeterminate outcome stops every Save and Save As before destination work
+until the user explicitly reconciles each record. New, Open, and notice
+dismissal never release the block. A confirmation removes one record without
+writing or retrying. Each bounded record reserves its vector slot, selected
+destination, 1-KiB display label, and 4-KiB diagnostic before mutation; encoded
+paths above 128 KiB are refused before save work, the ledger retains at most 16
+records, and the scroll-bounded surfaces expose the destination plus an explicit
+path-copy action. Non-Unicode paths use a labeled reversible hexadecimal
+operating-system representation rather than lossy replacement text. The
+confirmation repeats the diagnostic and path action; removing the last record
+clears only its stale block error. Save availability is a constant-time
+in-memory decision with no repaint-time filesystem inspection. Exhaustive
+transition tests and a
+fixed-seed 512-case command-sequence property compare the reducer with an
+independent model. Durable restart-spanning recovery records, external-change
+handling through the reducer, and crash-fault evidence remain open.
 
 ### Exit criteria
 

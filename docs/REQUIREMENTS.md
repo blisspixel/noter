@@ -78,14 +78,29 @@ Feature presence alone is not verification.
   requires an explicit GUI confirmation that only the selected directory entry
   will advance and that other names retain the previous revision. Confirmation
   must retain the exact pre-dialog target expectation; it must not rebaseline a
-  path that changes while the dialog is visible.
+  path that changes while the dialog is visible. Every indeterminate outcome
+  retains an independent recovery record and blocks every Save and Save As
+  before destination inspection or mutation until explicit reconciliation.
+  New and Open never deactivate a record. In-memory recovery storage must
+  reserve the vector slot, selected destination, display label, and diagnostic
+  before disk mutation; limit those fields to 128 KiB of encoded path, 1 KiB of
+  label, and 4 KiB of diagnostic; retain no more than 16 records; and never evict
+  active evidence. Each surface must identify the destination, provide an
+  explicit exact path-copy action, represent non-Unicode operating-system paths
+  reversibly rather than through lossy replacement text, and require per-record
+  confirmation that repeats the diagnostic and path action, removes only the
+  safety record, and performs no write or retry. Removing the last record must
+  clear only its stale save-block error. Dismissing a notice does not authorize
+  a save. Save availability checks must not perform filesystem work during
+  repaint.
 - **FR-014 Save As:** Ask for a destination every time. The document path and
   clean revision change only after the new destination commits successfully.
   Refuse an existing final symlink or unsupported reparse point rather than
   replacing or following it implicitly. A failed or indeterminate save that may
   leave a private sibling must identify the safe random basename and give
-  explicit inspection, recovery, retry, and removal guidance. If identity
-  inspection or platform-specific privacy finalization fails immediately after
+  explicit inspection, recovery, retry, and removal guidance. Each notice stays
+  visible until explicit dismissal, and dismissing it does not authorize a
+  blocked retry. If platform-specific privacy finalization fails immediately after
   exclusive creation, report the creation failure and any retained-sibling
   cleanup failure separately.
 - **FR-015 Recent files:** Maintain at most ten deduplicated user-opened paths.
@@ -118,7 +133,9 @@ Feature presence alone is not verification.
   next, previous, wrap indication, and visible match count.
 - **FR-025 Replace:** Provide Replace and Replace All with an explicit current
   selection or whole-document scope.
-- **FR-026 Go To Line:** Navigate to a validated one-based logical line.
+- **FR-026 Go To Line:** Navigate to a validated one-based logical line. Discard
+  the dialog's input, validation, and focus state whenever the document changes
+  or the application leaves a mode in which the command is available.
 - **FR-027 Word wrap:** Toggle wrapping without changing document bytes.
 - **FR-028 Long operations:** Search, indexing, and formatting cannot commit a
   stale result to a newer document revision.
@@ -259,7 +276,9 @@ The complete release and verification contract is in
   unsafe constructs remain inert and accessible in Text Mode.
 - **FR-112 Direct formatted editing:** Headings, emphasis, links, lists, tasks,
   quotes, code, and supported tables are directly editable in Markdown Mode while
-  retaining keyboard, selection, IME, clipboard, and accessibility parity.
+  retaining keyboard, selection, IME, clipboard, and accessibility parity. An
+  active-to-rendered transition commits same-frame input first and preserves the
+  exact final directional source selection.
 - **FR-113 Minimal transactions:** A Markdown Mode operation changes only the source
   range required by the user action. It cannot normalize unrelated blocks.
 - **FR-114 Malformed source:** Invalid, incomplete, or unsupported Markdown stays

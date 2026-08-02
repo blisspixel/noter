@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::fmt::{self, Write as _};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use eframe::egui;
@@ -35,7 +36,7 @@ const ABOUT_PRIVACY: &str = "Noter has no accounts, telemetry, or background net
 const ABOUT_LINK_BEHAVIOR: &str = "The project link opens in your default browser.";
 const UPDATE_STATUS: &str = "No Noter release has been published yet. This source build cannot safely self-update without verified release artifacts.";
 const RELEASES_URL: &str = "https://github.com/blisspixel/noter/releases";
-const UNCERTAIN_SAVE_ABANDON_GUIDANCE: &str = "Cancel this dialog, then use Save As to preserve the current text at another path or reconcile the recovery state.";
+const UNCERTAIN_SAVE_ABANDON_GUIDANCE: &str = "Cancel this dialog and reconcile every uncertain save outcome before attempting another save. Your current text remains editable.";
 const MENU_BAR_HEIGHT: f32 = 30.0;
 const EDITOR_TOOLBAR_HEIGHT: f32 = 40.0;
 const STATUS_BAR_HEIGHT: f32 = 26.0;
@@ -47,6 +48,14 @@ const MARKDOWN_READING_BOTTOM_PADDING: f32 = 48.0;
 const INLINE_ZOOM_MIN_WIDTH: f32 = 180.0;
 const INTERACTIVE_TEXT_MAX_BYTES: usize = 8 << 20;
 const INTERACTIVE_TEXT_MAX_LABEL: &str = "8 MiB";
+const MAX_SAVE_RECOVERY_RECORDS: usize = 16;
+const MAX_SAVE_RECOVERY_MESSAGE_BYTES: usize = 4 << 10;
+const MAX_SAVE_RECOVERY_DESTINATION_BYTES: usize = 128 << 10;
+const MAX_SAVE_RECOVERY_LABEL_BYTES: usize = 1 << 10;
+const SAVE_RECOVERY_BLOCK_MESSAGE: &str = "Another save cannot start while an uncertain save outcome remains. Inspect the destination and retained recovery artifact, preserve the version you need, and explicitly reconcile the listed outcome first.";
+const SAVE_RECOVERY_CAPACITY_MESSAGE: &str = "Another save cannot start because Noter is already retaining the maximum number of unresolved save outcomes. Reconcile and preserve the listed recovery artifacts before retrying any save.";
+const SAVE_RECOVERY_PATH_LIMIT_MESSAGE: &str = "Save stopped before writing because the selected destination path is too large to retain safely if the commit outcome becomes uncertain.";
+const SAVE_RECOVERY_TRUNCATION_SUFFIX: &str = "... Recovery detail was shortened to bound memory. Do not save again. Inspect the destination and every retained `.noter-save-*.tmp` sibling before explicit reconciliation.";
 const TEXT_INPUT_LIMIT_PREFIX: &str =
     "Input was limited to keep this document within its supported";
 const MARKDOWN_INPUT_LIMIT_MESSAGE: &str = "Markdown Mode limited this input to keep the source within its 1 MiB safety budget. Text within the remaining budget was preserved.";
@@ -309,10 +318,12 @@ struct EditorFrameOutcome {
 #[derive(Debug)]
 enum PendingHardLinkSave {
     Current {
+        target: PathBuf,
         link_count: u64,
     },
     SaveAs {
         prepared: PreparedSaveAs,
+        target: PathBuf,
         link_count: u64,
     },
 }
@@ -320,7 +331,43 @@ enum PendingHardLinkSave {
 impl PendingHardLinkSave {
     const fn link_count(&self) -> u64 {
         match self {
-            Self::Current { link_count } | Self::SaveAs { link_count, .. } => *link_count,
+            Self::Current { link_count, .. } | Self::SaveAs { link_count, .. } => *link_count,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct SaveRecovery {
+    destination: PathBuf,
+    destination_label: String,
+    message: String,
+    notice_pending: bool,
+}
+
+#[derive(Debug)]
+struct SaveRecoveryReservation {
+    record_count: usize,
+    attempt: SaveAttempt,
+    destination_label: String,
+    message: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum SaveAttempt {
+    Current(PathBuf),
+    SaveAs(PathBuf),
+}
+
+impl SaveAttempt {
+    fn destination(&self) -> &Path {
+        match self {
+            Self::Current(destination) | Self::SaveAs(destination) => destination,
+        }
+    }
+
+    fn into_destination(self) -> PathBuf {
+        match self {
+            Self::Current(destination) | Self::SaveAs(destination) => destination,
         }
     }
 }
@@ -346,7 +393,8 @@ pub struct NoterApp {
     markdown_issue_cache: Option<MarkdownIssueCache>,
     status_cache: Option<StatusCache>,
     error_msg: Option<String>,
-    save_recovery_msg: Option<String>,
+    save_recoveries: Vec<SaveRecovery>,
+    pending_recovery_reconciliation: Option<usize>,
     about_open: bool,
     updates_open: bool,
     pending_hard_link_save: Option<PendingHardLinkSave>,
@@ -378,7 +426,8 @@ impl Default for NoterApp {
             markdown_issue_cache: None,
             status_cache: None,
             error_msg: None,
-            save_recovery_msg: None,
+            save_recoveries: Vec::new(),
+            pending_recovery_reconciliation: None,
             about_open: false,
             updates_open: false,
             pending_hard_link_save: None,
@@ -460,6 +509,7 @@ impl NoterApp {
                 self.pending_selection_restore = Some(self.selection);
                 self.advance_document_editor();
                 self.find_bar.reset();
+                self.go_to_line.reset();
                 self.markdown_editor.reset();
                 self.markdown_issue_cache = None;
                 self.error_msg = None;
@@ -500,34 +550,52 @@ impl NoterApp {
     }
 
     fn do_save(&mut self) {
-        if self.document.path().is_none() {
+        if self.save_is_blocked() {
+            self.show_active_save_recovery_messages();
+            self.error_msg = Some(SAVE_RECOVERY_BLOCK_MESSAGE.to_owned());
+            return;
+        }
+        let Some(path) = self.document.path().map(std::path::Path::to_path_buf) else {
             self.do_save_as();
             return;
-        }
-        if self.restore_save_recovery_message() {
+        };
+        let Some(reservation) = self.reserve_save_recovery_slot(SaveAttempt::Current(path.clone()))
+        else {
+            return;
+        };
+        let result = self.document.save();
+        if let Err(NoterError::HardLinkedTarget(link_count)) = result {
+            self.pending_hard_link_save = Some(PendingHardLinkSave::Current {
+                target: path,
+                link_count,
+            });
+            self.error_msg = None;
             return;
         }
-
-        match self.document.save() {
-            Err(NoterError::HardLinkedTarget(link_count)) => {
-                self.pending_hard_link_save = Some(PendingHardLinkSave::Current { link_count });
-                self.error_msg = None;
-            }
-            result => self.handle_save_result(result),
-        }
+        self.handle_save_result(result, reservation);
     }
 
     fn do_save_as(&mut self) {
+        if self.save_is_blocked() {
+            self.show_active_save_recovery_messages();
+            self.error_msg = Some(SAVE_RECOVERY_BLOCK_MESSAGE.to_owned());
+            return;
+        }
         if let Some(path) = rfd::FileDialog::new().save_file() {
             self.do_save_as_to(path);
         }
     }
 
     fn do_save_as_to(&mut self, path: PathBuf) {
-        let prepared = match self.document.prepare_save_as(path) {
+        if self.save_is_blocked() {
+            self.show_active_save_recovery_messages();
+            self.error_msg = Some(SAVE_RECOVERY_BLOCK_MESSAGE.to_owned());
+            return;
+        }
+        let prepared = match self.document.prepare_save_as(&path) {
             Ok(prepared) => prepared,
             Err(error) => {
-                self.handle_save_result(Err(error));
+                self.error_msg = Some(format!("Failed to save file: {error}"));
                 return;
             }
         };
@@ -537,16 +605,38 @@ impl NoterApp {
         {
             self.pending_hard_link_save = Some(PendingHardLinkSave::SaveAs {
                 prepared,
+                target: path,
                 link_count,
             });
             self.error_msg = None;
             return;
         }
+        let Some(reservation) = self.reserve_save_recovery_slot(SaveAttempt::SaveAs(path)) else {
+            return;
+        };
         let result = self.document.save_prepared_as(prepared);
-        self.handle_save_result(result);
+        self.handle_save_result(result, reservation);
     }
 
     fn confirm_pending_hard_link_save(&mut self) {
+        if self.save_is_blocked() {
+            self.show_active_save_recovery_messages();
+            self.error_msg = Some(SAVE_RECOVERY_BLOCK_MESSAGE.to_owned());
+            return;
+        }
+        let Some(attempt) = self
+            .pending_hard_link_save
+            .as_ref()
+            .map(|pending| match pending {
+                PendingHardLinkSave::Current { target, .. } => SaveAttempt::Current(target.clone()),
+                PendingHardLinkSave::SaveAs { target, .. } => SaveAttempt::SaveAs(target.clone()),
+            })
+        else {
+            return;
+        };
+        let Some(reservation) = self.reserve_save_recovery_slot(attempt) else {
+            return;
+        };
         let Some(pending) = self.pending_hard_link_save.take() else {
             return;
         };
@@ -558,10 +648,20 @@ impl NoterApp {
                 .document
                 .save_prepared_as_confirming_hard_link_replacement(prepared),
         };
-        self.handle_save_result(result);
+        self.handle_save_result(result, reservation);
     }
 
-    fn handle_save_result(&mut self, result: Result<SaveOutcome, NoterError>) {
+    fn handle_save_result(
+        &mut self,
+        result: Result<SaveOutcome, NoterError>,
+        reservation: SaveRecoveryReservation,
+    ) {
+        let SaveRecoveryReservation {
+            record_count,
+            attempt,
+            destination_label,
+            mut message,
+        } = reservation;
         self.error_msg = match result {
             Ok(SaveOutcome::Committed { ref warnings, .. }) if warnings.is_empty() => None,
             Ok(SaveOutcome::Committed { warnings, .. }) => {
@@ -594,22 +694,78 @@ impl NoterApp {
                 recovery_artifact,
                 ..
             }) => {
-                let message = format!(
-                    "Save state is uncertain and must be reconciled before retry: {error}. Recovery follow-up: {recovery_artifact}"
-                );
-                self.save_recovery_msg = Some(message.clone());
-                Some(message)
+                message = write_save_recovery_message(message, &recovery_artifact, &error);
+                debug_assert_eq!(self.save_recoveries.len(), record_count);
+                self.save_recoveries.push(SaveRecovery {
+                    destination: attempt.into_destination(),
+                    destination_label,
+                    message,
+                    notice_pending: true,
+                });
+                None
             }
             Err(error) => Some(format!("Failed to save file: {error}")),
         };
     }
 
-    fn restore_save_recovery_message(&mut self) -> bool {
-        let Some(message) = self.save_recovery_msg.as_ref() else {
-            return false;
+    const fn ordinary_save_is_blocked(&self) -> bool {
+        self.save_is_blocked()
+    }
+
+    const fn save_is_blocked(&self) -> bool {
+        !self.save_recoveries.is_empty()
+    }
+
+    fn show_active_save_recovery_messages(&mut self) {
+        for recovery in &mut self.save_recoveries {
+            recovery.notice_pending = true;
+        }
+    }
+
+    fn reserve_save_recovery_slot(
+        &mut self,
+        attempt: SaveAttempt,
+    ) -> Option<SaveRecoveryReservation> {
+        if self.save_recoveries.len() >= MAX_SAVE_RECOVERY_RECORDS {
+            self.show_active_save_recovery_messages();
+            self.error_msg = Some(SAVE_RECOVERY_CAPACITY_MESSAGE.to_owned());
+            return None;
+        }
+        if self.save_is_blocked() {
+            self.show_active_save_recovery_messages();
+            self.error_msg = Some(SAVE_RECOVERY_BLOCK_MESSAGE.to_owned());
+            return None;
+        }
+        if attempt.destination().as_os_str().as_encoded_bytes().len()
+            > MAX_SAVE_RECOVERY_DESTINATION_BYTES
+        {
+            self.error_msg = Some(SAVE_RECOVERY_PATH_LIMIT_MESSAGE.to_owned());
+            return None;
+        }
+        if self.save_recoveries.try_reserve(1).is_err() {
+            self.show_active_save_recovery_messages();
+            self.error_msg = Some(SAVE_RECOVERY_CAPACITY_MESSAGE.to_owned());
+            return None;
+        }
+        let mut message = String::new();
+        if message
+            .try_reserve_exact(MAX_SAVE_RECOVERY_MESSAGE_BYTES)
+            .is_err()
+        {
+            self.show_active_save_recovery_messages();
+            self.error_msg = Some(SAVE_RECOVERY_CAPACITY_MESSAGE.to_owned());
+            return None;
+        }
+        let Some(destination_label) = bounded_destination_label(attempt.destination()) else {
+            self.error_msg = Some(SAVE_RECOVERY_CAPACITY_MESSAGE.to_owned());
+            return None;
         };
-        self.error_msg = Some(message.clone());
-        true
+        Some(SaveRecoveryReservation {
+            record_count: self.save_recoveries.len(),
+            attempt,
+            destination_label,
+            message,
+        })
     }
 
     fn start_new_document_unchecked(&mut self) {
@@ -621,6 +777,7 @@ impl NoterApp {
         self.view = DocumentView::Text;
         self.advance_document_editor();
         self.find_bar.reset();
+        self.go_to_line.reset();
         self.markdown_editor.reset();
         self.markdown_issue_cache = None;
         self.error_msg = None;
@@ -674,7 +831,7 @@ impl NoterApp {
         let _ = self
             .lifecycle
             .reduce(LifecycleCommand::Decide(DirtyDecision::Cancel));
-        let _ = self.restore_save_recovery_message();
+        self.show_active_save_recovery_messages();
     }
 
     fn discard_pending_abandon(&mut self, ctx: &egui::Context) {
@@ -707,7 +864,7 @@ impl NoterApp {
         match effect {
             LifecycleEffect::None => {}
             LifecycleEffect::PromptDirty(_) => {
-                let _ = self.restore_save_recovery_message();
+                self.show_active_save_recovery_messages();
             }
             LifecycleEffect::StartSave => {
                 self.do_save();
@@ -1128,7 +1285,7 @@ impl NoterApp {
                 );
                 menu_ui.spacing_mut().item_spacing.x = 2.0;
                 egui::MenuBar::new().ui(&mut menu_ui, |ui| {
-                    ui.menu_button("File", |ui| Self::show_file_menu(ui, file_command));
+                    ui.menu_button("File", |ui| self.show_file_menu(ui, file_command));
                     if expanded {
                         ui.menu_button("Edit", |ui| self.show_edit_menu(ui, edit_command));
                         ui.menu_button("View", |ui| {
@@ -1225,7 +1382,7 @@ impl NoterApp {
         response.on_hover_text("Choose the application theme");
     }
 
-    fn show_file_menu(ui: &mut egui::Ui, command: &mut Option<FileCommand>) {
+    fn show_file_menu(&self, ui: &mut egui::Ui, command: &mut Option<FileCommand>) {
         for (index, candidate) in [
             FileCommand::New,
             FileCommand::Open,
@@ -1243,7 +1400,18 @@ impl NoterApp {
             if let Some(shortcut) = candidate.shortcut() {
                 button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
             }
-            if ui.add(button).clicked() {
+            let enabled = self.file_command_enabled(candidate);
+            let response = ui.add_enabled(enabled, button);
+            if !enabled && candidate == FileCommand::Reload {
+                response
+                    .clone()
+                    .on_disabled_hover_text("Available after this document has been saved");
+            } else if !enabled && matches!(candidate, FileCommand::Save | FileCommand::SaveAs) {
+                response.clone().on_disabled_hover_text(
+                    "Reconcile every uncertain save outcome before saving again",
+                );
+            }
+            if response.clicked() {
                 command.get_or_insert(candidate);
                 ui.close();
             }
@@ -1252,6 +1420,14 @@ impl NoterApp {
         if ui.button(FileCommand::Quit.label()).clicked() {
             command.get_or_insert(FileCommand::Quit);
             ui.close();
+        }
+    }
+
+    fn file_command_enabled(&self, command: FileCommand) -> bool {
+        match command {
+            FileCommand::Reload => self.document.path().is_some(),
+            FileCommand::Save | FileCommand::SaveAs => !self.save_is_blocked(),
+            FileCommand::New | FileCommand::Open | FileCommand::Quit => true,
         }
     }
 
@@ -1392,6 +1568,9 @@ impl NoterApp {
         }
         if self.view != view {
             self.view = view;
+            if view != DocumentView::Text {
+                self.go_to_line.reset();
+            }
             self.markdown_editor.reset();
             self.pending_selection_restore = Some(self.selection);
         }
@@ -1505,6 +1684,9 @@ impl NoterApp {
         let mut save = false;
         let mut discard = false;
         let mut cancel = false;
+        let mut reconcile = None;
+        let ordinary_save_is_blocked = self.ordinary_save_is_blocked();
+        let save_recoveries = &self.save_recoveries;
 
         let response =
             egui::Modal::new(egui::Id::new("unsaved-changes-confirmation")).show(ctx, |ui| {
@@ -1513,16 +1695,20 @@ impl NoterApp {
                 ui.heading("Save changes?");
                 ui.label(format!("{document_name} has unsaved changes."));
                 ui.label(pending_abandon_prompt(action));
-                if let Some(message) = self.save_recovery_msg.as_deref() {
+                if !save_recoveries.is_empty() {
                     ui.separator();
-                    ui.colored_label(ui.visuals().error_fg_color, message);
+                    egui::ScrollArea::vertical()
+                        .max_height(144.0)
+                        .show(ui, |ui| {
+                            reconcile = show_save_recovery_records(ui, save_recoveries, false);
+                        });
                     ui.label(UNCERTAIN_SAVE_ABANDON_GUIDANCE);
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
                     save = ui
                         .add_enabled(
-                            self.save_recovery_msg.is_none(),
+                            !ordinary_save_is_blocked,
                             egui::Button::new(egui::RichText::new("Save").strong()),
                         )
                         .on_disabled_hover_text(
@@ -1534,7 +1720,9 @@ impl NoterApp {
                 });
             });
 
-        if save {
+        if let Some(index) = reconcile {
+            self.pending_recovery_reconciliation = Some(index);
+        } else if save {
             self.save_pending_abandon(ctx);
         } else if discard {
             self.discard_pending_abandon(ctx);
@@ -1585,7 +1773,7 @@ impl NoterApp {
         if let Some(error) = self.error_msg.as_deref() {
             egui::Panel::top("error_bar").show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::RED, format!("Error: {error}"));
+                    ui.colored_label(ui.visuals().error_fg_color, format!("Error: {error}"));
                     dismiss = ui.button("Dismiss").clicked();
                 });
             });
@@ -1593,6 +1781,75 @@ impl NoterApp {
         if dismiss {
             self.error_msg = None;
         }
+    }
+
+    fn show_save_recovery_notice(&mut self, ui: &mut egui::Ui) {
+        if !self
+            .save_recoveries
+            .iter()
+            .any(|recovery| recovery.notice_pending)
+        {
+            return;
+        }
+
+        let mut dismiss = false;
+        let mut reconcile = None;
+        egui::Panel::top("save_recovery_bar").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("Recovery follow-up required");
+                dismiss = ui.button("Dismiss notice").clicked();
+            });
+            egui::ScrollArea::vertical()
+                .max_height(144.0)
+                .show(ui, |ui| {
+                    reconcile = show_save_recovery_records(ui, &self.save_recoveries, true);
+                });
+        });
+        if let Some(index) = reconcile {
+            self.pending_recovery_reconciliation = Some(index);
+        }
+        if dismiss {
+            for recovery in &mut self.save_recoveries {
+                recovery.notice_pending = false;
+            }
+        }
+    }
+
+    fn show_save_recovery_reconciliation(&mut self, ctx: &egui::Context) {
+        let Some(index) = self.pending_recovery_reconciliation else {
+            return;
+        };
+        let Some(recovery) = self.save_recoveries.get(index) else {
+            self.pending_recovery_reconciliation = None;
+            return;
+        };
+        let mut confirm = false;
+        let mut cancel = false;
+        let response =
+            egui::Modal::new(egui::Id::new("save-recovery-reconciliation")).show(ctx, |ui| {
+                (confirm, cancel) = show_save_recovery_reconciliation_contents(ui, recovery);
+            });
+
+        if confirm {
+            self.reconcile_save_recovery(index);
+        } else if cancel || response.should_close() {
+            self.pending_recovery_reconciliation = None;
+        }
+    }
+
+    fn reconcile_save_recovery(&mut self, index: usize) -> bool {
+        if index >= self.save_recoveries.len() {
+            self.pending_recovery_reconciliation = None;
+            return false;
+        }
+        self.save_recoveries.remove(index);
+        self.pending_recovery_reconciliation = None;
+        if self.save_recoveries.is_empty()
+            && self.error_msg.as_deref() == Some(SAVE_RECOVERY_BLOCK_MESSAGE)
+        {
+            self.error_msg = None;
+        }
+        true
     }
 
     fn markdown_issue_count(&mut self) -> usize {
@@ -2124,6 +2381,7 @@ impl NoterApp {
         );
         self.show_menu(ui, &mut file_command, &mut edit_command, &mut view_command);
         self.show_error(ui);
+        self.show_save_recovery_notice(ui);
         let commands_enabled =
             self.pending_hard_link_save.is_none() && self.lifecycle.pending_intent().is_none();
         let edit_executed = if commands_enabled {
@@ -2153,7 +2411,9 @@ impl NoterApp {
         self.show_about(ui.ctx());
         self.show_updates(ui.ctx());
         self.show_go_to_line(ui.ctx());
-        if self.pending_hard_link_save.is_some() {
+        if self.pending_recovery_reconciliation.is_some() {
+            self.show_save_recovery_reconciliation(ui.ctx());
+        } else if self.pending_hard_link_save.is_some() {
             self.show_hard_link_confirmation(ui.ctx());
         } else {
             self.show_unsaved_changes_confirmation(ui.ctx());
@@ -2215,6 +2475,241 @@ impl NoterApp {
             ScreenshotCapture::MARKER.to_owned(),
         )));
     }
+}
+
+struct BoundedTextWriter {
+    output: String,
+    maximum_bytes: usize,
+    truncation_suffix: &'static str,
+    truncated: bool,
+}
+
+impl BoundedTextWriter {
+    fn new(output: String, maximum_bytes: usize, truncation_suffix: &'static str) -> Self {
+        debug_assert!(output.capacity() >= maximum_bytes);
+        debug_assert!(truncation_suffix.len() <= maximum_bytes);
+        Self {
+            output,
+            maximum_bytes,
+            truncation_suffix,
+            truncated: false,
+        }
+    }
+
+    fn finish(mut self) -> String {
+        if self.truncated {
+            self.output.push_str(self.truncation_suffix);
+        }
+        debug_assert!(self.output.len() <= self.maximum_bytes);
+        self.output
+    }
+}
+
+impl fmt::Write for BoundedTextWriter {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        if self.truncated {
+            return Ok(());
+        }
+        if self.output.len().saturating_add(value.len()) <= self.maximum_bytes {
+            self.output.push_str(value);
+            return Ok(());
+        }
+
+        let prefix_limit = self
+            .maximum_bytes
+            .saturating_sub(self.truncation_suffix.len());
+        if self.output.len() > prefix_limit {
+            let mut boundary = prefix_limit;
+            while !self.output.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            self.output.truncate(boundary);
+        }
+        let available = prefix_limit.saturating_sub(self.output.len());
+        let mut boundary = available.min(value.len());
+        while !value.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        self.output.push_str(&value[..boundary]);
+        self.truncated = true;
+        Ok(())
+    }
+}
+
+fn bounded_destination_label(path: &Path) -> Option<String> {
+    let mut output = String::new();
+    output
+        .try_reserve_exact(MAX_SAVE_RECOVERY_LABEL_BYTES)
+        .ok()?;
+    let mut writer = BoundedTextWriter::new(output, MAX_SAVE_RECOVERY_LABEL_BYTES, "...");
+    match (path.parent().and_then(Path::file_name), path.file_name()) {
+        (Some(parent), Some(name)) => {
+            let _ = write!(
+                writer,
+                "{}{}{}",
+                parent.to_string_lossy(),
+                std::path::MAIN_SEPARATOR,
+                name.to_string_lossy()
+            );
+        }
+        (_, Some(name)) => {
+            let _ = write!(writer, "{}", name.to_string_lossy());
+        }
+        _ => {
+            let _ = write!(writer, "{}", path.display());
+        }
+    }
+    Some(writer.finish())
+}
+
+fn write_save_recovery_message(
+    output: String,
+    recovery_artifact: &noter::core::save::StorageError,
+    error: &noter::core::save::StorageError,
+) -> String {
+    let mut writer = BoundedTextWriter::new(
+        output,
+        MAX_SAVE_RECOVERY_MESSAGE_BYTES,
+        SAVE_RECOVERY_TRUNCATION_SUFFIX,
+    );
+    let _ = write!(
+        writer,
+        "Save state is uncertain. Noter has stopped every save until you explicitly reconcile this outcome. Recovery follow-up: {recovery_artifact}. Commit detail: {error}"
+    );
+    writer.finish()
+}
+
+fn show_save_recovery_records(
+    ui: &mut egui::Ui,
+    recoveries: &[SaveRecovery],
+    pending_only: bool,
+) -> Option<usize> {
+    let mut reconcile = None;
+    let mut displayed_record = false;
+    for (index, recovery) in recoveries.iter().enumerate() {
+        if pending_only && !recovery.notice_pending {
+            continue;
+        }
+        if displayed_record {
+            ui.separator();
+        }
+        displayed_record = true;
+        ui.strong(format!("Destination: {}", recovery.destination_label));
+        ui.colored_label(ui.visuals().error_fg_color, &recovery.message);
+        show_save_recovery_copy_action(ui, recovery);
+        ui.horizontal(|ui| {
+            if ui.button("Reconcile...").clicked() {
+                reconcile = Some(index);
+            }
+        });
+    }
+    reconcile
+}
+
+fn show_save_recovery_reconciliation_contents(
+    ui: &mut egui::Ui,
+    recovery: &SaveRecovery,
+) -> (bool, bool) {
+    ui.set_min_width(460.0);
+    ui.set_max_width(600.0);
+    ui.heading("Reconcile uncertain save");
+    ui.strong(format!("Destination: {}", recovery.destination_label));
+    show_save_recovery_copy_action(ui, recovery);
+    egui::ScrollArea::vertical()
+        .max_height(120.0)
+        .show(ui, |ui| {
+            ui.colored_label(ui.visuals().error_fg_color, &recovery.message);
+        });
+    ui.label(
+        "Continue only after you inspected the destination and retained private sibling, preserved the version you need, and determined whether the earlier save committed.",
+    );
+    ui.label(
+        "Confirming removes this safety record. It does not write, retry, or change the document.",
+    );
+    ui.separator();
+    let mut cancel = false;
+    let mut confirm = false;
+    ui.horizontal(|ui| {
+        cancel = ui.button("Cancel").clicked();
+        confirm = ui.button("I Have Reconciled This Outcome").clicked();
+    });
+    (confirm, cancel)
+}
+
+fn show_save_recovery_copy_action(ui: &mut egui::Ui, recovery: &SaveRecovery) {
+    let path_is_unicode = recovery.destination.to_str().is_some();
+    if !path_is_unicode {
+        ui.label(
+            "This operating-system path is not valid Unicode. Copy uses a reversible hexadecimal representation instead of changing the path.",
+        );
+    }
+    let button_label = if path_is_unicode {
+        "Copy Destination Path"
+    } else {
+        "Copy Exact Path Encoding"
+    };
+    if ui.button(button_label).clicked() {
+        ui.ctx()
+            .copy_text(recovery_path_clipboard_text(&recovery.destination));
+    }
+}
+
+fn recovery_path_clipboard_text(path: &Path) -> String {
+    if let Some(path) = path.to_str() {
+        return path.to_owned();
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        hex_encoded_path("unix-path-bytes:", path.as_os_str().as_bytes())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt as _;
+
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let units = path.as_os_str().encode_wide();
+        let unit_count = units.clone().count();
+        let mut output = String::new();
+        output
+            .try_reserve_exact(
+                "windows-path-utf16:"
+                    .len()
+                    .saturating_add(unit_count.saturating_mul(4)),
+            )
+            .expect("bounded recovery paths fit the clipboard representation");
+        output.push_str("windows-path-utf16:");
+        for unit in units {
+            for shift in [12, 8, 4, 0] {
+                output.push(char::from(HEX[usize::from((unit >> shift) & 0x0f)]));
+            }
+        }
+        output
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        hex_encoded_path(
+            "platform-path-encoding:",
+            path.as_os_str().as_encoded_bytes(),
+        )
+    }
+}
+
+#[cfg(not(windows))]
+fn hex_encoded_path(prefix: &str, bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::new();
+    output
+        .try_reserve_exact(prefix.len().saturating_add(bytes.len().saturating_mul(2)))
+        .expect("bounded recovery paths fit the clipboard representation");
+    output.push_str(prefix);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 fn preferred_view_for_path(path: &std::path::Path) -> DocumentView {
@@ -2499,6 +2994,21 @@ mod tests {
             .unwrap_or_else(|| panic!("expected rendered text `{label}` with a font section"))
     }
 
+    fn text_shape_color(shape: &egui::Shape, label: &str) -> Option<egui::Color32> {
+        match shape {
+            egui::Shape::Text(text_shape) if text_shape.galley.job.text == label => text_shape
+                .galley
+                .job
+                .sections
+                .first()
+                .map(|section| section.format.color),
+            egui::Shape::Vec(shapes) => shapes
+                .iter()
+                .find_map(|shape| text_shape_color(shape, label)),
+            _ => None,
+        }
+    }
+
     fn accesskit_labels(output: &egui::FullOutput) -> Vec<String> {
         fn visit(
             id: egui::accesskit::NodeId,
@@ -2578,6 +3088,18 @@ mod tests {
             .nodes
             .iter()
             .find_map(|(id, node)| (node.label() == Some(label)).then_some(*id))
+            .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}`"))
+    }
+
+    fn accesskit_disabled(output: &egui::FullOutput, label: &str) -> bool {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled")
+            .nodes
+            .iter()
+            .find_map(|(_, node)| (node.label() == Some(label)).then(|| node.is_disabled()))
             .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}`"))
     }
 
@@ -2761,6 +3283,46 @@ mod tests {
         });
     }
 
+    fn active_test_recovery(path: PathBuf, message: &str) -> SaveRecovery {
+        let destination_label = bounded_destination_label(&path)
+            .expect("the bounded test destination should be representable");
+        SaveRecovery {
+            destination: path,
+            destination_label,
+            message: message.to_owned(),
+            notice_pending: true,
+        }
+    }
+
+    fn test_save_recovery_reservation(
+        app: &mut NoterApp,
+        attempt: SaveAttempt,
+    ) -> SaveRecoveryReservation {
+        app.reserve_save_recovery_slot(attempt)
+            .expect("the test save should reserve a recovery slot")
+    }
+
+    fn record_test_unknown_save(app: &mut NoterApp, attempt: SaveAttempt, label: &str) {
+        use noter::core::revision::Revision;
+        use noter::core::save::{SaveStage, StorageError};
+
+        let reservation = test_save_recovery_reservation(app, attempt);
+        app.handle_save_result(
+            Ok(SaveOutcome::CommitStateUnknown {
+                revision: Revision::INITIAL,
+                error: StorageError::new(
+                    SaveStage::Reconcile,
+                    format!("{label} destination state differs"),
+                ),
+                recovery_artifact: StorageError::new(
+                    SaveStage::Cleanup,
+                    format!("inspect `{label}.noter-save-recovery.tmp` before retrying"),
+                ),
+            }),
+            reservation,
+        );
+    }
+
     fn arrange_pending_intent(app: &mut NoterApp, intent: PendingAbandonAction) {
         assert_eq!(
             app.lifecycle.reduce(LifecycleCommand::Request {
@@ -2798,15 +3360,25 @@ mod tests {
         app.document
             .replace_text("unsaved text")
             .expect("the test edit should advance the document revision");
-        app.handle_save_result(Ok(SaveOutcome::CommitStateUnknown {
-            revision: Revision::INITIAL,
-            error: StorageError::new(SaveStage::Reconcile, "destination state differs"),
-            recovery_artifact: StorageError::new(
-                SaveStage::Cleanup,
-                "inspect `.noter-save-recovery.tmp` before retrying",
-            ),
-        }));
+        let reservation = test_save_recovery_reservation(
+            &mut app,
+            SaveAttempt::SaveAs(PathBuf::from("uncertain-save.txt")),
+        );
+        app.handle_save_result(
+            Ok(SaveOutcome::CommitStateUnknown {
+                revision: Revision::INITIAL,
+                error: StorageError::new(SaveStage::Reconcile, "destination state differs"),
+                recovery_artifact: StorageError::new(
+                    SaveStage::Cleanup,
+                    "inspect `.noter-save-recovery.tmp` before retrying",
+                ),
+            }),
+            reservation,
+        );
         app.error_msg = None;
+        for recovery in &mut app.save_recoveries {
+            recovery.notice_pending = false;
+        }
         app
     }
 
@@ -3035,7 +3607,7 @@ mod tests {
             let mut command = None;
             let output = context.run_ui(egui::RawInput::default(), |ui| {
                 ui.set_width(320.0);
-                NoterApp::show_file_menu(ui, &mut command);
+                NoterApp::default().show_file_menu(ui, &mut command);
             });
             let labels = rendered_text(&output)
                 .into_iter()
@@ -3059,6 +3631,67 @@ mod tests {
                 );
             }
             assert!(command.is_none());
+        }
+    }
+
+    #[test]
+    fn reload_menu_state_matches_document_path_semantics() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut command = None;
+        let untitled = NoterApp::default();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            untitled.show_file_menu(ui, &mut command);
+        });
+
+        assert!(!untitled.file_command_enabled(FileCommand::Reload));
+        assert!(accesskit_disabled(&output, "Reload from Disk"));
+        assert!(command.is_none());
+
+        let directory = tempdir()?;
+        let path = directory.path().join("saved.txt");
+        fs::write(&path, b"saved")?;
+        let saved = NoterApp {
+            text: "saved".to_owned(),
+            document: Document::from_path(&path)?,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            saved.show_file_menu(ui, &mut command);
+        });
+
+        assert!(saved.file_command_enabled(FileCommand::Reload));
+        assert!(!accesskit_disabled(&output, "Reload from Disk"));
+        Ok(())
+    }
+
+    #[test]
+    fn error_banner_uses_each_standard_themes_contrast_safe_error_color() {
+        for app_theme in [AppTheme::Light, AppTheme::Dark] {
+            let context = egui::Context::default();
+            theme::configure_styles(&context);
+            app_theme.apply(&context);
+            let egui_theme = match app_theme {
+                AppTheme::Light => egui::Theme::Light,
+                AppTheme::Dark => egui::Theme::Dark,
+                _ => unreachable!("the test covers standard themes only"),
+            };
+            let expected = context.style_of(egui_theme).visuals.error_fg_color;
+            let mut app = NoterApp {
+                error_msg: Some("visible failure".to_owned()),
+                ..NoterApp::default()
+            };
+
+            let output = context.run_ui(egui::RawInput::default(), |ui| app.show_error(ui));
+            let actual = output
+                .shapes
+                .iter()
+                .find_map(|shape| text_shape_color(&shape.shape, "Error: visible failure"));
+
+            assert_eq!(actual, Some(expected));
         }
     }
 
@@ -3708,6 +4341,45 @@ mod tests {
         assert_eq!(app.markdown_editor.source_selection(), Some(selection));
         assert!(app.markdown_editor.is_editing());
         assert!(app.error_msg.is_none());
+    }
+
+    #[test]
+    fn markdown_escape_records_the_final_caret_for_undo_and_redo() {
+        let source = "abcXYZ";
+        let initial_selection = Selection::new(0, 3);
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection: initial_selection,
+            pending_selection_restore: Some(initial_selection),
+            view: DocumentView::Markdown,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| app.show_editor(ui));
+        let mut input = ui_input(800.0, 600.0, 0.1);
+        input.events.push(egui::Event::Text("q".to_owned()));
+        input.events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+
+        let _ = context.run_ui(input, |ui| app.show_editor(ui));
+
+        assert_eq!(app.text, "qXYZ");
+        assert_eq!(String::from(app.document.rope()), "qXYZ");
+        assert_eq!(app.selection, Selection::caret(1));
+        assert!(!app.markdown_editor.is_editing());
+
+        app.execute_edit_command(EditCommand::Undo);
+        assert_eq!(app.text, source);
+        assert_eq!(app.selection, initial_selection);
+        app.execute_edit_command(EditCommand::Redo);
+        assert_eq!(app.text, "qXYZ");
+        assert_eq!(app.selection, Selection::caret(1));
     }
 
     #[test]
@@ -4597,6 +5269,36 @@ mod tests {
     }
 
     #[test]
+    fn same_frame_event_heavy_markdown_paste_falls_back_after_bounded_layout() {
+        let source = "text";
+        let selection = Selection::caret(source.len());
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection,
+            pending_selection_restore: Some(selection),
+            view: DocumentView::Markdown,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| app.show_editor(ui));
+        let paste = "*x* ".repeat(3_000);
+        let mut input = ui_input(800.0, 600.0, 0.1);
+        input.events.push(egui::Event::Paste(paste.clone()));
+
+        let _ = context.run_ui(input, |ui| app.show_editor(ui));
+
+        assert_eq!(app.view, DocumentView::Text);
+        assert_eq!(app.text, format!("text{paste}"));
+        assert_eq!(String::from(app.document.rope()), app.text);
+        assert!(!app.markdown_editor.is_editing());
+        assert!(app.error_msg.as_deref().is_some_and(|message| {
+            message.contains("8,192-event parser budget")
+                && message.contains("fully available in Text Mode")
+        }));
+    }
+
+    #[test]
     fn markdown_diagnostic_cache_is_revision_and_document_scoped() {
         use std::cell::Cell;
 
@@ -4754,8 +5456,13 @@ mod tests {
     fn new_document_replaces_a_clean_document() {
         let mut app = NoterApp {
             text: "stale view text".to_owned(),
+            save_recoveries: vec![active_test_recovery(
+                PathBuf::from("stale.txt"),
+                "Retain recovery guidance.",
+            )],
             ..NoterApp::default()
         };
+        app.go_to_line.open(1);
         let previous_editor_id = app.editor_id();
 
         let context = egui::Context::default();
@@ -4764,7 +5471,48 @@ mod tests {
         assert_eq!(app.document.rope().len_bytes(), 0);
         assert!(!app.document.is_dirty());
         assert!(app.error_msg.is_none());
+        assert_eq!(app.save_recoveries.len(), 1);
+        assert!(app.save_recoveries[0].notice_pending);
+        assert!(app.save_is_blocked());
+        assert!(!app.go_to_line.is_open());
         assert_ne!(app.editor_id(), previous_editor_id);
+    }
+
+    #[test]
+    fn leaving_text_mode_closes_go_to_line() {
+        let mut app = NoterApp::default();
+        app.go_to_line.open(1);
+        assert!(app.go_to_line.is_open());
+
+        app.select_document_view(DocumentView::Markdown);
+
+        assert_eq!(app.view, DocumentView::Markdown);
+        assert!(!app.go_to_line.is_open());
+    }
+
+    #[test]
+    fn successful_open_preserves_destination_block_and_resets_go_to_line_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let path = directory.path().join("opened.txt");
+        fs::write(&path, b"opened")?;
+        let mut app = NoterApp {
+            save_recoveries: vec![active_test_recovery(
+                PathBuf::from("stale.txt"),
+                "Retain recovery guidance.",
+            )],
+            ..NoterApp::default()
+        };
+        app.go_to_line.open(7);
+
+        app.open_path(&path, Some(DocumentView::Text));
+
+        assert_eq!(app.document.path(), Some(path.as_path()));
+        assert_eq!(app.save_recoveries.len(), 1);
+        assert!(app.save_recoveries[0].notice_pending);
+        assert!(app.save_is_blocked());
+        assert!(!app.go_to_line.is_open());
+        Ok(())
     }
 
     #[test]
@@ -4944,7 +5692,7 @@ mod tests {
 
         assert_eq!(
             UNCERTAIN_SAVE_ABANDON_GUIDANCE,
-            "Cancel this dialog, then use Save As to preserve the current text at another path or reconcile the recovery state."
+            "Cancel this dialog and reconcile every uncertain save outcome before attempting another save. Your current text remains editable."
         );
 
         for trigger in [
@@ -4976,17 +5724,16 @@ mod tests {
             }
 
             let recovery = app
-                .save_recovery_msg
-                .clone()
+                .save_recoveries
+                .first()
                 .expect("the uncertain save must retain recovery guidance");
-            assert_eq!(app.error_msg.as_deref(), Some(recovery.as_str()));
-            assert!(recovery.contains(".noter-save-recovery.tmp"));
+            assert!(recovery.notice_pending);
+            assert!(recovery.message.contains(".noter-save-recovery.tmp"));
 
             app.cancel_pending_abandon();
 
             assert!(app.lifecycle.pending_intent().is_none());
-            assert_eq!(app.error_msg.as_deref(), Some(recovery.as_str()));
-            assert_eq!(app.save_recovery_msg.as_deref(), Some(recovery.as_str()));
+            assert!(app.save_recoveries[0].notice_pending);
         }
     }
 
@@ -5000,7 +5747,10 @@ mod tests {
         let mut app = NoterApp {
             text: "unsaved replacement".to_owned(),
             document,
-            save_recovery_msg: Some("Reconcile the uncertain save before retrying.".to_owned()),
+            save_recoveries: vec![active_test_recovery(
+                path.clone(),
+                "Reconcile the uncertain save before retrying.",
+            )],
             ..NoterApp::default()
         };
 
@@ -5008,11 +5758,412 @@ mod tests {
 
         assert_eq!(fs::read(&path)?, b"original");
         assert!(app.document.is_dirty());
-        assert_eq!(
-            app.error_msg.as_deref(),
-            Some("Reconcile the uncertain save before retrying.")
+        assert_eq!(app.error_msg.as_deref(), Some(SAVE_RECOVERY_BLOCK_MESSAGE));
+        assert!(app.save_recoveries[0].notice_pending);
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_save_preserves_the_loaded_baseline_for_a_dotted_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let ordinary_path = directory.path().join("note.txt");
+        let dotted_path = directory.path().join(".").join("note.txt");
+        fs::write(&ordinary_path, b"loaded bytes")?;
+        let mut document = Document::from_path(&dotted_path)?;
+        document.replace_text("unsaved replacement")?;
+        let mut app = NoterApp {
+            text: "unsaved replacement".to_owned(),
+            document,
+            ..NoterApp::default()
+        };
+        fs::write(&ordinary_path, b"external replacement")?;
+
+        app.do_save();
+
+        assert_eq!(fs::read(&ordinary_path)?, b"external replacement");
+        assert_eq!(app.document.path(), Some(dotted_path.as_path()));
+        assert!(app.document.is_dirty());
+        assert!(
+            app.error_msg
+                .as_deref()
+                .is_some_and(|message| message.contains("destination changed"))
         );
         Ok(())
+    }
+
+    #[test]
+    fn save_as_refuses_an_unresolved_destination_before_preparation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        fs::write(&path, b"original")?;
+        let mut document = Document::from_path(&path)?;
+        document.replace_text("unsaved replacement")?;
+        let mut app = NoterApp {
+            text: "unsaved replacement".to_owned(),
+            document,
+            save_recoveries: vec![active_test_recovery(
+                path.clone(),
+                "Reconcile this destination before retrying.",
+            )],
+            ..NoterApp::default()
+        };
+
+        app.do_save_as_to(path.clone());
+
+        assert_eq!(fs::read(&path)?, b"original");
+        assert!(app.document.is_dirty());
+        assert!(app.pending_hard_link_save.is_none());
+        assert!(app.save_recoveries[0].notice_pending);
+        Ok(())
+    }
+
+    #[test]
+    fn save_as_refuses_an_alias_of_an_unresolved_destination()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        let alias = directory.path().join(".").join("note.txt");
+        fs::write(&path, b"original")?;
+        let mut document = Document::from_path(&path)?;
+        document.replace_text("unsaved replacement")?;
+        let mut app = NoterApp {
+            text: "unsaved replacement".to_owned(),
+            document,
+            save_recoveries: vec![active_test_recovery(
+                path.clone(),
+                "Reconcile this destination before retrying.",
+            )],
+            ..NoterApp::default()
+        };
+
+        app.do_save_as_to(alias);
+
+        assert_eq!(fs::read(&path)?, b"original");
+        assert!(app.document.is_dirty());
+        assert!(app.pending_hard_link_save.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn save_as_refuses_a_blocked_hard_link_entry_before_confirmation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let selected = directory.path().join("selected.txt");
+        let other_link = directory.path().join("other.txt");
+        fs::write(&selected, b"shared")?;
+        fs::hard_link(&selected, &other_link)?;
+        let mut document = Document::from_path(&selected)?;
+        document.replace_text("unsaved replacement")?;
+        let mut app = NoterApp {
+            text: "unsaved replacement".to_owned(),
+            document,
+            save_recoveries: vec![active_test_recovery(
+                selected.clone(),
+                "Reconcile this directory entry before retrying.",
+            )],
+            ..NoterApp::default()
+        };
+
+        app.do_save_as_to(selected.clone());
+
+        assert!(app.pending_hard_link_save.is_none());
+        assert_eq!(fs::read(&selected)?, b"shared");
+        assert_eq!(fs::read(&other_link)?, b"shared");
+        assert!(app.document.is_dirty());
+        Ok(())
+    }
+
+    #[test]
+    fn one_unknown_save_blocks_every_later_destination_before_work_begins()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let current = directory.path().join("current.txt");
+        let alternate = directory.path().join("alternate.txt");
+        fs::write(&current, b"original")?;
+        let mut document = Document::from_path(&current)?;
+        document.replace_text("unsaved replacement")?;
+        let mut app = NoterApp {
+            text: "unsaved replacement".to_owned(),
+            document,
+            ..NoterApp::default()
+        };
+
+        record_test_unknown_save(&mut app, SaveAttempt::Current(current.clone()), "current");
+        app.do_save_as_to(alternate.clone());
+
+        assert_eq!(app.save_recoveries.len(), 1);
+        assert!(app.save_recoveries[0].notice_pending);
+        assert!(app.save_recoveries[0].message.contains("current"));
+        assert!(app.ordinary_save_is_blocked());
+        assert_eq!(app.error_msg.as_deref(), Some(SAVE_RECOVERY_BLOCK_MESSAGE));
+        assert!(!alternate.exists());
+
+        app.do_save();
+        assert_eq!(fs::read(&current)?, b"original");
+        assert!(app.document.is_dirty());
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_ledger_bounds_records_messages_and_future_save_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let current = directory.path().join("current.txt");
+        fs::write(&current, b"original")?;
+        let mut document = Document::from_path(&current)?;
+        document.replace_text("unsaved replacement")?;
+        let mut app = NoterApp {
+            text: "unsaved replacement".to_owned(),
+            document,
+            ..NoterApp::default()
+        };
+
+        for index in 0..MAX_SAVE_RECOVERY_RECORDS {
+            let parent = directory.path().join(format!("recovery-{index}"));
+            fs::create_dir(&parent)?;
+            let path = parent.join("note.txt");
+            fs::write(&path, b"unresolved")?;
+            app.save_recoveries.push(active_test_recovery(
+                path,
+                &"x".repeat(MAX_SAVE_RECOVERY_MESSAGE_BYTES),
+            ));
+        }
+
+        app.do_save();
+
+        assert_eq!(fs::read(&current)?, b"original");
+        assert!(app.document.is_dirty());
+        assert_eq!(app.save_recoveries.len(), MAX_SAVE_RECOVERY_RECORDS);
+        assert!(
+            app.save_recoveries
+                .iter()
+                .all(|recovery| recovery.message.len() <= MAX_SAVE_RECOVERY_MESSAGE_BYTES)
+        );
+        assert_eq!(app.error_msg.as_deref(), Some(SAVE_RECOVERY_BLOCK_MESSAGE));
+        assert!(
+            app.reserve_save_recovery_slot(SaveAttempt::SaveAs(
+                directory.path().join("another.txt")
+            ))
+            .is_none()
+        );
+        assert_eq!(
+            app.error_msg.as_deref(),
+            Some(SAVE_RECOVERY_CAPACITY_MESSAGE)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_message_truncation_retains_fail_closed_guidance() {
+        use noter::core::save::{SaveStage, StorageError};
+
+        let mut output = String::new();
+        output
+            .try_reserve_exact(MAX_SAVE_RECOVERY_MESSAGE_BYTES)
+            .expect("the bounded test buffer should reserve");
+        let detail = "detail".repeat(2_000);
+        let message = write_save_recovery_message(
+            output,
+            &StorageError::new(SaveStage::Cleanup, detail),
+            &StorageError::new(SaveStage::Reconcile, "state differs"),
+        );
+
+        assert_eq!(message.len(), MAX_SAVE_RECOVERY_MESSAGE_BYTES);
+        assert!(message.is_char_boundary(message.len()));
+        assert!(message.contains("Do not save again"));
+        assert!(message.contains(".noter-save-*.tmp"));
+    }
+
+    #[test]
+    fn recovery_reservation_preallocates_every_bounded_record_field() {
+        let destination = PathBuf::from("parent").join("note.txt");
+        let mut app = NoterApp::default();
+
+        let reservation = app
+            .reserve_save_recovery_slot(SaveAttempt::SaveAs(destination.clone()))
+            .expect("a bounded destination should reserve before save work");
+
+        assert_eq!(reservation.attempt.destination(), destination);
+        assert!(reservation.message.capacity() >= MAX_SAVE_RECOVERY_MESSAGE_BYTES);
+        assert!(reservation.destination_label.capacity() >= MAX_SAVE_RECOVERY_LABEL_BYTES);
+        assert_eq!(
+            reservation.destination_label,
+            destination.display().to_string()
+        );
+    }
+
+    #[test]
+    fn oversized_recovery_destination_is_rejected_before_save_work() {
+        let oversized = PathBuf::from("x".repeat(MAX_SAVE_RECOVERY_DESTINATION_BYTES + 1));
+        let mut app = NoterApp::default();
+
+        assert!(
+            app.reserve_save_recovery_slot(SaveAttempt::SaveAs(oversized))
+                .is_none()
+        );
+        assert!(app.save_recoveries.is_empty());
+        assert_eq!(
+            app.error_msg.as_deref(),
+            Some(SAVE_RECOVERY_PATH_LIMIT_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn recovery_destination_label_is_bounded_on_a_utf8_boundary() {
+        let path = PathBuf::from("directory").join("leaf".repeat(1_000));
+        let label = bounded_destination_label(&path)
+            .expect("the bounded label buffer should reserve successfully");
+
+        assert_eq!(label.len(), MAX_SAVE_RECOVERY_LABEL_BYTES);
+        assert!(label.is_char_boundary(label.len()));
+        assert!(label.ends_with("..."));
+    }
+
+    #[test]
+    fn reconciliation_removes_only_the_confirmed_record_without_writing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let first = directory.path().join("first.txt");
+        let second = directory.path().join("second.txt");
+        fs::write(&first, b"first bytes")?;
+        fs::write(&second, b"second bytes")?;
+        let mut app = NoterApp {
+            save_recoveries: vec![
+                active_test_recovery(first.clone(), "Inspect first."),
+                active_test_recovery(second.clone(), "Inspect second."),
+            ],
+            pending_recovery_reconciliation: Some(0),
+            error_msg: Some(SAVE_RECOVERY_BLOCK_MESSAGE.to_owned()),
+            ..NoterApp::default()
+        };
+
+        assert!(app.reconcile_save_recovery(0));
+
+        assert_eq!(app.save_recoveries.len(), 1);
+        assert_eq!(app.save_recoveries[0].destination, second);
+        assert!(app.pending_recovery_reconciliation.is_none());
+        assert_eq!(app.error_msg.as_deref(), Some(SAVE_RECOVERY_BLOCK_MESSAGE));
+        assert_eq!(fs::read(first)?, b"first bytes");
+        assert_eq!(
+            fs::read(&app.save_recoveries[0].destination)?,
+            b"second bytes"
+        );
+        assert!(app.reconcile_save_recovery(0));
+        assert!(app.save_recoveries.is_empty());
+        assert!(app.error_msg.is_none());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_unicode_unix_recovery_path_copy_is_exact_and_reversible() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let path = PathBuf::from(std::ffi::OsString::from_vec(vec![
+            b'n', b'o', b't', b'e', b'-', 0xff,
+        ]));
+        let copied = recovery_path_clipboard_text(&path);
+
+        assert_eq!(copied, "unix-path-bytes:6e6f74652dff");
+        assert!(!copied.contains('\u{fffd}'));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn non_unicode_windows_recovery_path_copy_is_exact_and_reversible() {
+        use std::os::windows::ffi::OsStringExt as _;
+
+        let path = PathBuf::from(std::ffi::OsString::from_wide(&[
+            0x006e, 0x006f, 0x0074, 0x0065, 0xd800,
+        ]));
+        let copied = recovery_path_clipboard_text(&path);
+
+        assert_eq!(copied, "windows-path-utf16:006e006f00740065d800");
+        assert!(!copied.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn recovery_notice_stays_visible_until_explicit_dismissal() {
+        let mut app = NoterApp {
+            save_recoveries: vec![active_test_recovery(
+                PathBuf::from("uncertain.txt"),
+                "Inspect the retained recovery artifact.",
+            )],
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        let initial = context.run_ui(ui_input(800.0, 240.0, 0.0), |ui| {
+            app.show_save_recovery_notice(ui);
+        });
+        let dismiss_position =
+            text_position(&rendered_text(&initial), "Dismiss notice") + egui::vec2(4.0, 4.0);
+
+        let _ = context.run_ui(click_input(800.0, 240.0, 1.0, dismiss_position), |ui| {
+            app.show_save_recovery_notice(ui);
+        });
+
+        assert!(!app.save_recoveries[0].notice_pending);
+        assert!(app.save_is_blocked());
+    }
+
+    #[test]
+    fn recovery_notice_exposes_destination_and_explicit_reconciliation() {
+        let path = PathBuf::from("private-notes").join("uncertain.txt");
+        let mut app = NoterApp {
+            save_recoveries: vec![active_test_recovery(
+                path,
+                "Inspect the retained recovery artifact.",
+            )],
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        let initial = context.run_ui(ui_input(900.0, 320.0, 0.0), |ui| {
+            let _ = show_save_recovery_records(ui, &app.save_recoveries, false);
+        });
+        let text = rendered_text(&initial);
+
+        assert!(
+            text.iter()
+                .any(|(value, _)| value.contains("private-notes"))
+        );
+        assert!(
+            text.iter()
+                .any(|(value, _)| value == "Copy Destination Path")
+        );
+        let reconcile_position = text_position(&text, "Reconcile...") + egui::vec2(4.0, 4.0);
+
+        let mut requested = None;
+        let _ = context.run_ui(click_input(900.0, 320.0, 1.0, reconcile_position), |ui| {
+            requested = show_save_recovery_records(ui, &app.save_recoveries, false);
+        });
+        app.pending_recovery_reconciliation = requested;
+
+        assert_eq!(app.pending_recovery_reconciliation, Some(0));
+        assert_eq!(app.save_recoveries.len(), 1);
+
+        let confirmation_context = egui::Context::default();
+        let confirmation = confirmation_context.run_ui(ui_input(900.0, 420.0, 0.0), |ui| {
+            let _ = show_save_recovery_reconciliation_contents(ui, &app.save_recoveries[0]);
+        });
+        let modal_text = rendered_text(&confirmation);
+        assert!(
+            modal_text
+                .iter()
+                .any(|(value, _)| value == "Copy Destination Path"),
+            "{modal_text:?}"
+        );
+        assert!(
+            modal_text
+                .iter()
+                .any(|(value, _)| { value.contains("Inspect the retained recovery artifact.") })
+        );
+        assert!(
+            modal_text
+                .iter()
+                .any(|(value, _)| { value == "I Have Reconciled This Outcome" })
+        );
     }
 
     #[test]
@@ -5174,19 +6325,25 @@ mod tests {
         use noter::core::save::{SaveStage, StorageError};
 
         let mut app = NoterApp::default();
-        app.handle_save_result(Ok(SaveOutcome::NotCommitted {
-            revision: Revision::INITIAL,
-            error: StorageError::new(SaveStage::Write, "primary failure"),
-            cleanup_error: Some(StorageError::new(
-                SaveStage::Cleanup,
-                "private artifact was preserved",
-            )),
-        }));
+        let reservation =
+            test_save_recovery_reservation(&mut app, SaveAttempt::SaveAs(PathBuf::from("new.txt")));
+        app.handle_save_result(
+            Ok(SaveOutcome::NotCommitted {
+                revision: Revision::INITIAL,
+                error: StorageError::new(SaveStage::Write, "primary failure"),
+                cleanup_error: Some(StorageError::new(
+                    SaveStage::Cleanup,
+                    "private artifact was preserved",
+                )),
+            }),
+            reservation,
+        );
 
         let message = app.error_msg.expect("the failure must be visible");
         assert!(message.contains("primary failure"));
         assert!(message.contains("Cleanup also failed"));
         assert!(message.contains("private artifact was preserved"));
+        assert!(app.save_recoveries.is_empty());
     }
 
     #[test]
@@ -5195,20 +6352,34 @@ mod tests {
         use noter::core::save::{SaveStage, StorageError};
 
         let mut app = NoterApp::default();
-        app.handle_save_result(Ok(SaveOutcome::CommitStateUnknown {
-            revision: Revision::INITIAL,
-            error: StorageError::new(SaveStage::Reconcile, "destination state differs"),
-            recovery_artifact: StorageError::new(
-                SaveStage::Cleanup,
-                "inspect `.noter-save-recovery.tmp` before retrying",
-            ),
-        }));
+        let reservation = test_save_recovery_reservation(
+            &mut app,
+            SaveAttempt::Current(PathBuf::from("note.txt")),
+        );
+        app.handle_save_result(
+            Ok(SaveOutcome::CommitStateUnknown {
+                revision: Revision::INITIAL,
+                error: StorageError::new(SaveStage::Reconcile, "destination state differs"),
+                recovery_artifact: StorageError::new(
+                    SaveStage::Cleanup,
+                    "inspect `.noter-save-recovery.tmp` before retrying",
+                ),
+            }),
+            reservation,
+        );
 
-        let message = app.error_msg.expect("the recovery action must be visible");
+        assert!(app.error_msg.is_none());
+        let recovery = app
+            .save_recoveries
+            .first()
+            .expect("the recovery action must be retained");
+        let message = &recovery.message;
         assert!(message.contains("destination state differs"));
         assert!(message.contains(".noter-save-recovery.tmp"));
         assert!(message.contains("before retrying"));
-        assert_eq!(app.save_recovery_msg.as_deref(), Some(message.as_str()));
+        assert!(recovery.notice_pending);
+        assert_eq!(recovery.destination, PathBuf::from("note.txt"));
+        assert_eq!(recovery.destination_label, "note.txt");
     }
 
     #[test]
@@ -5228,13 +6399,20 @@ mod tests {
             FileChangeToken::new(3, 4),
         );
         let mut app = NoterApp::default();
+        let reservation = test_save_recovery_reservation(
+            &mut app,
+            SaveAttempt::Current(PathBuf::from("note.txt")),
+        );
 
-        app.handle_save_result(Ok(SaveOutcome::Committed {
-            revision: Revision::INITIAL,
-            durability: Durability::FileSynced,
-            observation,
-            warnings: SaveWarnings::new(Vec::new(), vec![warning]),
-        }));
+        app.handle_save_result(
+            Ok(SaveOutcome::Committed {
+                revision: Revision::INITIAL,
+                durability: Durability::FileSynced,
+                observation,
+                warnings: SaveWarnings::new(Vec::new(), vec![warning]),
+            }),
+            reservation,
+        );
 
         assert_eq!(
             app.error_msg.as_deref(),
@@ -5282,7 +6460,7 @@ mod tests {
 
         assert!(matches!(
             app.pending_hard_link_save,
-            Some(PendingHardLinkSave::Current { link_count }) if link_count >= 2
+            Some(PendingHardLinkSave::Current { link_count, .. }) if link_count >= 2
         ));
         assert_eq!(fs::read(&selected)?, b"shared original");
         assert_eq!(fs::read(&other_link)?, b"shared original");
@@ -5396,6 +6574,90 @@ mod tests {
                 .as_deref()
                 .is_some_and(|message| message.contains("displaced recovery artifact"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_reconciliation_is_required_before_saving_to_any_destination()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let original = directory.path().join("original.txt");
+        let preserved = directory.path().join("preserved.txt");
+        fs::write(&original, b"original")?;
+        let mut document = Document::from_path(&original)?;
+        document.replace_text("first preserved revision")?;
+        let mut app = NoterApp {
+            text: "first preserved revision".to_owned(),
+            document,
+            save_recoveries: vec![active_test_recovery(
+                original.clone(),
+                "Inspect the retained recovery artifact.",
+            )],
+            ..NoterApp::default()
+        };
+
+        app.do_save_as_to(preserved.clone());
+
+        assert_eq!(app.document.path(), Some(original.as_path()));
+        assert_eq!(app.save_recoveries.len(), 1);
+        assert!(app.save_recoveries[0].notice_pending);
+        assert!(!preserved.exists());
+        assert_eq!(fs::read(&original)?, b"original");
+        assert!(app.document.is_dirty());
+        assert_eq!(app.error_msg.as_deref(), Some(SAVE_RECOVERY_BLOCK_MESSAGE));
+
+        assert!(app.reconcile_save_recovery(0));
+        app.do_save_as_to(preserved.clone());
+
+        assert_eq!(app.document.path(), Some(preserved.as_path()));
+        assert_eq!(fs::read(&preserved)?, b"first preserved revision");
+        assert_eq!(fs::read(&original)?, b"original");
+        assert!(!app.document.is_dirty());
+        Ok(())
+    }
+
+    #[test]
+    fn unresolved_recovery_blocks_hard_link_save_before_confirmation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let original = directory.path().join("original.txt");
+        let selected = directory.path().join("selected.txt");
+        let other_link = directory.path().join("other.txt");
+        fs::write(&original, b"original")?;
+        fs::write(&selected, b"shared")?;
+        fs::hard_link(&selected, &other_link)?;
+        let mut document = Document::from_path(&original)?;
+        document.replace_text("first preserved revision")?;
+        let mut app = NoterApp {
+            text: "first preserved revision".to_owned(),
+            document,
+            save_recoveries: vec![active_test_recovery(
+                original.clone(),
+                "Inspect the retained recovery artifact.",
+            )],
+            ..NoterApp::default()
+        };
+
+        app.do_save_as_to(selected.clone());
+        assert!(app.pending_hard_link_save.is_none());
+        assert_eq!(app.document.path(), Some(original.as_path()));
+        assert_eq!(fs::read(&selected)?, b"shared");
+        assert_eq!(fs::read(&other_link)?, b"shared");
+        assert!(app.document.is_dirty());
+
+        assert!(app.reconcile_save_recovery(0));
+        app.do_save_as_to(selected.clone());
+        assert!(matches!(
+            app.pending_hard_link_save,
+            Some(PendingHardLinkSave::SaveAs { .. })
+        ));
+        app.confirm_pending_hard_link_save();
+
+        assert_eq!(app.document.path(), Some(selected.as_path()));
+        assert_eq!(fs::read(&selected)?, b"first preserved revision");
+        assert_eq!(fs::read(&other_link)?, b"shared");
+        assert!(app.save_recoveries.is_empty());
+        assert!(!app.document.is_dirty());
         Ok(())
     }
 }

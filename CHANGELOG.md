@@ -290,6 +290,36 @@ release, so current work remains under Unreleased.
 
 ### Fixed
 
+- Stop every Save and Save As after an indeterminate commit until the user
+  explicitly reconciles each retained outcome. New and Open preserve the block;
+  dismissing its notice only hides the notice. Each record retains the selected
+  destination, a 1-KiB display label, and a 4-KiB diagnostic, with a 128-KiB
+  encoded-path ceiling and capacity reserved before disk mutation. The bounded
+  recovery surface identifies each destination, offers an explicit Copy
+  Destination Path action, uses a reversible hexadecimal operating-system
+  encoding instead of lossy text for non-Unicode paths, and removes one record
+  only after a confirmation that performs no write or retry. Reconciliation of
+  the last record clears only its now-stale save-block error. At most 16 records
+  can be retained, and no recovery surface performs filesystem identity work
+  during repaint.
+- Check every live Markdown draft against the structural projection budgets
+  before semantic targeting or source-style parsing. Expanded and compact
+  toolbar actions defer mutation until all command-state queries finish. Every
+  synchronized edit is then checked as a complete document before block
+  discovery, so a bounded active range cannot conceal an aggregate source,
+  block, or parser-event limit. Inline and link formatting also run the bounded
+  projection check on their expanded candidate before semantic validation. An
+  adversarial same-frame paste receives one plain bounded layout section,
+  commits exact source, and falls back to Text Mode with the specific exceeded
+  budget.
+- Preserve the final directional source selection when Escape closes an active
+  Markdown edit in the same frame as input, allowing shared Undo and Redo to
+  restore the correct post-edit caret.
+- Use contrast-verified palette error colors in Light and Dark instead of a
+  fixed pure red, with direct rendering and actual-surface contrast regressions.
+- Reset Go To Line input, validation, and focus when a document is replaced or
+  the application leaves Text Mode, and disable Reload while the document is
+  Untitled.
 - Make Windows private-file resource release and security flag invariants
   directly mutation-testable. LocalAlloc strings now carry their owned
   deallocator, and access, sharing, and security-information masks reject
@@ -326,8 +356,8 @@ release, so current work remains under Unreleased.
   authorization with the exact document revision. Unsolicited or stale save
   completions can no longer authorize abandonment.
 - Retain indeterminate-save recovery guidance through every dirty-document
-  decision and Cancel path, and block an ordinary Save retry until the user has
-  reconciled that state or chosen Save As.
+  decision and Cancel path, and block every Save and Save As until the user has
+  explicitly reconciled that state.
 - Keep a link destination visible and selected while it is being edited in
   Markdown Mode, then hide the source target again when the caret leaves it.
 - Preserve replacement artifacts whose identity or bytes changed during cleanup.
@@ -369,6 +399,11 @@ release, so current work remains under Unreleased.
 
 ### Engineering
 
+- Limit test-profile debug information while retaining optimized test code, so
+  the growing native UI regression suite does not exhaust the MSVC PDB linker
+  limit on Windows.
+- Remove the redundant secondary root instruction stub so `AGENTS.md` remains
+  the single repository working agreement.
 - Verify implementation commit `08fd8a5` in exact-commit nine-context run
   [30702655806](https://github.com/blisspixel/noter/actions/runs/30702655806).
   Hosted Linux coverage is 93.02 percent for the whole workspace and 94.36

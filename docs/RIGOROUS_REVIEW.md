@@ -397,3 +397,20 @@ Any unanswered question is incomplete work, not an accepted guarantee.
 This review is rechecked at each milestone gate. New failures become FMEA rows,
 tests, or explicit residual risks. Closed findings remain in history so future
 changes can see why the constraints exist.
+
+The 2026-08-01 maintenance pass found surface-to-contract defects in the save
+retry boundary after an indeterminate destination, active Markdown parsing
+before live-draft structural preflight, stale selection capture on same-frame
+Escape, insufficient standard-theme error contrast, retained Go To Line state
+outside its command scope, an enabled Reload command for Untitled, and a
+range-local Markdown projection result incorrectly standing in for the complete
+synchronized document. Independent review then found unconditional
+recovery-block release across document transitions, a racy destination-scoped
+repair that could not bind a mutable parent namespace through commit, incomplete
+preallocation of unknown-outcome evidence, unactionable multi-record notices,
+repaint-time filesystem work, and inline formatting that semantically parsed an
+expanded candidate before its structural check. The save boundary now stops all
+saves until explicit per-record reconciliation instead of claiming that path
+comparison proves a safe alternate destination. Each finding has a direct
+regression. This is local implementation evidence, not a claim that durable M4
+recovery, M5 accessibility, or M6 continuous editing is complete.

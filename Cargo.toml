@@ -70,6 +70,10 @@ panic = "abort"
 [profile.dev]
 opt-level = 1
 
+[profile.test]
+opt-level = 1
+debug = 1
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"

@@ -66,9 +66,11 @@ The commit-point adapter returns exactly one of:
 4. `CommitStateUnknown`, when the platform may have changed a path entry despite
    reporting failure, paired with a typed, actionable recovery-artifact warning.
 
-`CommitStateUnknown` keeps the document dirty, retains recovery, disables blind
-retry, and requires path reconciliation before another ordinary Save. A generic
-I/O error is never interpreted as non-commit.
+`CommitStateUnknown` keeps the document dirty, retains recovery, disables every
+Save and Save As before further destination work, and requires explicit
+per-record reconciliation. Reconciliation removes the in-memory safety record
+only after user confirmation and performs no write or retry. A generic I/O error
+is never interpreted as non-commit.
 
 ### Protocol
 

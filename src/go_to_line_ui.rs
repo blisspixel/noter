@@ -34,6 +34,15 @@ impl GoToLineDialog {
         self.open && context.memory(|memory| memory.has_focus(egui::Id::new(LINE_INPUT_ID)))
     }
 
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    #[cfg(test)]
+    pub const fn is_open(&self) -> bool {
+        self.open
+    }
+
     pub fn show(&mut self, context: &egui::Context, source: &str) -> Option<GoToLineAction> {
         if !self.open {
             return None;
@@ -179,6 +188,23 @@ mod tests {
         assert_eq!(dialog.input, "7");
         assert_eq!(dialog.validation, None);
         assert!(dialog.request_focus);
+    }
+
+    #[test]
+    fn reset_closes_the_dialog_and_discards_document_specific_state() {
+        let mut dialog = GoToLineDialog {
+            open: true,
+            input: "99".to_owned(),
+            validation: Some("old document error".to_owned()),
+            request_focus: true,
+        };
+
+        dialog.reset();
+
+        assert!(!dialog.is_open());
+        assert!(dialog.input.is_empty());
+        assert!(dialog.validation.is_none());
+        assert!(!dialog.request_focus);
     }
 
     #[test]
