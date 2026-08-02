@@ -52,7 +52,9 @@ const MARKDOWN_READING_BOTTOM_PADDING: f32 = 48.0;
 const INLINE_ZOOM_MIN_WIDTH: f32 = 180.0;
 const INTERACTIVE_TEXT_MAX_BYTES: usize = 8 << 20;
 const INTERACTIVE_TEXT_MAX_LABEL: &str = "8 MiB";
-const EXTERNAL_INSPECT_INTERVAL_SECS: f64 = 2.0;
+// Focus regain always inspects. While focused, re-check at a bounded interval
+// so concurrent writers surface without thrashing large-file fingerprint work.
+const EXTERNAL_INSPECT_INTERVAL_SECS: f64 = 15.0;
 const EXTERNAL_CHANGE_SAVE_BLOCK_MESSAGE: &str = "Ordinary Save is paused while an external file change needs a decision. Choose Reload Disk Version, Keep Editing, or Save As first.";
 const MAX_SAVE_RECOVERY_RECORDS: usize = 16;
 const MAX_SAVE_RECOVERY_MESSAGE_BYTES: usize = 4 << 10;
@@ -922,7 +924,9 @@ impl NoterApp {
                     .events
                     .iter()
                     .any(|event| matches!(event, egui::Event::WindowFocused(true))),
-                input.viewport().focused.unwrap_or(true),
+                // Unknown focus is treated as unfocused so background or
+                // minimized sessions do not schedule periodic disk inspection.
+                input.viewport().focused.unwrap_or(false),
             )
         });
         let interval_elapsed = self
