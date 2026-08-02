@@ -272,12 +272,10 @@ fn byte_range_from_char_range(
     source: &str,
     character_range: Range<egui::text::CharIndex>,
 ) -> Range<usize> {
-    assert!(
-        character_range.start <= character_range.end,
-        "character range start must not exceed its end"
-    );
-    let start_character: usize = character_range.start.into();
-    let end_character: usize = character_range.end.into();
+    // Defensive sort: inverted ranges must not panic the product path if the
+    // widget ever reports them. Ordered byte ranges remain the contract.
+    let start_character: usize = character_range.start.min(character_range.end).into();
+    let end_character: usize = character_range.start.max(character_range.end).into();
     let mut byte_start = source.len();
     let mut byte_end = source.len();
     for (character, (byte, _)) in source.char_indices().enumerate() {
@@ -600,6 +598,14 @@ mod tests {
             assert_eq!(buffer.as_str(), "");
         }
         assert_eq!(value, "");
+    }
+
+    #[test]
+    fn inverted_character_ranges_sort_instead_of_panicking() {
+        let mut value = "abcd".to_owned();
+        let mut buffer = BoundedTextBuffer::new(&mut value, 8);
+        buffer.delete_char_range(egui::text::CharIndex(3)..egui::text::CharIndex(1));
+        assert_eq!(buffer.as_str(), "ad");
     }
 
     #[test]

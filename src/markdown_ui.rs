@@ -1039,10 +1039,19 @@ impl MarkdownEditor {
         restorable_source_edit_range(source, selection).is_some()
     }
 
+    /// Writes a dirty active draft into `source` before selection restore or
+    /// any other activation that would replace the active block.
+    pub fn commit_pending_source(&mut self, source: &mut String) -> Option<EditOrigin> {
+        self.sync_pending_command(source)
+    }
+
     /// Restores a source-backed selection and optionally focuses its editor.
     ///
-    /// Non-modal controls use `request_focus = false` so their keyboard input
-    /// remains active while the selected document match stays visible.
+    /// Callers that may hold a dirty active draft must run
+    /// [`Self::commit_pending_source`] first so restore cannot discard uncommitted
+    /// formatting or typing. Non-modal controls use `request_focus = false` so
+    /// their keyboard input remains active while the selected document match
+    /// stays visible.
     pub fn restore_source_selection_with_focus(
         &mut self,
         source: &str,
@@ -1073,7 +1082,7 @@ impl MarkdownEditor {
     ) -> MarkdownShowOutcome {
         self.input_was_limited = false;
         self.finished_selection = None;
-        let mut finish_after_frame = false;
+        let mut finish_serial = None;
         let mut changed_origin = self.sync_pending_command(source);
         if let Some(origin) = changed_origin
             && let Some(limit) = markdown_projection_limit(source)
@@ -1092,7 +1101,9 @@ impl MarkdownEditor {
             let maximum_draft_bytes = self.maximum_active_draft_bytes(source, maximum_source_bytes);
             let (active_changed, finish_requested, active_draft_limit) =
                 self.show_active_editor(ui, maximum_draft_bytes);
-            finish_after_frame |= finish_requested;
+            if finish_requested {
+                finish_serial = self.active.as_ref().map(|active| active.editor_serial);
+            }
             if active_changed && let Some(origin) = self.sync_pending_command(source) {
                 changed_origin.get_or_insert(origin);
                 if let Some(limit) =
@@ -1102,7 +1113,7 @@ impl MarkdownEditor {
                 }
             }
             ui.add_space(BLOCK_GAP);
-            self.finish_if_requested(finish_after_frame);
+            self.finish_if_requested(finish_serial);
             return changed_origin
                 .map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed);
         }
@@ -1126,7 +1137,9 @@ impl MarkdownEditor {
                         self.maximum_active_draft_bytes(source, maximum_source_bytes);
                     let (_, finish_requested, projection_limit) =
                         self.show_active_editor(ui, maximum_draft_bytes);
-                    finish_after_frame |= finish_requested;
+                    if finish_requested {
+                        finish_serial = self.active.as_ref().map(|active| active.editor_serial);
+                    }
                     active_draft_limit = active_draft_limit.or(projection_limit);
                     ui.add_space(BLOCK_GAP);
                     active_shown = true;
@@ -1170,7 +1183,7 @@ impl MarkdownEditor {
             }
         }
         self.apply_rendered_activation(source, pending_activation);
-        self.finish_if_requested(finish_after_frame);
+        self.finish_if_requested(finish_serial);
         changed_origin.map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed)
     }
 
@@ -1214,8 +1227,7 @@ impl MarkdownEditor {
                 clear_label_selection(ui);
             }
         } else if !primary_down && self.rendered_drag.is_some() {
-            self.rendered_drag = None;
-            self.finished_selection = None;
+            self.collapse_rendered_drag_to_anchor();
             clear_label_selection(ui);
         }
     }
@@ -1242,13 +1254,22 @@ impl MarkdownEditor {
         if !escape_pressed && !interaction_lost {
             return false;
         }
-        self.rendered_drag = None;
-        self.finished_selection = None;
+        // Collapse to the drag origin so the application-level selection does
+        // not retain the aborted multi-block range through its lagged fallback.
+        self.collapse_rendered_drag_to_anchor();
         clear_label_selection(ui);
         if escape_pressed {
             ui.input_mut(|input| input.events.retain(|event| !is_plain_escape_press(event)));
         }
         true
+    }
+
+    const fn collapse_rendered_drag_to_anchor(&mut self) {
+        if let Some(drag) = self.rendered_drag.take() {
+            self.finished_selection = Some(Selection::caret(drag.anchor.selection_start));
+        } else {
+            self.finished_selection = None;
+        }
     }
 
     fn remap_rendered_interaction(
@@ -1317,8 +1338,17 @@ impl MarkdownEditor {
             .and_then(ActiveBlock::source_selection);
     }
 
-    fn finish_if_requested(&mut self, requested: bool) {
-        if requested {
+    fn finish_if_requested(&mut self, serial: Option<u64>) {
+        let Some(serial) = serial else {
+            return;
+        };
+        // Bind Escape finish to the serial that requested it so a same-frame
+        // click activation cannot be retired by the previous block's Escape.
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.editor_serial == serial)
+        {
             self.finish_active();
         }
     }
@@ -1329,7 +1359,8 @@ impl MarkdownEditor {
             || !source.is_char_boundary(active.source_range.start)
             || !source.is_char_boundary(active.source_range.end)
         {
-            self.active = None;
+            // Keep the dirty draft visible. Writing against an invalid range is
+            // refused, but uncommitted bytes must not be silently discarded.
             return None;
         }
         source.replace_range(active.source_range.clone(), &active.draft);
@@ -4628,6 +4659,13 @@ mod tests {
             pointer_input(start, Some(true)),
         );
         let _ = show_markdown_frame(&context, &mut editor, &mut source, pointer_input(end, None));
+        let expected_cancel = Selection::caret(
+            editor
+                .rendered_drag
+                .expect("drag should be live before cancel")
+                .anchor
+                .selection_start,
+        );
         assert!(editor.rendered_drag.is_some());
 
         let mut pointer_gone = egui::RawInput::default();
@@ -4636,7 +4674,11 @@ mod tests {
 
         assert!(context.input(|input| { input.pointer.button_down(egui::PointerButton::Primary) }));
         assert!(editor.rendered_drag.is_none());
-        assert_eq!(editor.source_selection(), None);
+        assert_eq!(
+            editor.source_selection(),
+            Some(expected_cancel),
+            "cancel must collapse to the drag origin, not retain the aborted range"
+        );
         assert_eq!(source, original);
         assert!(
             !context
@@ -4668,6 +4710,13 @@ mod tests {
             pointer_input(start, Some(true)),
         );
         let _ = show_markdown_frame(&context, &mut editor, &mut source, pointer_input(end, None));
+        let expected_cancel = Selection::caret(
+            editor
+                .rendered_drag
+                .expect("drag should be live before cancel")
+                .anchor
+                .selection_start,
+        );
         assert!(editor.rendered_drag.is_some());
 
         let mut focus_lost = egui::RawInput::default();
@@ -4677,7 +4726,11 @@ mod tests {
         assert!(context.input(|input| { input.pointer.button_down(egui::PointerButton::Primary) }));
         assert!(editor.rendered_drag.is_none());
         assert!(!editor.is_editing());
-        assert_eq!(editor.source_selection(), None);
+        assert_eq!(
+            editor.source_selection(),
+            Some(expected_cancel),
+            "focus-loss cancel collapses to the drag origin"
+        );
         assert_eq!(source, original);
         assert!(
             !context
@@ -4693,6 +4746,8 @@ mod tests {
             pointer_input(end, Some(false)),
         );
         assert!(!editor.is_editing());
+        // The cancel caret was reported in the previous frame; without an active
+        // edit the editor itself does not retain a finished selection.
         assert_eq!(editor.source_selection(), None);
         assert_eq!(source, original);
     }
@@ -5041,6 +5096,13 @@ mod tests {
             pointer_input(start, Some(true)),
         );
         let _ = show_markdown_frame(&context, &mut editor, &mut source, pointer_input(end, None));
+        let expected_cancel = Selection::caret(
+            editor
+                .rendered_drag
+                .expect("drag should be live before cancel")
+                .anchor
+                .selection_start,
+        );
         assert!(editor.rendered_drag.is_some());
 
         let mut cancel = pointer_input(end, None);
@@ -5054,7 +5116,11 @@ mod tests {
         let _ = show_markdown_frame(&context, &mut editor, &mut source, cancel);
         assert!(editor.rendered_drag.is_none());
         assert!(!editor.is_editing());
-        assert_eq!(editor.source_selection(), None);
+        assert_eq!(
+            editor.source_selection(),
+            Some(expected_cancel),
+            "Escape cancel collapses to the drag origin so lagged app selection cannot keep the aborted multi-block range"
+        );
         assert_eq!(source, original);
         assert!(
             !context
@@ -5790,6 +5856,72 @@ mod tests {
             assert!(!editor.restore_source_selection_with_focus(source, invalid, true));
             assert!(!editor.is_editing());
         }
+    }
+
+    #[test]
+    fn commit_pending_source_preserves_dirty_formatting_before_restore() {
+        let mut source = "plain text".to_owned();
+        let mut editor = MarkdownEditor::default();
+        assert!(editor.restore_source_selection_with_focus(
+            &source,
+            Selection::new(0, source.len()),
+            true
+        ));
+        editor.apply_command(MarkdownCommand::Bold);
+        assert!(
+            editor
+                .active
+                .as_ref()
+                .is_some_and(|active| active.dirty && active.draft.contains("**"))
+        );
+
+        let origin = editor
+            .commit_pending_source(&mut source)
+            .expect("dirty formatting must commit before restore");
+        assert_eq!(origin, EditOrigin::MarkdownFormatting);
+        assert_eq!(source, "**plain text**");
+        assert!(editor.active.as_ref().is_some_and(|active| !active.dirty));
+
+        assert!(editor.restore_source_selection_with_focus(
+            &source,
+            Selection::caret(source.len()),
+            false
+        ));
+        assert_eq!(source, "**plain text**");
+        assert_eq!(
+            editor.active.as_ref().map(|active| active.draft.as_str()),
+            Some("**plain text**")
+        );
+    }
+
+    #[test]
+    fn dirty_active_with_invalid_source_range_keeps_the_draft() {
+        let mut source = "abc".to_owned();
+        let mut editor = MarkdownEditor {
+            active: Some(ActiveBlock {
+                source_range: 0..10,
+                draft: "preserved draft".to_owned(),
+                selection: CharSelection::caret(0),
+                editor_serial: 1,
+                dirty: true,
+                pending_origin: Some(EditOrigin::MarkdownFormatting),
+                request_focus: false,
+            }),
+            finished_selection: None,
+            rendered_drag: None,
+            next_editor_serial: 2,
+            input_was_limited: false,
+        };
+
+        assert!(editor.commit_pending_source(&mut source).is_none());
+        assert_eq!(source, "abc");
+        let active = editor
+            .active
+            .as_ref()
+            .expect("invalid dirty range must keep the draft visible");
+        assert!(active.dirty);
+        assert_eq!(active.draft, "preserved draft");
+        assert_eq!(active.source_range, 0..10);
     }
 
     #[test]

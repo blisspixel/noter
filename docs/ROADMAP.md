@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-07-31
+**Updated:** 2026-08-02
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -463,7 +463,9 @@ All uses the same path in either view. Primary-pointer dragging now spans
 separate inactive blocks in either direction, maps through exact source spans,
 autoscrolls at a time-based bounded edge speed, preserves normal touch release,
 and cancels on Escape, unreleased pointer loss, or focus loss without changing
-bytes. A link target is revealed while it is edited and hidden again after the
+bytes. Cancel collapses to the drag-origin caret so lagged application selection
+cannot keep an aborted multi-block range. Dirty drafts commit before selection
+restore so toolbar formatting and unfinished typing are not discarded. A link target is revealed while it is edited and hidden again after the
 caret leaves it. Text Mode always exposes exact source. Shared bounded Undo and
 Redo use the deterministic intent and coalescing policy. Continuous
 whole-document editing, complete complex-block layout, full syntax conformance,
@@ -558,9 +560,10 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
    Evidence: [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
 4. Complete M2 evidence for installed About and update actions, theme
    persistence, cross-platform visual behavior, and disposable source installs.
-5. Complete the remaining M3 navigation, clipboard, Markdown document-selection,
-   background-work, cross-platform keyboard, and long-session requirements atop
-   the implemented Undo, Find and Replace, Go To Line, wrap, and zoom foundation.
+5. Complete the remaining M3 navigation, clipboard, background-work,
+   cross-platform keyboard, and long-session requirements atop the implemented
+   Undo, Find and Replace, Go To Line, wrap, zoom, and Markdown document and
+   cross-block selection foundation.
 6. Complete M4 recovery records and external-change decisions through the pure
    lifecycle reducer, including fault and stale-effect evidence.
 7. Execute the M5 editor feasibility gate, including native typography, IME,

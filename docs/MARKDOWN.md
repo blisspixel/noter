@@ -1,6 +1,6 @@
 # Native Markdown Mode
 
-**Reviewed:** 2026-07-31
+**Reviewed:** 2026-08-02
 
 **Status:** Early source-backed formatted editing is available. The complete
 contract below remains in progress.
@@ -35,8 +35,11 @@ authoritative. Changing modes never rewrites a file.
   forward or backward across separately rendered blocks, keeps the native live
   selection visible, and scrolls at a bounded speed near the document edges.
   Escape, pointer loss without a completed primary release, or window focus
-  loss cancels without activating an edit. A completed touch release followed
-  by pointer loss still activates at its retained final position. The mapping
+  loss cancels without activating an edit and collapses selection to the drag
+  origin caret so lagged application state cannot keep an aborted multi-block
+  range. A completed touch release followed by pointer loss still activates at
+  its retained final position. Dirty active drafts commit before selection
+  restore so formatting and unfinished typing are not discarded. The mapping
   includes complete hidden delimiter, escape, and parser-decoded
   character-reference spans so an edit cannot split their source syntax.
   Synthesized text without a safe source substring remains visible and editable

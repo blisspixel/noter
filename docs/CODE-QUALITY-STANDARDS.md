@@ -1,6 +1,6 @@
 # Code Quality Standards
 
-**Reviewed:** 2026-07-30
+**Reviewed:** 2026-08-02
 
 **Status:** Repository merge contract
 

@@ -10,7 +10,8 @@
 repository-wide review and final-entry race hardening; 2026-07-28 macOS
 retained-recovery ACL verification; 2026-07-31 Windows private-owner and
 cross-filesystem verification plus exact token-length boundary validation;
-2026-08-01 exact hosted mutation reconciliation
+2026-08-01 exact hosted mutation reconciliation; 2026-08-02 product-surface
+security re-review with no new confirmed vulnerabilities
 
 **Coverage:** Partial repository review with full-file inspection of the runtime
 document, observation, save, platform, GUI lifecycle, dependency, and CI paths.

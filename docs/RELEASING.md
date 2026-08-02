@@ -1,6 +1,6 @@
 # Release Process
 
-**Reviewed:** 2026-07-31
+**Reviewed:** 2026-08-02
 
 **Current status:** The distribution workflow is prepared, but Noter has not
 published a supported binary release. Running a publication job requires an
