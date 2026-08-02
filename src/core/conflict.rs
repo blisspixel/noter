@@ -231,6 +231,51 @@ mod tests {
     }
 
     #[test]
+    fn descriptions_are_exact_and_nontrivial() {
+        assert_eq!(
+            ExternalChangeKind::Unchanged.description(),
+            "The file on disk still matches Noter's last trusted version."
+        );
+        assert_eq!(
+            ExternalChangeKind::ContentOrIdentityChanged.description(),
+            "The file on disk changed since Noter last loaded or saved it."
+        );
+        assert_eq!(
+            ExternalChangeKind::Deleted.description(),
+            "The file on disk is missing."
+        );
+        assert_eq!(
+            ExternalChangeKind::ReplacedBySpecial(SpecialFileKind::SymbolicLink).description(),
+            "The path is now a symbolic link or reparse point."
+        );
+        assert_eq!(
+            ExternalChangeKind::ReplacedBySpecial(SpecialFileKind::Directory).description(),
+            "The path is now a directory."
+        );
+        assert_eq!(
+            ExternalChangeKind::ReplacedBySpecial(SpecialFileKind::Other).description(),
+            "The path is no longer an ordinary file."
+        );
+        assert_eq!(
+            ExternalChangeKind::Unreadable.description(),
+            "Noter could not safely inspect the file on disk."
+        );
+        for kind in [
+            ExternalChangeKind::Unchanged,
+            ExternalChangeKind::ContentOrIdentityChanged,
+            ExternalChangeKind::Deleted,
+            ExternalChangeKind::ReplacedBySpecial(SpecialFileKind::SymbolicLink),
+            ExternalChangeKind::ReplacedBySpecial(SpecialFileKind::Directory),
+            ExternalChangeKind::ReplacedBySpecial(SpecialFileKind::Other),
+            ExternalChangeKind::Unreadable,
+        ] {
+            let text = kind.description();
+            assert!(!text.is_empty());
+            assert_ne!(text, "xyzzy");
+        }
+    }
+
+    #[test]
     fn classify_reports_exact_boundaries() {
         let first = observation(1);
         let second = observation(2);
@@ -325,6 +370,45 @@ mod tests {
                 revision,
             }),
             ConflictEffect::Prompt(ExternalChangeKind::Deleted)
+        );
+    }
+
+    #[test]
+    fn prompting_updates_when_kind_or_revision_changes() {
+        let mut state = ConflictState::default();
+        let first = Revision::new(1);
+        let second = Revision::new(2);
+        assert_eq!(
+            state.reduce(ConflictCommand::Observed {
+                kind: ExternalChangeKind::ContentOrIdentityChanged,
+                revision: first,
+            }),
+            ConflictEffect::Prompt(ExternalChangeKind::ContentOrIdentityChanged)
+        );
+        assert_eq!(
+            state.reduce(ConflictCommand::Observed {
+                kind: ExternalChangeKind::Deleted,
+                revision: first,
+            }),
+            ConflictEffect::Prompt(ExternalChangeKind::Deleted)
+        );
+        assert_eq!(
+            state.prompt_kind(),
+            Some(ExternalChangeKind::Deleted)
+        );
+        assert_eq!(
+            state.reduce(ConflictCommand::Observed {
+                kind: ExternalChangeKind::Deleted,
+                revision: second,
+            }),
+            ConflictEffect::Prompt(ExternalChangeKind::Deleted)
+        );
+        assert_eq!(
+            state.reduce(ConflictCommand::Observed {
+                kind: ExternalChangeKind::Deleted,
+                revision: second,
+            }),
+            ConflictEffect::None
         );
     }
 
