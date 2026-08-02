@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-07-31
+**Updated:** 2026-08-02
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -39,14 +39,15 @@ installed-product M2 checks, completion of the ordinary M3 text
 commands, and the M4 recovery and external-change safety path. M5 through M7
 remain first-release work after that checkpoint.
 
-The current implementation closes three earlier blockers: deterministic Undo
-coalescing, bounded literal Find and Replace, and the pure destructive-action
-lifecycle reducer. The shortest path to correctness alpha is now:
+The current implementation closes earlier blockers including deterministic Undo
+coalescing, bounded literal Find and Replace, the pure destructive-action
+lifecycle reducer, and Markdown document-wide plus cross-block selection. The
+shortest path to correctness alpha is now:
 
 1. finish the remaining M1 manual filesystem fixtures;
 2. prove About, updates, themes, and source installation in installed builds;
-3. finish cross-platform navigation and clipboard policy, Markdown
-   document-selection parity, and long-session M3 evidence;
+3. finish cross-platform navigation and clipboard policy, plus long-session M3
+   evidence;
 4. implement private recovery records and external-change decisions through the
    M4 reducer; and
 5. run the cross-platform correctness matrix on one immutable green commit.
@@ -294,8 +295,10 @@ with only the ordinary editor inset, deliberate vertical rhythm, and a
 document-bar zoom cluster wired to the same bounded state. The live percentage
 accepts vertical pointer-wheel zoom and remains a click target for reset.
 Formatted content remains wrapped by design. Cross-block pointer dragging in
-inactive Markdown content and the remaining clipboard and navigation parity are
-still open.
+inactive Markdown content now preserves source direction and exact UTF-8
+boundaries, retains native cross-label feedback, and performs bounded edge
+autoscroll before activating one contiguous source-backed edit range. The
+remaining clipboard and navigation parity are still open.
 
 Escape now commits same-frame Markdown input before leaving the active range
 and carries the final directional source selection into shared history. Go To
@@ -457,11 +460,15 @@ escapes, and supported character
 references; synthesis without a safe mapping falls back to visible source. A
 Text Mode selection may span parsed blocks and restores as one contiguous
 source-backed active region with its direction and line endings intact. Select
-All uses the same path in either view. Pointer dragging across separate inactive
-blocks remains open.
-link target is revealed while it is edited and hidden again
-after the caret leaves it. Text Mode always exposes exact source. Shared bounded
-Undo and Redo use the deterministic intent and coalescing policy. Continuous
+All uses the same path in either view. Primary-pointer dragging now spans
+separate inactive blocks in either direction, maps through exact source spans,
+autoscrolls at a time-based bounded edge speed, preserves normal touch release,
+and cancels on Escape, unreleased pointer loss, or focus loss without changing
+bytes. Cancel collapses to the drag-origin caret so lagged application selection
+cannot keep an aborted multi-block range. Dirty drafts commit before selection
+restore so toolbar formatting and unfinished typing are not discarded. A link target is revealed while it is edited and hidden again after the
+caret leaves it. Text Mode always exposes exact source. Shared bounded Undo and
+Redo use the deterministic intent and coalescing policy. Continuous
 whole-document editing, complete complex-block layout, full syntax conformance,
 accessibility, asynchronous parsing, and the quality engine remain open.
 
@@ -554,9 +561,10 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
    Evidence: [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
 4. Complete M2 evidence for installed About and update actions, theme
    persistence, cross-platform visual behavior, and disposable source installs.
-5. Complete the remaining M3 navigation, clipboard, Markdown document-selection,
-   background-work, cross-platform keyboard, and long-session requirements atop
-   the implemented Undo, Find and Replace, Go To Line, wrap, and zoom foundation.
+5. Complete the remaining M3 navigation, clipboard, background-work,
+   cross-platform keyboard, and long-session requirements atop the implemented
+   Undo, Find and Replace, Go To Line, wrap, zoom, and Markdown document and
+   cross-block selection foundation.
 6. Complete M4 recovery records and external-change decisions through the pure
    lifecycle reducer, including fault and stale-effect evidence.
 7. Execute the M5 editor feasibility gate, including native typography, IME,

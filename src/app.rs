@@ -2330,6 +2330,10 @@ impl NoterApp {
 
     fn show_markdown_editor(&mut self, ui: &mut egui::Ui) -> EditorFrameOutcome {
         let observed_at = edit_timestamp(ui);
+        // Commit any dirty Markdown draft before selection restore. Restore
+        // replaces the active block and must not discard uncommitted formatting
+        // or typing from the same frame's toolbar or prior unfinished edit.
+        let committed_origin = self.markdown_editor.commit_pending_source(&mut self.text);
         if let Some(pending) = self.pending_selection_restore.take() {
             let restore_focus = !std::mem::take(&mut self.preserve_focus_on_selection_restore);
             let _ = self.markdown_editor.restore_source_selection_with_focus(
@@ -2360,9 +2364,12 @@ impl NoterApp {
             self.error_msg = Some(MARKDOWN_INPUT_LIMIT_MESSAGE.to_owned());
         }
         EditorFrameOutcome {
-            changed: outcome.changed(),
+            changed: outcome.changed() || committed_origin.is_some(),
             selection,
-            origin: outcome.origin().unwrap_or(EditOrigin::MarkdownInput),
+            origin: outcome
+                .origin()
+                .or(committed_origin)
+                .unwrap_or(EditOrigin::MarkdownInput),
             observed_at,
         }
     }
@@ -4341,6 +4348,50 @@ mod tests {
         assert_eq!(app.markdown_editor.source_selection(), Some(selection));
         assert!(app.markdown_editor.is_editing());
         assert!(app.error_msg.is_none());
+    }
+
+    #[test]
+    fn markdown_selection_restore_commits_dirty_input_first() {
+        let source = "plain";
+        let mut app = NoterApp {
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            text: source.to_owned(),
+            selection: Selection::caret(source.len()),
+            pending_selection_restore: Some(Selection::caret(source.len())),
+            view: DocumentView::Markdown,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| {
+            let _ = app.show_markdown_editor(ui);
+        });
+        assert!(app.markdown_editor.is_editing());
+
+        let mut typed = ui_input(800.0, 600.0, 0.1);
+        typed.events.push(egui::Event::Text("!".to_owned()));
+        let _ = context.run_ui(typed, |ui| {
+            let _ = app.show_markdown_editor(ui);
+        });
+        assert_eq!(app.text, "plain!");
+
+        // Queue a restore while the next frame will also receive more input so
+        // commit-before-restore is exercised for pending selection work.
+        app.pending_selection_restore = Some(Selection::caret(0));
+        app.preserve_focus_on_selection_restore = true;
+        let mut more = ui_input(800.0, 600.0, 0.2);
+        more.events.push(egui::Event::Text("?".to_owned()));
+        let _ = context.run_ui(more, |ui| {
+            let outcome = app.show_markdown_editor(ui);
+            assert!(
+                outcome.changed || app.text.contains('!'),
+                "prior committed input must remain after selection restore"
+            );
+        });
+        assert!(
+            app.text.contains('!'),
+            "selection restore must not discard committed Markdown input; got {:?}",
+            app.text
+        );
     }
 
     #[test]

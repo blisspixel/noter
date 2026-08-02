@@ -73,12 +73,27 @@ release, so current work remains under Unreleased.
   dialog for Text Mode that navigates LF, CRLF, CR, and mixed files without
   allocating a line index. Markdown selections can span parsed blocks, retain
   direction and exact line endings, and replace only the selected source bytes.
+- Add forward and reverse primary-pointer selection across separately rendered
+  Markdown blocks. The native interaction preserves exact source boundaries for
+  Unicode and hidden syntax, keeps live cross-block feedback, autoscrolls at a
+  bounded edge speed, preserves normal touch completion, and cancels cleanly on
+  Escape or input loss without changing document bytes. Cancel collapses to the
+  drag origin so the application selection cannot retain an aborted multi-block
+  range through lagged fallback.
 - Add persistent Text Mode word wrap and editor-only zoom from 50 to 300 percent
   with View-menu controls, standard zoom shortcuts, supported pointer
   magnification over the document surface, and a status indication.
 
 ### Changed
 
+- Commit dirty Markdown drafts before selection restore so toolbar formatting
+  and unfinished typing cannot be discarded by Find navigation, pointer zoom,
+  or other same-frame restore paths. An active draft whose source range becomes
+  invalid is kept visible instead of being silently cleared.
+- Bind Escape finish to the active editor serial so a same-frame click into
+  another block cannot be retired by the previous block's Escape.
+- Sort inverted TextEdit character ranges in the bounded input buffer instead of
+  panicking if a widget reports an unordered range.
 - Replace the separate H1 and H2 Markdown buttons with one fixed-width
   paragraph-style selector for Paragraph and all six ATX heading levels. The
   selector reports the current style accessibly, marks mixed selections

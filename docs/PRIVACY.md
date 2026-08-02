@@ -1,6 +1,6 @@
 # Privacy Contract
 
-**Effective for release candidates:** July 2026
+**Effective for release candidates:** August 2026
 
 **Status:** Product contract. A release is not privacy-verified until dependency
 review and runtime network inspection pass on every supported platform.

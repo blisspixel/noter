@@ -16,6 +16,9 @@ const BLOCK_STYLE_BUTTON_WIDTH: f32 = 112.0;
 const BLOCK_HORIZONTAL_PADDING: i8 = 0;
 const BLOCK_VERTICAL_PADDING: i8 = 3;
 const BLOCK_GAP: f32 = 3.0;
+const DRAG_AUTOSCROLL_EDGE: f32 = 28.0;
+const DRAG_AUTOSCROLL_MAX_SPEED: f32 = 1080.0;
+const DRAG_AUTOSCROLL_MAX_FRAME_SECONDS: f32 = 0.1;
 const MARKER_FONT_SIZE: f32 = 0.1;
 const BODY_WEIGHT: f32 = 400.0;
 const HEADING_WEIGHT: f32 = 600.0;
@@ -545,13 +548,113 @@ impl CharSelection {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct RenderedDragSelection {
-    widget_id: egui::Id,
-    anchor: usize,
+    anchor: RenderedSourceCursor,
+    active: RenderedSourceCursor,
+}
+
+impl RenderedDragSelection {
+    const fn new(anchor: RenderedSourceCursor) -> Self {
+        Self {
+            anchor,
+            active: anchor,
+        }
+    }
+
+    fn source_selection(self) -> Selection {
+        match self.anchor.order_key().cmp(&self.active.order_key()) {
+            std::cmp::Ordering::Less => {
+                Selection::new(self.anchor.selection_start, self.active.selection_end)
+            }
+            std::cmp::Ordering::Equal => Selection::caret(self.anchor.selection_start),
+            std::cmp::Ordering::Greater => {
+                Selection::new(self.anchor.selection_end, self.active.selection_start)
+            }
+        }
+    }
+
+    fn remap_after_replacement(
+        self,
+        replaced: &Range<usize>,
+        replacement_len: usize,
+    ) -> Option<Self> {
+        Some(Self {
+            anchor: self
+                .anchor
+                .remap_after_replacement(replaced, replacement_len)?,
+            active: self
+                .active
+                .remap_after_replacement(replaced, replacement_len)?,
+        })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct RenderedSourceCursor {
+    block_start: usize,
+    rendered_index: usize,
+    selection_start: usize,
+    selection_end: usize,
+}
+
+impl RenderedSourceCursor {
+    const fn order_key(self) -> (usize, usize) {
+        (self.block_start, self.rendered_index)
+    }
+
+    fn remap_after_replacement(
+        self,
+        replaced: &Range<usize>,
+        replacement_len: usize,
+    ) -> Option<Self> {
+        Some(Self {
+            block_start: remap_disjoint_position(self.block_start, replaced, replacement_len)?,
+            rendered_index: self.rendered_index,
+            selection_start: remap_disjoint_position(
+                self.selection_start,
+                replaced,
+                replacement_len,
+            )?,
+            selection_end: remap_disjoint_position(self.selection_end, replaced, replacement_len)?,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RenderedPointerTarget {
+    cursor: RenderedSourceCursor,
+    vertical_distance: f32,
+}
+
+impl RenderedPointerTarget {
+    fn replace_if_nearer(self, target: &mut Option<Self>) {
+        if target.as_ref().is_none_or(|current| {
+            self.vertical_distance
+                .total_cmp(&current.vertical_distance)
+                .is_lt()
+        }) {
+            *target = Some(self);
+        }
+    }
 }
 
 struct RenderedActivation {
-    source_range: Range<usize>,
-    selection: CharSelection,
+    source_selection: Selection,
+}
+
+impl RenderedActivation {
+    fn remap_after_replacement(
+        self,
+        replaced: &Range<usize>,
+        replacement_len: usize,
+    ) -> Option<Self> {
+        Some(Self {
+            source_selection: remap_disjoint_selection(
+                self.source_selection,
+                replaced,
+                replacement_len,
+            )?,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -610,6 +713,72 @@ impl RenderedBlockLabel {
     fn cursor_at(&self, position: egui::Pos2) -> usize {
         let local_position = position - self.response.rect.left_top();
         self.galley.cursor_from_pos(local_position).index.into()
+    }
+
+    fn source_cursor_at(
+        &self,
+        position: egui::Pos2,
+        source_range: &Range<usize>,
+        source: &str,
+    ) -> Option<RenderedSourceCursor> {
+        let rendered_count = self.source_map.source_span_for_rendered_character.len();
+        let rendered_index = if position.y < self.response.rect.top() {
+            0
+        } else if self.response.rect.bottom() < position.y {
+            rendered_count
+        } else {
+            let clamped = egui::pos2(
+                position
+                    .x
+                    .clamp(self.response.rect.left(), self.response.rect.right()),
+                position
+                    .y
+                    .clamp(self.response.rect.top(), self.response.rect.bottom()),
+            );
+            self.cursor_at(clamped).min(rendered_count)
+        };
+        let source_character_count = source.chars().count();
+        let selection_start_index = self.source_map.start_boundary(rendered_index);
+        let selection_end_index = self.source_map.end_boundary(rendered_index);
+        if source_character_count < selection_start_index
+            || source_character_count < selection_end_index
+        {
+            return None;
+        }
+        let selection_start = source_range
+            .start
+            .checked_add(char_index_to_byte(source, selection_start_index))?;
+        let selection_end = source_range
+            .start
+            .checked_add(char_index_to_byte(source, selection_end_index))?;
+        if source_range.end < selection_start || source_range.end < selection_end {
+            return None;
+        }
+        Some(RenderedSourceCursor {
+            block_start: source_range.start,
+            rendered_index,
+            selection_start,
+            selection_end,
+        })
+    }
+
+    fn pointer_target(
+        &self,
+        position: egui::Pos2,
+        source_range: &Range<usize>,
+        source: &str,
+    ) -> Option<RenderedPointerTarget> {
+        let vertical_distance = if position.y < self.response.rect.top() {
+            self.response.rect.top() - position.y
+        } else if self.response.rect.bottom() < position.y {
+            position.y - self.response.rect.bottom()
+        } else {
+            0.0
+        };
+        Some(RenderedPointerTarget {
+            cursor: self.source_cursor_at(position, source_range, source)?,
+            vertical_distance,
+        })
     }
 }
 
@@ -870,29 +1039,32 @@ impl MarkdownEditor {
         restorable_source_edit_range(source, selection).is_some()
     }
 
+    /// Writes a dirty active draft into `source` before selection restore or
+    /// any other activation that would replace the active block.
+    pub fn commit_pending_source(&mut self, source: &mut String) -> Option<EditOrigin> {
+        self.sync_pending_command(source)
+    }
+
     /// Restores a source-backed selection and optionally focuses its editor.
     ///
-    /// Non-modal controls use `request_focus = false` so their keyboard input
-    /// remains active while the selected document match stays visible.
+    /// Callers that may hold a dirty active draft must run
+    /// [`Self::commit_pending_source`] first so restore cannot discard uncommitted
+    /// formatting or typing. Non-modal controls use `request_focus = false` so
+    /// their keyboard input remains active while the selected document match
+    /// stays visible.
     pub fn restore_source_selection_with_focus(
         &mut self,
         source: &str,
         selection: Selection,
         request_focus: bool,
     ) -> bool {
-        let Some(range) = restorable_source_edit_range(source, selection) else {
+        let Some((range, char_selection)) = source_edit_activation(source, selection) else {
             return false;
         };
-        let Some(block) = source.get(range.clone()) else {
-            return false;
-        };
-        let anchor_byte = selection.anchor() - range.start;
-        let active_byte = selection.active() - range.start;
-        let anchor = block[..anchor_byte].chars().count();
-        let active = block[..active_byte].chars().count();
+        let block = &source[range.clone()];
         self.activate(range, block.to_owned());
         if let Some(block) = self.active.as_mut() {
-            block.selection = CharSelection::new(anchor, active);
+            block.selection = char_selection;
             block.request_focus = request_focus;
         }
         true
@@ -910,12 +1082,15 @@ impl MarkdownEditor {
     ) -> MarkdownShowOutcome {
         self.input_was_limited = false;
         self.finished_selection = None;
-        let mut finish_after_frame = false;
+        let mut finish_serial = None;
         let mut changed_origin = self.sync_pending_command(source);
         if let Some(origin) = changed_origin
             && let Some(limit) = markdown_projection_limit(source)
         {
             return MarkdownShowOutcome::ProjectionLimitExceeded { limit, origin };
+        }
+        if !self.cancel_rendered_drag_on_escape_or_input_loss(ui) && self.rendered_drag.is_some() {
+            self.retire_active();
         }
         let ranges = markdown_block_ranges(source);
 
@@ -926,7 +1101,9 @@ impl MarkdownEditor {
             let maximum_draft_bytes = self.maximum_active_draft_bytes(source, maximum_source_bytes);
             let (active_changed, finish_requested, active_draft_limit) =
                 self.show_active_editor(ui, maximum_draft_bytes);
-            finish_after_frame |= finish_requested;
+            if finish_requested {
+                finish_serial = self.active.as_ref().map(|active| active.editor_serial);
+            }
             if active_changed && let Some(origin) = self.sync_pending_command(source) {
                 changed_origin.get_or_insert(origin);
                 if let Some(limit) =
@@ -936,7 +1113,7 @@ impl MarkdownEditor {
                 }
             }
             ui.add_space(BLOCK_GAP);
-            self.finish_if_requested(finish_after_frame);
+            self.finish_if_requested(finish_serial);
             return changed_origin
                 .map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed);
         }
@@ -948,6 +1125,7 @@ impl MarkdownEditor {
         let mut active_shown = false;
         let mut pending_activation = None;
         let mut active_draft_limit = None;
+        let mut pointer_target = None;
 
         for range in ranges {
             let overlaps_active = active_range
@@ -959,22 +1137,25 @@ impl MarkdownEditor {
                         self.maximum_active_draft_bytes(source, maximum_source_bytes);
                     let (_, finish_requested, projection_limit) =
                         self.show_active_editor(ui, maximum_draft_bytes);
-                    finish_after_frame |= finish_requested;
+                    if finish_requested {
+                        finish_serial = self.active.as_ref().map(|active| active.editor_serial);
+                    }
                     active_draft_limit = active_draft_limit.or(projection_limit);
                     ui.add_space(BLOCK_GAP);
                     active_shown = true;
                 }
                 continue;
             }
-            if let Some(activation) = self.show_rendered_block(ui, source, range) {
+            if let Some(activation) =
+                self.show_rendered_block(ui, source, range, &mut pointer_target)
+            {
                 // The newly activated range was rendered as formatted content
                 // this pass and becomes its TextEdit on the next pass.
                 pending_activation = Some(activation);
             }
         }
-        if ui.input(|input| input.pointer.any_released()) {
-            self.rendered_drag = None;
-        }
+
+        self.update_rendered_drag(ui, pointer_target, &mut pending_activation);
 
         if self.active.is_some() && !active_shown && pending_activation.is_none() {
             self.active = None;
@@ -985,33 +1166,156 @@ impl MarkdownEditor {
                 .then(|| (active.source_range.clone(), active.draft.len()))
         });
         let synchronized = self.sync_pending_command(source);
+        if synchronized.is_some()
+            && let Some((replaced, replacement_len)) = pending_replacement.as_ref()
+        {
+            self.remap_rendered_interaction(
+                ui,
+                &mut pending_activation,
+                replaced,
+                *replacement_len,
+            );
+        }
         if let Some(origin) = synchronized {
             changed_origin.get_or_insert(origin);
             if let Some(limit) = active_draft_limit.or_else(|| markdown_projection_limit(source)) {
                 return MarkdownShowOutcome::ProjectionLimitExceeded { limit, origin };
             }
         }
-        if let Some(activation) = pending_activation {
-            let source_range = if synchronized.is_some() {
-                pending_replacement.map_or_else(
-                    || activation.source_range.clone(),
-                    |(replaced, replacement_len)| {
-                        remap_disjoint_range(
-                            activation.source_range.clone(),
-                            &replaced,
-                            replacement_len,
-                        )
-                    },
-                )
-            } else {
-                activation.source_range
-            };
-            if let Some(block) = source.get(source_range.clone()) {
-                self.activate_with_selection(source_range, block.to_owned(), activation.selection);
+        self.apply_rendered_activation(source, pending_activation);
+        self.finish_if_requested(finish_serial);
+        changed_origin.map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed)
+    }
+
+    fn update_rendered_drag(
+        &mut self,
+        ui: &egui::Ui,
+        pointer_target: Option<RenderedPointerTarget>,
+        pending_activation: &mut Option<RenderedActivation>,
+    ) {
+        if self.cancel_rendered_drag_on_escape_or_input_loss(ui) {
+            return;
+        }
+        if let Some(drag) = self.rendered_drag.as_mut() {
+            if let Some(target) = pointer_target {
+                drag.active = target.cursor;
+            }
+            self.finished_selection = Some(drag.source_selection());
+        }
+        let (primary_down, primary_released) = ui.input(|input| {
+            (
+                input.pointer.button_down(egui::PointerButton::Primary),
+                input.pointer.button_released(egui::PointerButton::Primary),
+            )
+        });
+        if primary_down
+            && self.rendered_drag.is_some()
+            && let Some(position) = ui.input(|input| input.pointer.latest_pos())
+        {
+            let frame_seconds = ui.input(|input| input.stable_dt);
+            let delta = rendered_drag_scroll_delta(position.y, ui.clip_rect(), frame_seconds);
+            if delta != 0.0 {
+                ui.scroll_with_delta(egui::vec2(0.0, delta));
+                ui.ctx().request_repaint();
             }
         }
-        self.finish_if_requested(finish_after_frame);
-        changed_origin.map_or(MarkdownShowOutcome::Unchanged, MarkdownShowOutcome::Changed)
+        if primary_released {
+            if let Some(drag) = self.rendered_drag.take() {
+                let source_selection = drag.source_selection();
+                self.finished_selection = Some(source_selection);
+                *pending_activation = Some(RenderedActivation { source_selection });
+                clear_label_selection(ui);
+            }
+        } else if !primary_down && self.rendered_drag.is_some() {
+            self.collapse_rendered_drag_to_anchor();
+            clear_label_selection(ui);
+        }
+    }
+
+    fn cancel_rendered_drag_on_escape_or_input_loss(&mut self, ui: &egui::Ui) -> bool {
+        if self.rendered_drag.is_none() {
+            return false;
+        }
+        let (escape_pressed, interaction_lost) = ui.input(|input| {
+            let pointer_lost_without_release = input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::PointerGone))
+                && !input.pointer.button_released(egui::PointerButton::Primary);
+            let window_focus_lost = input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::WindowFocused(false)));
+            (
+                input.events.iter().any(is_plain_escape_press),
+                pointer_lost_without_release || window_focus_lost,
+            )
+        });
+        if !escape_pressed && !interaction_lost {
+            return false;
+        }
+        // Collapse to the drag origin so the application-level selection does
+        // not retain the aborted multi-block range through its lagged fallback.
+        self.collapse_rendered_drag_to_anchor();
+        clear_label_selection(ui);
+        if escape_pressed {
+            ui.input_mut(|input| input.events.retain(|event| !is_plain_escape_press(event)));
+        }
+        true
+    }
+
+    const fn collapse_rendered_drag_to_anchor(&mut self) {
+        if let Some(drag) = self.rendered_drag.take() {
+            self.finished_selection = Some(Selection::caret(drag.anchor.selection_start));
+        } else {
+            self.finished_selection = None;
+        }
+    }
+
+    fn remap_rendered_interaction(
+        &mut self,
+        ui: &egui::Ui,
+        pending_activation: &mut Option<RenderedActivation>,
+        replaced: &Range<usize>,
+        replacement_len: usize,
+    ) {
+        let mut invalidated = false;
+        if let Some(drag) = self.rendered_drag.take() {
+            self.rendered_drag = drag.remap_after_replacement(replaced, replacement_len);
+            if let Some(remapped) = self.rendered_drag {
+                self.finished_selection = Some(remapped.source_selection());
+            } else {
+                self.finished_selection = None;
+                invalidated = true;
+            }
+        }
+        if let Some(activation) = pending_activation.take() {
+            *pending_activation = activation.remap_after_replacement(replaced, replacement_len);
+            if let Some(remapped) = pending_activation.as_ref() {
+                self.finished_selection = Some(remapped.source_selection);
+            } else {
+                self.finished_selection = None;
+                invalidated = true;
+            }
+        }
+        if invalidated {
+            clear_label_selection(ui);
+        }
+    }
+
+    fn apply_rendered_activation(&mut self, source: &str, activation: Option<RenderedActivation>) {
+        let Some(activation) = activation else {
+            return;
+        };
+        let Some((source_range, selection)) =
+            source_edit_activation(source, activation.source_selection)
+        else {
+            self.finished_selection = None;
+            return;
+        };
+        let block = &source[source_range.clone()];
+        self.finished_selection = Some(activation.source_selection);
+        self.activate_with_selection(source_range, block.to_owned(), selection);
     }
 
     fn maximum_active_draft_bytes(&self, source: &str, maximum_source_bytes: usize) -> usize {
@@ -1022,16 +1326,29 @@ impl MarkdownEditor {
     }
 
     fn finish_active(&mut self) {
+        self.retire_active();
+        self.rendered_drag = None;
+    }
+
+    fn retire_active(&mut self) {
         self.finished_selection = self
             .active
             .take()
             .as_ref()
             .and_then(ActiveBlock::source_selection);
-        self.rendered_drag = None;
     }
 
-    fn finish_if_requested(&mut self, requested: bool) {
-        if requested {
+    fn finish_if_requested(&mut self, serial: Option<u64>) {
+        let Some(serial) = serial else {
+            return;
+        };
+        // Bind Escape finish to the serial that requested it so a same-frame
+        // click activation cannot be retired by the previous block's Escape.
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.editor_serial == serial)
+        {
             self.finish_active();
         }
     }
@@ -1042,7 +1359,8 @@ impl MarkdownEditor {
             || !source.is_char_boundary(active.source_range.start)
             || !source.is_char_boundary(active.source_range.end)
         {
-            self.active = None;
+            // Keep the dirty draft visible. Writing against an invalid range is
+            // refused, but uncommitted bytes must not be silently discarded.
             return None;
         }
         source.replace_range(active.source_range.clone(), &active.draft);
@@ -1061,6 +1379,7 @@ impl MarkdownEditor {
         ui: &mut egui::Ui,
         source: &str,
         range: Range<usize>,
+        pointer_target: &mut Option<RenderedPointerTarget>,
     ) -> Option<RenderedActivation> {
         let block = &source[range.clone()];
         let frame = egui::Frame::NONE
@@ -1103,19 +1422,17 @@ impl MarkdownEditor {
 
         if label.response.drag_started_by(egui::PointerButton::Primary)
             && let Some(position) = ui.input(|input| input.pointer.press_origin())
+            && let Some(anchor) = label.source_cursor_at(position, &range, block)
         {
-            self.rendered_drag = Some(RenderedDragSelection {
-                widget_id: label.response.id,
-                anchor: label.cursor_at(position),
-            });
+            self.rendered_drag = Some(RenderedDragSelection::new(anchor));
         }
-        let rendered_selection = if label.response.drag_stopped_by(egui::PointerButton::Primary) {
-            let drag = self.rendered_drag.take();
-            let position = ui.input(|input| input.pointer.latest_pos());
-            drag.filter(|drag| drag.widget_id == label.response.id)
-                .zip(position)
-                .map(|(drag, position)| CharSelection::new(drag.anchor, label.cursor_at(position)))
-        } else if label.response.clicked_by(egui::PointerButton::Primary) {
+        if self.rendered_drag.is_some()
+            && let Some(position) = ui.input(|input| input.pointer.interact_pos())
+            && let Some(target) = label.pointer_target(position, &range, block)
+        {
+            target.replace_if_nearer(pointer_target);
+        }
+        let rendered_selection = if label.response.clicked_by(egui::PointerButton::Primary) {
             label
                 .response
                 .interact_pointer_pos()
@@ -1123,12 +1440,10 @@ impl MarkdownEditor {
         } else {
             None
         };
-        let activation = rendered_selection.map(|selection| {
+        let activation = rendered_selection.and_then(|selection| {
             let source_selection = label.source_map.source_selection(selection);
-            RenderedActivation {
-                source_range: range,
-                selection: source_selection,
-            }
+            absolute_source_selection(&range, block, source_selection)
+                .map(|source_selection| RenderedActivation { source_selection })
         });
 
         ui.add_space(BLOCK_GAP);
@@ -1388,6 +1703,84 @@ fn restorable_source_edit_range(source: &str, selection: Selection) -> Option<Ra
     }
     let next = ranges.iter().find(|range| selected.end() <= range.start)?;
     Some(selected.start().min(next.start)..next.end)
+}
+
+fn source_edit_activation(
+    source: &str,
+    selection: Selection,
+) -> Option<(Range<usize>, CharSelection)> {
+    let range = restorable_source_edit_range(source, selection)?;
+    let block = source.get(range.clone())?;
+    let anchor_byte = selection.anchor().checked_sub(range.start)?;
+    let active_byte = selection.active().checked_sub(range.start)?;
+    if anchor_byte > block.len()
+        || active_byte > block.len()
+        || !block.is_char_boundary(anchor_byte)
+        || !block.is_char_boundary(active_byte)
+    {
+        return None;
+    }
+    Some((
+        range,
+        CharSelection::new(
+            block[..anchor_byte].chars().count(),
+            block[..active_byte].chars().count(),
+        ),
+    ))
+}
+
+fn absolute_source_selection(
+    source_range: &Range<usize>,
+    source: &str,
+    selection: CharSelection,
+) -> Option<Selection> {
+    let character_count = source.chars().count();
+    if character_count < selection.anchor || character_count < selection.active {
+        return None;
+    }
+    let anchor = source_range
+        .start
+        .checked_add(char_index_to_byte(source, selection.anchor))?;
+    let active = source_range
+        .start
+        .checked_add(char_index_to_byte(source, selection.active))?;
+    if source_range.end < anchor || source_range.end < active {
+        return None;
+    }
+    Some(Selection::new(anchor, active))
+}
+
+fn clear_label_selection(ui: &egui::Ui) {
+    ui.ctx()
+        .plugin::<egui::text_selection::LabelSelectionState>()
+        .lock()
+        .clear_selection();
+}
+
+fn rendered_drag_scroll_delta(pointer_y: f32, clip_rect: egui::Rect, frame_seconds: f32) -> f32 {
+    if !pointer_y.is_finite()
+        || !clip_rect.is_finite()
+        || clip_rect.height() <= 0.0
+        || !frame_seconds.is_finite()
+        || frame_seconds <= 0.0
+    {
+        return 0.0;
+    }
+    let edge = DRAG_AUTOSCROLL_EDGE.min(clip_rect.height() / 2.0);
+    if edge <= 0.0 {
+        return 0.0;
+    }
+    let maximum_delta =
+        DRAG_AUTOSCROLL_MAX_SPEED * frame_seconds.min(DRAG_AUTOSCROLL_MAX_FRAME_SECONDS);
+    if pointer_y < clip_rect.top() + edge {
+        let intensity = ((clip_rect.top() + edge - pointer_y) / edge).clamp(0.0, 1.0);
+        return maximum_delta * intensity;
+    }
+    if clip_rect.bottom() - edge < pointer_y {
+        let intensity = ((pointer_y - (clip_rect.bottom() - edge)) / edge).clamp(0.0, 1.0);
+        return -maximum_delta * intensity;
+    }
+    0.0
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2826,29 +3219,34 @@ fn char_index_to_byte(source: &str, char_index: usize) -> usize {
         .map_or(source.len(), |(index, _)| index)
 }
 
-fn remap_disjoint_range(
-    range: Range<usize>,
+fn remap_disjoint_selection(
+    selection: Selection,
     replaced: &Range<usize>,
     replacement_len: usize,
-) -> Range<usize> {
-    if range.end <= replaced.start {
-        return range;
-    }
-    if replaced.end <= range.start {
-        let removed_len = replaced.end - replaced.start;
-        if replacement_len >= removed_len {
-            let shift = replacement_len - removed_len;
-            return (range.start + shift)..(range.end + shift);
-        }
-        let shift = removed_len - replacement_len;
-        return (range.start - shift)..(range.end - shift);
-    }
+) -> Option<Selection> {
+    Some(Selection::new(
+        remap_disjoint_position(selection.anchor(), replaced, replacement_len)?,
+        remap_disjoint_position(selection.active(), replaced, replacement_len)?,
+    ))
+}
 
-    debug_assert!(
-        false,
-        "rendered activation must not overlap the active block"
-    );
-    range
+fn remap_disjoint_position(
+    position: usize,
+    replaced: &Range<usize>,
+    replacement_len: usize,
+) -> Option<usize> {
+    if position <= replaced.start {
+        return Some(position);
+    }
+    if replaced.end <= position {
+        let removed_len = replaced.end.checked_sub(replaced.start)?;
+        return if replacement_len >= removed_len {
+            position.checked_add(replacement_len - removed_len)
+        } else {
+            position.checked_sub(removed_len - replacement_len)
+        };
+    }
+    None
 }
 
 #[cfg(test)]
@@ -2990,6 +3388,40 @@ mod tests {
             )),
             ..Default::default()
         }
+    }
+
+    fn pointer_input(position: egui::Pos2, pressed: Option<bool>) -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::PointerMoved(position));
+        if let Some(pressed) = pressed {
+            input.events.push(egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        input
+    }
+
+    fn show_markdown_frame(
+        context: &egui::Context,
+        editor: &mut MarkdownEditor,
+        source: &mut String,
+        input: egui::RawInput,
+    ) -> egui::FullOutput {
+        context.run_ui(input, |ui| {
+            ui.set_width(800.0);
+            let _ = editor.show(ui, source);
+        })
+    }
+
+    fn rendered_text_rect(output: &egui::FullOutput, expected: &str) -> egui::Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| text_rect(&shape.shape, expected))
+            .unwrap_or_else(|| panic!("expected rendered text `{expected}`"))
     }
 
     fn origin_from_input(input: egui::RawInput) -> EditOrigin {
@@ -4181,6 +4613,582 @@ mod tests {
     }
 
     #[test]
+    fn rendered_drag_selection_preserves_source_boundaries_and_direction() {
+        let first = RenderedSourceCursor {
+            block_start: 0,
+            rendered_index: 1,
+            selection_start: 2,
+            selection_end: 1,
+        };
+        let second = RenderedSourceCursor {
+            block_start: 20,
+            rendered_index: 4,
+            selection_start: 28,
+            selection_end: 26,
+        };
+
+        let mut drag = RenderedDragSelection::new(first);
+        assert_eq!(drag.source_selection(), Selection::caret(2));
+        drag.active = second;
+        assert_eq!(drag.source_selection(), Selection::new(2, 26));
+
+        let mut drag = RenderedDragSelection::new(second);
+        drag.active = first;
+        assert_eq!(drag.source_selection(), Selection::new(26, 2));
+    }
+
+    #[test]
+    fn pointer_gone_cancels_cross_block_drag_while_primary_button_remains_down() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "First\n\nSecond".to_owned();
+        let original = source.clone();
+        let initial = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let start = rendered_text_rect(&initial, "First").center();
+        let end = rendered_text_rect(&initial, "Second").center();
+
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(start, Some(true)),
+        );
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, pointer_input(end, None));
+        let expected_cancel = Selection::caret(
+            editor
+                .rendered_drag
+                .expect("drag should be live before cancel")
+                .anchor
+                .selection_start,
+        );
+        assert!(editor.rendered_drag.is_some());
+
+        let mut pointer_gone = egui::RawInput::default();
+        pointer_gone.events.push(egui::Event::PointerGone);
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, pointer_gone);
+
+        assert!(context.input(|input| { input.pointer.button_down(egui::PointerButton::Primary) }));
+        assert!(editor.rendered_drag.is_none());
+        assert_eq!(
+            editor.source_selection(),
+            Some(expected_cancel),
+            "cancel must collapse to the drag origin, not retain the aborted range"
+        );
+        assert_eq!(source, original);
+        assert!(
+            !context
+                .plugin::<egui::text_selection::LabelSelectionState>()
+                .lock()
+                .has_selection()
+        );
+    }
+
+    #[test]
+    fn window_focus_loss_cancels_cross_block_drag_while_primary_button_remains_down() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "First\n\nSecond".to_owned();
+        let original = source.clone();
+        let initial = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let start = rendered_text_rect(&initial, "First").center();
+        let end = rendered_text_rect(&initial, "Second").center();
+
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(start, Some(true)),
+        );
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, pointer_input(end, None));
+        let expected_cancel = Selection::caret(
+            editor
+                .rendered_drag
+                .expect("drag should be live before cancel")
+                .anchor
+                .selection_start,
+        );
+        assert!(editor.rendered_drag.is_some());
+
+        let mut focus_lost = egui::RawInput::default();
+        focus_lost.events.push(egui::Event::WindowFocused(false));
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, focus_lost);
+
+        assert!(context.input(|input| { input.pointer.button_down(egui::PointerButton::Primary) }));
+        assert!(editor.rendered_drag.is_none());
+        assert!(!editor.is_editing());
+        assert_eq!(
+            editor.source_selection(),
+            Some(expected_cancel),
+            "focus-loss cancel collapses to the drag origin"
+        );
+        assert_eq!(source, original);
+        assert!(
+            !context
+                .plugin::<egui::text_selection::LabelSelectionState>()
+                .lock()
+                .has_selection()
+        );
+
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(end, Some(false)),
+        );
+        assert!(!editor.is_editing());
+        // The cancel caret was reported in the previous frame; without an active
+        // edit the editor itself does not retain a finished selection.
+        assert_eq!(editor.source_selection(), None);
+        assert_eq!(source, original);
+    }
+
+    #[test]
+    fn touch_release_followed_by_pointer_gone_activates_the_completed_selection() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "First\n\nSecond".to_owned();
+        let original = source.clone();
+        let ranges = markdown_block_ranges(&source);
+        let initial = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let first = rendered_text_rect(&initial, "First");
+        let second = rendered_text_rect(&initial, "Second");
+        let start = egui::pos2(first.left() + 0.1, first.center().y);
+        let drag_point = second.center();
+        let end = egui::pos2(second.right() - 0.1, second.center().y);
+
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(start, Some(true)),
+        );
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(drag_point, None),
+        );
+        assert!(editor.rendered_drag.is_some());
+
+        let mut touch_release = pointer_input(end, Some(false));
+        touch_release.events.push(egui::Event::PointerGone);
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, touch_release);
+
+        assert!(editor.rendered_drag.is_none());
+        assert_eq!(source, original);
+        assert_eq!(
+            editor.source_selection(),
+            Some(Selection::new(ranges[0].start, ranges[1].end))
+        );
+        assert_eq!(
+            editor
+                .active
+                .as_ref()
+                .map(|active| active.source_range.clone()),
+            Some(ranges[0].start..ranges[1].end)
+        );
+    }
+
+    #[test]
+    fn drag_autoscroll_is_time_based_bounded_and_directional() {
+        let clip = egui::Rect::from_min_max(egui::pos2(0.0, 10.0), egui::pos2(100.0, 110.0));
+        let sixty_hz = 1.0 / 60.0;
+        let one_twenty_hz = 1.0 / 120.0;
+        let sixty_hz_maximum = DRAG_AUTOSCROLL_MAX_SPEED * sixty_hz;
+        let delayed_frame_maximum = DRAG_AUTOSCROLL_MAX_SPEED * DRAG_AUTOSCROLL_MAX_FRAME_SECONDS;
+
+        assert!(rendered_drag_scroll_delta(60.0, clip, sixty_hz).abs() <= f32::EPSILON);
+        assert!(
+            (rendered_drag_scroll_delta(10.0, clip, sixty_hz) - sixty_hz_maximum).abs()
+                <= f32::EPSILON
+        );
+        assert!(
+            (rendered_drag_scroll_delta(110.0, clip, sixty_hz) + sixty_hz_maximum).abs()
+                <= f32::EPSILON
+        );
+        assert!(rendered_drag_scroll_delta(20.0, clip, sixty_hz) > 0.0);
+        assert!(rendered_drag_scroll_delta(100.0, clip, sixty_hz) < 0.0);
+        assert!(rendered_drag_scroll_delta(f32::NAN, clip, sixty_hz).abs() <= f32::EPSILON);
+        assert!(rendered_drag_scroll_delta(10.0, clip, f32::NAN).abs() <= f32::EPSILON);
+        assert!(rendered_drag_scroll_delta(10.0, clip, 0.0).abs() <= f32::EPSILON);
+        assert!(
+            (rendered_drag_scroll_delta(10.0, clip, one_twenty_hz) * 2.0
+                - rendered_drag_scroll_delta(10.0, clip, sixty_hz))
+            .abs()
+                <= f32::EPSILON
+        );
+        assert!(
+            (rendered_drag_scroll_delta(10.0, clip, 1.0) - delayed_frame_maximum).abs()
+                <= f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn pending_activation_remap_preserves_direction_and_fails_on_overlap() {
+        let replaced = 4..8;
+        assert_eq!(
+            remap_disjoint_selection(Selection::new(12, 2), &replaced, 7),
+            Some(Selection::new(15, 2))
+        );
+        assert_eq!(
+            remap_disjoint_selection(Selection::new(12, 2), &replaced, 1),
+            Some(Selection::new(9, 2))
+        );
+        assert_eq!(
+            remap_disjoint_selection(Selection::new(6, 2), &replaced, 4),
+            None
+        );
+    }
+
+    #[test]
+    fn pointer_drag_selects_forward_across_inactive_markdown_blocks() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "Alpha\r\n\r\nBeta é\n\nGamma".to_owned();
+        let original = source.clone();
+        let ranges = markdown_block_ranges(&source);
+        assert_eq!(ranges.len(), 3);
+
+        let initial = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let first = rendered_text_rect(&initial, "Alpha");
+        let second = rendered_text_rect(&initial, "Beta é");
+        let start = egui::pos2(first.left() + 0.1, first.center().y);
+        let end = egui::pos2(second.right() - 0.1, second.center().y);
+
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(start, Some(true)),
+        );
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, pointer_input(end, None));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(end, Some(false)),
+        );
+
+        assert_eq!(source, original);
+        assert_eq!(
+            editor.source_selection(),
+            Some(Selection::new(ranges[0].start, ranges[1].end))
+        );
+        let active = editor
+            .active
+            .as_ref()
+            .expect("cross-block selection should activate one native editor");
+        assert_eq!(active.source_range, ranges[0].start..ranges[1].end);
+        assert_eq!(active.draft, &original[ranges[0].start..ranges[1].end]);
+
+        let mut replace = egui::RawInput::default();
+        replace.events.push(egui::Event::Text("X".to_owned()));
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, replace);
+        assert_eq!(source, format!("X{}", &original[ranges[1].end..]));
+    }
+
+    #[test]
+    fn pointer_drag_selects_backward_across_unicode_and_hidden_syntax() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "**Alpha**\n\n_Béta_\r\n\rGamma".to_owned();
+        let original = source.clone();
+        let ranges = markdown_block_ranges(&source);
+        assert_eq!(ranges.len(), 3);
+
+        let initial = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let first = rendered_text_rect(&initial, "Alpha");
+        let third = rendered_text_rect(&initial, "Gamma");
+        let start = egui::pos2(third.right() - 0.1, third.center().y);
+        let end = egui::pos2(first.left() + 0.1, first.center().y);
+
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(start, Some(true)),
+        );
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, pointer_input(end, None));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(end, Some(false)),
+        );
+
+        let selection = editor
+            .source_selection()
+            .expect("reverse cross-block drag should activate its source selection");
+        assert_eq!(source, original);
+        assert_eq!(selection.anchor(), ranges[2].end);
+        assert_eq!(selection.active(), ranges[0].start + "**".len());
+        assert!(selection.anchor() > selection.active());
+        assert!(source.is_char_boundary(selection.anchor()));
+        assert!(source.is_char_boundary(selection.active()));
+    }
+
+    #[test]
+    fn cross_block_drag_retires_an_older_active_edit_without_losing_input() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "First\n\nSecond\n\nThird".to_owned();
+        assert!(editor.restore_source_selection_with_focus(
+            &source,
+            Selection::caret("First".len()),
+            true,
+        ));
+
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Text("!".to_owned()));
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+        assert_eq!(source, "First!\n\nSecond\n\nThird");
+        let ranges = markdown_block_ranges(&source);
+
+        let rendered = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let second = rendered_text_rect(&rendered, "Second");
+        let third = rendered_text_rect(&rendered, "Third");
+        let start = egui::pos2(second.left() + 0.1, second.center().y);
+        let end = egui::pos2(third.right() - 0.1, third.center().y);
+
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(start, Some(true)),
+        );
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, pointer_input(end, None));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(end, Some(false)),
+        );
+
+        assert_eq!(source, "First!\n\nSecond\n\nThird");
+        assert_eq!(
+            editor.source_selection(),
+            Some(Selection::new(ranges[1].start, ranges[2].end))
+        );
+        assert_eq!(
+            editor
+                .active
+                .as_ref()
+                .map(|active| active.source_range.clone()),
+            Some(ranges[1].start..ranges[2].end)
+        );
+    }
+
+    #[test]
+    fn same_frame_text_commit_remaps_a_new_cross_block_drag() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "First\n\nSecond\n\nThird".to_owned();
+        assert!(editor.restore_source_selection_with_focus(
+            &source,
+            Selection::caret("First".len()),
+            true,
+        ));
+
+        let rendered = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let second = rendered_text_rect(&rendered, "Second");
+        let third = rendered_text_rect(&rendered, "Third");
+        let start = egui::pos2(second.left() + 0.1, second.center().y);
+        let end = egui::pos2(third.right() - 0.1, third.center().y);
+
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(start, Some(true)),
+        );
+        assert!(editor.rendered_drag.is_none());
+
+        let mut commit_and_drag = pointer_input(end, None);
+        commit_and_drag
+            .events
+            .insert(0, egui::Event::Text("é".to_owned()));
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, commit_and_drag);
+        assert_eq!(source, "Firsté\n\nSecond\n\nThird");
+        assert!(editor.rendered_drag.is_some());
+
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(end, Some(false)),
+        );
+
+        let ranges = markdown_block_ranges(&source);
+        assert_eq!(
+            editor.source_selection(),
+            Some(Selection::new(ranges[1].start, ranges[2].end))
+        );
+        assert_eq!(
+            editor
+                .active
+                .as_ref()
+                .map(|active| active.source_range.clone()),
+            Some(ranges[1].start..ranges[2].end)
+        );
+        let selection = editor
+            .source_selection()
+            .expect("remapped drag should remain actionable");
+        assert!(source.is_char_boundary(selection.anchor()));
+        assert!(source.is_char_boundary(selection.active()));
+    }
+
+    #[test]
+    fn escape_cancels_cross_block_drag_without_residual_selection() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "First\n\nSecond".to_owned();
+        let original = source.clone();
+        let initial = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let first = rendered_text_rect(&initial, "First");
+        let second = rendered_text_rect(&initial, "Second");
+        let start = first.center();
+        let end = second.center();
+
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(start, Some(true)),
+        );
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, pointer_input(end, None));
+        let expected_cancel = Selection::caret(
+            editor
+                .rendered_drag
+                .expect("drag should be live before cancel")
+                .anchor
+                .selection_start,
+        );
+        assert!(editor.rendered_drag.is_some());
+
+        let mut cancel = pointer_input(end, None);
+        cancel.events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, cancel);
+        assert!(editor.rendered_drag.is_none());
+        assert!(!editor.is_editing());
+        assert_eq!(
+            editor.source_selection(),
+            Some(expected_cancel),
+            "Escape cancel collapses to the drag origin so lagged app selection cannot keep the aborted multi-block range"
+        );
+        assert_eq!(source, original);
+        assert!(
+            !context
+                .plugin::<egui::text_selection::LabelSelectionState>()
+                .lock()
+                .has_selection()
+        );
+
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            pointer_input(end, Some(false)),
+        );
+        assert!(!editor.is_editing());
+        assert_eq!(source, original);
+    }
+
+    #[test]
+    fn cross_block_drag_keeps_native_scroll_selection_moving() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        let mut source = (1..=30)
+            .map(|index| format!("Block {index:02}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let original = source.clone();
+        let scroll_offset = std::cell::Cell::new(0.0);
+        {
+            let mut show = |input| {
+                context.run_ui(input, |ui| {
+                    ui.set_width(320.0);
+                    scroll_offset.set(
+                        egui::ScrollArea::vertical()
+                            .id_salt("cross-block-drag-scroll")
+                            .max_height(96.0)
+                            .show(ui, |ui| editor.show(ui, &mut source))
+                            .state
+                            .offset
+                            .y,
+                    );
+                })
+            };
+
+            let initial = show(egui::RawInput::default());
+            let first = rendered_text_rect(&initial, "Block 01");
+            let start = egui::pos2(first.left() + 2.0, first.center().y);
+            let end = egui::pos2(first.left() + 36.0, first.top() + 92.0);
+            let _ = show(pointer_input(start, Some(true)));
+            for _ in 0..6 {
+                let _ = show(pointer_input(end, None));
+            }
+
+            assert!(
+                scroll_offset.get() > 0.0,
+                "native selection should advance the scroll area"
+            );
+            let _ = show(pointer_input(end, Some(false)));
+        }
+
+        let selection = editor
+            .source_selection()
+            .expect("scrolled drag should activate its source selection");
+        assert!(selection.active() > "Block 01".len());
+        assert_eq!(source, original);
+    }
+
+    #[test]
     fn rendered_selection_mapping_excludes_hidden_markdown_delimiters() {
         let projection = markdown_render_projection("Make **this** bold", &egui::Style::default());
         assert_eq!(projection.job.text, "Make this bold");
@@ -4848,6 +5856,72 @@ mod tests {
             assert!(!editor.restore_source_selection_with_focus(source, invalid, true));
             assert!(!editor.is_editing());
         }
+    }
+
+    #[test]
+    fn commit_pending_source_preserves_dirty_formatting_before_restore() {
+        let mut source = "plain text".to_owned();
+        let mut editor = MarkdownEditor::default();
+        assert!(editor.restore_source_selection_with_focus(
+            &source,
+            Selection::new(0, source.len()),
+            true
+        ));
+        editor.apply_command(MarkdownCommand::Bold);
+        assert!(
+            editor
+                .active
+                .as_ref()
+                .is_some_and(|active| active.dirty && active.draft.contains("**"))
+        );
+
+        let origin = editor
+            .commit_pending_source(&mut source)
+            .expect("dirty formatting must commit before restore");
+        assert_eq!(origin, EditOrigin::MarkdownFormatting);
+        assert_eq!(source, "**plain text**");
+        assert!(editor.active.as_ref().is_some_and(|active| !active.dirty));
+
+        assert!(editor.restore_source_selection_with_focus(
+            &source,
+            Selection::caret(source.len()),
+            false
+        ));
+        assert_eq!(source, "**plain text**");
+        assert_eq!(
+            editor.active.as_ref().map(|active| active.draft.as_str()),
+            Some("**plain text**")
+        );
+    }
+
+    #[test]
+    fn dirty_active_with_invalid_source_range_keeps_the_draft() {
+        let mut source = "abc".to_owned();
+        let mut editor = MarkdownEditor {
+            active: Some(ActiveBlock {
+                source_range: 0..10,
+                draft: "preserved draft".to_owned(),
+                selection: CharSelection::caret(0),
+                editor_serial: 1,
+                dirty: true,
+                pending_origin: Some(EditOrigin::MarkdownFormatting),
+                request_focus: false,
+            }),
+            finished_selection: None,
+            rendered_drag: None,
+            next_editor_serial: 2,
+            input_was_limited: false,
+        };
+
+        assert!(editor.commit_pending_source(&mut source).is_none());
+        assert_eq!(source, "abc");
+        let active = editor
+            .active
+            .as_ref()
+            .expect("invalid dirty range must keep the draft visible");
+        assert!(active.dirty);
+        assert_eq!(active.draft, "preserved draft");
+        assert_eq!(active.source_range, 0..10);
     }
 
     #[test]
