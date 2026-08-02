@@ -48,6 +48,7 @@ cargo mutants -vV --in-place --colors never --workspace \
 
 macOS native-adapter scope:
 export CARGO_BUILD_JOBS=1
+export CARGO_PROFILE_TEST_CODEGEN_UNITS=16
 export CARGO_PROFILE_TEST_DEBUG=0
 export CARGO_INCREMENTAL=1
 cargo mutants -vV --in-place --colors never --workspace \
@@ -421,3 +422,17 @@ rejections before the complete hosted matrix passed.
 These hosted scopes overlap and are not presented as a new deduplicated
 cross-platform union. The manual native-filesystem and crash-persistence limits
 in this report and the roadmap remain open.
+
+Exact-head run
+[30733013827](https://github.com/blisspixel/noter/actions/runs/30733013827)
+is retained as later negative infrastructure evidence. Apple clang 21
+segfaulted while linking one stripped workspace test binary for a macOS
+platform mutant even though Cargo builds were serialized and debug information
+was disabled. The mutation campaign itself selected the same 47 candidates and
+cargo-mutants summarized 40 caught plus 7 nominally unviable outcomes. The
+fail-closed validator identified one nominally unviable result as the linker
+crash and correctly rejected the run. The repair retains the complete candidate
+inventory, workspace test scope, and incremental rebuilds while setting
+test-profile codegen units to 16 for the macOS mutation step. At the repair
+point, a fresh exact-head campaign remained required; rerunning the unchanged
+failed configuration was not accepted as evidence.

@@ -98,18 +98,20 @@ class MutationInfrastructureTests(unittest.TestCase):
                 ],
             )
 
-    def test_macos_mutation_job_bounds_linker_debug_payload(self) -> None:
-        """Keep the reviewed mitigation beside serialized macOS linking."""
+    def test_macos_mutation_job_bounds_repeated_linker_input(self) -> None:
+        """Keep both reviewed bounds beside serialized macOS linking."""
         workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text(
             encoding="utf-8"
         )
 
         self.assertIn(
             "          CARGO_BUILD_JOBS: 1\n"
+            "          CARGO_PROFILE_TEST_CODEGEN_UNITS: '16'\n"
             "          CARGO_PROFILE_TEST_DEBUG: '0'\n"
             "          CARGO_INCREMENTAL: 1\n",
             workflow,
         )
+        self.assertEqual(workflow.count("CARGO_PROFILE_TEST_CODEGEN_UNITS: '16'"), 1)
         self.assertEqual(workflow.count("CARGO_PROFILE_TEST_DEBUG: '0'"), 1)
 
     def test_caught_mutant_log_is_not_reclassified(self) -> None:

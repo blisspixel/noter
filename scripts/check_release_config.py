@@ -40,7 +40,7 @@ REVIEWED_RELEASE_WORKFLOW_SHA256 = (
 )
 REVIEWED_WIX_SHA256 = "777e3bbc058b30611dc274390eb44059a97375c2ca49cf2af910bc386e2cfada"
 REVIEWED_CI_WORKFLOW_SHA256 = (
-    "caf61ce9826063921f65d0cd9574796c4ca111eaf5b94495e020b56a8ba60220"
+    "498edc2ece1894b8dd7a25ded3c7cd0d4edd9d481de3a5d8bfdf527052596628"
 )
 REVIEWED_CI_TEST_JOB_SHA256 = (
     "7abb1436d4c1bbcd14c106d5bf60812866df7265966156226d7353561f2ad785"
@@ -613,6 +613,11 @@ def validate_license_inventory(
         (generator, '"--workspace",', "workspace license scan"),
         (generator, '"--all-features",', "all-feature license scan"),
         (generator, '"--frozen",', "frozen license scan"),
+        (
+            ci_workflow,
+            "CARGO_PROFILE_TEST_CODEGEN_UNITS: '16'",
+            "bounded macOS mutation codegen units",
+        ),
         (generator, '"--fail",', "fail-closed license scan"),
         (
             inventory,
