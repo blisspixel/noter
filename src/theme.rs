@@ -7,6 +7,8 @@ const NOTER_PROPORTIONAL_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/Int
 const ENHANCED_TEXT_CONTRAST: f64 = 7.0;
 const TEXT_CONTRAST: f64 = 4.5;
 const CONTROL_CONTRAST: f64 = 3.0;
+const LIGHT_ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(179, 38, 30);
+const DARK_ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 180, 171);
 const CRT_SCANLINE_SPACING: f32 = 4.0;
 const CRT_MAX_SCANLINES: usize = 1_024;
 const CRT_VIGNETTE_WIDTH: f32 = 10.0;
@@ -307,6 +309,7 @@ fn apply_light_palette(visuals: &mut egui::Visuals) {
     visuals.faint_bg_color = egui::Color32::from_rgb(238, 240, 243);
     visuals.code_bg_color = egui::Color32::from_rgb(238, 240, 243);
     visuals.hyperlink_color = egui::Color32::from_rgb(36, 91, 161);
+    visuals.error_fg_color = LIGHT_ERROR_COLOR;
     visuals.selection.bg_fill = egui::Color32::from_rgb(190, 215, 245);
     visuals.selection.stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(22, 64, 112));
 }
@@ -321,6 +324,7 @@ fn apply_dark_palette(visuals: &mut egui::Visuals) {
     visuals.faint_bg_color = egui::Color32::from_rgb(38, 42, 50);
     visuals.code_bg_color = egui::Color32::from_rgb(38, 42, 50);
     visuals.hyperlink_color = egui::Color32::from_rgb(126, 172, 238);
+    visuals.error_fg_color = DARK_ERROR_COLOR;
     visuals.selection.bg_fill = egui::Color32::from_rgb(55, 92, 139);
     visuals.selection.stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(235, 241, 250));
 }
@@ -608,6 +612,25 @@ mod tests {
         }
         assert!(green_screen_palette().is_valid());
         assert!(amber_screen_palette().is_valid());
+    }
+
+    #[test]
+    fn every_palette_error_color_meets_text_contrast_on_actual_error_surfaces() {
+        let context = egui::Context::default();
+        configure_styles(&context);
+
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let visuals = &context.style_of(theme).visuals;
+            assert!(contrast_ratio(visuals.error_fg_color, visuals.panel_fill) >= TEXT_CONTRAST);
+            assert!(contrast_ratio(visuals.error_fg_color, visuals.window_fill) >= TEXT_CONTRAST);
+        }
+
+        for theme in [AppTheme::GreenScreen, AppTheme::AmberScreen] {
+            theme.apply(&context);
+            let visuals = &context.style_of(egui::Theme::Dark).visuals;
+            assert!(contrast_ratio(visuals.error_fg_color, visuals.panel_fill) >= TEXT_CONTRAST);
+            assert!(contrast_ratio(visuals.error_fg_color, visuals.window_fill) >= TEXT_CONTRAST);
+        }
     }
 
     #[test]

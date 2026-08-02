@@ -63,7 +63,9 @@ authoritative. Changing modes never rewrites a file.
   shortcuts on macOS while the Markdown editor owns focus. Toolbar buttons
   expose their active state to assistive technology. The bar is permanent and
   non-modal: there is no Done state, and Escape returns a focused active range
-  to rendered form after its pending source edit is synchronized.
+  to rendered form after its pending source edit is synchronized. Same-frame
+  input is committed first, and the final directional source selection is
+  retained so shared Undo and Redo restore the correct post-edit caret.
 - The primary Text and Markdown switch remains in the upper-right application
   row. The contextual document bar appears only in Markdown Mode, with
   formatting groups on the left and a visually separated zoom cluster on the
@@ -128,6 +130,14 @@ complete.
   within the current 8 MiB interactive-file ceiling opens unchanged in Text
   Mode instead of entering an unproven formatted path. Larger files are refused
   without replacing the open document until M5 delivers a virtualized editor.
+  A live draft is structurally checked before semantic or source-style parsing.
+  Toolbar mutations wait until all command states have been derived from the
+  previous bounded draft. Every synchronized edit is then checked as a complete
+  document before block discovery, including aggregate source, block, and
+  parser-event ceilings. Inline and link commands check their expanded local
+  candidate before any semantic validation pass. An adversarial same-frame edit
+  or formatting expansion receives one plain bounded layout section, commits
+  exact source, and falls back to Text Mode with the exceeded budget.
 - Diagnostics are a conservative initial set, not a complete Markdown linter.
 - Whole-document Format, reviewed diffs, semantic-equivalence checks, and safe
   fixes are not implemented.

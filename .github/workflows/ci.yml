@@ -214,7 +214,6 @@ jobs:
         run: |
           test -s README.md
           test -s AGENTS.md
-          test -s CLAUDE.md
           test -s CONTRIBUTING.md
           test -s CHANGELOG.md
           test -s LICENSE

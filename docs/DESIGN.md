@@ -327,7 +327,10 @@ transaction history with explicit Replace intent.
 Go To Line caps its focused input at 20 UTF-8 bytes before widget processing,
 then scans source bytes without allocation and treats LF, CRLF, CR, and mixed
 files exactly. An empty document has one addressable line and a final terminator
-starts a trailing empty line. Select All in either view and Text Mode Go To Line
+starts a trailing empty line. Its dialog state is discarded when New or Open
+replaces the document and whenever the application leaves Text Mode, so an
+unavailable command cannot retain stale input or focus. Select All in either
+view and Text Mode Go To Line
 restore the exact source selection through the same editor-state boundary used
 by Undo and Find. Markdown restoration accepts any in-bounds UTF-8 source
 selection, retains its direction, and activates one contiguous source-backed
@@ -477,6 +480,32 @@ does not clear a newer dirty revision. An uncertain commit keeps dirty state and
 recovery and blocks blind retry until paths are reconciled. Its typed recovery
 warning names only the random artifact basename and states how to inspect,
 recover, retry, and remove it safely.
+
+An indeterminate outcome stops every later Save and Save As before destination
+inspection or mutation. This global fail-closed boundary avoids treating a
+pathname comparison as authority while a parent namespace can be renamed,
+replaced, or rebound. New and Open may replace the visible document but never
+release retained recovery evidence. Dismissing a notice only hides the notice;
+attempting any save resurfaces every active record. Each record exposes a
+bounded parent-and-name label and an explicit Copy Destination Path action. A
+non-Unicode operating-system path is never copied through lossy Unicode text;
+the action is relabeled and copies a reversible hexadecimal byte or UTF-16
+representation. Reconcile opens a confirmation that repeats the diagnostic and
+path-copy action and instructs the user to inspect the destination and retained
+private sibling and preserve the needed version. Confirmation removes exactly
+that in-memory record and performs no write, retry, or document mutation.
+Removing the last record clears only the stale save-block error and re-enables
+the save commands.
+
+Before any save that could become indeterminate, the application reserves the
+vector slot and all record-owned text. The selected destination is limited to
+128 KiB in its platform encoding, its display label to 1 KiB, and its diagnostic
+to 4 KiB. The unknown-outcome path streams details into the reserved diagnostic
+without formatting an intermediate string. The ledger retains at most 16
+records, never evicts active evidence, and renders inside bounded scroll
+regions. Save availability is an in-memory constant-time check, so repaint does
+not inspect or canonicalize filesystem paths. Durable restart-spanning records
+remain M4 work.
 
 ### 6.3 Metadata and symlinks
 
@@ -650,7 +679,9 @@ are harmless.
 
 Every menu item and shortcut maps to the same `CommandId` table. Enabled state,
 label, platform shortcut, and help text derive from that table. A command that
-has no behavior is absent.
+has no behavior is absent. The current alpha adapter applies the same rule
+directly to implemented commands; for example, Reload is disabled until the
+document owns a filesystem path.
 
 ## 9. GUI and editor strategy
 
@@ -818,6 +849,12 @@ moving the whitespace outside the closing marker. Viewing never changes those
 source bytes. This establishes the interaction direction but does not satisfy
 M6.
 
+Escape is ordered after active widget input. The editor synchronizes the final
+draft, captures the resulting directional source selection, and then removes
+the active range. The application records that exact selection in the shared
+transaction history, so Undo and Redo restore the post-edit caret instead of a
+stale pre-frame selection.
+
 Because the current slice discovers and renders the complete block set
 synchronously, it enforces prototype ceilings of 1 MiB of source, 8,192 logical
 lines, 64 KiB per line, 512 projected blocks, 64 KiB per block span, and 8,192
@@ -825,6 +862,17 @@ parser events. A document that exceeds a Markdown ceiling remains unchanged in
 Text Mode when it is within the interface's current 8 MiB file ceiling. The
 interface refuses a larger file before constructing its complete widget string,
 while the trust-kernel loader retains the independent 64 MiB storage boundary.
+Each live active draft is checked against the structural ceilings before
+semantic targeting or source-style parsing. Toolbar mutations are deferred
+until every visible command state has been derived from the prior bounded
+draft. After any draft is synchronized, the complete resulting document is
+checked before block discovery. A successful range-local check can therefore
+never stand in for the aggregate source, block, or parser-event ceilings. An
+over-budget draft receives one plain, bounded layout section for that frame,
+commits its exact source through the shared transaction authority, and then
+falls back to Text Mode with the specific exceeded budget. This prevents an
+adversarial same-frame paste or formatting expansion from reaching the more
+expensive formatted layout path first.
 Diagnostic counts are cached by document generation and revision. These
 ceilings are temporary safety boundaries, not evidence that the final 1 MiB
 Markdown latency or 50 MiB text-editing requirements pass.

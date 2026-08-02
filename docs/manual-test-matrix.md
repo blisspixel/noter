@@ -40,9 +40,20 @@ filesystem effects, and window-manager behavior still require these rows.
 - [ ] LIF-09 Multiple instances edit independent documents without sharing dirty
   or recovery state.
 - [ ] LIF-10 After an indeterminate save, New, Open, Quit, and native Close keep
-  the reconciliation guidance visible. Cancel restores that guidance, ordinary
-  Save stays disabled, and Save As remains available after Cancel to preserve
-  current text.
+  the reconciliation guidance visible. Cancel restores that guidance. Every
+  Save and Save As remains blocked before destination inspection or mutation,
+  including after New or Open, until each record is explicitly reconciled.
+  Dismiss notice hides only the notice, and attempting a save resurfaces every
+  active record. Each record shows a bounded destination label and an explicit
+  Copy Destination Path action. A non-Unicode path instead offers a clearly
+  labeled reversible hexadecimal operating-system representation with no
+  replacement characters. Reconcile repeats the diagnostic and path action and
+  requires confirmation that the user inspected the destination and retained
+  sibling and preserved the needed version. Confirming removes only that record
+  and performs no write, retry, or document mutation. Removing the last record
+  re-enables Save and Save As without leaving stale block guidance. With a
+  fault-injected full 16-record ledger, verify another save is refused before
+  destination work and the bounded, scrollable guidance remains usable.
 
 ## 2. Open, Save, and byte fidelity
 
@@ -164,6 +175,8 @@ full manual matrix.
 - [ ] EDT-09 Find next, previous, wrap, case toggle, count, and no-match state work.
 - [ ] EDT-10 Replace respects selection or whole-document scope.
 - [ ] EDT-11 Go To Line validates bounds and reaches the expected logical line.
+  Switching to Markdown Mode, creating a new document, or opening another
+  document closes the dialog and discards its prior input, error, and focus.
 - [ ] EDT-12 Word wrap changes layout without changing bytes.
 
 ## 6. Unicode and IME
@@ -235,6 +248,8 @@ Required real readers:
   the current-percentage Reset Zoom control, and Zoom In.
 - [ ] UI-13 Invalid declarative custom themes fail closed to Dark with an
   actionable explanation and no partially applied colors or external access.
+- [ ] UI-14 Reload is disabled and announced as unavailable for Untitled, then
+  becomes enabled after the document owns a filesystem path.
 
 ## 9. Performance and resources
 
@@ -316,6 +331,10 @@ Attach the reproducible benchmark report rather than estimating subjectively.
   align menus and controls, and match the exact candidate renderer. The Light
   Text and Markdown pair preserves the same outer gutter, approximate scroll
   position, selection, and source bytes across the view switch.
+- [ ] MD-14 Same-frame input followed by Escape commits exact source before the
+  active range closes, and Undo and Redo restore the final caret. An adversarial
+  same-frame paste that exceeds a structural ceiling receives only bounded plain
+  layout work before exact-source fallback to Text Mode.
 
 ## Sign-off
 
