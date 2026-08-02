@@ -392,10 +392,7 @@ mod tests {
             }),
             ConflictEffect::Prompt(ExternalChangeKind::Deleted)
         );
-        assert_eq!(
-            state.prompt_kind(),
-            Some(ExternalChangeKind::Deleted)
-        );
+        assert_eq!(state.prompt_kind(), Some(ExternalChangeKind::Deleted));
         assert_eq!(
             state.reduce(ConflictCommand::Observed {
                 kind: ExternalChangeKind::Deleted,
