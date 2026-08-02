@@ -6478,7 +6478,9 @@ mod tests {
         fs::write(&path, b"external revision")?;
 
         let context = egui::Context::default();
-        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+        let mut focused = egui::RawInput::default();
+        focused.events.push(egui::Event::WindowFocused(true));
+        let _ = context.run_ui(focused, |ui| {
             app.maybe_inspect_external_change(ui.ctx());
         });
         assert!(app.conflict.is_prompting());
@@ -6518,7 +6520,9 @@ mod tests {
         fs::remove_file(&path)?;
 
         let context = egui::Context::default();
-        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+        let mut focused = egui::RawInput::default();
+        focused.events.push(egui::Event::WindowFocused(true));
+        let _ = context.run_ui(focused, |ui| {
             app.maybe_inspect_external_change(ui.ctx());
         });
         assert_eq!(
