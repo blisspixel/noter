@@ -294,8 +294,10 @@ with only the ordinary editor inset, deliberate vertical rhythm, and a
 document-bar zoom cluster wired to the same bounded state. The live percentage
 accepts vertical pointer-wheel zoom and remains a click target for reset.
 Formatted content remains wrapped by design. Cross-block pointer dragging in
-inactive Markdown content and the remaining clipboard and navigation parity are
-still open.
+inactive Markdown content now preserves source direction and exact UTF-8
+boundaries, retains native cross-label feedback, and performs bounded edge
+autoscroll before activating one contiguous source-backed edit range. The
+remaining clipboard and navigation parity are still open.
 
 Escape now commits same-frame Markdown input before leaving the active range
 and carries the final directional source selection into shared history. Go To
@@ -457,11 +459,13 @@ escapes, and supported character
 references; synthesis without a safe mapping falls back to visible source. A
 Text Mode selection may span parsed blocks and restores as one contiguous
 source-backed active region with its direction and line endings intact. Select
-All uses the same path in either view. Pointer dragging across separate inactive
-blocks remains open.
-link target is revealed while it is edited and hidden again
-after the caret leaves it. Text Mode always exposes exact source. Shared bounded
-Undo and Redo use the deterministic intent and coalescing policy. Continuous
+All uses the same path in either view. Primary-pointer dragging now spans
+separate inactive blocks in either direction, maps through exact source spans,
+autoscrolls at a time-based bounded edge speed, preserves normal touch release,
+and cancels on Escape, unreleased pointer loss, or focus loss without changing
+bytes. A link target is revealed while it is edited and hidden again after the
+caret leaves it. Text Mode always exposes exact source. Shared bounded Undo and
+Redo use the deterministic intent and coalescing policy. Continuous
 whole-document editing, complete complex-block layout, full syntax conformance,
 accessibility, asynchronous parsing, and the quality engine remain open.
 

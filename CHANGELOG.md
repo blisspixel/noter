@@ -73,6 +73,11 @@ release, so current work remains under Unreleased.
   dialog for Text Mode that navigates LF, CRLF, CR, and mixed files without
   allocating a line index. Markdown selections can span parsed blocks, retain
   direction and exact line endings, and replace only the selected source bytes.
+- Add forward and reverse primary-pointer selection across separately rendered
+  Markdown blocks. The native interaction preserves exact source boundaries for
+  Unicode and hidden syntax, keeps live cross-block feedback, autoscrolls at a
+  bounded edge speed, preserves normal touch completion, and cancels cleanly on
+  Escape or input loss without changing document bytes.
 - Add persistent Text Mode word wrap and editor-only zoom from 50 to 300 percent
   with View-menu controls, standard zoom shortcuts, supported pointer
   magnification over the document surface, and a status indication.

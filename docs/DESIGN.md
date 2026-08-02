@@ -82,13 +82,13 @@ The current development checkpoint has:
 
 The latest verified implementation checkpoint passes all nine required jobs in
 exact-commit run
-[30717757040](https://github.com/blisspixel/noter/actions/runs/30717757040)
-for commit `c28711deae601efaf242b65007cd3e26f333b141`. A reproducible local
+[30737535516](https://github.com/blisspixel/noter/actions/runs/30737535516)
+for commit `76594b89c1967546893cef73569041fa148573a9`. A reproducible local
 trust-kernel benchmark baseline now exists; the manual
 metadata and weaker-filesystem evidence named by ADR-003, and later M5 GUI and
 input benchmarks remain open. The edit foundation still requires complete
-navigation and clipboard policy, cross-block Markdown pointer selection,
-long-session fixtures, and cross-platform evidence. Recovery, external-change
+navigation and clipboard policy, long-session fixtures, and cross-platform
+evidence. Recovery, external-change
 handling, configuration, accessibility evidence, and release performance
 evidence also remain open. M1 through M4 therefore remain In Progress even
 where their current implementation slices are substantial.
@@ -805,6 +805,19 @@ editable. This prevents hidden syntax from being split without inventing a
 mapping. A mode switch restores the directional source selection before the
 destination editor accepts input, and both adapters discard widget-local undo
 snapshots after committing to the shared bounded history.
+
+Cross-block primary-pointer selection retains one anchor and one active cursor,
+each expressed as absolute source boundaries derived from those same rendered
+spans. Native selectable labels own live cross-widget painting. The editor
+chooses the nearest rendered block by vertical geometry, performs bounded edge
+autoscroll through the containing native scroll area using elapsed frame time,
+and activates one contiguous source-backed editor only on release. Forward and
+reverse drags use the appropriate leading and trailing source boundaries, so
+hidden syntax and multi-byte characters cannot become partial edit positions.
+Escape, unreleased pointer loss, or window focus loss clears the transient
+selection without changing source bytes. A primary release followed by the
+normal touch PointerGone event completes at the retained final interaction
+position.
 
 The current M2 slice is deliberately bounded. It parses through
 `pulldown-cmark` and builds restricted native egui layout jobs before shaping.

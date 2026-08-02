@@ -31,10 +31,16 @@ authoritative. Changing modes never rewrites a file.
   delimiters remain in the edit buffer and on disk even when they are not
   painted.
 - Clicking or dragging directly over inactive formatted content activates the
-  corresponding source caret or selection. The mapping includes complete
-  hidden delimiter, escape, and parser-decoded character-reference spans so an
-  edit cannot split their source syntax. Synthesized text without a safe source
-  substring remains visible and editable as raw source.
+  corresponding source caret or selection. A primary-pointer drag can continue
+  forward or backward across separately rendered blocks, keeps the native live
+  selection visible, and scrolls at a bounded speed near the document edges.
+  Escape, pointer loss without a completed primary release, or window focus
+  loss cancels without activating an edit. A completed touch release followed
+  by pointer loss still activates at its retained final position. The mapping
+  includes complete hidden delimiter, escape, and parser-decoded
+  character-reference spans so an edit cannot split their source syntax.
+  Synthesized text without a safe source substring remains visible and editable
+  as raw source.
 - A selected link destination is temporarily revealed and underlined while it
   is edited, then hidden again after the caret leaves that target.
 - One fixed-width paragraph-style selector sets selected logical lines to
@@ -109,11 +115,11 @@ complete.
 ## Current limitations
 
 - Editing is still range-focused rather than permanently continuous across the
-  full formatted document. Select All and a selection carried from Text Mode
-  can activate one contiguous region across parsed blocks, but pointer dragging
-  across separate inactive rendered blocks is not implemented. Supported
-  headings, emphasis, links, and inline code remain styled in the active range;
-  complex and unsupported punctuation may remain visible.
+  full formatted document. Select All, a selection carried from Text Mode, and
+  a pointer drag across inactive rendered blocks can activate one contiguous
+  source-backed region. Supported headings, emphasis, links, and inline code
+  remain styled in the active range; complex and unsupported punctuation may
+  remain visible.
 - Tables, images, nested structures, reference resolution, and other complex
   constructs do not yet have complete native layout or editing behavior.
 - Cross-block Markdown references may not resolve in every rendered fragment.
