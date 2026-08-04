@@ -351,8 +351,9 @@ impl RecoverySnapshot {
 
     /// Serializes this snapshot into the versioned recovery record bytes.
     ///
-    /// Path and content lengths are always representable because [`try_new`]
-    /// enforces ceilings far below the on-disk integer widths.
+    /// Path and content lengths are always representable because
+    /// [`RecoverySnapshot::try_new`] enforces ceilings far below the on-disk
+    /// integer widths.
     pub fn encode(&self) -> Vec<u8> {
         let checksum = ContentFingerprint::from_bytes(&self.content);
         // try_new enforces path <= MAX_RECOVERY_PATH_BYTES (128 KiB) and
@@ -1020,6 +1021,9 @@ mod tests {
 
     #[test]
     fn path_and_content_ceilings_are_enforced() {
+        assert_eq!(MAX_RECOVERY_PATH_BYTES, 128 * 1024);
+        assert_eq!(MAX_RECOVERY_PATH_BYTES, 131_072);
+
         let path = vec![b'a'; MAX_RECOVERY_PATH_BYTES + 1];
         let err = RecoverySnapshot::try_new(RecoverySnapshotParts {
             document_id: RecoveryDocumentId::new([1; 16]),
@@ -1035,6 +1039,22 @@ mod tests {
         });
         assert_eq!(err, Err(RecoveryQuarantineReason::PathTooLarge));
 
+        // Exact ceiling must still be accepted (strict greater-than, not >=).
+        let exact_path = vec![b'b'; MAX_RECOVERY_PATH_BYTES];
+        RecoverySnapshot::try_new(RecoverySnapshotParts {
+            document_id: RecoveryDocumentId::new([1; 16]),
+            instance_id: RecoveryInstanceId::new([2; 16]),
+            revision: Revision::new(1),
+            created_at: RecoveryWallTime::from_unix_millis(1),
+            updated_at: RecoveryWallTime::from_unix_millis(1),
+            original_path: exact_path,
+            bom: Bom::Absent,
+            encoding: Encoding::Utf8,
+            selection: Selection::caret(0),
+            content: b"x".to_vec(),
+        })
+        .expect("exact path ceiling is allowed");
+
         let content = vec![b'x'; MAX_DOCUMENT_BYTES + 1];
         let err = RecoverySnapshot::try_new(RecoverySnapshotParts {
             document_id: RecoveryDocumentId::new([1; 16]),
@@ -1049,6 +1069,214 @@ mod tests {
             content,
         });
         assert_eq!(err, Err(RecoveryQuarantineReason::ContentTooLarge));
+
+        let exact_content = vec![b'y'; MAX_DOCUMENT_BYTES];
+        RecoverySnapshot::try_new(RecoverySnapshotParts {
+            document_id: RecoveryDocumentId::new([1; 16]),
+            instance_id: RecoveryInstanceId::new([2; 16]),
+            revision: Revision::new(1),
+            created_at: RecoveryWallTime::from_unix_millis(1),
+            updated_at: RecoveryWallTime::from_unix_millis(1),
+            original_path: Vec::new(),
+            bom: Bom::Absent,
+            encoding: Encoding::Utf8,
+            selection: Selection::caret(0),
+            content: exact_content,
+        })
+        .expect("exact document ceiling is allowed");
+    }
+
+    #[test]
+    fn identities_and_descriptions_are_exact() {
+        let id = RecoveryDocumentId::new([9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            id.as_bytes(),
+            [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6]
+        );
+        let instance =
+            RecoveryInstanceId::new([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+        assert_eq!(
+            instance.as_bytes(),
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        );
+        assert_eq!(
+            RecoveryQuarantineReason::InvalidMagic.description(),
+            "The recovery file is not a Noter recovery record."
+        );
+        assert_eq!(
+            RecoveryQuarantineReason::ChecksumMismatch.description(),
+            "The recovery record failed its content integrity check."
+        );
+    }
+
+    #[test]
+    fn encoded_path_and_content_ceilings_match_try_new() {
+        let exact_path = vec![b'p'; MAX_RECOVERY_PATH_BYTES];
+        let snapshot = RecoverySnapshot::try_new(RecoverySnapshotParts {
+            document_id: RecoveryDocumentId::new([1; 16]),
+            instance_id: RecoveryInstanceId::new([2; 16]),
+            revision: Revision::new(1),
+            created_at: RecoveryWallTime::from_unix_millis(1),
+            updated_at: RecoveryWallTime::from_unix_millis(2),
+            original_path: exact_path.clone(),
+            bom: Bom::Absent,
+            encoding: Encoding::Utf8,
+            selection: Selection::caret(0),
+            content: b"ok".to_vec(),
+        })
+        .expect("exact path");
+        let encoded = snapshot.encode();
+        let RecoveryStartupDisposition::Offer(record) = validate_recovery_record(&encoded) else {
+            panic!("exact path must validate");
+        };
+        assert_eq!(record.original_path(), exact_path.as_slice());
+
+        // Inflate path_len beyond the ceiling while keeping a short payload.
+        let mut bad = sample_snapshot(b"x", Selection::caret(0)).encode();
+        bad[68..72].copy_from_slice(&(MAX_RECOVERY_PATH_BYTES as u32 + 1).to_le_bytes());
+        assert_eq!(
+            validate_recovery_record(&bad),
+            RecoveryStartupDisposition::Quarantine(RecoveryQuarantineReason::PathTooLarge)
+        );
+
+        let mut bad = sample_snapshot(b"x", Selection::caret(0)).encode();
+        bad[90..98].copy_from_slice(&(MAX_DOCUMENT_BYTES as u64 + 1).to_le_bytes());
+        assert_eq!(
+            validate_recovery_record(&bad),
+            RecoveryStartupDisposition::Quarantine(RecoveryQuarantineReason::ContentTooLarge)
+        );
+    }
+
+    #[test]
+    fn selection_checks_range_and_char_boundaries_independently() {
+        // Out of range only.
+        assert_eq!(
+            RecoverySnapshot::try_new(RecoverySnapshotParts {
+                document_id: RecoveryDocumentId::new([1; 16]),
+                instance_id: RecoveryInstanceId::new([2; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(1),
+                updated_at: RecoveryWallTime::from_unix_millis(1),
+                original_path: Vec::new(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::new(0, 3),
+                content: b"hi".to_vec(),
+            }),
+            Err(RecoveryQuarantineReason::InvalidSelection)
+        );
+        // Mid-codepoint only (in range for length but not a boundary).
+        assert_eq!(
+            RecoverySnapshot::try_new(RecoverySnapshotParts {
+                document_id: RecoveryDocumentId::new([1; 16]),
+                instance_id: RecoveryInstanceId::new([2; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(1),
+                updated_at: RecoveryWallTime::from_unix_millis(1),
+                original_path: Vec::new(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::new(1, 0),
+                content: "é".as_bytes().to_vec(),
+            }),
+            Err(RecoveryQuarantineReason::InvalidSelection)
+        );
+    }
+
+    #[test]
+    fn persist_ack_requires_matching_epoch_and_revision() {
+        let mut state = RecoveryScheduleState::default();
+        let epoch = state.epoch();
+        let _ = state.reduce(RecoveryScheduleCommand::Edited {
+            revision: Revision::new(1),
+            now: RecoveryClock::new(Duration::from_secs(0)),
+        });
+        assert!(state.is_dirty());
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Tick {
+                now: RecoveryClock::new(Duration::from_secs(2))
+            }),
+            RecoveryScheduleEffect::Persist {
+                revision: Revision::new(1),
+                epoch,
+            }
+        );
+
+        // Matching revision with the wrong epoch must not clear in-flight state.
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::PersistAcknowledged {
+                revision: Revision::new(1),
+                epoch: epoch.wrapping_add(1),
+            }),
+            RecoveryScheduleEffect::None
+        );
+        assert_eq!(state.in_flight_revision(), Some(Revision::new(1)));
+        assert!(state.is_dirty());
+
+        // Matching epoch with the wrong revision is also ignored.
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::PersistAcknowledged {
+                revision: Revision::new(2),
+                epoch,
+            }),
+            RecoveryScheduleEffect::None
+        );
+        assert_eq!(state.in_flight_revision(), Some(Revision::new(1)));
+
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::PersistAcknowledged {
+                revision: Revision::new(1),
+                epoch,
+            }),
+            RecoveryScheduleEffect::None
+        );
+        assert!(state.in_flight_revision().is_none());
+        assert!(state.is_dirty());
+        assert_eq!(state.last_persisted_revision(), Some(Revision::new(1)));
+    }
+
+    #[test]
+    fn persist_failed_requires_matching_epoch_and_revision() {
+        let mut state = RecoveryScheduleState::default();
+        let epoch = state.epoch();
+        let _ = state.reduce(RecoveryScheduleCommand::Edited {
+            revision: Revision::new(3),
+            now: RecoveryClock::new(Duration::from_secs(0)),
+        });
+        let _ = state.reduce(RecoveryScheduleCommand::Tick {
+            now: RecoveryClock::new(Duration::from_secs(2)),
+        });
+
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::PersistFailed {
+                revision: Revision::new(3),
+                epoch: epoch.wrapping_add(9),
+                now: RecoveryClock::new(Duration::from_secs(3)),
+            }),
+            RecoveryScheduleEffect::None
+        );
+        assert_eq!(state.in_flight_revision(), Some(Revision::new(3)));
+
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::PersistFailed {
+                revision: Revision::new(99),
+                epoch,
+                now: RecoveryClock::new(Duration::from_secs(3)),
+            }),
+            RecoveryScheduleEffect::None
+        );
+        assert_eq!(state.in_flight_revision(), Some(Revision::new(3)));
+
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::PersistFailed {
+                revision: Revision::new(3),
+                epoch,
+                now: RecoveryClock::new(Duration::from_secs(3)),
+            }),
+            RecoveryScheduleEffect::None
+        );
+        assert!(state.in_flight_revision().is_none());
+        assert!(state.is_dirty());
     }
 
     #[test]

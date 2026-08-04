@@ -538,6 +538,72 @@ mod tests {
     }
 
     #[test]
+    fn resource_ceilings_are_exact() {
+        assert_eq!(MAX_STARTUP_RECOVERY_OFFERS, 32);
+        assert_eq!(MAX_RECOVERY_FILE_BYTES, 64 * 1024 * 1024 + 256 * 1024);
+        assert_eq!(MAX_RECOVERY_FILE_BYTES, 67_371_008);
+    }
+
+    #[test]
+    fn delete_instance_rejects_non_missing_failures() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let id = RecoveryInstanceId::new([42; 16]);
+        let path = store.record_path(id);
+        fs::create_dir(&path)?;
+        let error = store
+            .delete_instance(id)
+            .expect_err("directory at record path is not a successful missing delete");
+        assert_ne!(error.kind(), io::ErrorKind::NotFound);
+        assert!(path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_recovery_file_is_quarantined() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let path = store.records_dir().join("huge.rec");
+        // Metadata length check happens before a full read; use a sparse-friendly size
+        // by writing a small file and then we can't easily make huge files. Instead
+        // assert the constant and exercise classify via a just-over-limit write only
+        // when practical. Here we verify the classifier path using a file whose
+        // length exceeds the ceiling via set_len when supported.
+        let file = File::create(&path)?;
+        file.set_len(MAX_RECOVERY_FILE_BYTES + 1)?;
+        drop(file);
+
+        let entries = store.scan_startup()?;
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            entries[0].disposition(),
+            RecoveryStartupDisposition::Quarantine(RecoveryQuarantineReason::ContentTooLarge)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn quarantine_error_is_reported_when_move_fails() -> io::Result<()> {
+        // A valid quarantine failure leaves remains_in_records true and a message.
+        // Use a non-empty records file, then remove write access to quarantine by
+        // replacing the quarantine directory with a file so rename fails.
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let path = store.records_dir().join("broken.rec");
+        fs::write(&path, b"not a recovery record")?;
+        let quarantine = store.quarantine_dir();
+        fs::remove_dir_all(&quarantine)?;
+        fs::write(&quarantine, b"block")?;
+
+        let entries = store.scan_startup()?;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].remains_in_records());
+        assert!(entries[0].quarantine_error().is_some());
+        assert!(path.exists());
+        Ok(())
+    }
+
+    #[test]
     fn surplus_valid_records_remain_for_later_session() -> io::Result<()> {
         let dir = tempdir()?;
         let store = RecoveryStore::open(dir.path())?;
