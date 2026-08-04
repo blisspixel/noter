@@ -1189,6 +1189,62 @@ mod tests {
     }
 
     #[test]
+    fn long_session_fixture_never_exceeds_history_ceilings() {
+        // Simulates a long editing session with non-coalescing programmatic
+        // edits under tightened ceilings that still exercise eviction and
+        // retained-byte accounting. Default production ceilings are larger;
+        // the invariant under test is the bound itself.
+        let limits = HistoryLimits {
+            max_transactions: 32,
+            max_bytes: 4_096,
+        };
+        let mut document = Document::new();
+        let mut history = UndoHistory::new(limits, document.revision());
+        let mut peak_len = 0_usize;
+        let mut peak_bytes = 0_usize;
+
+        for step in 0..512_u32 {
+            let inserted = format!("x{step:04}");
+            let offset = document.rope().len_bytes();
+            let outcome = apply_change(
+                &mut document,
+                &mut history,
+                TextRange::new(offset, offset),
+                &inserted,
+                "",
+                Selection::caret(offset),
+                Selection::caret(offset + inserted.len()),
+            );
+            assert!(matches!(
+                outcome,
+                HistoryRecordOutcome::Stored | HistoryRecordOutcome::ClearedForOversizedTransaction
+            ));
+            assert!(history.len() <= limits.max_transactions);
+            assert!(history.retained_bytes() <= limits.max_bytes);
+            peak_len = peak_len.max(history.len());
+            peak_bytes = peak_bytes.max(history.retained_bytes());
+
+            if step % 17 == 0 && history.can_undo() {
+                let _ = history.undo(&mut document).expect("undo");
+                assert!(history.len() <= limits.max_transactions);
+                assert!(history.retained_bytes() <= limits.max_bytes);
+            }
+            if step % 29 == 0 && history.can_redo() {
+                let _ = history.redo(&mut document).expect("redo");
+                assert!(history.len() <= limits.max_transactions);
+                assert!(history.retained_bytes() <= limits.max_bytes);
+            }
+        }
+
+        assert!(peak_len > 0);
+        assert!(peak_bytes > 0);
+        assert!(peak_len <= limits.max_transactions);
+        assert!(peak_bytes <= limits.max_bytes);
+        // Eviction must have engaged under this workload.
+        assert!(peak_len == limits.max_transactions || peak_bytes == limits.max_bytes);
+    }
+
+    #[test]
     fn new_edit_after_undo_discards_redo_branch() {
         let mut document = Document::new();
         let mut history = UndoHistory::default();

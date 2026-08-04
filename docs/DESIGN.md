@@ -208,8 +208,10 @@ struct Selection {
 ```
 
 The status bar reports one-based logical line and Unicode-scalar column in v0.1.
-Grapheme-aware visual movement belongs to the editor adapter and is tested with
-combining marks, emoji sequences, CJK, and bidirectional samples.
+Pure caret policy for character, classic word token, logical line, and document
+endpoints lives in `core::navigation::move_caret` and returns validated UTF-8
+byte offsets. Grapheme-aware visual movement belongs to the editor adapter and
+is tested with combining marks, emoji sequences, CJK, and bidirectional samples.
 
 ### 4.3 Encoding
 
