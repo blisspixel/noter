@@ -106,13 +106,14 @@ class MutationInfrastructureTests(unittest.TestCase):
 
         self.assertIn(
             "          CARGO_BUILD_JOBS: 1\n"
-            "          CARGO_PROFILE_TEST_CODEGEN_UNITS: '16'\n"
+            "          CARGO_PROFILE_TEST_CODEGEN_UNITS: '8'\n"
             "          CARGO_PROFILE_TEST_DEBUG: '0'\n"
             "          CARGO_INCREMENTAL: 1\n",
             workflow,
         )
-        self.assertEqual(workflow.count("CARGO_PROFILE_TEST_CODEGEN_UNITS: '16'"), 1)
+        self.assertEqual(workflow.count("CARGO_PROFILE_TEST_CODEGEN_UNITS: '8'"), 1)
         self.assertEqual(workflow.count("CARGO_PROFILE_TEST_DEBUG: '0'"), 1)
+        self.assertIn("macOS mutation infrastructure flake detected; retrying once", workflow)
 
     def test_caught_mutant_log_is_not_reclassified(self) -> None:
         """Only build failures already labeled unviable are inspected."""
