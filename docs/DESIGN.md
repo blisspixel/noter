@@ -600,8 +600,9 @@ transition tests and a fixed-seed 512-case command-sequence property compare
 the reducer with a separate reference model. A pure `ConflictState` reducer
 classifies focus and timer observations against the trusted save baseline and
 offers Reload, Keep Editing, and Save As without silent overwrite.
-Overwrite-with-second-confirm remains an open M4 slice for
-`0.1.0-alpha.2`.
+Overwrite-with-second-confirm is implemented as a pure two-step conflict
+decision (`RequestOverwrite` then `ConfirmOverwrite`) that only then rebaselines
+the trusted save expectation and saves.
 
 Dialogs cannot directly mutate document state. They emit commands to the same
 dispatcher used by keyboard shortcuts and menus. Repeated close events are

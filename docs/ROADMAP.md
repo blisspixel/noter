@@ -103,9 +103,10 @@ The current tree already has deterministic Undo coalescing, bounded Find and
 Replace, the pure lifecycle reducer, external-change Reload / Keep Editing /
 Save As, Markdown document-wide and cross-block selection, pure recovery
 scheduling with epoch-correlated persist, versioned recovery records, a private
-durable recovery store, and application wiring that schedules dirty persist,
-offers startup Restore / Discard, deletes on Save or Discard, and shows persist
-failure. The overwrite second-confirm and remaining alpha.2 evidence remain open.
+durable recovery store, application wiring that schedules dirty persist, offers
+startup Restore / Discard, deletes on Save or Discard, and shows persist
+failure, and external-change overwrite behind a second confirmation. Remaining
+alpha.2 evidence (clipboard path, matrices, fixtures) remains open.
 
 ## Product boundaries
 

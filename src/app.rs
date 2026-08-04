@@ -982,9 +982,42 @@ impl NoterApp {
 
     fn apply_conflict_effect(&mut self, effect: ConflictEffect, ctx: &egui::Context) {
         match effect {
-            ConflictEffect::None | ConflictEffect::Prompt(_) => {}
+            ConflictEffect::None
+            | ConflictEffect::Prompt(_)
+            | ConflictEffect::PromptOverwriteConfirm(_) => {}
             ConflictEffect::RequestReload => self.request_reload(ctx),
             ConflictEffect::RequestSaveAs => self.do_save_as(),
+            ConflictEffect::AuthorizeOverwrite => self.perform_authorized_overwrite(),
+        }
+    }
+
+    fn perform_authorized_overwrite(&mut self) {
+        let Some(path) = self.document.path().map(Path::to_path_buf) else {
+            self.error_msg = Some(
+                "Overwrite is unavailable because this document has not been saved yet.".to_owned(),
+            );
+            return;
+        };
+        match inspect_target(&path, SaveStage::InspectInitial) {
+            Ok(noter::core::save::TargetState::Regular(observation)) => {
+                self.document.rebaseline_to_observed_disk(observation);
+                self.do_save();
+            }
+            Ok(noter::core::save::TargetState::Missing) => {
+                self.error_msg = Some(
+                    "Overwrite stopped because the file is now missing. Use Save As to keep your work.".to_owned(),
+                );
+            }
+            Ok(noter::core::save::TargetState::Special(_)) => {
+                self.error_msg = Some(
+                    "Overwrite stopped because the path is no longer an ordinary file. Use Save As.".to_owned(),
+                );
+            }
+            Err(error) => {
+                self.error_msg = Some(format!(
+                    "Overwrite stopped because the path could not be inspected safely: {error}"
+                ));
+            }
         }
     }
 
@@ -992,10 +1025,20 @@ impl NoterApp {
         let Some(kind) = self.conflict.prompt_kind() else {
             return;
         };
+        if self.conflict.is_confirming_overwrite() {
+            self.show_overwrite_second_confirmation(ctx, kind);
+            return;
+        }
         let mut reload = false;
         let mut keep = false;
         let mut save_as = false;
+        let mut overwrite = false;
         let recovery_blocked = self.save_is_blocked();
+        let allow_overwrite = matches!(
+            kind,
+            noter::core::conflict::ExternalChangeKind::ContentOrIdentityChanged
+        ) && !recovery_blocked
+            && self.document.path().is_some();
 
         let response =
             egui::Modal::new(egui::Id::new("external-change-confirmation")).show(ctx, |ui| {
@@ -1020,6 +1063,12 @@ impl NoterApp {
                             "Save As is blocked until the uncertain save state is reconciled",
                         )
                         .clicked();
+                    overwrite = ui
+                        .add_enabled(allow_overwrite, egui::Button::new("Overwrite Disk Version…"))
+                        .on_disabled_hover_text(
+                            "Overwrite is available only when the path still points at a regular file and no uncertain save is open",
+                        )
+                        .clicked();
                 });
             });
 
@@ -1037,6 +1086,48 @@ impl NoterApp {
             let effect = self
                 .conflict
                 .reduce(ConflictCommand::Decide(ConflictDecision::SaveAs));
+            self.apply_conflict_effect(effect, ctx);
+        } else if overwrite {
+            let effect = self
+                .conflict
+                .reduce(ConflictCommand::Decide(ConflictDecision::RequestOverwrite));
+            self.apply_conflict_effect(effect, ctx);
+        }
+    }
+
+    fn show_overwrite_second_confirmation(
+        &mut self,
+        ctx: &egui::Context,
+        kind: noter::core::conflict::ExternalChangeKind,
+    ) {
+        let mut confirm = false;
+        let mut cancel = false;
+        let response =
+            egui::Modal::new(egui::Id::new("external-change-overwrite-confirm")).show(ctx, |ui| {
+                ui.set_min_width(440.0);
+                ui.set_max_width(560.0);
+                ui.heading("Replace the disk version?");
+                ui.label(kind.description());
+                ui.label(
+                    "This replaces the file on disk with the text currently in this window. The disk version will not be recoverable from Noter after this save.",
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    confirm = ui
+                        .add(egui::Button::new("Replace Disk Version").min_size(egui::vec2(160.0, 28.0)))
+                        .clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        if confirm {
+            let effect = self
+                .conflict
+                .reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite));
+            self.apply_conflict_effect(effect, ctx);
+        } else if cancel || response.should_close() {
+            let effect = self
+                .conflict
+                .reduce(ConflictCommand::Decide(ConflictDecision::CancelOverwrite));
             self.apply_conflict_effect(effect, ctx);
         }
     }

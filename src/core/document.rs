@@ -205,6 +205,17 @@ impl Document {
         self.saved_target = None;
     }
 
+    /// Rebaselines the trusted save expectation to an observed disk revision.
+    ///
+    /// Used only after the external-change second-confirm path authorizes
+    /// overwrite. Ordinary Keep Editing must never call this method.
+    pub const fn rebaseline_to_observed_disk(
+        &mut self,
+        observation: super::save::FileObservation,
+    ) {
+        self.saved_target = Some(TargetExpectation::Existing(observation));
+    }
+
     /// Replaces authoritative text and advances the revision exactly once when changed.
     ///
     /// # Errors
