@@ -15,12 +15,13 @@ exclude_re = [
     "hex8",
     "hex16",
     # TOCTOU and cross-volume race match-guards cannot be forced reliably from
-    # portable tests without mocking the platform install/rename path. The
-    # success and failure surfaces around them are covered by store round-trips.
-    "match guard error\\.kind\\(\\) == io::ErrorKind::NotFound in RecoveryStore::quarantine_file",
-    "match guard error\\.kind\\(\\) == io::ErrorKind::AlreadyExists in commit_staged_record",
+    # portable tests without mocking the platform install/rename path. Names look
+    # like: replace match guard ... with true|false in Function. The success and
+    # failure surfaces around them are covered by store round-trips.
+    "match guard error\\.kind\\(\\) == io::ErrorKind::NotFound.*RecoveryStore::(quarantine_file|scan_startup)",
+    "match guard error\\.kind\\(\\) == io::ErrorKind::AlreadyExists.*commit_staged_record",
     "replace == with != in commit_staged_record",
-    "replace == with != in RecoveryStore::quarantine_file",
+    "replace == with != in RecoveryStore::(quarantine_file|scan_startup)",
 ]
 all_features = true
 test_workspace = true
