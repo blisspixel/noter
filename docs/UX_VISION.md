@@ -1,6 +1,6 @@
 # Noter UX Direction
 
-**Reviewed:** 2026-07-30
+**Reviewed:** 2026-08-04
 
 This is the experiential direction. [REQUIREMENTS.md](REQUIREMENTS.md) owns
 behavior and [ROADMAP.md](ROADMAP.md) owns measurable delivery gates.
@@ -19,6 +19,28 @@ Noter should feel predictable before it feels clever:
 
 The best trust UI is consistent behavior. Status indicators and dialogs support
 that behavior rather than compensating for ambiguity.
+
+### 1.1 Recovery and conflict surfaces (interaction contract)
+
+When recovery and conflict UI are fully wired, they follow calm system-dialog
+patterns rather than toast spam or silent auto-restore:
+
+- **Startup recovery** appears before a normal untitled document: short plain
+  language, optional original path label (never full content preview by
+  default), primary action Restore, secondary Discard, and an explicit note that
+  restore does not overwrite the file on disk until Save.
+- **Damaged recovery** uses quarantine language: what failed (checksum, schema,
+  truncated), that the original document was not modified, and that the damaged
+  record was set aside when possible.
+- **Persist failure** is a durable status or bar, not a flash: recovery could
+  not be written; continue editing; Save remains available; close still uses the
+  classic dirty prompt.
+- **External change** keeps one decision surface: Reload Disk Version, Keep
+  Editing, Save As, and Overwrite only after a second confirm that names the
+  irreversible disk replacement.
+- Keyboard-only and screen-reader users receive the same choices, names, and
+  default focus as pointer users. Escape cancels without discarding recovery
+  offers unless the user chooses Discard.
 
 ## 2. The document is the visual hierarchy
 

@@ -229,6 +229,7 @@ impl EditCommand {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ViewCommand {
     ToggleWordWrap,
+    ToggleFullscreen,
     ZoomIn,
     ZoomOut,
     ResetZoom,
@@ -277,6 +278,7 @@ impl ViewCommand {
     const fn label(self) -> &'static str {
         match self {
             Self::ToggleWordWrap => "Word Wrap",
+            Self::ToggleFullscreen => "Full Screen",
             Self::ZoomIn => "Zoom In",
             Self::ZoomOut => "Zoom Out",
             Self::ResetZoom => "Reset Zoom",
@@ -286,6 +288,10 @@ impl ViewCommand {
     const fn shortcut(self) -> Option<egui::KeyboardShortcut> {
         match self {
             Self::ToggleWordWrap => None,
+            Self::ToggleFullscreen => Some(egui::KeyboardShortcut::new(
+                egui::Modifiers::NONE,
+                egui::Key::F11,
+            )),
             Self::ZoomIn => Some(egui::gui_zoom::kb_shortcuts::ZOOM_IN),
             Self::ZoomOut => Some(egui::gui_zoom::kb_shortcuts::ZOOM_OUT),
             Self::ResetZoom => Some(egui::gui_zoom::kb_shortcuts::ZOOM_RESET),
@@ -1079,13 +1085,23 @@ impl NoterApp {
     fn collect_view_shortcut(ui: &egui::Ui) -> Option<ViewCommandRequest> {
         let mut command = None;
         ui.input_mut(|input| {
-            if input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_RESET) {
+            if let Some(shortcut) = ViewCommand::ToggleFullscreen.shortcut()
+                && input.consume_shortcut(&shortcut)
+            {
+                command = Some(ViewCommand::ToggleFullscreen);
+            }
+            if command.is_none()
+                && input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_RESET)
+            {
                 command = Some(ViewCommand::ResetZoom);
-            } else if input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_IN)
-                || input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_IN_SECONDARY)
+            } else if command.is_none()
+                && (input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_IN)
+                    || input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_IN_SECONDARY))
             {
                 command = Some(ViewCommand::ZoomIn);
-            } else if input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_OUT) {
+            } else if command.is_none()
+                && input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_OUT)
+            {
                 command = Some(ViewCommand::ZoomOut);
             }
         });
@@ -1154,13 +1170,17 @@ impl NoterApp {
         }
     }
 
-    fn execute_view_command(&mut self, request: ViewCommandRequest) {
+    fn execute_view_command(&mut self, request: ViewCommandRequest, ctx: &egui::Context) {
         let ViewCommandRequest { command, focus } = request;
         match command {
             ViewCommand::ToggleWordWrap if self.view == DocumentView::Text => {
                 self.text_wrap.toggle();
             }
             ViewCommand::ToggleWordWrap => return,
+            ViewCommand::ToggleFullscreen => {
+                let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
+            }
             ViewCommand::ZoomIn => {
                 let _ = self.editor_zoom.zoom_in();
             }
@@ -1649,6 +1669,18 @@ impl NoterApp {
         if wrap.clicked() {
             command.get_or_insert(ViewCommandRequest::restore_document(
                 ViewCommand::ToggleWordWrap,
+            ));
+            ui.close();
+        }
+        let is_fullscreen = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+        let mut fs_button =
+            egui::Button::selectable(is_fullscreen, ViewCommand::ToggleFullscreen.label());
+        if let Some(shortcut) = ViewCommand::ToggleFullscreen.shortcut() {
+            fs_button = fs_button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+        }
+        if ui.add(fs_button).clicked() {
+            command.get_or_insert(ViewCommandRequest::restore_document(
+                ViewCommand::ToggleFullscreen,
             ));
             ui.close();
         }
@@ -2549,7 +2581,7 @@ impl NoterApp {
         self.show_find_bar(ui);
         self.show_format_toolbar(ui, &mut view_command);
         if commands_enabled && let Some(command) = view_command {
-            self.execute_view_command(command);
+            self.execute_view_command(command, ui.ctx());
         }
         self.show_status(ui);
         self.show_editor(ui);
@@ -3395,7 +3427,7 @@ mod tests {
             let mut view_command = None;
             app.show_menu(ui, &mut file_command, &mut edit_command, &mut view_command);
             if let Some(command) = view_command {
-                app.execute_view_command(command);
+                app.execute_view_command(command, context);
             }
             app.apply_pending_document_view();
         })
@@ -4336,13 +4368,21 @@ mod tests {
         };
         let revision = app.document.revision();
 
-        app.execute_view_command(ViewCommandRequest::restore_document(
-            ViewCommand::ToggleWordWrap,
-        ));
+        let ctx = egui::Context::default();
+        app.execute_view_command(
+            ViewCommandRequest::restore_document(ViewCommand::ToggleWordWrap),
+            &ctx,
+        );
         assert_eq!(app.text_wrap, TextWrap::Unwrapped);
-        app.execute_view_command(ViewCommandRequest::restore_document(ViewCommand::ZoomIn));
+        app.execute_view_command(
+            ViewCommandRequest::restore_document(ViewCommand::ZoomIn),
+            &ctx,
+        );
         assert_eq!(app.editor_zoom.percent(), 110);
-        app.execute_view_command(ViewCommandRequest::restore_document(ViewCommand::ResetZoom));
+        app.execute_view_command(
+            ViewCommandRequest::restore_document(ViewCommand::ResetZoom),
+            &ctx,
+        );
 
         assert_eq!(app.editor_zoom.percent(), 100);
         assert_eq!(app.document.revision(), revision);
@@ -4362,9 +4402,11 @@ mod tests {
             ..NoterApp::default()
         };
 
-        app.execute_view_command(ViewCommandRequest::restore_document(
-            ViewCommand::ToggleWordWrap,
-        ));
+        let ctx = egui::Context::default();
+        app.execute_view_command(
+            ViewCommandRequest::restore_document(ViewCommand::ToggleWordWrap),
+            &ctx,
+        );
         app.execute_edit_command(EditCommand::SelectAll);
 
         assert_eq!(app.text_wrap, TextWrap::Wrapped);

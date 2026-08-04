@@ -147,9 +147,21 @@ under the following directory:
 | macOS | `~/Library/Application Support/Noter` |
 | Linux | `$XDG_DATA_HOME/noter`, or `~/.local/share/noter` when unset |
 
-Inspect that directory before deleting it. The current build does not yet create
-the planned recovery store; releases that do will distinguish preferences from
-recovery data in their uninstall instructions.
+Inspect that directory before deleting it.
+
+The library already implements a private recovery layout under a caller-supplied
+root (`recovery/records` for active instance records and
+`recovery/quarantine` for damaged files). The shipped application does not yet
+wire that store into startup and editing, so ordinary source builds still do not
+create recovery files for crash restore. When wiring lands, uninstall
+instructions will distinguish:
+
+| Kind | Location | Safe to delete when |
+| --- | --- | --- |
+| Preferences | `app.ron` in the state directory above | You want default theme, wrap, and zoom |
+| Recovery records | `recovery/` under the same state root | You have saved or discarded all unsaved work |
+
+Until application wiring ships, only preference files appear in practice.
 
 ## Troubleshooting
 

@@ -20,6 +20,10 @@ pub mod line_endings;
 pub mod markdown;
 /// Allocation-free logical-line navigation.
 pub mod navigation;
+/// Pure crash-recovery scheduling, integrity, and startup disposition.
+pub mod recovery;
+/// Durable private storage for restart-spanning recovery records.
+pub mod recovery_store;
 /// Monotonic document revision values.
 pub mod revision;
 /// Revision-tagged, fault-injectable save protocol.

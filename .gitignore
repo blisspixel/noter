@@ -81,6 +81,8 @@ desktop.ini
 # =============================================================================
 # Test / coverage artifacts
 # =============================================================================
+# Local proptest failure seeds; pin cases in source tests instead.
+/proptest-regressions/
 /coverage/
 /lcov.info
 coverage.xml

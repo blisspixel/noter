@@ -2,31 +2,40 @@
 
 [![CI](https://github.com/blisspixel/noter/actions/workflows/ci.yml/badge.svg)](https://github.com/blisspixel/noter/actions/workflows/ci.yml)
 
-Noter is a private, cross-platform editor for plain text and Markdown, written
-in Rust.
+**A clean editor. Nothing else.**
 
-It is a compiled desktop application with a native window and GPU renderer. It
-does not embed a WebView, browser engine, HTML or CSS interface, or JavaScript
-runtime.
+Privacy first. Zero spyware. Zero telemetry. Zero activity logging. No analytics
+panel, no usage funnel, no silent crash phone-home, no background history of
+what you wrote or which files you opened. Noter is only the tool you asked for:
+open a file, write, save. The rest is deliberately not there.
 
-One document. Two exact views. Text Mode shows every source character. Markdown
-Mode shows the same file as readable structure while keeping supported content
-directly editable. Both views operate on one portable UTF-8 text or Markdown
-file, and switching views never rewrites it.
+Noter is a local, cross-platform editor for plain text and Markdown. Use it for
+notes, drafts, journals, fiction, arguments, code comments, anything you need
+to put into words. Write freely. No account, no feed, no product that studies
+you while you work. Freedom of creativity and freedom of speech both need
+software that does not second-guess, score, or siphon the work.
 
-No tracking. No activity logging. No usage analytics. No automatic crash
-uploads. Noter stores ordinary local preferences such as theme, wrapping, and
-zoom, but keeps no background history of what you write, which files you open,
-or how you use the editor. The application rejects the spyware and bloatware
-pattern of turning a small utility into an oversized data-collection product.
-Those capabilities are absent, not hidden behind an opt-out.
+Your files stay ordinary portable `.txt` and `.md` on disk. Noter does not lock
+them into a proprietary cloud format, a subscription vault, or a bundled AI
+pipeline. You choose how to store, sync, back up, or publish. Local preferences
+such as theme, wrap, and zoom are ordinary settings on your machine, not a
+dossier.
 
-There is no account, subscription, telemetry, advertising, cloud document
-format, bundled AI, or remote content fetch while editing. Your files remain
-portable `.txt` and `.md` files, ready to move between devices using whatever
-storage, sync, or version-control tools you trust. The current application
-makes no network request; even its update action only opens a local status
-dialog unless you explicitly choose to open the releases page in your browser.
+## Why this shape
+
+- **Just the app.** No spyware, no telemetry, no activity logging, no ads, no
+  account, no subscription, no cloud document format, no bundled AI. Update
+  checks, when you choose them, stay explicit and separate from editing.
+- **Local by default.** A compiled desktop app with a native window and GPU
+  renderer. No WebView, no browser engine, no JavaScript runtime inside the
+  editor, no remote content fetch while you write.
+- **One document, full attention.** Classic single-file focus instead of a
+  workspace that wants to become a platform.
+- **Two exact views of the same source.** Text Mode shows every character.
+  Markdown Mode shows the same file as readable structure with supported content
+  still editable. Switching views never rewrites your bytes.
+
+The full privacy contract is in [docs/PRIVACY.md](docs/PRIVACY.md).
 
 ## Interface
 
@@ -78,23 +87,33 @@ The [installation guide](docs/INSTALLATION.md) covers updates, custom install
 locations, uninstallation, troubleshooting, and the future binary-release
 contract.
 
+The current application makes no network request while you work. Even Help >
+Check for Updates only opens a local status dialog unless you explicitly open
+the releases page in your browser.
+
 ## Project status
 
-Today, the source build provides exact-source Text Mode, source-backed Markdown
+Today the source build provides exact-source Text Mode, source-backed Markdown
 Mode, Undo and Redo, Find and Replace, Go To Line, wrap, zoom, five themes, and
 defensive local saves for ordinary UTF-8 `.txt` and `.md` files.
 
-Noter remains an alpha while recovery, continuous Markdown interaction,
-accessibility, platform filesystem evidence, and binary distribution are being
-finished. Evaluate it with backups rather than making it the only editor for an
-important file. The [roadmap](docs/ROADMAP.md) separates working behavior from
-the evidence required for the first public-quality release.
+The current crate version is `0.1.0-alpha.1`. Noter is still an engineering
+alpha: crash recovery is not fully wired in the app yet, continuous Markdown
+editing, accessibility matrices, remaining filesystem evidence, and binary
+distribution remain open. Use it with backups rather than as the only copy of
+important work.
+
+The privacy stance above is product law for every release, including alpha. What
+is still unfinished is reliability, completeness, and packaging, not a planned
+telemetry path. The [roadmap](docs/ROADMAP.md) defines the ordered path through
+correctness alpha (`0.1.0-alpha.2`), beta, release candidate, and the first
+public-quality `0.1.0`.
 
 ## Documentation
 
 - [Documentation index](docs/README.md)
-- [Native Markdown Mode](docs/MARKDOWN.md)
 - [Privacy contract](docs/PRIVACY.md)
+- [Native Markdown Mode](docs/MARKDOWN.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
