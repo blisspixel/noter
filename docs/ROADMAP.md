@@ -102,9 +102,10 @@ remain first-release work after that checkpoint.
 The current tree already has deterministic Undo coalescing, bounded Find and
 Replace, the pure lifecycle reducer, external-change Reload / Keep Editing /
 Save As, Markdown document-wide and cross-block selection, pure recovery
-scheduling with epoch-correlated persist, versioned recovery records, and a
-private durable recovery store. Application wiring for recovery and the
-overwrite second-confirm remain open.
+scheduling with epoch-correlated persist, versioned recovery records, a private
+durable recovery store, and application wiring that schedules dirty persist,
+offers startup Restore / Discard, deletes on Save or Discard, and shows persist
+failure. The overwrite second-confirm and remaining alpha.2 evidence remain open.
 
 ## Product boundaries
 
@@ -616,8 +617,8 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 Ordered for `0.1.0-alpha.2` first. Completed historical items stay listed only
 when they document evidence links.
 
-1. **In progress / next:** wire M4 recovery into the app (schedule, startup UI,
-   Save/Discard cleanup, visible persist failure). Library store is present.
+1. **In progress / next:** finish alpha.2 after recovery app wiring: overwrite
+   second-confirm, clipboard path, remaining M3/M1/M2 evidence, correctness matrix.
 2. **Next:** external-change overwrite with explicit second confirmation.
 3. **Next:** M3 Cut / Copy / Paste command path and remaining navigation /
    long-session evidence.

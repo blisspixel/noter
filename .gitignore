@@ -100,3 +100,7 @@ tarpaulin-report.html
 *.pem
 *.key
 secrets/
+
+# Agent working memory (local only)
+.agent/
+

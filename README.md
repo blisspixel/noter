@@ -98,10 +98,11 @@ Mode, Undo and Redo, Find and Replace, Go To Line, wrap, zoom, five themes, and
 defensive local saves for ordinary UTF-8 `.txt` and `.md` files.
 
 The current crate version is `0.1.0-alpha.1`. Noter is still an engineering
-alpha: crash recovery is not fully wired in the app yet, continuous Markdown
-editing, accessibility matrices, remaining filesystem evidence, and binary
-distribution remain open. Use it with backups rather than as the only copy of
-important work.
+alpha. Private crash recovery is now scheduled and restored in the application
+for dirty sessions (see the roadmap for remaining alpha.2 gates). Continuous
+Markdown editing, accessibility matrices, remaining filesystem evidence, and
+binary distribution remain open. Use it with backups rather than as the only
+copy of important work.
 
 The privacy stance above is product law for every release, including alpha. What
 is still unfinished is reliability, completeness, and packaging, not a planned

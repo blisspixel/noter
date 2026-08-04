@@ -23,6 +23,9 @@ use noter::core::undo::{HistoryApplyOutcome, HistoryRecordOutcome, UndoHistory};
 use noter::error::NoterError;
 
 use crate::bounded_text_input::{BoundedTextBuffer, sanitize_bounded_text_events};
+use crate::crash_recovery::{
+    CrashRecoverySession, RECOVERY_PERSIST_FAILURE_MESSAGE, RECOVERY_UNAVAILABLE_MESSAGE,
+};
 use crate::editor_settings::{
     EditorZoom, PointerZoomAccumulator, TextWrap, WORD_WRAP_STORAGE_KEY, ZOOM_STORAGE_KEY,
     apply_editor_zoom,
@@ -415,6 +418,7 @@ pub struct NoterApp {
     lifecycle: LifecycleState,
     conflict: ConflictState,
     last_external_inspect_at: Option<f64>,
+    crash_recovery: CrashRecoverySession,
     #[cfg(feature = "screenshot-qa")]
     screenshot: Option<ScreenshotCapture>,
 }
@@ -450,6 +454,7 @@ impl Default for NoterApp {
             lifecycle: LifecycleState::default(),
             conflict: ConflictState::default(),
             last_external_inspect_at: None,
+            crash_recovery: CrashRecoverySession::open_default(),
             #[cfg(feature = "screenshot-qa")]
             screenshot: None,
         }
@@ -481,9 +486,22 @@ impl NoterApp {
             text_wrap: TextWrap::from_storage(cc.storage),
             editor_zoom: EditorZoom::from_storage(cc.storage),
             updates_open: options.show_updates,
+            crash_recovery: CrashRecoverySession::open_default(),
             ..Self::default()
         };
-        if let Some(path) = options.initial_path {
+        if app.crash_recovery.is_unavailable() {
+            app.error_msg = Some(RECOVERY_UNAVAILABLE_MESSAGE.to_owned());
+        }
+        // Explicit file opens and screenshot automation skip interactive recovery
+        // offers so double-click open and capture remain deterministic.
+        let skip_recovery_offers =
+            options.initial_path.is_some() || options.screenshot_path.is_some();
+        if skip_recovery_offers {
+            while app.crash_recovery.active_offer().is_some() {
+                app.crash_recovery.discard_active_offer();
+            }
+        }
+        if let Some(path) = options.initial_path.clone() {
             app.open_path(&path, options.view);
         } else if let Some(view) = options.view {
             app.select_document_view(view);
@@ -532,6 +550,7 @@ impl NoterApp {
                 self.markdown_issue_cache = None;
                 self.error_msg = None;
                 self.reset_external_conflict_state();
+                self.crash_recovery.begin_fresh_identity();
                 self.view = DocumentView::Text;
                 self.select_document_view(
                     requested_view.unwrap_or_else(|| preferred_view_for_path(path)),
@@ -688,10 +707,12 @@ impl NoterApp {
         self.error_msg = match result {
             Ok(SaveOutcome::Committed { ref warnings, .. }) if warnings.is_empty() => {
                 self.reset_external_conflict_state();
+                self.crash_recovery.on_saved_clean(self.document.revision());
                 None
             }
             Ok(SaveOutcome::Committed { warnings, .. }) => {
                 self.reset_external_conflict_state();
+                self.crash_recovery.on_saved_clean(self.document.revision());
                 let mut details: Vec<String> =
                     warnings.cleanup().iter().map(ToString::to_string).collect();
                 details.extend(warnings.durability().iter().map(ToString::to_string));
@@ -871,6 +892,7 @@ impl NoterApp {
         let effect = self
             .lifecycle
             .reduce(LifecycleCommand::Decide(DirtyDecision::Discard));
+        self.crash_recovery.on_discarded();
         self.apply_lifecycle_effect(effect, ctx);
     }
 
@@ -911,6 +933,7 @@ impl NoterApp {
         if self.lifecycle.pending_intent().is_some()
             || self.pending_hard_link_save.is_some()
             || self.pending_recovery_reconciliation.is_some()
+            || self.crash_recovery.active_offer().is_some()
             || self.about_open
             || self.updates_open
         {
@@ -2378,6 +2401,8 @@ impl NoterApp {
                 let history_outcome = self.history.record(applied);
                 self.text = String::from(self.document.rope());
                 self.markdown_issue_cache = None;
+                self.crash_recovery
+                    .on_edited(&self.document, self.selection);
                 if history_outcome == HistoryRecordOutcome::ClearedForOversizedTransaction {
                     self.error_msg = Some(format!(
                         "The edit was applied, but its {}-byte inverse exceeded the bounded undo history and older history was cleared.",
@@ -2566,10 +2591,14 @@ impl NoterApp {
         );
         self.show_menu(ui, &mut file_command, &mut edit_command, &mut view_command);
         self.show_error(ui);
+        self.show_crash_recovery_quarantine_notices(ui);
+        self.show_crash_recovery_persist_failure(ui);
         self.show_save_recovery_notice(ui);
+        let recovery_offer_open = self.crash_recovery.active_offer().is_some();
         let commands_enabled = self.pending_hard_link_save.is_none()
             && self.lifecycle.pending_intent().is_none()
-            && !self.conflict.is_prompting();
+            && !self.conflict.is_prompting()
+            && !recovery_offer_open;
         let edit_executed = if commands_enabled {
             edit_command.take().is_some_and(|command| {
                 self.execute_edit_command(command);
@@ -2592,13 +2621,26 @@ impl NoterApp {
         {
             self.execute_file_command(command, ui.ctx());
         }
+        if !recovery_offer_open {
+            self.crash_recovery.on_tick(&self.document, self.selection);
+            if self.crash_recovery.has_persist_failure()
+                && self.error_msg.as_deref() != Some(RECOVERY_PERSIST_FAILURE_MESSAGE)
+            {
+                // Surface once as a durable status; do not spam every frame.
+                if self.error_msg.is_none() {
+                    self.error_msg = Some(RECOVERY_PERSIST_FAILURE_MESSAGE.to_owned());
+                }
+            }
+        }
         self.maybe_inspect_external_change(ui.ctx());
         self.protect_native_close(ui.ctx());
         self.update_title(ui.ctx());
         self.show_about(ui.ctx());
         self.show_updates(ui.ctx());
         self.show_go_to_line(ui.ctx());
-        if self.pending_recovery_reconciliation.is_some() {
+        if recovery_offer_open {
+            self.show_startup_recovery_offer(ui.ctx());
+        } else if self.pending_recovery_reconciliation.is_some() {
             self.show_save_recovery_reconciliation(ui.ctx());
         } else if self.pending_hard_link_save.is_some() {
             self.show_hard_link_confirmation(ui.ctx());
@@ -2606,6 +2648,107 @@ impl NoterApp {
             self.show_unsaved_changes_confirmation(ui.ctx());
         } else if self.conflict.is_prompting() {
             self.show_external_change_confirmation(ui.ctx());
+        }
+    }
+
+    fn show_crash_recovery_quarantine_notices(&mut self, ui: &mut egui::Ui) {
+        if self.crash_recovery.quarantine_notices().is_empty() {
+            return;
+        }
+        egui::Panel::top("crash_recovery_quarantine").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Noter moved damaged recovery file(s) aside and did not open them.",
+                );
+                if ui.button("Dismiss").clicked() {
+                    self.crash_recovery.clear_quarantine_notices();
+                }
+            });
+            for notice in self.crash_recovery.quarantine_notices() {
+                ui.label(notice.as_str());
+            }
+        });
+    }
+
+    fn show_crash_recovery_persist_failure(&mut self, ui: &mut egui::Ui) {
+        if !self.crash_recovery.has_persist_failure() {
+            return;
+        }
+        egui::Panel::top("crash_recovery_persist_failure").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(ui.visuals().warn_fg_color, RECOVERY_PERSIST_FAILURE_MESSAGE);
+                if ui.button("Dismiss notice").clicked() {
+                    self.crash_recovery.dismiss_persist_failure();
+                    if self.error_msg.as_deref() == Some(RECOVERY_PERSIST_FAILURE_MESSAGE) {
+                        self.error_msg = None;
+                    }
+                }
+            });
+        });
+    }
+
+    fn show_startup_recovery_offer(&mut self, ctx: &egui::Context) {
+        let Some(offer) = self.crash_recovery.active_offer() else {
+            return;
+        };
+        let label = offer.original_path_label();
+        let content_preview_len = offer.record().content().len();
+        let mut restore = false;
+        let mut discard = false;
+        egui::Modal::new(egui::Id::new("startup-crash-recovery")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.heading("Recover unsaved work?");
+            ui.add_space(8.0);
+            ui.label(format!(
+                "Noter found a private recovery copy for \"{label}\" ({content_preview_len} bytes)."
+            ));
+            ui.label(
+                "Restore opens it as an unsaved document in this window. Discard deletes only that private recovery copy. Your original file on disk is not changed until you Save.",
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                restore = ui
+                    .add(egui::Button::new("Restore").min_size(egui::vec2(100.0, 28.0)))
+                    .clicked();
+                discard = ui
+                    .add(egui::Button::new("Discard").min_size(egui::vec2(100.0, 28.0)))
+                    .clicked();
+            });
+        });
+        if restore {
+            if let Some(offer) = self.crash_recovery.active_offer()
+                && offer.record().content().len() > INTERACTIVE_TEXT_MAX_BYTES
+            {
+                self.error_msg = Some(format!(
+                    "The recovered document is larger than the current {INTERACTIVE_TEXT_MAX_LABEL} interactive limit and was not opened. Use Discard to remove only the private recovery copy, or restore it with a future virtualized editor."
+                ));
+                return;
+            }
+            match self.crash_recovery.restore_active_offer() {
+                Ok((document, selection)) => {
+                    self.text = String::from(document.rope());
+                    self.document = document;
+                    self.history.reset(self.document.revision());
+                    self.selection = valid_selection_or_end(&self.text, selection);
+                    self.pending_selection_restore = Some(self.selection);
+                    self.advance_document_editor();
+                    self.find_bar.reset();
+                    self.go_to_line.reset();
+                    self.markdown_editor.reset();
+                    self.markdown_issue_cache = None;
+                    self.error_msg = None;
+                    self.reset_external_conflict_state();
+                    self.view = DocumentView::Text;
+                    self.crash_recovery
+                        .on_edited(&self.document, self.selection);
+                }
+                Err(message) => {
+                    self.error_msg = Some(message);
+                }
+            }
+        } else if discard {
+            self.crash_recovery.discard_active_offer();
         }
     }
 

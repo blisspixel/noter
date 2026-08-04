@@ -149,19 +149,15 @@ under the following directory:
 
 Inspect that directory before deleting it.
 
-The library already implements a private recovery layout under a caller-supplied
-root (`recovery/records` for active instance records and
-`recovery/quarantine` for damaged files). The shipped application does not yet
-wire that store into startup and editing, so ordinary source builds still do not
-create recovery files for crash restore. When wiring lands, uninstall
-instructions will distinguish:
+Private crash recovery uses a subdirectory of that state root
+(`recovery/records` for active instance records and `recovery/quarantine` for
+damaged files). Dirty editing sessions persist recovery copies there; Save and
+explicit Discard remove the owned record. Uninstall and cleanup distinguish:
 
 | Kind | Location | Safe to delete when |
 | --- | --- | --- |
 | Preferences | `app.ron` in the state directory above | You want default theme, wrap, and zoom |
 | Recovery records | `recovery/` under the same state root | You have saved or discarded all unsaved work |
-
-Until application wiring ships, only preference files appear in practice.
 
 ## Troubleshooting
 

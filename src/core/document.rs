@@ -192,6 +192,19 @@ impl Document {
         self.content_fingerprint != self.saved_content_fingerprint
     }
 
+    /// Marks recovered crash-recovery content as dirty without changing bytes.
+    ///
+    /// Restored work must never appear clean until the user saves (FR-066). A
+    /// load from recovery bytes would otherwise match the saved fingerprint and
+    /// suppress the dirty prompt and recovery scheduling.
+    pub fn mark_recovered_dirty(&mut self) {
+        // Sentinel baseline cannot match a real document fingerprint in practice
+        // and is not a committed path; Save establishes a true saved baseline.
+        self.saved_content_fingerprint =
+            ContentFingerprint::from_bytes(b"\0noter-recovery-unsaved-baseline");
+        self.saved_target = None;
+    }
+
     /// Replaces authoritative text and advances the revision exactly once when changed.
     ///
     /// # Errors
@@ -482,6 +495,17 @@ mod tests {
                 count: 1
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn mark_recovered_dirty_keeps_bytes_and_sets_dirty() -> Result<(), NoterError> {
+        let mut document = Document::from_bytes(b"recovered text")?;
+        assert!(!document.is_dirty());
+        let before = document.to_bytes();
+        document.mark_recovered_dirty();
+        assert!(document.is_dirty());
+        assert_eq!(document.to_bytes(), before);
         Ok(())
     }
 

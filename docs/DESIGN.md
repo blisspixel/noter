@@ -613,8 +613,10 @@ Recovery uses a private subdirectory of the per-user application data root
 (never the general temporary directory). Preferences may use eframe storage
 (`app.ron`); recovery records do not. The library modules are
 `core::recovery` (pure schedule and integrity) and `core::recovery_store`
-(durable private files). Application wiring of those modules is still required
-before crash recovery is product-complete.
+(durable private files). The binary adapter `crash_recovery` opens
+`eframe::storage_dir("Noter")/recovery`, drives the pure scheduler, presents
+startup Restore / Discard offers, and surfaces persist failures without writing
+user document paths.
 
 Each dirty session owns one versioned record:
 
