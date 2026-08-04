@@ -209,10 +209,7 @@ impl Document {
     ///
     /// Used only after the external-change second-confirm path authorizes
     /// overwrite. Ordinary Keep Editing must never call this method.
-    pub const fn rebaseline_to_observed_disk(
-        &mut self,
-        observation: super::save::FileObservation,
-    ) {
+    pub const fn rebaseline_to_observed_disk(&mut self, observation: super::save::FileObservation) {
         self.saved_target = Some(TargetExpectation::Existing(observation));
     }
 

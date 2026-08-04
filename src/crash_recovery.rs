@@ -14,9 +14,9 @@ use noter::core::document::Document;
 use noter::core::edit::Selection;
 use noter::core::recovery::{
     RecoveryClock, RecoveryDocumentId, RecoveryInstanceId, RecoveryOfferDecision,
-    RecoveryOfferState, RecoveryQuarantineReason, RecoveryScheduleCommand, RecoveryScheduleEffect,
-    RecoveryScheduleState, RecoverySnapshot, RecoverySnapshotParts, RecoveryStartupDisposition,
-    RecoveryWallTime, ValidatedRecoveryRecord,
+    RecoveryOfferState, RecoveryScheduleCommand, RecoveryScheduleEffect, RecoveryScheduleState,
+    RecoverySnapshot, RecoverySnapshotParts, RecoveryStartupDisposition, RecoveryWallTime,
+    ValidatedRecoveryRecord,
 };
 use noter::core::recovery_store::{RecoveryScanEntry, RecoveryStore};
 use noter::core::revision::Revision;
@@ -117,6 +117,10 @@ impl CrashRecoverySession {
     /// Opens a recovery session under an explicit recovery root (tests).
     pub fn open_at(recovery_root: impl Into<PathBuf>) -> Self {
         let mut session = Self::blank();
+        if session.unavailable {
+            // Identity construction failed; never attach a store with weak IDs.
+            return session;
+        }
         match RecoveryStore::open(recovery_root) {
             Ok(store) => {
                 session.store = Some(store);
@@ -136,18 +140,27 @@ impl CrashRecoverySession {
     }
 
     fn blank() -> Self {
+        let (document_id, instance_id, unavailable) =
+            match (random_document_id(), random_instance_id()) {
+                (Ok(document_id), Ok(instance_id)) => (document_id, instance_id, false),
+                _ => (
+                    RecoveryDocumentId::new([0; 16]),
+                    RecoveryInstanceId::new([0; 16]),
+                    true,
+                ),
+            };
         Self {
             store: None,
             schedule: RecoveryScheduleState::default(),
-            document_id: random_document_id(),
-            instance_id: random_instance_id(),
+            document_id,
+            instance_id,
             session_started: Instant::now(),
             created_wall: wall_now(),
             startup_offers: Vec::new(),
             active_offer_index: None,
             quarantine_notices: Vec::new(),
             persist_failure: false,
-            unavailable: false,
+            unavailable,
         }
     }
 
@@ -304,10 +317,27 @@ impl CrashRecoverySession {
     }
 
     /// Begins tracking a new editor identity after New / successful open / restore.
+    ///
+    /// When operating-system randomness is unavailable, recovery is marked
+    /// unavailable for the rest of the session so the adapter never persists
+    /// with a weak or zero identity that could collide with another session.
     pub fn begin_fresh_identity(&mut self) {
-        self.document_id = random_document_id();
-        self.instance_id = random_instance_id();
-        self.created_wall = wall_now();
+        match (random_document_id(), random_instance_id()) {
+            (Ok(document_id), Ok(instance_id)) => {
+                self.document_id = document_id;
+                self.instance_id = instance_id;
+                self.created_wall = wall_now();
+                self.schedule = RecoveryScheduleState::default();
+                self.persist_failure = false;
+            }
+            _ => {
+                self.mark_unavailable_for_identity_failure();
+            }
+        }
+    }
+
+    fn mark_unavailable_for_identity_failure(&mut self) {
+        self.unavailable = true;
         self.schedule = RecoveryScheduleState::default();
         self.persist_failure = false;
     }
@@ -480,16 +510,23 @@ fn wall_now() -> RecoveryWallTime {
     RecoveryWallTime::from_unix_millis(millis)
 }
 
-fn random_document_id() -> RecoveryDocumentId {
-    let mut bytes = [0_u8; 16];
-    let _ = fill_random(&mut bytes);
-    RecoveryDocumentId::new(bytes)
+fn random_document_id() -> Result<RecoveryDocumentId, ()> {
+    Ok(RecoveryDocumentId::new(random_id_bytes()?))
 }
 
-fn random_instance_id() -> RecoveryInstanceId {
+fn random_instance_id() -> Result<RecoveryInstanceId, ()> {
+    Ok(RecoveryInstanceId::new(random_id_bytes()?))
+}
+
+fn random_id_bytes() -> Result<[u8; 16], ()> {
     let mut bytes = [0_u8; 16];
-    let _ = fill_random(&mut bytes);
-    RecoveryInstanceId::new(bytes)
+    fill_random(&mut bytes).map_err(|_| ())?;
+    // All-zero should not occur after a successful CSPRNG fill; treat it as
+    // failure so instance files never share a fixed weak identity.
+    if bytes.iter().all(|&byte| byte == 0) {
+        return Err(());
+    }
+    Ok(bytes)
 }
 
 fn truncate_for_ui(text: &str, max_bytes: usize) -> String {
@@ -502,9 +539,6 @@ fn truncate_for_ui(text: &str, max_bytes: usize) -> String {
     }
     format!("{}…", &text[..end])
 }
-
-// Silence unused import if RecoveryQuarantineReason only used via description.
-const _: fn(RecoveryQuarantineReason) -> &'static str = RecoveryQuarantineReason::description;
 
 #[cfg(test)]
 mod tests {
@@ -594,6 +628,58 @@ mod tests {
         let store = RecoveryStore::open(dir.path()).expect("store");
         let entries = store.scan_startup().expect("scan");
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn fresh_identity_keeps_distinct_recovery_instances() {
+        let dir = tempdir().expect("tempdir");
+        let mut session = CrashRecoverySession::open_at(dir.path());
+        assert!(!session.is_unavailable());
+        let first_instance = session.instance_id;
+
+        let mut first = Document::new();
+        first.replace_text("first session").expect("edit");
+        session.on_edited(&first, Selection::caret(0));
+        session.session_started = Instant::now()
+            .checked_sub(Duration::from_secs(3))
+            .expect("clock");
+        session.on_tick(&first, Selection::caret(0));
+
+        session.begin_fresh_identity();
+        assert!(!session.is_unavailable());
+        assert_ne!(session.instance_id, first_instance);
+
+        let mut second = Document::new();
+        second.replace_text("second session").expect("edit");
+        session.on_edited(&second, Selection::caret(0));
+        session.session_started = Instant::now()
+            .checked_sub(Duration::from_secs(3))
+            .expect("clock");
+        session.on_tick(&second, Selection::caret(0));
+
+        let entries = RecoveryStore::open(dir.path())
+            .expect("store")
+            .scan_startup()
+            .expect("scan");
+        // Prior instance remains on disk until save/discard; new instance is distinct.
+        assert_eq!(entries.len(), 2);
+        let contents: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| match entry.disposition() {
+                RecoveryStartupDisposition::Offer(record) => Some(record.content().to_vec()),
+                RecoveryStartupDisposition::Quarantine(_) => None,
+            })
+            .collect();
+        assert!(contents.iter().any(|c| c == b"first session"));
+        assert!(contents.iter().any(|c| c == b"second session"));
+    }
+
+    #[test]
+    fn random_id_bytes_rejects_all_zero_buffer() {
+        // Operating-system fill is expected to succeed on CI hosts; the
+        // zero-rejection branch is structural insurance, not a forced fault.
+        let bytes = random_id_bytes().expect("csprng");
+        assert!(bytes.iter().any(|&byte| byte != 0));
     }
 
     #[test]

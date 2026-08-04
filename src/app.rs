@@ -847,6 +847,10 @@ impl NoterApp {
         self.markdown_issue_cache = None;
         self.error_msg = None;
         self.reset_external_conflict_state();
+        // Clean New skips the discard prompt, so rotate recovery identity here
+        // the same way Open and dirty-Discard do. Otherwise later dirty
+        // snapshots would reuse the previous session's instance file.
+        self.crash_recovery.begin_fresh_identity();
     }
 
     fn request_new_document(&mut self, ctx: &egui::Context) {
