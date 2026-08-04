@@ -159,6 +159,9 @@ impl FileCommand {
 enum EditCommand {
     Undo,
     Redo,
+    Cut,
+    Copy,
+    Paste,
     SelectAll,
     Find,
     FindNext,
@@ -168,10 +171,13 @@ enum EditCommand {
 }
 
 impl EditCommand {
-    const INPUT_PRECEDENCE: [Self; 8] = [
+    const INPUT_PRECEDENCE: [Self; 11] = [
         Self::FindPrevious,
         Self::Redo,
         Self::Undo,
+        Self::Cut,
+        Self::Copy,
+        Self::Paste,
         Self::SelectAll,
         Self::Find,
         Self::Replace,
@@ -183,6 +189,9 @@ impl EditCommand {
         match self {
             Self::Undo => "Undo",
             Self::Redo => "Redo",
+            Self::Cut => "Cut",
+            Self::Copy => "Copy",
+            Self::Paste => "Paste",
             Self::SelectAll => "Select All",
             Self::Find => "Find...",
             Self::FindNext => "Find Next",
@@ -200,6 +209,9 @@ impl EditCommand {
             ),
             (Self::Redo, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y),
             (Self::Undo, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z),
+            (Self::Cut, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::X),
+            (Self::Copy, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C),
+            (Self::Paste, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::V),
             (Self::SelectAll, _) => {
                 egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::A)
             }
@@ -1178,7 +1190,12 @@ impl NoterApp {
                 if !document_shortcuts_enabled
                     && matches!(
                         candidate,
-                        EditCommand::Undo | EditCommand::Redo | EditCommand::SelectAll
+                        EditCommand::Undo
+                            | EditCommand::Redo
+                            | EditCommand::Cut
+                            | EditCommand::Copy
+                            | EditCommand::Paste
+                            | EditCommand::SelectAll
                     )
                 {
                     continue;
@@ -1233,7 +1250,7 @@ impl NoterApp {
         }
     }
 
-    fn execute_edit_command(&mut self, command: EditCommand) {
+    fn execute_edit_command(&mut self, command: EditCommand, ctx: &egui::Context) {
         match command {
             EditCommand::Find => {
                 self.find_bar.open(false, &self.text, self.selection);
@@ -1262,6 +1279,18 @@ impl NoterApp {
                 self.preserve_focus_on_selection_restore = false;
                 return;
             }
+            EditCommand::Copy => {
+                self.clipboard_copy(ctx);
+                return;
+            }
+            EditCommand::Cut => {
+                self.clipboard_cut(ctx);
+                return;
+            }
+            EditCommand::Paste => {
+                self.clipboard_paste(ctx);
+                return;
+            }
             EditCommand::Undo | EditCommand::Redo => {}
         }
         let result = match command {
@@ -1272,7 +1301,10 @@ impl NoterApp {
             | EditCommand::FindPrevious
             | EditCommand::Replace
             | EditCommand::GoToLine
-            | EditCommand::SelectAll => return,
+            | EditCommand::SelectAll
+            | EditCommand::Cut
+            | EditCommand::Copy
+            | EditCommand::Paste => return,
         };
         match result {
             Ok(Some(outcome)) => self.synchronize_after_history(outcome),
@@ -1715,6 +1747,9 @@ impl NoterApp {
         for (index, candidate) in [
             EditCommand::Undo,
             EditCommand::Redo,
+            EditCommand::Cut,
+            EditCommand::Copy,
+            EditCommand::Paste,
             EditCommand::SelectAll,
             EditCommand::Find,
             EditCommand::FindNext,
@@ -1725,7 +1760,7 @@ impl NoterApp {
         .into_iter()
         .enumerate()
         {
-            if matches!(index, 2 | 3 | 7) {
+            if matches!(index, 2 | 5 | 6 | 10) {
                 ui.separator();
             }
             let enabled = self.edit_command_enabled(candidate);
@@ -1749,13 +1784,91 @@ impl NoterApp {
         match command {
             EditCommand::Undo => self.history.can_undo(),
             EditCommand::Redo => self.history.can_redo(),
+            EditCommand::Cut | EditCommand::Copy => {
+                self.selection.anchor() != self.selection.active()
+            }
             EditCommand::GoToLine => self.view == DocumentView::Text,
-            EditCommand::SelectAll
+            EditCommand::Paste
+            | EditCommand::SelectAll
             | EditCommand::Find
             | EditCommand::FindNext
             | EditCommand::FindPrevious
             | EditCommand::Replace => true,
         }
+    }
+
+    fn selected_source_text(&self) -> String {
+        let range = self.selection.ordered_range();
+        let start = range.start().min(self.text.len());
+        let end = range.end().min(self.text.len());
+        if start > end || !self.text.is_char_boundary(start) || !self.text.is_char_boundary(end) {
+            return String::new();
+        }
+        self.text[start..end].to_owned()
+    }
+
+    fn clipboard_copy(&self, ctx: &egui::Context) {
+        let selected = self.selected_source_text();
+        if selected.is_empty() {
+            return;
+        }
+        ctx.copy_text(selected);
+    }
+
+    fn clipboard_cut(&mut self, ctx: &egui::Context) {
+        let selected = self.selected_source_text();
+        if selected.is_empty() {
+            return;
+        }
+        ctx.copy_text(selected);
+        self.replace_selection_with("", EditOrigin::Programmatic);
+    }
+
+    fn clipboard_paste(&mut self, ctx: &egui::Context) {
+        // System paste arrives as Event::Paste in the same input frame as Ctrl+V.
+        // Menu Paste without an OS event cannot invent clipboard bytes; request
+        // a platform paste so the next frame can deliver Event::Paste when the
+        // integration supports it, and apply any paste event already present.
+        let payload = ctx.input(|input| {
+            input.events.iter().rev().find_map(|event| {
+                if let egui::Event::Paste(text) = event {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+        });
+        if let Some(text) = payload.filter(|text| !text.is_empty()) {
+            self.replace_selection_with(&text, EditOrigin::Paste);
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+    }
+
+    fn replace_selection_with(&mut self, replacement: &str, origin: EditOrigin) {
+        let range = self.selection.ordered_range();
+        let start = range.start().min(self.text.len());
+        let end = range.end().min(self.text.len());
+        if start > end || !self.text.is_char_boundary(start) || !self.text.is_char_boundary(end) {
+            return;
+        }
+        let mut next = String::with_capacity(self.text.len() - (end - start) + replacement.len());
+        next.push_str(&self.text[..start]);
+        next.push_str(replacement);
+        next.push_str(&self.text[end..]);
+        let caret = start + replacement.len();
+        if !next.is_char_boundary(caret) {
+            return;
+        }
+        let after = Selection::caret(caret);
+        let observed_at = EditTimestamp::new(std::time::Duration::from_secs(0));
+        self.text = next;
+        self.record_editor_change(EditorFrameOutcome {
+            changed: true,
+            selection: after,
+            origin,
+            observed_at,
+        });
     }
 
     fn show_view_menu(&mut self, ui: &mut egui::Ui, command: &mut Option<ViewCommandRequest>) {
@@ -2692,7 +2805,7 @@ impl NoterApp {
             && !recovery_offer_open;
         let edit_executed = if commands_enabled {
             edit_command.take().is_some_and(|command| {
-                self.execute_edit_command(command);
+                self.execute_edit_command(command, ui.ctx());
                 true
             })
         } else {
@@ -4471,7 +4584,7 @@ mod tests {
             selection,
             ..NoterApp::default()
         };
-        app.execute_edit_command(EditCommand::Replace);
+        app.execute_edit_command(EditCommand::Replace, &egui::Context::default());
         app.find_bar.set_replacement_for_test("yy".to_owned());
 
         app.replace_selected_match(EditTimestamp::default());
@@ -4504,7 +4617,7 @@ mod tests {
             selection,
             ..NoterApp::default()
         };
-        app.execute_edit_command(EditCommand::Replace);
+        app.execute_edit_command(EditCommand::Replace, &egui::Context::default());
         app.find_bar.set_replacement_for_test("zzz".to_owned());
 
         app.replace_all_matches(EditTimestamp::default());
@@ -4584,12 +4697,29 @@ mod tests {
             ..NoterApp::default()
         };
 
-        app.execute_edit_command(EditCommand::SelectAll);
+        app.execute_edit_command(EditCommand::SelectAll, &egui::Context::default());
 
         assert_eq!(app.selection, Selection::new(0, source.len()));
         assert_eq!(app.pending_selection_restore, Some(app.selection));
         assert_eq!(String::from(app.document.rope()), source);
         assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn cut_command_removes_selection_through_the_shared_edit_path() {
+        let source = "abcdef";
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection: Selection::new(1, 4),
+            ..NoterApp::default()
+        };
+        assert!(app.edit_command_enabled(EditCommand::Cut));
+        assert!(app.edit_command_enabled(EditCommand::Copy));
+        app.execute_edit_command(EditCommand::Cut, &egui::Context::default());
+        assert_eq!(String::from(app.document.rope()), "aef");
+        assert!(app.document.is_dirty());
+        assert_eq!(app.selection, Selection::caret(1));
     }
 
     #[test]
@@ -4641,7 +4771,7 @@ mod tests {
             ViewCommandRequest::restore_document(ViewCommand::ToggleWordWrap),
             &ctx,
         );
-        app.execute_edit_command(EditCommand::SelectAll);
+        app.execute_edit_command(EditCommand::SelectAll, &egui::Context::default());
 
         assert_eq!(app.text_wrap, TextWrap::Wrapped);
         assert_eq!(app.selection, Selection::new(0, source.len()));
@@ -4852,10 +4982,10 @@ mod tests {
         assert_eq!(app.selection, Selection::caret(1));
         assert!(!app.markdown_editor.is_editing());
 
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.text, source);
         assert_eq!(app.selection, initial_selection);
-        app.execute_edit_command(EditCommand::Redo);
+        app.execute_edit_command(EditCommand::Redo, &egui::Context::default());
         assert_eq!(app.text, "qXYZ");
         assert_eq!(app.selection, Selection::caret(1));
     }
@@ -4870,15 +5000,15 @@ mod tests {
             ..NoterApp::default()
         };
 
-        app.execute_edit_command(EditCommand::Find);
-        app.execute_edit_command(EditCommand::FindNext);
+        app.execute_edit_command(EditCommand::Find, &egui::Context::default());
+        app.execute_edit_command(EditCommand::FindNext, &egui::Context::default());
         assert_eq!(app.selection, Selection::new(8, 11));
         assert_eq!(app.pending_selection_restore, Some(app.selection));
         assert!(app.preserve_focus_on_selection_restore);
 
-        app.execute_edit_command(EditCommand::FindNext);
+        app.execute_edit_command(EditCommand::FindNext, &egui::Context::default());
         assert_eq!(app.selection, Selection::new(0, 3));
-        app.execute_edit_command(EditCommand::FindPrevious);
+        app.execute_edit_command(EditCommand::FindPrevious, &egui::Context::default());
         assert_eq!(app.selection, Selection::new(8, 11));
         assert_eq!(app.document.rope().to_string(), source);
         assert!(!app.document.is_dirty());
@@ -4894,12 +5024,12 @@ mod tests {
             ..NoterApp::default()
         };
 
-        app.execute_edit_command(EditCommand::Replace);
+        app.execute_edit_command(EditCommand::Replace, &egui::Context::default());
         app.replace_selected_match(EditTimestamp::default());
         assert_eq!(app.text, " cat");
         assert_eq!(app.document.rope().to_string(), " cat");
         assert_eq!(app.history.len(), 1);
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.text, source);
 
         app.selection = Selection::new(0, source.len());
@@ -4908,7 +5038,7 @@ mod tests {
         assert_eq!(app.document.rope().to_string(), " ");
         assert_eq!(app.history.len(), 1);
         assert_eq!(app.selection, Selection::new(0, 1));
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.text, source);
         assert_eq!(app.selection, Selection::new(0, source.len()));
     }
@@ -4946,9 +5076,9 @@ mod tests {
         }
 
         assert_eq!(app.history.len(), 2);
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.text, "ab");
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.text, "");
     }
 
@@ -4973,14 +5103,14 @@ mod tests {
         assert!(app.document.is_dirty());
         assert!(app.history.can_undo());
 
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.text, "abc");
         assert_eq!(String::from(app.document.rope()), "abc");
         assert_eq!(app.selection, Selection::new(2, 1));
         assert!(!app.document.is_dirty());
         assert!(app.history.can_redo());
 
-        app.execute_edit_command(EditCommand::Redo);
+        app.execute_edit_command(EditCommand::Redo, &egui::Context::default());
         assert_eq!(app.text, "aBc");
         assert_eq!(String::from(app.document.rope()), "aBc");
         assert_eq!(app.selection, Selection::new(1, 2));
@@ -5094,7 +5224,7 @@ mod tests {
         let context = egui::Context::default();
         context.memory_mut(|memory| memory.request_focus(editor_id));
 
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.editor_id(), editor_id);
         assert_eq!(app.pending_selection_restore, Some(Selection::new(1, 2)));
 
