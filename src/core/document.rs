@@ -518,6 +518,48 @@ mod tests {
     }
 
     #[test]
+    fn rebaseline_to_observed_disk_replaces_saved_target_expectation() {
+        use crate::core::save::{
+            ContentFingerprint, FileChangeToken, FileIdentity, FileObservation, TargetExpectation,
+        };
+
+        let mut document = Document::from_bytes(b"trusted").expect("bytes");
+        assert!(document.saved_target().is_none());
+
+        let first = FileObservation::new(
+            FileIdentity::new(1, 2),
+            ContentFingerprint::from_bytes(b"first"),
+            5,
+            1,
+            FileChangeToken::new(10, 0),
+        );
+        let second = FileObservation::new(
+            FileIdentity::new(3, 4),
+            ContentFingerprint::from_bytes(b"second"),
+            7,
+            1,
+            FileChangeToken::new(20, 0),
+        );
+        assert_ne!(first, second);
+
+        document.rebaseline_to_observed_disk(first);
+        assert_eq!(
+            document.saved_target(),
+            Some(TargetExpectation::Existing(first))
+        );
+
+        document.rebaseline_to_observed_disk(second);
+        assert_eq!(
+            document.saved_target(),
+            Some(TargetExpectation::Existing(second))
+        );
+        assert_ne!(
+            document.saved_target(),
+            Some(TargetExpectation::Existing(first))
+        );
+    }
+
+    #[test]
     fn roundtrip_preserves_bom_and_line_endings() -> Result<(), NoterError> {
         let original = b"\xEF\xBB\xBFhello\r\nworld\r\n";
         let document = Document::from_bytes(original)?;
