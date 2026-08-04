@@ -788,11 +788,20 @@ const fn validate_selection(
     body: &str,
 ) -> Result<(), RecoveryQuarantineReason> {
     let body_len = body.len();
-    if selection.anchor() > body_len || selection.active() > body_len {
+    // Check endpoints separately so a single out-of-range side cannot hide
+    // behind the other, and so range failures stay distinct from mid-codepoint
+    // boundary failures (is_char_boundary is false for every index > len).
+    if selection.anchor() > body_len {
+        return Err(RecoveryQuarantineReason::InvalidSelection);
+    }
+    if selection.active() > body_len {
         return Err(RecoveryQuarantineReason::InvalidSelection);
     }
     // Mid-codepoint offsets would silently corrupt restore selection.
-    if !body.is_char_boundary(selection.anchor()) || !body.is_char_boundary(selection.active()) {
+    if !body.is_char_boundary(selection.anchor()) {
+        return Err(RecoveryQuarantineReason::InvalidSelection);
+    }
+    if !body.is_char_boundary(selection.active()) {
         return Err(RecoveryQuarantineReason::InvalidSelection);
     }
     Ok(())
@@ -1149,7 +1158,7 @@ mod tests {
 
     #[test]
     fn selection_checks_range_and_char_boundaries_independently() {
-        // Out of range only.
+        // Active out of range only.
         assert_eq!(
             RecoverySnapshot::try_new(RecoverySnapshotParts {
                 document_id: RecoveryDocumentId::new([1; 16]),
@@ -1161,6 +1170,22 @@ mod tests {
                 bom: Bom::Absent,
                 encoding: Encoding::Utf8,
                 selection: Selection::new(0, 3),
+                content: b"hi".to_vec(),
+            }),
+            Err(RecoveryQuarantineReason::InvalidSelection)
+        );
+        // Anchor out of range only.
+        assert_eq!(
+            RecoverySnapshot::try_new(RecoverySnapshotParts {
+                document_id: RecoveryDocumentId::new([1; 16]),
+                instance_id: RecoveryInstanceId::new([2; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(1),
+                updated_at: RecoveryWallTime::from_unix_millis(1),
+                original_path: Vec::new(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::new(3, 0),
                 content: b"hi".to_vec(),
             }),
             Err(RecoveryQuarantineReason::InvalidSelection)
@@ -1181,6 +1206,51 @@ mod tests {
             }),
             Err(RecoveryQuarantineReason::InvalidSelection)
         );
+        // Active mid-codepoint only.
+        assert_eq!(
+            RecoverySnapshot::try_new(RecoverySnapshotParts {
+                document_id: RecoveryDocumentId::new([1; 16]),
+                instance_id: RecoveryInstanceId::new([2; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(1),
+                updated_at: RecoveryWallTime::from_unix_millis(1),
+                original_path: Vec::new(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::new(0, 1),
+                content: "é".as_bytes().to_vec(),
+            }),
+            Err(RecoveryQuarantineReason::InvalidSelection)
+        );
+    }
+
+    #[test]
+    fn encoded_exact_document_ceiling_validates() {
+        // 64 MiB fixture: keeps validate_recovery_record's content_len > ceiling
+        // branch distinct from >= (exact size must still Offer).
+        let exact_content = vec![b'y'; MAX_DOCUMENT_BYTES];
+        let snapshot = RecoverySnapshot::try_new(RecoverySnapshotParts {
+            document_id: RecoveryDocumentId::new([1; 16]),
+            instance_id: RecoveryInstanceId::new([2; 16]),
+            revision: Revision::new(1),
+            created_at: RecoveryWallTime::from_unix_millis(1),
+            updated_at: RecoveryWallTime::from_unix_millis(2),
+            original_path: Vec::new(),
+            bom: Bom::Absent,
+            encoding: Encoding::Utf8,
+            selection: Selection::caret(0),
+            content: exact_content,
+        })
+        .expect("exact document ceiling is allowed at try_new");
+        let encoded = snapshot.encode();
+        match validate_recovery_record(&encoded) {
+            RecoveryStartupDisposition::Offer(record) => {
+                assert_eq!(record.content().len(), MAX_DOCUMENT_BYTES);
+            }
+            RecoveryStartupDisposition::Quarantine(reason) => {
+                panic!("exact content ceiling must validate, got {reason:?}")
+            }
+        }
     }
 
     #[test]
@@ -1233,6 +1303,118 @@ mod tests {
         assert!(state.in_flight_revision().is_none());
         assert!(state.is_dirty());
         assert_eq!(state.last_persisted_revision(), Some(Revision::new(1)));
+    }
+
+    #[test]
+    fn matching_persist_ack_clears_dirty_since_so_max_interval_restarts() {
+        // After a successful ack of the current dirty revision, dirty_since must
+        // clear. The next edit starts a fresh max-interval window. If ack failed
+        // to clear dirty_since, continuous edits would hit the old window early.
+        let mut state = RecoveryScheduleState::default();
+        let epoch = state.epoch();
+        let _ = state.reduce(RecoveryScheduleCommand::Edited {
+            revision: Revision::new(1),
+            now: RecoveryClock::new(Duration::from_secs(0)),
+        });
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Tick {
+                now: RecoveryClock::new(Duration::from_secs(2))
+            }),
+            RecoveryScheduleEffect::Persist {
+                revision: Revision::new(1),
+                epoch,
+            }
+        );
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::PersistAcknowledged {
+                revision: Revision::new(1),
+                epoch,
+            }),
+            RecoveryScheduleEffect::None
+        );
+
+        // New dirty interval begins at t=3.
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Edited {
+                revision: Revision::new(2),
+                now: RecoveryClock::new(Duration::from_secs(3)),
+            }),
+            RecoveryScheduleEffect::None
+        );
+
+        // Continuous edits every second: from dirty_since=3 the max interval is
+        // due at t=18. At t=15 (12s dirty) it must still be idle.
+        for step in 4..=15 {
+            assert_eq!(
+                state.reduce(RecoveryScheduleCommand::Edited {
+                    revision: Revision::new(step),
+                    now: RecoveryClock::new(Duration::from_secs(step)),
+                }),
+                RecoveryScheduleEffect::None,
+                "step {step} must not fire the old dirty_since window"
+            );
+        }
+
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Edited {
+                revision: Revision::new(18),
+                now: RecoveryClock::new(Duration::from_secs(18)),
+            }),
+            RecoveryScheduleEffect::Persist {
+                revision: Revision::new(18),
+                epoch,
+            }
+        );
+    }
+
+    #[test]
+    fn stale_in_flight_ack_preserves_dirty_since_for_newer_revision() {
+        // Edit while a persist is in flight advances current_revision. Acking the
+        // older in-flight revision must not clear dirty_since; otherwise ticks
+        // would skip scheduling until another edit re-arms the interval.
+        let mut state = RecoveryScheduleState::default();
+        let epoch = state.epoch();
+        let _ = state.reduce(RecoveryScheduleCommand::Edited {
+            revision: Revision::new(1),
+            now: RecoveryClock::new(Duration::from_secs(0)),
+        });
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Tick {
+                now: RecoveryClock::new(Duration::from_secs(2))
+            }),
+            RecoveryScheduleEffect::Persist {
+                revision: Revision::new(1),
+                epoch,
+            }
+        );
+        // Newer edit while rev 1 is still in flight.
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Edited {
+                revision: Revision::new(2),
+                now: RecoveryClock::new(Duration::from_millis(2_500)),
+            }),
+            RecoveryScheduleEffect::None
+        );
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::PersistAcknowledged {
+                revision: Revision::new(1),
+                epoch,
+            }),
+            RecoveryScheduleEffect::None
+        );
+        assert_eq!(state.last_persisted_revision(), Some(Revision::new(1)));
+        assert_eq!(state.current_revision(), Revision::new(2));
+
+        // Idle debounce from the newer edit must still schedule rev 2.
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Tick {
+                now: RecoveryClock::new(Duration::from_millis(4_500))
+            }),
+            RecoveryScheduleEffect::Persist {
+                revision: Revision::new(2),
+                epoch,
+            }
+        );
     }
 
     #[test]

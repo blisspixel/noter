@@ -564,11 +564,8 @@ mod tests {
         let dir = tempdir()?;
         let store = RecoveryStore::open(dir.path())?;
         let path = store.records_dir().join("huge.rec");
-        // Metadata length check happens before a full read; use a sparse-friendly size
-        // by writing a small file and then we can't easily make huge files. Instead
-        // assert the constant and exercise classify via a just-over-limit write only
-        // when practical. Here we verify the classifier path using a file whose
-        // length exceeds the ceiling via set_len when supported.
+        // Metadata length check happens before a full read; use set_len so the
+        // ceiling is exercised without writing 64 MiB of payload bytes.
         let file = File::create(&path)?;
         file.set_len(MAX_RECOVERY_FILE_BYTES + 1)?;
         drop(file);
@@ -579,6 +576,43 @@ mod tests {
             entries[0].disposition(),
             RecoveryStartupDisposition::Quarantine(RecoveryQuarantineReason::ContentTooLarge)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn exact_recovery_file_ceiling_is_not_size_rejected() -> io::Result<()> {
+        // metadata.len() > MAX must stay strict greater-than: exact size proceeds
+        // to content validation (truncated/magic) instead of ContentTooLarge.
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let path = store.records_dir().join("exact-ceiling.rec");
+        let file = File::create(&path)?;
+        file.set_len(MAX_RECOVERY_FILE_BYTES)?;
+        drop(file);
+
+        let entries = store.scan_startup()?;
+        assert_eq!(entries.len(), 1);
+        assert!(
+            !matches!(
+                entries[0].disposition(),
+                RecoveryStartupDisposition::Quarantine(RecoveryQuarantineReason::ContentTooLarge)
+            ),
+            "exact file ceiling must not be size-rejected, got {:?}",
+            entries[0].disposition()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn missing_records_directory_scans_as_empty() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        fs::remove_dir_all(store.records_dir())?;
+        let entries = store.scan_startup()?;
+        assert!(
+            entries.is_empty(),
+            "a missing records directory is an empty startup scan, not an error"
+        );
         Ok(())
     }
 
