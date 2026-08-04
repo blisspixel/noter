@@ -1,20 +1,85 @@
 # Noter Roadmap
 
-**Updated:** 2026-08-02
+**Updated:** 2026-08-04
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
 quality tools, private local operation, and straightforward installation and
 updates on Windows, macOS, and Linux.
 
-This file defines sequence and exit criteria. Product behavior belongs in
-[REQUIREMENTS.md](REQUIREMENTS.md), the Markdown experience in
-[MARKDOWN.md](MARKDOWN.md), installation and update behavior in
+This file defines sequence, version checkpoints, and exit criteria. Product
+behavior belongs in [REQUIREMENTS.md](REQUIREMENTS.md), the Markdown experience
+in [MARKDOWN.md](MARKDOWN.md), installation and update behavior in
 [INSTALLATION.md](INSTALLATION.md), and implementation detail in
 [DESIGN.md](DESIGN.md). Evidence belongs in the dedicated baseline, security,
 mutation, benchmark, and release records.
 
-## Status
+## Version train
+
+Crate version numbers mark product checkpoints. Milestone labels (M0–M7) name
+workstreams inside those checkpoints. A version is only claimed when its exit
+criteria and evidence land on one immutable green commit.
+
+| Version | Product meaning | Primary milestones | Status |
+| --- | --- | --- | --- |
+| `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1–M4 and M6 partial | Current crate version |
+| `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups | Finish M4 recovery wiring; M3 clipboard/navigation; remaining M1/M2 evidence; conflict overwrite confirm | **Next** |
+| `0.1.0-beta.1` | Production editor path: measured performance, IME, accessibility | M5 feasibility gate and production editor; continuous Markdown editing foundation | After alpha.2 |
+| `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.1 |
+| `0.1.0` | First public-quality release | Every v0.1 requirement in REQUIREMENTS has evidence | After successful RC dogfood |
+| `0.2.x` and later | Post-release work only after explicit ratification | Deferred non-goals from REQUIREMENTS become in-scope only by decision | Not planned yet |
+
+`Verified` means the implementation and every named automated, manual, and
+documentation artifact exist on the same green commit. Local implementation is
+not verification.
+
+## Order of operations
+
+Work proceeds in this dependency order. Later items do not start until earlier
+safety foundations are dogfoodable, except pure library and evidence work that
+does not expand unsafe UI surface.
+
+### Toward `0.1.0-alpha.2` (correctness alpha)
+
+1. **Wire M4 recovery into the application** — schedule dirty persist, startup
+   Restore / Discard / quarantine notice, delete on Save or Discard, visible
+   persist failure. Library record format and private store already exist.
+2. **Complete external-change overwrite** — second confirmation before replacing
+   a detected disk revision; Keep Editing still never rebaselines.
+3. **Finish M3 clipboard command path** — Edit-menu Cut / Copy / Paste share one
+   path with platform shortcuts and `EditTransaction` intent.
+4. **Close remaining M3 navigation and long-session gaps** — platform keyboard
+   policy, long-session memory fixture, cross-platform evidence.
+5. **Land remaining M1 filesystem fixtures** as environments allow — macOS,
+   SMB, cloud-sync, removable, weak FS, second-identity, crash-persistence.
+   Does not block dogfood on platforms already covered.
+6. **Complete M2 installed-product evidence** — About, updates, theme
+   persistence, disposable source installs.
+7. **Run the cross-platform correctness matrix** on one immutable green commit
+   and label `0.1.0-alpha.2` only when that matrix and the recovery path pass.
+
+### Toward `0.1.0-beta.1`
+
+8. **Execute the M5 editor feasibility gate** — rope-backed or proven bounded
+   path, IME, AccessKit, display scale, 50 MiB corpus route.
+9. **Expand Markdown to continuous whole-document editing** on the production
+   editor foundation (still source-backed; no proprietary model).
+
+### Toward `0.1.0-rc.1` and `0.1.0`
+
+10. **Complete M6 quality engine** — conformance, diagnostics, Format Document
+    with diff and semantic equivalence, async revision-tagged parse.
+11. **Complete M7 distribution** — signed/attested artifacts where credentials
+    exist, clean-machine install/upgrade/uninstall, updater policy.
+12. **RC dogfood** — minimum 14-day multi-person, multi-platform use without
+    data loss; then publish `0.1.0`.
+
+### After `0.1.0`
+
+13. Only ratified post-release work. Non-goals in REQUIREMENTS stay out unless
+    product decision and a new roadmap entry promote them.
+
+## Milestone status
 
 | Milestone | Outcome | Status |
 | --- | --- | --- |
@@ -27,30 +92,19 @@ mutation, benchmark, and release records.
 | M6 | Native Markdown editor and quality engine | In progress |
 | M7 | Cross-platform distribution and first public-quality release | Planned |
 
-`Verified` means the implementation and every named automated, manual, and
-documentation artifact exist on the same green commit. Local implementation is
-not verification.
-
-## Next checkpoint: correctness alpha
+## Next checkpoint: `0.1.0-alpha.2` correctness alpha
 
 The next product checkpoint is a dogfoodable correctness alpha, not a relabeling
-of incomplete work. It requires the remaining M1 filesystem evidence,
-installed-product M2 checks, completion of the ordinary M3 text
-commands, and the M4 recovery and external-change safety path. M5 through M7
+of incomplete work. Kill-process recovery, clipboard parity, conflict overwrite
+confirmation, and the remaining trust evidence are required. M5 through M7
 remain first-release work after that checkpoint.
 
-The current implementation closes earlier blockers including deterministic Undo
-coalescing, bounded literal Find and Replace, the pure destructive-action
-lifecycle reducer, and Markdown document-wide plus cross-block selection. The
-shortest path to correctness alpha is now:
-
-1. finish the remaining M1 manual filesystem fixtures;
-2. prove About, updates, themes, and source installation in installed builds;
-3. finish cross-platform navigation and clipboard policy, plus long-session M3
-   evidence;
-4. implement private restart-spanning recovery records and complete remaining
-   external-change overwrite confirmation through the M4 path; and
-5. run the cross-platform correctness matrix on one immutable green commit.
+The current tree already has deterministic Undo coalescing, bounded Find and
+Replace, the pure lifecycle reducer, external-change Reload / Keep Editing /
+Save As, Markdown document-wide and cross-block selection, pure recovery
+scheduling with epoch-correlated persist, versioned recovery records, and a
+private durable recovery store. Application wiring for recovery and the
+overwrite second-confirm remain open.
 
 ## Product boundaries
 
@@ -361,8 +415,14 @@ focused-timer inspections. Changed, deleted, special, and unreadable outcomes
 prompt Reload Disk Version, Keep Editing, or Save As. Keep Editing never
 rebaselines the expectation, so ordinary Save still fails closed through the
 durable save protocol. Ordinary Save is paused only while the prompt is visible.
-Durable restart-spanning recovery records, overwrite-with-second-confirm,
-and crash-fault evidence remain open.
+Pure recovery scheduling (2 s idle / 15 s max, epoch-correlated persist so
+late writes cannot revive recovery after Save or Discard), versioned record
+encode/validate with UTF-8 boundary selection checks, and private durable
+recovery storage (atomic install/replace, quarantine with reported failures,
+full directory walk with a 32-offer cap) are implemented in the library.
+Application wiring (startup offer UI, idle persist effects, state-directory
+path resolution), overwrite-with-second-confirm, and crash-fault evidence
+remain open for `0.1.0-alpha.2`.
 
 ### Exit criteria
 
@@ -551,34 +611,38 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 - Two people, including one non-primary developer and one non-Windows user, use
   the candidate for at least 14 days without data loss.
 
-## Immediate backlog
+## Immediate backlog (maps to version train)
 
-1. Complete: run the settled 741-candidate supported-platform mutation union on
-   one immutable commit, reconcile the evidence, and pass independent review.
-   Evidence: `97371d8`,
-   [run 30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209).
-2. Complete: build the reproducible M1 benchmark harness and record the
-   canonical 30-sample Windows reference. Evidence:
-   [M1_BASELINE_EVIDENCE.md](M1_BASELINE_EVIDENCE.md).
-3. Partially complete: native NTFS and WSL2 ext4 fixtures pass, and the
-   Windows-to-WSL boundary now fails closed. Continue the remaining native
-   macOS, SMB, cloud, removable, weak-filesystem, second-identity, and
-   crash-persistence fixtures without overstating unavailable evidence.
-   Evidence: [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
-4. Complete M2 evidence for installed About and update actions, theme
-   persistence, cross-platform visual behavior, and disposable source installs.
-5. Complete the remaining M3 navigation, clipboard, background-work,
-   cross-platform keyboard, and long-session requirements atop the implemented
-   Undo, Find and Replace, Go To Line, wrap, zoom, and Markdown document and
-   cross-block selection foundation.
-6. Complete M4 durable recovery records and remaining external-change overwrite
-   confirmation through the pure decision path, including fault and stale-effect
-   evidence. The first external-change prompt and Keep Editing path is landed.
-7. Execute the M5 editor feasibility gate, including native typography, IME,
-   accessibility, display-scale, and large-file evidence. Keep the early
-   block-focused Markdown slice bounded until the transaction, lifecycle, and
-   production-editor contracts it depends on are stable.
+Ordered for `0.1.0-alpha.2` first. Completed historical items stay listed only
+when they document evidence links.
+
+1. **In progress / next:** wire M4 recovery into the app (schedule, startup UI,
+   Save/Discard cleanup, visible persist failure). Library store is present.
+2. **Next:** external-change overwrite with explicit second confirmation.
+3. **Next:** M3 Cut / Copy / Paste command path and remaining navigation /
+   long-session evidence.
+4. **Parallel evidence:** remaining M1 fixtures (macOS, SMB, cloud, removable,
+   weak FS, second-identity, crash-persistence). Evidence:
+   [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
+5. **Parallel evidence:** M2 installed About, updates, theme persistence,
+   disposable source installs.
+6. **Gate:** cross-platform correctness matrix on one green commit → tag
+   `0.1.0-alpha.2`.
+7. **Then `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
+   accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
+   production editor contract is stable.
+8. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
+   dogfood, public release.
+
+### Completed foundations (historical)
+
+- Settled 741-candidate supported-platform mutation union. Evidence: `97371d8`,
+  [run 30221793209](https://github.com/blisspixel/noter/actions/runs/30221793209).
+- Reproducible M1 benchmark harness and canonical 30-sample Windows reference.
+  Evidence: [M1_BASELINE_EVIDENCE.md](M1_BASELINE_EVIDENCE.md).
+- Native NTFS and WSL2 ext4 fixtures; Windows-to-WSL boundary fails closed.
+  Evidence: [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
 
 This dependency order protects source fidelity and accessibility. It does not
 reduce native Markdown to an optional side feature; Markdown is a required
-outcome of the first public-quality release.
+outcome of the first public-quality release (`0.1.0`).

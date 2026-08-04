@@ -288,16 +288,18 @@ enum MarkdownCommand {
     InlineCode,
     BulletedList,
     Quote,
+    Strikethrough,
 }
 
 impl MarkdownCommand {
     const WITH_SHORTCUTS: [Self; 3] = [Self::Bold, Self::Italic, Self::Link];
 
-    const INLINE_AND_LINE: [Self; 6] = [
+    const INLINE_AND_LINE: [Self; 7] = [
         Self::Bold,
         Self::Italic,
         Self::Link,
         Self::InlineCode,
+        Self::Strikethrough,
         Self::BulletedList,
         Self::Quote,
     ];
@@ -310,6 +312,7 @@ impl MarkdownCommand {
             Self::InlineCode => "Toggle inline code on the selection",
             Self::BulletedList => "Toggle bullet markers on the active lines",
             Self::Quote => "Toggle quote markers on the active lines",
+            Self::Strikethrough => "Toggle strikethrough on the selection",
         }
     }
 
@@ -321,12 +324,14 @@ impl MarkdownCommand {
             Self::InlineCode => "Inline code",
             Self::BulletedList => "Bulleted list",
             Self::Quote => "Quote",
+            Self::Strikethrough => "Strikethrough",
         }
     }
 
     fn button_text(self) -> Option<egui::RichText> {
         match self {
             Self::Bold => Some(egui::RichText::new("B").strong().size(16.0)),
+            Self::Strikethrough => Some(egui::RichText::new("S").strikethrough().size(16.0)),
             Self::InlineCode => Some(egui::RichText::new("</>").monospace().size(11.0)),
             Self::Italic | Self::Link | Self::BulletedList | Self::Quote => None,
         }
@@ -341,7 +346,7 @@ impl MarkdownCommand {
     }
 
     const fn ends_group(self) -> bool {
-        matches!(self, Self::Italic | Self::InlineCode)
+        matches!(self, Self::Italic | Self::Strikethrough | Self::InlineCode)
     }
 
     const fn shortcut(self) -> Option<egui::KeyboardShortcut> {
@@ -349,7 +354,9 @@ impl MarkdownCommand {
             Self::Bold => egui::Key::B,
             Self::Italic => egui::Key::I,
             Self::Link => egui::Key::K,
-            Self::InlineCode | Self::BulletedList | Self::Quote => return None,
+            Self::InlineCode | Self::BulletedList | Self::Quote | Self::Strikethrough => {
+                return None;
+            }
         };
         Some(egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, key))
     }
@@ -442,7 +449,7 @@ impl MarkdownCommand {
                     );
                 }
             }
-            Self::Bold | Self::InlineCode => {}
+            Self::Bold | Self::InlineCode | Self::Strikethrough => {}
         }
     }
 }
@@ -2416,6 +2423,7 @@ fn apply_markdown_command(
         MarkdownCommand::Link => insert_link(source, selection),
         MarkdownCommand::BulletedList => toggle_line_prefix(source, selection, "- "),
         MarkdownCommand::Quote => toggle_line_prefix(source, selection, "> "),
+        MarkdownCommand::Strikethrough => toggle_inline_marker(source, selection, "~~"),
     }
 }
 
@@ -2464,9 +2472,34 @@ fn markdown_command_is_active(
     command: MarkdownCommand,
 ) -> bool {
     match command {
-        MarkdownCommand::Bold => inline_marker_location(source, selection, "**").is_some(),
-        MarkdownCommand::Italic => inline_marker_location(source, selection, "*").is_some(),
-        MarkdownCommand::InlineCode => inline_marker_location(source, selection, "`").is_some(),
+        MarkdownCommand::Bold => {
+            inline_marker_location(source, selection.clone(), "**").is_some()
+                || selected_inline_source_range(source, selection, |event| {
+                    matches!(event, Event::Start(Tag::Strong))
+                })
+                .is_some_and(|r| inline_marker_location(source, r, "**").is_some())
+        }
+        MarkdownCommand::Italic => {
+            inline_marker_location(source, selection.clone(), "*").is_some()
+                || selected_inline_source_range(source, selection, |event| {
+                    matches!(event, Event::Start(Tag::Emphasis))
+                })
+                .is_some_and(|r| inline_marker_location(source, r, "*").is_some())
+        }
+        MarkdownCommand::InlineCode => {
+            inline_marker_location(source, selection.clone(), "`").is_some()
+                || selected_inline_source_range(source, selection, |event| {
+                    matches!(event, Event::Code(_))
+                })
+                .is_some_and(|r| inline_marker_location(source, r, "`").is_some())
+        }
+        MarkdownCommand::Strikethrough => {
+            inline_marker_location(source, selection.clone(), "~~").is_some()
+                || selected_inline_source_range(source, selection, |event| {
+                    matches!(event, Event::Start(Tag::Strikethrough))
+                })
+                .is_some_and(|r| inline_marker_location(source, r, "~~").is_some())
+        }
         MarkdownCommand::Link => link_span_at_selection(source, selection).is_some(),
         MarkdownCommand::BulletedList => {
             selected_lines_all(source, selection, |content| content.starts_with("- "))
@@ -2549,7 +2582,7 @@ fn inline_marker_insertion_is_ambiguous(
     }
     match (needle, marker.len()) {
         (b'*', 1) => left_run != 2 || right_run != 2,
-        (b'*', 2) => left_run != 1 || right_run != 1,
+        (b'*' | b'~', 2) => left_run != 1 || right_run != 1,
         _ => true,
     }
 }
@@ -2621,7 +2654,11 @@ fn inline_marker_location(
             prefix: selected.start - width..selected.start,
             suffix: selected.end..selected.end + width,
         };
-        if !selected.is_empty() && inline_marker_location_is_semantic(source, marker, &location) {
+        if !selected.is_empty()
+            && semantic_candidate_is_valid_or_requires_text_fallback(source, || {
+                inline_marker_location_is_semantic(source, marker, &location)
+            })
+        {
             return Some(location);
         }
     }
@@ -2647,8 +2684,11 @@ fn inline_marker_location(
         prefix: selected.start..selected.start + width,
         suffix: selected.end - width..selected.end,
     };
-    (inside_active && inline_marker_location_is_semantic(source, marker, &location))
-        .then_some(location)
+    (inside_active
+        && semantic_candidate_is_valid_or_requires_text_fallback(source, || {
+            inline_marker_location_is_semantic(source, marker, &location)
+        }))
+    .then_some(location)
 }
 
 fn inline_marker_location_is_semantic(
@@ -2697,6 +2737,7 @@ fn inline_event_matches_marker(marker: &str, event: &Event<'_>) -> bool {
         ("**", Event::Start(Tag::Strong))
             | ("*", Event::Start(Tag::Emphasis))
             | ("`", Event::Code(_))
+            | ("~~", Event::Start(Tag::Strikethrough))
     )
 }
 
@@ -2745,7 +2786,11 @@ fn insert_link(source: &str, selection: Range<usize>) -> CommandResult {
             selection: selection_start..selection_start + label_characters,
         };
     }
-    if selected_link_source_range(source, selection.clone()).is_some() {
+    if selected_inline_source_range(source, selection.clone(), |event| {
+        matches!(event, Event::Start(Tag::Link { .. }))
+    })
+    .is_some()
+    {
         return CommandResult {
             text: source.to_owned(),
             selection,
@@ -2789,7 +2834,9 @@ fn semantic_candidate_is_valid_or_requires_text_fallback(
 }
 
 fn link_span_at_selection(source: &str, selection: Range<usize>) -> Option<LinkSpan> {
-    let entire = selected_link_source_range(source, selection)?;
+    let entire = selected_inline_source_range(source, selection, |event| {
+        matches!(event, Event::Start(Tag::Link { .. }))
+    })?;
     let raw = source.get(entire.clone())?;
     if !raw.starts_with('[') {
         return None;
@@ -2846,12 +2893,16 @@ fn link_span_at_selection(source: &str, selection: Range<usize>) -> Option<LinkS
     None
 }
 
-fn selected_link_source_range(source: &str, selection: Range<usize>) -> Option<Range<usize>> {
+fn selected_inline_source_range(
+    source: &str,
+    selection: Range<usize>,
+    is_match: impl Fn(&Event<'_>) -> bool,
+) -> Option<Range<usize>> {
     let selected = char_range_to_byte_range(source, bounded_char_range(source, selection));
     Parser::new_ext(source, markdown_parser_options())
         .into_offset_iter()
         .find_map(|(event, source_range)| {
-            if !matches!(event, Event::Start(Tag::Link { .. })) {
+            if !is_match(&event) {
                 return None;
             }
             let contained = if selected.is_empty() {

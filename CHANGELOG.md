@@ -7,6 +7,41 @@ release, so current work remains under Unreleased.
 
 ### Added
 
+- Add View menu Full Screen toggle with the F11 shortcut.
+- Add Markdown Mode strikethrough formatting on the formatting bar.
+- Add pure M4 crash-recovery scheduling, versioned record integrity, and startup
+  disposition logic with 2-second idle and 15-second max dirty persistence
+  policy, epoch-correlated persist acknowledgements, checksum validation, UTF-8
+  character-boundary selection checks, and quarantine reasons that never write a
+  user document path.
+- Add durable private recovery storage that stages owner-restricted siblings,
+  installs or replaces instance records atomically, removes displaced stage and
+  backup siblings after success, walks the full records directory, offers at
+  most 32 restores per launch, and reports quarantine relocation failures
+  instead of claiming success.
+
+### Fixed
+
+- Recovery persist no longer leaves Unix-exchanged or hard-linked stage files
+  after a successful commit.
+- Recovery scan no longer treats a missing quarantine source as success or
+  swallows quarantine I/O errors.
+- Recovery scheduling no longer disables the recovery-point objective when the
+  monotonic clock regresses, and no longer accepts late persist acks after Save
+  or Discard.
+- Mid-codepoint recovery selection offsets are rejected instead of offering a
+  restore that would corrupt caret placement.
+- Markdown strikethrough marker ambiguity handling shares the bold double-marker
+  path without Clippy-identical arms; active-state checks avoid redundant
+  selection clones.
+
+### Changed
+
+- Lead the public README with a clean-app stance: privacy first, zero spyware,
+  zero telemetry, zero activity logging, free writing, and only the tool you
+  asked for, while keeping an honest alpha status and network claims.
+- Roadmap version train documents the ordered path from `0.1.0-alpha.1` through
+  correctness alpha (`0.1.0-alpha.2`), beta, RC, and first public `0.1.0`.
 - Add exact-checksum local M1 filesystem evidence for native NTFS, native WSL2
   ext4, and the Windows-to-WSL boundary, including explicit provenance,
   durability limits, unavailable environments, and remaining milestone gaps.

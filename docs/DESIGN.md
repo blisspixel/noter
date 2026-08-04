@@ -2,7 +2,7 @@
 
 **Version:** 0.3
 
-**Reviewed:** 2026-08-02
+**Reviewed:** 2026-08-04
 
 **Status:** Active architecture contract
 
@@ -88,10 +88,10 @@ trust-kernel benchmark baseline now exists; the manual
 metadata and weaker-filesystem evidence named by ADR-003, and later M5 GUI and
 input benchmarks remain open. The edit foundation still requires complete
 navigation and clipboard policy, long-session fixtures, and cross-platform
-evidence. Recovery, external-change
-handling, configuration, accessibility evidence, and release performance
-evidence also remain open. M1 through M4 therefore remain In Progress even
-where their current implementation slices are substantial.
+evidence. Pure recovery scheduling and private recovery storage exist; app
+wiring, overwrite-with-second-confirm, accessibility evidence, and release
+performance evidence also remain open. M1 through M4 therefore remain In
+Progress even where their current implementation slices are substantial.
 
 The local test and coverage measurements above describe the current source
 checkpoint, not hosted release evidence. The M1 paragraph identifies the latest
@@ -599,9 +599,9 @@ only Quit authorizes one native close for the exact saved revision. Exhaustive
 transition tests and a fixed-seed 512-case command-sequence property compare
 the reducer with a separate reference model. A pure `ConflictState` reducer
 classifies focus and timer observations against the trusted save baseline and
-offers Reload, Keep Editing, and Save As without silent overwrite. Private
-restart-spanning recovery records and overwrite-with-second-confirm remain later
-M4 slices.
+offers Reload, Keep Editing, and Save As without silent overwrite.
+Overwrite-with-second-confirm remains an open M4 slice for
+`0.1.0-alpha.2`.
 
 Dialogs cannot directly mutate document state. They emit commands to the same
 dispatcher used by keyboard shortcuts and menus. Repeated close events are
@@ -609,11 +609,17 @@ idempotent while a decision is open.
 
 ### 7.2 Recovery storage
 
-Recovery uses the application state or local-data directory returned by
-`directories::ProjectDirs`. Each document has a private versioned record:
+Recovery uses a private subdirectory of the per-user application data root
+(never the general temporary directory). Preferences may use eframe storage
+(`app.ron`); recovery records do not. The library modules are
+`core::recovery` (pure schedule and integrity) and `core::recovery_store`
+(durable private files). Application wiring of those modules is still required
+before crash recovery is product-complete.
+
+Each dirty session owns one versioned record:
 
 ```text
-magic
+magic (NOTERREC)
 schema_version
 document_id
 instance_id
@@ -621,25 +627,33 @@ revision
 created_at
 updated_at
 original_path_metadata
-encoding_and_eol_profile
-selection
+bom and encoding tags
+selection (UTF-8 body offsets on character boundaries)
 content_length
-content_checksum
-content_bytes
+content_checksum (BLAKE3-256)
+content_bytes (serialized body including optional UTF-8 BOM)
 ```
 
-Records are written with the durable state-file protocol and restrictive
-permissions. The recovery worker receives immutable revision snapshots. It
-acknowledges a persisted revision back to application state, and stale
-acknowledgements are ignored.
+Records stage through exclusive private creation, file sync, and atomic
+install or replace. Unix exchange leaves the previous destination on the stage
+path; that displaced file is removed after a successful replace so recovery
+siblings do not accumulate silently. Windows replacement backups of superseded
+recovery content are removed after success.
 
-Scheduling uses a 2-second idle debounce plus a 15-second maximum interval while
-dirty. A clean close after Save or explicit Discard removes the owned record. A
-recovery write failure is a visible warning and never permits silent close.
+The pure scheduler uses a 2-second idle debounce and a 15-second maximum
+interval while dirty. Persist requests carry a session epoch. Save success and
+explicit Discard advance the epoch and request deletion so a late disk
+completion cannot reintroduce recovery after clean state. Clock regression
+schedules an immediate persist rather than disabling the recovery-point
+objective. A recovery write failure is a visible warning and never permits
+silent close.
 
-Startup scans only Noter's own versioned state directory. Valid orphan records
-are offered before a normal untitled document. Unknown versions and checksum
-failures are quarantined with a non-destructive explanation.
+Startup walks the entire records directory. Valid records are offered (at most
+32 per launch); surplus valid records remain for a later session. Corrupt or
+unsupported records are quarantined; quarantine relocation failures are
+reported on the scan entry and leave the damaged file in place rather than
+claiming success. Restored content always opens dirty and never writes the
+original user path until Save.
 
 ### 7.3 External changes
 
