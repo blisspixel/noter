@@ -81,6 +81,12 @@ pub enum ConflictDecision {
     KeepEditing,
     /// Save the in-memory document to a different path.
     SaveAs,
+    /// Request the second confirmation step before replacing the disk version.
+    RequestOverwrite,
+    /// Confirm replacement of the disk version after the second confirmation.
+    ConfirmOverwrite,
+    /// Cancel the overwrite second-confirm and return to the ordinary prompt.
+    CancelOverwrite,
 }
 
 /// One input to the conflict reducer.
@@ -107,10 +113,14 @@ pub enum ConflictEffect {
     None,
     /// Show the external-change decision for the retained observation.
     Prompt(ExternalChangeKind),
+    /// Show the second confirmation before replacing the disk version.
+    PromptOverwriteConfirm(ExternalChangeKind),
     /// Request Reload through the ordinary lifecycle path.
     RequestReload,
     /// Request Save As without authorizing overwrite of the conflicting path.
     RequestSaveAs,
+    /// Authorize overwrite: rebaseline to the live disk revision and save.
+    AuthorizeOverwrite,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -118,6 +128,10 @@ enum ConflictPhase {
     #[default]
     Idle,
     Prompting {
+        kind: ExternalChangeKind,
+        revision: Revision,
+    },
+    ConfirmOverwrite {
         kind: ExternalChangeKind,
         revision: Revision,
     },
@@ -140,13 +154,22 @@ pub struct ConflictState {
 impl ConflictState {
     /// Returns whether an external-change decision is currently visible.
     pub const fn is_prompting(self) -> bool {
-        matches!(self.phase, ConflictPhase::Prompting { .. })
+        matches!(
+            self.phase,
+            ConflictPhase::Prompting { .. } | ConflictPhase::ConfirmOverwrite { .. }
+        )
+    }
+
+    /// Returns whether the second overwrite confirmation is visible.
+    pub const fn is_confirming_overwrite(self) -> bool {
+        matches!(self.phase, ConflictPhase::ConfirmOverwrite { .. })
     }
 
     /// Returns the observation currently shown to the user, if any.
     pub const fn prompt_kind(self) -> Option<ExternalChangeKind> {
         match self.phase {
-            ConflictPhase::Prompting { kind, .. } => Some(kind),
+            ConflictPhase::Prompting { kind, .. }
+            | ConflictPhase::ConfirmOverwrite { kind, .. } => Some(kind),
             ConflictPhase::Idle | ConflictPhase::KeptEditing { .. } => None,
         }
     }
@@ -156,7 +179,10 @@ impl ConflictState {
     /// After Keep Editing, Save remains available and still fails closed through
     /// the durable save protocol if the disk version differs.
     pub const fn blocks_ordinary_save(self) -> bool {
-        matches!(self.phase, ConflictPhase::Prompting { .. })
+        matches!(
+            self.phase,
+            ConflictPhase::Prompting { .. } | ConflictPhase::ConfirmOverwrite { .. }
+        )
     }
 
     /// Applies one command and returns its adapter effect.
@@ -183,6 +209,10 @@ impl ConflictState {
             ConflictPhase::Prompting {
                 kind: current,
                 revision: current_revision,
+            }
+            | ConflictPhase::ConfirmOverwrite {
+                kind: current,
+                revision: current_revision,
             } if current == kind && current_revision == revision => ConflictEffect::None,
             ConflictPhase::KeptEditing {
                 kind: current,
@@ -190,6 +220,7 @@ impl ConflictState {
             } if current == kind && current_revision == revision => ConflictEffect::None,
             ConflictPhase::Idle
             | ConflictPhase::Prompting { .. }
+            | ConflictPhase::ConfirmOverwrite { .. }
             | ConflictPhase::KeptEditing { .. } => {
                 self.phase = ConflictPhase::Prompting { kind, revision };
                 ConflictEffect::Prompt(kind)
@@ -198,19 +229,35 @@ impl ConflictState {
     }
 
     const fn decide(&mut self, decision: ConflictDecision) -> ConflictEffect {
-        let ConflictPhase::Prompting { kind, revision } = self.phase else {
-            return ConflictEffect::None;
-        };
-        match decision {
-            ConflictDecision::ReloadDisk => {
+        match (self.phase, decision) {
+            (ConflictPhase::Prompting { .. }, ConflictDecision::ReloadDisk) => {
                 self.phase = ConflictPhase::Idle;
                 ConflictEffect::RequestReload
             }
-            ConflictDecision::KeepEditing => {
+            (ConflictPhase::Prompting { kind, revision }, ConflictDecision::KeepEditing) => {
                 self.phase = ConflictPhase::KeptEditing { kind, revision };
                 ConflictEffect::None
             }
-            ConflictDecision::SaveAs => ConflictEffect::RequestSaveAs,
+            (ConflictPhase::Prompting { .. }, ConflictDecision::SaveAs) => {
+                ConflictEffect::RequestSaveAs
+            }
+            (ConflictPhase::Prompting { kind, revision }, ConflictDecision::RequestOverwrite) => {
+                self.phase = ConflictPhase::ConfirmOverwrite { kind, revision };
+                ConflictEffect::PromptOverwriteConfirm(kind)
+            }
+            (ConflictPhase::ConfirmOverwrite { .. }, ConflictDecision::ConfirmOverwrite) => {
+                self.phase = ConflictPhase::Idle;
+                ConflictEffect::AuthorizeOverwrite
+            }
+            (
+                ConflictPhase::ConfirmOverwrite { kind, revision },
+                ConflictDecision::CancelOverwrite,
+            ) => {
+                self.phase = ConflictPhase::Prompting { kind, revision };
+                ConflictEffect::Prompt(kind)
+            }
+            // Stale or out-of-phase decisions never authorize destructive work.
+            _ => ConflictEffect::None,
         }
     }
 }
@@ -432,6 +479,50 @@ mod tests {
         assert!(!state.is_prompting());
         assert_eq!(
             state.reduce(ConflictCommand::Decide(ConflictDecision::ReloadDisk)),
+            ConflictEffect::None
+        );
+    }
+
+    #[test]
+    fn overwrite_requires_a_second_confirmation() {
+        let mut state = ConflictState::default();
+        let revision = Revision::new(9);
+        assert_eq!(
+            state.reduce(ConflictCommand::Observed {
+                kind: ExternalChangeKind::ContentOrIdentityChanged,
+                revision,
+            }),
+            ConflictEffect::Prompt(ExternalChangeKind::ContentOrIdentityChanged)
+        );
+        // First click only enters the second-confirm phase.
+        assert_eq!(
+            state.reduce(ConflictCommand::Decide(ConflictDecision::RequestOverwrite)),
+            ConflictEffect::PromptOverwriteConfirm(ExternalChangeKind::ContentOrIdentityChanged)
+        );
+        assert!(state.is_confirming_overwrite());
+        assert!(state.blocks_ordinary_save());
+        // A first-phase decision is inert while confirming overwrite.
+        assert_eq!(
+            state.reduce(ConflictCommand::Decide(ConflictDecision::KeepEditing)),
+            ConflictEffect::None
+        );
+        assert!(state.is_confirming_overwrite());
+        // Cancel returns to the ordinary prompt without authorizing overwrite.
+        assert_eq!(
+            state.reduce(ConflictCommand::Decide(ConflictDecision::CancelOverwrite)),
+            ConflictEffect::Prompt(ExternalChangeKind::ContentOrIdentityChanged)
+        );
+        assert!(!state.is_confirming_overwrite());
+        assert!(state.is_prompting());
+        let _ = state.reduce(ConflictCommand::Decide(ConflictDecision::RequestOverwrite));
+        assert_eq!(
+            state.reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite)),
+            ConflictEffect::AuthorizeOverwrite
+        );
+        assert!(!state.is_prompting());
+        // Stale second-confirm after idle is inert.
+        assert_eq!(
+            state.reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite)),
             ConflictEffect::None
         );
     }

@@ -7,6 +7,7 @@
 
 mod app;
 mod bounded_text_input;
+mod crash_recovery;
 mod editor_settings;
 mod find_ui;
 mod go_to_line_ui;

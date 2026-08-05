@@ -23,6 +23,9 @@ use noter::core::undo::{HistoryApplyOutcome, HistoryRecordOutcome, UndoHistory};
 use noter::error::NoterError;
 
 use crate::bounded_text_input::{BoundedTextBuffer, sanitize_bounded_text_events};
+use crate::crash_recovery::{
+    CrashRecoverySession, RECOVERY_PERSIST_FAILURE_MESSAGE, RECOVERY_UNAVAILABLE_MESSAGE,
+};
 use crate::editor_settings::{
     EditorZoom, PointerZoomAccumulator, TextWrap, WORD_WRAP_STORAGE_KEY, ZOOM_STORAGE_KEY,
     apply_editor_zoom,
@@ -156,6 +159,9 @@ impl FileCommand {
 enum EditCommand {
     Undo,
     Redo,
+    Cut,
+    Copy,
+    Paste,
     SelectAll,
     Find,
     FindNext,
@@ -165,10 +171,13 @@ enum EditCommand {
 }
 
 impl EditCommand {
-    const INPUT_PRECEDENCE: [Self; 8] = [
+    const INPUT_PRECEDENCE: [Self; 11] = [
         Self::FindPrevious,
         Self::Redo,
         Self::Undo,
+        Self::Cut,
+        Self::Copy,
+        Self::Paste,
         Self::SelectAll,
         Self::Find,
         Self::Replace,
@@ -180,6 +189,9 @@ impl EditCommand {
         match self {
             Self::Undo => "Undo",
             Self::Redo => "Redo",
+            Self::Cut => "Cut",
+            Self::Copy => "Copy",
+            Self::Paste => "Paste",
             Self::SelectAll => "Select All",
             Self::Find => "Find...",
             Self::FindNext => "Find Next",
@@ -197,6 +209,9 @@ impl EditCommand {
             ),
             (Self::Redo, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y),
             (Self::Undo, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z),
+            (Self::Cut, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::X),
+            (Self::Copy, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C),
+            (Self::Paste, _) => egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::V),
             (Self::SelectAll, _) => {
                 egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::A)
             }
@@ -415,6 +430,7 @@ pub struct NoterApp {
     lifecycle: LifecycleState,
     conflict: ConflictState,
     last_external_inspect_at: Option<f64>,
+    crash_recovery: CrashRecoverySession,
     #[cfg(feature = "screenshot-qa")]
     screenshot: Option<ScreenshotCapture>,
 }
@@ -450,6 +466,7 @@ impl Default for NoterApp {
             lifecycle: LifecycleState::default(),
             conflict: ConflictState::default(),
             last_external_inspect_at: None,
+            crash_recovery: CrashRecoverySession::open_default(),
             #[cfg(feature = "screenshot-qa")]
             screenshot: None,
         }
@@ -481,9 +498,22 @@ impl NoterApp {
             text_wrap: TextWrap::from_storage(cc.storage),
             editor_zoom: EditorZoom::from_storage(cc.storage),
             updates_open: options.show_updates,
+            crash_recovery: CrashRecoverySession::open_default(),
             ..Self::default()
         };
-        if let Some(path) = options.initial_path {
+        if app.crash_recovery.is_unavailable() {
+            app.error_msg = Some(RECOVERY_UNAVAILABLE_MESSAGE.to_owned());
+        }
+        // Explicit file opens and screenshot automation skip interactive recovery
+        // offers so double-click open and capture remain deterministic.
+        let skip_recovery_offers =
+            options.initial_path.is_some() || options.screenshot_path.is_some();
+        if skip_recovery_offers {
+            while app.crash_recovery.active_offer().is_some() {
+                app.crash_recovery.discard_active_offer();
+            }
+        }
+        if let Some(path) = options.initial_path.clone() {
             app.open_path(&path, options.view);
         } else if let Some(view) = options.view {
             app.select_document_view(view);
@@ -532,6 +562,7 @@ impl NoterApp {
                 self.markdown_issue_cache = None;
                 self.error_msg = None;
                 self.reset_external_conflict_state();
+                self.crash_recovery.begin_fresh_identity();
                 self.view = DocumentView::Text;
                 self.select_document_view(
                     requested_view.unwrap_or_else(|| preferred_view_for_path(path)),
@@ -688,10 +719,12 @@ impl NoterApp {
         self.error_msg = match result {
             Ok(SaveOutcome::Committed { ref warnings, .. }) if warnings.is_empty() => {
                 self.reset_external_conflict_state();
+                self.crash_recovery.on_saved_clean(self.document.revision());
                 None
             }
             Ok(SaveOutcome::Committed { warnings, .. }) => {
                 self.reset_external_conflict_state();
+                self.crash_recovery.on_saved_clean(self.document.revision());
                 let mut details: Vec<String> =
                     warnings.cleanup().iter().map(ToString::to_string).collect();
                 details.extend(warnings.durability().iter().map(ToString::to_string));
@@ -814,6 +847,10 @@ impl NoterApp {
         self.markdown_issue_cache = None;
         self.error_msg = None;
         self.reset_external_conflict_state();
+        // Clean New skips the discard prompt, so rotate recovery identity here
+        // the same way Open and dirty-Discard do. Otherwise later dirty
+        // snapshots would reuse the previous session's instance file.
+        self.crash_recovery.begin_fresh_identity();
     }
 
     fn request_new_document(&mut self, ctx: &egui::Context) {
@@ -871,6 +908,7 @@ impl NoterApp {
         let effect = self
             .lifecycle
             .reduce(LifecycleCommand::Decide(DirtyDecision::Discard));
+        self.crash_recovery.on_discarded();
         self.apply_lifecycle_effect(effect, ctx);
     }
 
@@ -911,6 +949,7 @@ impl NoterApp {
         if self.lifecycle.pending_intent().is_some()
             || self.pending_hard_link_save.is_some()
             || self.pending_recovery_reconciliation.is_some()
+            || self.crash_recovery.active_offer().is_some()
             || self.about_open
             || self.updates_open
         {
@@ -959,9 +998,42 @@ impl NoterApp {
 
     fn apply_conflict_effect(&mut self, effect: ConflictEffect, ctx: &egui::Context) {
         match effect {
-            ConflictEffect::None | ConflictEffect::Prompt(_) => {}
+            ConflictEffect::None
+            | ConflictEffect::Prompt(_)
+            | ConflictEffect::PromptOverwriteConfirm(_) => {}
             ConflictEffect::RequestReload => self.request_reload(ctx),
             ConflictEffect::RequestSaveAs => self.do_save_as(),
+            ConflictEffect::AuthorizeOverwrite => self.perform_authorized_overwrite(),
+        }
+    }
+
+    fn perform_authorized_overwrite(&mut self) {
+        let Some(path) = self.document.path().map(Path::to_path_buf) else {
+            self.error_msg = Some(
+                "Overwrite is unavailable because this document has not been saved yet.".to_owned(),
+            );
+            return;
+        };
+        match inspect_target(&path, SaveStage::InspectInitial) {
+            Ok(noter::core::save::TargetState::Regular(observation)) => {
+                self.document.rebaseline_to_observed_disk(observation);
+                self.do_save();
+            }
+            Ok(noter::core::save::TargetState::Missing) => {
+                self.error_msg = Some(
+                    "Overwrite stopped because the file is now missing. Use Save As to keep your work.".to_owned(),
+                );
+            }
+            Ok(noter::core::save::TargetState::Special(_)) => {
+                self.error_msg = Some(
+                    "Overwrite stopped because the path is no longer an ordinary file. Use Save As.".to_owned(),
+                );
+            }
+            Err(error) => {
+                self.error_msg = Some(format!(
+                    "Overwrite stopped because the path could not be inspected safely: {error}"
+                ));
+            }
         }
     }
 
@@ -969,10 +1041,20 @@ impl NoterApp {
         let Some(kind) = self.conflict.prompt_kind() else {
             return;
         };
+        if self.conflict.is_confirming_overwrite() {
+            self.show_overwrite_second_confirmation(ctx, kind);
+            return;
+        }
         let mut reload = false;
         let mut keep = false;
         let mut save_as = false;
+        let mut overwrite = false;
         let recovery_blocked = self.save_is_blocked();
+        let allow_overwrite = matches!(
+            kind,
+            noter::core::conflict::ExternalChangeKind::ContentOrIdentityChanged
+        ) && !recovery_blocked
+            && self.document.path().is_some();
 
         let response =
             egui::Modal::new(egui::Id::new("external-change-confirmation")).show(ctx, |ui| {
@@ -997,6 +1079,12 @@ impl NoterApp {
                             "Save As is blocked until the uncertain save state is reconciled",
                         )
                         .clicked();
+                    overwrite = ui
+                        .add_enabled(allow_overwrite, egui::Button::new("Overwrite Disk Version…"))
+                        .on_disabled_hover_text(
+                            "Overwrite is available only when the path still points at a regular file and no uncertain save is open",
+                        )
+                        .clicked();
                 });
             });
 
@@ -1014,6 +1102,48 @@ impl NoterApp {
             let effect = self
                 .conflict
                 .reduce(ConflictCommand::Decide(ConflictDecision::SaveAs));
+            self.apply_conflict_effect(effect, ctx);
+        } else if overwrite {
+            let effect = self
+                .conflict
+                .reduce(ConflictCommand::Decide(ConflictDecision::RequestOverwrite));
+            self.apply_conflict_effect(effect, ctx);
+        }
+    }
+
+    fn show_overwrite_second_confirmation(
+        &mut self,
+        ctx: &egui::Context,
+        kind: noter::core::conflict::ExternalChangeKind,
+    ) {
+        let mut confirm = false;
+        let mut cancel = false;
+        let response =
+            egui::Modal::new(egui::Id::new("external-change-overwrite-confirm")).show(ctx, |ui| {
+                ui.set_min_width(440.0);
+                ui.set_max_width(560.0);
+                ui.heading("Replace the disk version?");
+                ui.label(kind.description());
+                ui.label(
+                    "This replaces the file on disk with the text currently in this window. The disk version will not be recoverable from Noter after this save.",
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    confirm = ui
+                        .add(egui::Button::new("Replace Disk Version").min_size(egui::vec2(160.0, 28.0)))
+                        .clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        if confirm {
+            let effect = self
+                .conflict
+                .reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite));
+            self.apply_conflict_effect(effect, ctx);
+        } else if cancel || response.should_close() {
+            let effect = self
+                .conflict
+                .reduce(ConflictCommand::Decide(ConflictDecision::CancelOverwrite));
             self.apply_conflict_effect(effect, ctx);
         }
     }
@@ -1064,7 +1194,12 @@ impl NoterApp {
                 if !document_shortcuts_enabled
                     && matches!(
                         candidate,
-                        EditCommand::Undo | EditCommand::Redo | EditCommand::SelectAll
+                        EditCommand::Undo
+                            | EditCommand::Redo
+                            | EditCommand::Cut
+                            | EditCommand::Copy
+                            | EditCommand::Paste
+                            | EditCommand::SelectAll
                     )
                 {
                     continue;
@@ -1119,7 +1254,7 @@ impl NoterApp {
         }
     }
 
-    fn execute_edit_command(&mut self, command: EditCommand) {
+    fn execute_edit_command(&mut self, command: EditCommand, ctx: &egui::Context) {
         match command {
             EditCommand::Find => {
                 self.find_bar.open(false, &self.text, self.selection);
@@ -1148,6 +1283,18 @@ impl NoterApp {
                 self.preserve_focus_on_selection_restore = false;
                 return;
             }
+            EditCommand::Copy => {
+                self.clipboard_copy(ctx);
+                return;
+            }
+            EditCommand::Cut => {
+                self.clipboard_cut(ctx);
+                return;
+            }
+            EditCommand::Paste => {
+                self.clipboard_paste(ctx);
+                return;
+            }
             EditCommand::Undo | EditCommand::Redo => {}
         }
         let result = match command {
@@ -1158,7 +1305,10 @@ impl NoterApp {
             | EditCommand::FindPrevious
             | EditCommand::Replace
             | EditCommand::GoToLine
-            | EditCommand::SelectAll => return,
+            | EditCommand::SelectAll
+            | EditCommand::Cut
+            | EditCommand::Copy
+            | EditCommand::Paste => return,
         };
         match result {
             Ok(Some(outcome)) => self.synchronize_after_history(outcome),
@@ -1601,6 +1751,9 @@ impl NoterApp {
         for (index, candidate) in [
             EditCommand::Undo,
             EditCommand::Redo,
+            EditCommand::Cut,
+            EditCommand::Copy,
+            EditCommand::Paste,
             EditCommand::SelectAll,
             EditCommand::Find,
             EditCommand::FindNext,
@@ -1611,7 +1764,7 @@ impl NoterApp {
         .into_iter()
         .enumerate()
         {
-            if matches!(index, 2 | 3 | 7) {
+            if matches!(index, 2 | 5 | 6 | 10) {
                 ui.separator();
             }
             let enabled = self.edit_command_enabled(candidate);
@@ -1635,13 +1788,91 @@ impl NoterApp {
         match command {
             EditCommand::Undo => self.history.can_undo(),
             EditCommand::Redo => self.history.can_redo(),
+            EditCommand::Cut | EditCommand::Copy => {
+                self.selection.anchor() != self.selection.active()
+            }
             EditCommand::GoToLine => self.view == DocumentView::Text,
-            EditCommand::SelectAll
+            EditCommand::Paste
+            | EditCommand::SelectAll
             | EditCommand::Find
             | EditCommand::FindNext
             | EditCommand::FindPrevious
             | EditCommand::Replace => true,
         }
+    }
+
+    fn selected_source_text(&self) -> String {
+        let range = self.selection.ordered_range();
+        let start = range.start().min(self.text.len());
+        let end = range.end().min(self.text.len());
+        if start > end || !self.text.is_char_boundary(start) || !self.text.is_char_boundary(end) {
+            return String::new();
+        }
+        self.text[start..end].to_owned()
+    }
+
+    fn clipboard_copy(&self, ctx: &egui::Context) {
+        let selected = self.selected_source_text();
+        if selected.is_empty() {
+            return;
+        }
+        ctx.copy_text(selected);
+    }
+
+    fn clipboard_cut(&mut self, ctx: &egui::Context) {
+        let selected = self.selected_source_text();
+        if selected.is_empty() {
+            return;
+        }
+        ctx.copy_text(selected);
+        self.replace_selection_with("", EditOrigin::Programmatic);
+    }
+
+    fn clipboard_paste(&mut self, ctx: &egui::Context) {
+        // System paste arrives as Event::Paste in the same input frame as Ctrl+V.
+        // Menu Paste without an OS event cannot invent clipboard bytes; request
+        // a platform paste so the next frame can deliver Event::Paste when the
+        // integration supports it, and apply any paste event already present.
+        let payload = ctx.input(|input| {
+            input.events.iter().rev().find_map(|event| {
+                if let egui::Event::Paste(text) = event {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+        });
+        if let Some(text) = payload.filter(|text| !text.is_empty()) {
+            self.replace_selection_with(&text, EditOrigin::Paste);
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+    }
+
+    fn replace_selection_with(&mut self, replacement: &str, origin: EditOrigin) {
+        let range = self.selection.ordered_range();
+        let start = range.start().min(self.text.len());
+        let end = range.end().min(self.text.len());
+        if start > end || !self.text.is_char_boundary(start) || !self.text.is_char_boundary(end) {
+            return;
+        }
+        let mut next = String::with_capacity(self.text.len() - (end - start) + replacement.len());
+        next.push_str(&self.text[..start]);
+        next.push_str(replacement);
+        next.push_str(&self.text[end..]);
+        let caret = start + replacement.len();
+        if !next.is_char_boundary(caret) {
+            return;
+        }
+        let after = Selection::caret(caret);
+        let observed_at = EditTimestamp::new(std::time::Duration::from_secs(0));
+        self.text = next;
+        self.record_editor_change(EditorFrameOutcome {
+            changed: true,
+            selection: after,
+            origin,
+            observed_at,
+        });
     }
 
     fn show_view_menu(&mut self, ui: &mut egui::Ui, command: &mut Option<ViewCommandRequest>) {
@@ -2378,6 +2609,8 @@ impl NoterApp {
                 let history_outcome = self.history.record(applied);
                 self.text = String::from(self.document.rope());
                 self.markdown_issue_cache = None;
+                self.crash_recovery
+                    .on_edited(&self.document, self.selection);
                 if history_outcome == HistoryRecordOutcome::ClearedForOversizedTransaction {
                     self.error_msg = Some(format!(
                         "The edit was applied, but its {}-byte inverse exceeded the bounded undo history and older history was cleared.",
@@ -2566,13 +2799,17 @@ impl NoterApp {
         );
         self.show_menu(ui, &mut file_command, &mut edit_command, &mut view_command);
         self.show_error(ui);
+        self.show_crash_recovery_quarantine_notices(ui);
+        self.show_crash_recovery_persist_failure(ui);
         self.show_save_recovery_notice(ui);
+        let recovery_offer_open = self.crash_recovery.active_offer().is_some();
         let commands_enabled = self.pending_hard_link_save.is_none()
             && self.lifecycle.pending_intent().is_none()
-            && !self.conflict.is_prompting();
+            && !self.conflict.is_prompting()
+            && !recovery_offer_open;
         let edit_executed = if commands_enabled {
             edit_command.take().is_some_and(|command| {
-                self.execute_edit_command(command);
+                self.execute_edit_command(command, ui.ctx());
                 true
             })
         } else {
@@ -2592,13 +2829,26 @@ impl NoterApp {
         {
             self.execute_file_command(command, ui.ctx());
         }
+        if !recovery_offer_open {
+            self.crash_recovery.on_tick(&self.document, self.selection);
+            if self.crash_recovery.has_persist_failure()
+                && self.error_msg.as_deref() != Some(RECOVERY_PERSIST_FAILURE_MESSAGE)
+            {
+                // Surface once as a durable status; do not spam every frame.
+                if self.error_msg.is_none() {
+                    self.error_msg = Some(RECOVERY_PERSIST_FAILURE_MESSAGE.to_owned());
+                }
+            }
+        }
         self.maybe_inspect_external_change(ui.ctx());
         self.protect_native_close(ui.ctx());
         self.update_title(ui.ctx());
         self.show_about(ui.ctx());
         self.show_updates(ui.ctx());
         self.show_go_to_line(ui.ctx());
-        if self.pending_recovery_reconciliation.is_some() {
+        if recovery_offer_open {
+            self.show_startup_recovery_offer(ui.ctx());
+        } else if self.pending_recovery_reconciliation.is_some() {
             self.show_save_recovery_reconciliation(ui.ctx());
         } else if self.pending_hard_link_save.is_some() {
             self.show_hard_link_confirmation(ui.ctx());
@@ -2606,6 +2856,107 @@ impl NoterApp {
             self.show_unsaved_changes_confirmation(ui.ctx());
         } else if self.conflict.is_prompting() {
             self.show_external_change_confirmation(ui.ctx());
+        }
+    }
+
+    fn show_crash_recovery_quarantine_notices(&mut self, ui: &mut egui::Ui) {
+        if self.crash_recovery.quarantine_notices().is_empty() {
+            return;
+        }
+        egui::Panel::top("crash_recovery_quarantine").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Noter moved damaged recovery file(s) aside and did not open them.",
+                );
+                if ui.button("Dismiss").clicked() {
+                    self.crash_recovery.clear_quarantine_notices();
+                }
+            });
+            for notice in self.crash_recovery.quarantine_notices() {
+                ui.label(notice.as_str());
+            }
+        });
+    }
+
+    fn show_crash_recovery_persist_failure(&mut self, ui: &mut egui::Ui) {
+        if !self.crash_recovery.has_persist_failure() {
+            return;
+        }
+        egui::Panel::top("crash_recovery_persist_failure").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(ui.visuals().warn_fg_color, RECOVERY_PERSIST_FAILURE_MESSAGE);
+                if ui.button("Dismiss notice").clicked() {
+                    self.crash_recovery.dismiss_persist_failure();
+                    if self.error_msg.as_deref() == Some(RECOVERY_PERSIST_FAILURE_MESSAGE) {
+                        self.error_msg = None;
+                    }
+                }
+            });
+        });
+    }
+
+    fn show_startup_recovery_offer(&mut self, ctx: &egui::Context) {
+        let Some(offer) = self.crash_recovery.active_offer() else {
+            return;
+        };
+        let label = offer.original_path_label();
+        let content_preview_len = offer.record().content().len();
+        let mut restore = false;
+        let mut discard = false;
+        egui::Modal::new(egui::Id::new("startup-crash-recovery")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.heading("Recover unsaved work?");
+            ui.add_space(8.0);
+            ui.label(format!(
+                "Noter found a private recovery copy for \"{label}\" ({content_preview_len} bytes)."
+            ));
+            ui.label(
+                "Restore opens it as an unsaved document in this window. Discard deletes only that private recovery copy. Your original file on disk is not changed until you Save.",
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                restore = ui
+                    .add(egui::Button::new("Restore").min_size(egui::vec2(100.0, 28.0)))
+                    .clicked();
+                discard = ui
+                    .add(egui::Button::new("Discard").min_size(egui::vec2(100.0, 28.0)))
+                    .clicked();
+            });
+        });
+        if restore {
+            if let Some(offer) = self.crash_recovery.active_offer()
+                && offer.record().content().len() > INTERACTIVE_TEXT_MAX_BYTES
+            {
+                self.error_msg = Some(format!(
+                    "The recovered document is larger than the current {INTERACTIVE_TEXT_MAX_LABEL} interactive limit and was not opened. Use Discard to remove only the private recovery copy, or restore it with a future virtualized editor."
+                ));
+                return;
+            }
+            match self.crash_recovery.restore_active_offer() {
+                Ok((document, selection)) => {
+                    self.text = String::from(document.rope());
+                    self.document = document;
+                    self.history.reset(self.document.revision());
+                    self.selection = valid_selection_or_end(&self.text, selection);
+                    self.pending_selection_restore = Some(self.selection);
+                    self.advance_document_editor();
+                    self.find_bar.reset();
+                    self.go_to_line.reset();
+                    self.markdown_editor.reset();
+                    self.markdown_issue_cache = None;
+                    self.error_msg = None;
+                    self.reset_external_conflict_state();
+                    self.view = DocumentView::Text;
+                    self.crash_recovery
+                        .on_edited(&self.document, self.selection);
+                }
+                Err(message) => {
+                    self.error_msg = Some(message);
+                }
+            }
+        } else if discard {
+            self.crash_recovery.discard_active_offer();
         }
     }
 
@@ -4237,7 +4588,7 @@ mod tests {
             selection,
             ..NoterApp::default()
         };
-        app.execute_edit_command(EditCommand::Replace);
+        app.execute_edit_command(EditCommand::Replace, &egui::Context::default());
         app.find_bar.set_replacement_for_test("yy".to_owned());
 
         app.replace_selected_match(EditTimestamp::default());
@@ -4270,7 +4621,7 @@ mod tests {
             selection,
             ..NoterApp::default()
         };
-        app.execute_edit_command(EditCommand::Replace);
+        app.execute_edit_command(EditCommand::Replace, &egui::Context::default());
         app.find_bar.set_replacement_for_test("zzz".to_owned());
 
         app.replace_all_matches(EditTimestamp::default());
@@ -4350,12 +4701,29 @@ mod tests {
             ..NoterApp::default()
         };
 
-        app.execute_edit_command(EditCommand::SelectAll);
+        app.execute_edit_command(EditCommand::SelectAll, &egui::Context::default());
 
         assert_eq!(app.selection, Selection::new(0, source.len()));
         assert_eq!(app.pending_selection_restore, Some(app.selection));
         assert_eq!(String::from(app.document.rope()), source);
         assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn cut_command_removes_selection_through_the_shared_edit_path() {
+        let source = "abcdef";
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection: Selection::new(1, 4),
+            ..NoterApp::default()
+        };
+        assert!(app.edit_command_enabled(EditCommand::Cut));
+        assert!(app.edit_command_enabled(EditCommand::Copy));
+        app.execute_edit_command(EditCommand::Cut, &egui::Context::default());
+        assert_eq!(String::from(app.document.rope()), "aef");
+        assert!(app.document.is_dirty());
+        assert_eq!(app.selection, Selection::caret(1));
     }
 
     #[test]
@@ -4407,7 +4775,7 @@ mod tests {
             ViewCommandRequest::restore_document(ViewCommand::ToggleWordWrap),
             &ctx,
         );
-        app.execute_edit_command(EditCommand::SelectAll);
+        app.execute_edit_command(EditCommand::SelectAll, &egui::Context::default());
 
         assert_eq!(app.text_wrap, TextWrap::Wrapped);
         assert_eq!(app.selection, Selection::new(0, source.len()));
@@ -4618,10 +4986,10 @@ mod tests {
         assert_eq!(app.selection, Selection::caret(1));
         assert!(!app.markdown_editor.is_editing());
 
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.text, source);
         assert_eq!(app.selection, initial_selection);
-        app.execute_edit_command(EditCommand::Redo);
+        app.execute_edit_command(EditCommand::Redo, &egui::Context::default());
         assert_eq!(app.text, "qXYZ");
         assert_eq!(app.selection, Selection::caret(1));
     }
@@ -4636,15 +5004,15 @@ mod tests {
             ..NoterApp::default()
         };
 
-        app.execute_edit_command(EditCommand::Find);
-        app.execute_edit_command(EditCommand::FindNext);
+        app.execute_edit_command(EditCommand::Find, &egui::Context::default());
+        app.execute_edit_command(EditCommand::FindNext, &egui::Context::default());
         assert_eq!(app.selection, Selection::new(8, 11));
         assert_eq!(app.pending_selection_restore, Some(app.selection));
         assert!(app.preserve_focus_on_selection_restore);
 
-        app.execute_edit_command(EditCommand::FindNext);
+        app.execute_edit_command(EditCommand::FindNext, &egui::Context::default());
         assert_eq!(app.selection, Selection::new(0, 3));
-        app.execute_edit_command(EditCommand::FindPrevious);
+        app.execute_edit_command(EditCommand::FindPrevious, &egui::Context::default());
         assert_eq!(app.selection, Selection::new(8, 11));
         assert_eq!(app.document.rope().to_string(), source);
         assert!(!app.document.is_dirty());
@@ -4660,12 +5028,12 @@ mod tests {
             ..NoterApp::default()
         };
 
-        app.execute_edit_command(EditCommand::Replace);
+        app.execute_edit_command(EditCommand::Replace, &egui::Context::default());
         app.replace_selected_match(EditTimestamp::default());
         assert_eq!(app.text, " cat");
         assert_eq!(app.document.rope().to_string(), " cat");
         assert_eq!(app.history.len(), 1);
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.text, source);
 
         app.selection = Selection::new(0, source.len());
@@ -4674,7 +5042,7 @@ mod tests {
         assert_eq!(app.document.rope().to_string(), " ");
         assert_eq!(app.history.len(), 1);
         assert_eq!(app.selection, Selection::new(0, 1));
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.text, source);
         assert_eq!(app.selection, Selection::new(0, source.len()));
     }
@@ -4712,9 +5080,9 @@ mod tests {
         }
 
         assert_eq!(app.history.len(), 2);
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.text, "ab");
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.text, "");
     }
 
@@ -4739,14 +5107,14 @@ mod tests {
         assert!(app.document.is_dirty());
         assert!(app.history.can_undo());
 
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.text, "abc");
         assert_eq!(String::from(app.document.rope()), "abc");
         assert_eq!(app.selection, Selection::new(2, 1));
         assert!(!app.document.is_dirty());
         assert!(app.history.can_redo());
 
-        app.execute_edit_command(EditCommand::Redo);
+        app.execute_edit_command(EditCommand::Redo, &egui::Context::default());
         assert_eq!(app.text, "aBc");
         assert_eq!(String::from(app.document.rope()), "aBc");
         assert_eq!(app.selection, Selection::new(1, 2));
@@ -4860,7 +5228,7 @@ mod tests {
         let context = egui::Context::default();
         context.memory_mut(|memory| memory.request_focus(editor_id));
 
-        app.execute_edit_command(EditCommand::Undo);
+        app.execute_edit_command(EditCommand::Undo, &egui::Context::default());
         assert_eq!(app.editor_id(), editor_id);
         assert_eq!(app.pending_selection_restore, Some(Selection::new(1, 2)));
 

@@ -173,7 +173,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
 
     def test_rejects_unbounded_macos_mutation_codegen_units(self) -> None:
         changed = self.ci_workflow.replace(
-            "CARGO_PROFILE_TEST_CODEGEN_UNITS: '16'",
+            "CARGO_PROFILE_TEST_CODEGEN_UNITS: '8'",
             "CARGO_PROFILE_TEST_CODEGEN_UNITS: '256'",
             1,
         )

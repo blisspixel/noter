@@ -600,8 +600,9 @@ transition tests and a fixed-seed 512-case command-sequence property compare
 the reducer with a separate reference model. A pure `ConflictState` reducer
 classifies focus and timer observations against the trusted save baseline and
 offers Reload, Keep Editing, and Save As without silent overwrite.
-Overwrite-with-second-confirm remains an open M4 slice for
-`0.1.0-alpha.2`.
+Overwrite-with-second-confirm is implemented as a pure two-step conflict
+decision (`RequestOverwrite` then `ConfirmOverwrite`) that only then rebaselines
+the trusted save expectation and saves.
 
 Dialogs cannot directly mutate document state. They emit commands to the same
 dispatcher used by keyboard shortcuts and menus. Repeated close events are
@@ -613,8 +614,10 @@ Recovery uses a private subdirectory of the per-user application data root
 (never the general temporary directory). Preferences may use eframe storage
 (`app.ron`); recovery records do not. The library modules are
 `core::recovery` (pure schedule and integrity) and `core::recovery_store`
-(durable private files). Application wiring of those modules is still required
-before crash recovery is product-complete.
+(durable private files). The binary adapter `crash_recovery` opens
+`eframe::storage_dir("Noter")/recovery`, drives the pure scheduler, presents
+startup Restore / Discard offers, and surfaces persist failures without writing
+user document paths.
 
 Each dirty session owns one versioned record:
 

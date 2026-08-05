@@ -7,6 +7,13 @@ release, so current work remains under Unreleased.
 
 ### Added
 
+- Wire private crash recovery into the application: dirty-session persist under
+  the per-user state directory, startup Restore / Discard, quarantine notices,
+  Save and Discard cleanup, and a visible recovery persist-failure notice.
+- Add external-change Overwrite Disk Version behind an explicit second
+  confirmation; Keep Editing still never rebaselines the trusted disk version.
+- Add Edit menu Cut / Copy / Paste on the shared edit-command path with platform
+  shortcuts and `EditOrigin::Paste` / programmatic cut intent.
 - Add View menu Full Screen toggle with the F11 shortcut.
 - Add Markdown Mode strikethrough formatting on the formatting bar.
 - Add pure M4 crash-recovery scheduling, versioned record integrity, and startup

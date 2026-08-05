@@ -101,10 +101,13 @@ remain first-release work after that checkpoint.
 
 The current tree already has deterministic Undo coalescing, bounded Find and
 Replace, the pure lifecycle reducer, external-change Reload / Keep Editing /
-Save As, Markdown document-wide and cross-block selection, pure recovery
-scheduling with epoch-correlated persist, versioned recovery records, and a
-private durable recovery store. Application wiring for recovery and the
-overwrite second-confirm remain open.
+Save As / overwrite second-confirm, Markdown document-wide and cross-block
+selection, pure recovery scheduling with epoch-correlated persist, versioned
+recovery records, a private durable recovery store, application wiring that
+schedules dirty persist, offers startup Restore / Discard, deletes on Save or
+Discard, and shows persist failure, and Edit-menu Cut / Copy / Paste on the
+shared edit-command path. Remaining alpha.2 work is navigation and long-session
+evidence, remaining M1/M2 fixtures, and the cross-platform correctness matrix.
 
 ## Product boundaries
 
@@ -352,7 +355,8 @@ Formatted content remains wrapped by design. Cross-block pointer dragging in
 inactive Markdown content now preserves source direction and exact UTF-8
 boundaries, retains native cross-label feedback, and performs bounded edge
 autoscroll before activating one contiguous source-backed edit range. The
-remaining clipboard and navigation parity are still open.
+shared Edit-menu Cut / Copy / Paste path is implemented. Remaining navigation
+parity and long-session evidence are still open.
 
 Escape now commits same-frame Markdown input before leaving the active range
 and carries the final directional source selection into shared history. Go To
@@ -365,9 +369,9 @@ lifecycle decisions against independent reference models. The
 [exact-commit M3 editing record](M3_EDITING_EVIDENCE.md) reports 256 generated
 mutations: 216 caught, 40 compiler-unviable, zero missed, and zero timed out,
 with no recognized infrastructure failure. This is focused Windows-local
-evidence, not M3 completion. Clipboard and complete navigation policy,
-revision-safe background indexing, cross-platform manual evidence, and the
-long-session memory fixture remain open.
+evidence, not M3 completion. Complete navigation policy, revision-safe
+background indexing, cross-platform manual evidence, and the long-session
+memory fixture remain open.
 
 ## M4: Lifecycle, Recovery, and Conflicts
 
@@ -616,22 +620,20 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 Ordered for `0.1.0-alpha.2` first. Completed historical items stay listed only
 when they document evidence links.
 
-1. **In progress / next:** wire M4 recovery into the app (schedule, startup UI,
-   Save/Discard cleanup, visible persist failure). Library store is present.
-2. **Next:** external-change overwrite with explicit second confirmation.
-3. **Next:** M3 Cut / Copy / Paste command path and remaining navigation /
+1. **In progress:** land recovery app wiring, overwrite second-confirm, and
+   shared Cut / Copy / Paste (this PR), then complete M3 navigation policy and
    long-session evidence.
-4. **Parallel evidence:** remaining M1 fixtures (macOS, SMB, cloud, removable,
+2. **Parallel evidence:** remaining M1 fixtures (macOS, SMB, cloud, removable,
    weak FS, second-identity, crash-persistence). Evidence:
    [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
-5. **Parallel evidence:** M2 installed About, updates, theme persistence,
+3. **Parallel evidence:** M2 installed About, updates, theme persistence,
    disposable source installs.
-6. **Gate:** cross-platform correctness matrix on one green commit → tag
+4. **Gate:** cross-platform correctness matrix on one green commit → tag
    `0.1.0-alpha.2`.
-7. **Then `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
+5. **Then `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
    production editor contract is stable.
-8. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
+6. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
    dogfood, public release.
 
 ### Completed foundations (historical)

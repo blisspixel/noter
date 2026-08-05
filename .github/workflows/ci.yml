@@ -190,16 +190,30 @@ jobs:
           # Keep the complete workspace test scope and incremental rebuilds, but
           # cap codegen units so every repeated linker invocation is bounded.
           # The ordinary macOS test job retains its normal debug profile.
+          # When the infrastructure gate still sees a linker flake hidden as
+          # unviable with zero missed mutants, retry the macOS scope once.
           CARGO_BUILD_JOBS: 1
-          CARGO_PROFILE_TEST_CODEGEN_UNITS: '16'
+          CARGO_PROFILE_TEST_CODEGEN_UNITS: '8'
           CARGO_PROFILE_TEST_DEBUG: '0'
           CARGO_INCREMENTAL: 1
-        run: >
-          cargo mutants -vV --in-place --colors never --workspace
-          -p noter-platform
-          --re '[Mm]acos'
+        run: |
+          set -euo pipefail
+          run_macos_mutants() {
+            cargo mutants -vV --in-place --colors never --workspace \
+              -p noter-platform \
+              --re '[Mm]acos'
+          }
+          run_macos_mutants
+          if python scripts/check_mutation_infrastructure.py mutants.out; then
+            exit 0
+          fi
+          echo "macOS mutation infrastructure flake detected; retrying once"
+          rm -rf mutants.out
+          run_macos_mutants
+          python scripts/check_mutation_infrastructure.py mutants.out
       - name: Reject infrastructure failures hidden as unviable mutants
-        if: always()
+        # macOS validates (and may retry) infrastructure inside its run step.
+        if: always() && runner.os != 'macOS'
         run: python scripts/check_mutation_infrastructure.py mutants.out
       - name: Upload mutation results
         if: always()
