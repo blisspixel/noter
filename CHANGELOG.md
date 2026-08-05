@@ -8,7 +8,7 @@ release, so current work remains under Unreleased.
 ### Added
 
 - Record partial M2 installed-product evidence for a disposable Windows
-  PowerShell source install at an exact green commit.
+  PowerShell source install at commit `91ed8d7` with exact-head main CI.
 - Route Markdown active-block word, Home/End, and document keyboard gestures
   through the same pure caret path as Text Mode.
 - Route Text Mode word, Home/End, and document keyboard gestures through pure
