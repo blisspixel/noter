@@ -21,14 +21,21 @@ pub struct NavigationGesture {
 
 impl NavigationGesture {
     /// Applies this gesture to `selection` over `source`.
+    ///
+    /// Without Shift, a non-empty selection collapses to the edge in the
+    /// movement direction before the caret steps (forward uses the high edge,
+    /// backward the low edge). With Shift, only the active caret moves.
     #[must_use]
     pub fn apply(self, source: &str, selection: Selection) -> Selection {
         if self.extend {
-            extend_selection(source, selection, self.direction, self.unit)
-        } else {
-            let active = move_caret(source, selection.active(), self.direction, self.unit);
-            Selection::caret(active)
+            return extend_selection(source, selection, self.direction, self.unit);
         }
+        let from = match self.direction {
+            MoveDirection::Backward => selection.ordered_range().start(),
+            MoveDirection::Forward => selection.ordered_range().end(),
+        };
+        let active = move_caret(source, from, self.direction, self.unit);
+        Selection::caret(active)
     }
 }
 
@@ -208,13 +215,16 @@ fn resolve_mac(key: Key, modifiers: Modifiers, extend: bool) -> Option<Navigatio
     None
 }
 
-/// Consumes matching navigation key events for this frame and returns the last
-/// gesture. Events are removed so `TextEdit` does not also apply them.
-pub fn consume_navigation_gesture(
+/// Consumes matching navigation key events for this frame.
+///
+/// Events are removed so `TextEdit` does not also apply them. Every matching
+/// event is returned in order so key-repeat buffers still advance the caret
+/// one step per event.
+pub fn consume_navigation_gestures(
     ui: &egui::Ui,
     platform: KeyboardPlatform,
-) -> Option<NavigationGesture> {
-    let mut resolved = None;
+) -> Vec<NavigationGesture> {
+    let mut resolved = Vec::new();
     ui.input_mut(|input| {
         input.events.retain(|event| {
             let egui::Event::Key {
@@ -227,7 +237,7 @@ pub fn consume_navigation_gesture(
                 return true;
             };
             resolve_navigation_gesture(*key, *modifiers, platform).is_none_or(|gesture| {
-                resolved = Some(gesture);
+                resolved.push(gesture);
                 false
             })
         });
@@ -332,6 +342,28 @@ mod tests {
         let selected = extend.apply(source, Selection::caret(0));
         assert_eq!(selected.anchor(), 0);
         assert_eq!(selected.active(), 5);
+    }
+
+    #[test]
+    fn non_extend_collapses_selection_to_direction_edge() {
+        let source = "hello world";
+        // Selection active is on the left (backward drag).
+        let selection = Selection::new(5, 1);
+        let forward = NavigationGesture {
+            direction: MoveDirection::Forward,
+            unit: MoveUnit::Word,
+            extend: false,
+        };
+        // Collapse to high edge (5, the space) then word-forward to "world" (6).
+        assert_eq!(forward.apply(source, selection), Selection::caret(6));
+
+        let backward = NavigationGesture {
+            direction: MoveDirection::Backward,
+            unit: MoveUnit::Word,
+            extend: false,
+        };
+        // Collapse to low edge (1) then word-backward to 0.
+        assert_eq!(backward.apply(source, selection), Selection::caret(0));
     }
 
     #[test]
