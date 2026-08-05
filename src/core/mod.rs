@@ -18,7 +18,7 @@ pub mod limits;
 pub mod line_endings;
 /// Conservative, source-based Markdown diagnostics.
 pub mod markdown;
-/// Allocation-free logical-line navigation.
+/// Allocation-free logical-line and UTF-8 caret navigation.
 pub mod navigation;
 /// Pure crash-recovery scheduling, integrity, and startup disposition.
 pub mod recovery;

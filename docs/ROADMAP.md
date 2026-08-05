@@ -106,7 +106,9 @@ selection, pure recovery scheduling with epoch-correlated persist, versioned
 recovery records, a private durable recovery store, application wiring that
 schedules dirty persist, offers startup Restore / Discard, deletes on Save or
 Discard, and shows persist failure, and Edit-menu Cut / Copy / Paste on the
-shared edit-command path. Remaining alpha.2 work is navigation and long-session
+shared edit-command path, pure caret navigation for character, word, line, and
+document units, and a long-session undo history bound fixture. Remaining
+alpha.2 work is wiring navigation into the editor adapter and platform keyboard
 evidence, remaining M1/M2 fixtures, and the cross-platform correctness matrix.
 
 ## Product boundaries
@@ -355,8 +357,9 @@ Formatted content remains wrapped by design. Cross-block pointer dragging in
 inactive Markdown content now preserves source direction and exact UTF-8
 boundaries, retains native cross-label feedback, and performs bounded edge
 autoscroll before activating one contiguous source-backed edit range. The
-shared Edit-menu Cut / Copy / Paste path is implemented. Remaining navigation
-parity and long-session evidence are still open.
+shared Edit-menu Cut / Copy / Paste path is implemented. Pure caret navigation
+and a long-session history bound fixture are implemented; adapter keyboard
+wiring and cross-platform manual evidence remain open.
 
 Escape now commits same-frame Markdown input before leaving the active range
 and carries the final directional source selection into shared history. Go To
@@ -369,9 +372,9 @@ lifecycle decisions against independent reference models. The
 [exact-commit M3 editing record](M3_EDITING_EVIDENCE.md) reports 256 generated
 mutations: 216 caught, 40 compiler-unviable, zero missed, and zero timed out,
 with no recognized infrastructure failure. This is focused Windows-local
-evidence, not M3 completion. Complete navigation policy, revision-safe
-background indexing, cross-platform manual evidence, and the long-session
-memory fixture remain open.
+evidence, not M3 completion. Adapter keyboard wiring for pure navigation policy,
+revision-safe background indexing, and cross-platform manual evidence remain
+open.
 
 ## M4: Lifecycle, Recovery, and Conflicts
 
@@ -620,9 +623,9 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 Ordered for `0.1.0-alpha.2` first. Completed historical items stay listed only
 when they document evidence links.
 
-1. **In progress:** land recovery app wiring, overwrite second-confirm, and
-   shared Cut / Copy / Paste (this PR), then complete M3 navigation policy and
-   long-session evidence.
+1. **In progress:** wire pure caret navigation into the text/Markdown adapters
+   and collect platform keyboard evidence; long-session history fixture is in
+   core tests.
 2. **Parallel evidence:** remaining M1 fixtures (macOS, SMB, cloud, removable,
    weak FS, second-identity, crash-persistence). Evidence:
    [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
