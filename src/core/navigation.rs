@@ -24,7 +24,13 @@ pub enum MoveUnit {
     /// One classic alphanumeric or non-alphanumeric token.
     Word,
     /// Start of the current logical line, or the previous line when already there.
+    ///
+    /// Used for repeated Up/Down-style line steps, not the Home key.
     Line,
+    /// Start of the containing logical line (Home). Stays put when already there.
+    LineHome,
+    /// End of the containing logical line content, before any terminator (End).
+    LineEnd,
     /// Document start or end.
     Document,
 }
@@ -56,11 +62,51 @@ pub fn move_caret(source: &str, offset: usize, direction: MoveDirection, unit: M
         MoveUnit::Character => move_by_character(source, offset, direction),
         MoveUnit::Word => move_by_word(source, offset, direction),
         MoveUnit::Line => move_by_line(source, offset, direction),
+        MoveUnit::LineHome => line_home_offset(source, offset),
+        MoveUnit::LineEnd => line_end_offset(source, offset),
         MoveUnit::Document => match direction {
             MoveDirection::Backward => 0,
             MoveDirection::Forward => source.len(),
         },
     }
+}
+
+/// Returns the start of the logical line that contains `offset` (Home).
+#[must_use]
+pub fn line_home_offset(source: &str, offset: usize) -> usize {
+    let offset = snap_to_char_boundary(source, offset);
+    let line = logical_line_at(source, offset);
+    line_start_offset(source, line).unwrap_or(0)
+}
+
+/// Returns the end of the logical line content that contains `offset` (End).
+///
+/// The caret sits just before the line terminator, or at the document end on
+/// the final line when no terminator follows.
+#[must_use]
+pub fn line_end_offset(source: &str, offset: usize) -> usize {
+    let offset = snap_to_char_boundary(source, offset);
+    let line = logical_line_at(source, offset);
+    match line_start_offset(source, line + 1) {
+        Ok(next_start) => content_end_before_line_start(source, next_start),
+        Err(LineNavigationError::OutOfRange { .. } | LineNavigationError::Zero) => source.len(),
+    }
+}
+
+fn content_end_before_line_start(source: &str, next_line_start: usize) -> usize {
+    let bytes = source.as_bytes();
+    if next_line_start >= 2
+        && bytes[next_line_start - 2] == b'\r'
+        && bytes[next_line_start - 1] == b'\n'
+    {
+        return next_line_start - 2;
+    }
+    if next_line_start >= 1
+        && (bytes[next_line_start - 1] == b'\n' || bytes[next_line_start - 1] == b'\r')
+    {
+        return next_line_start - 1;
+    }
+    next_line_start
 }
 
 /// Extends a directional selection by moving only the active caret.
@@ -538,6 +584,34 @@ mod tests {
             move_caret(source, 5, MoveDirection::Forward, MoveUnit::Document),
             source.len()
         );
+    }
+
+    #[test]
+    fn line_home_and_end_respect_terminators() {
+        let source = "one\r\ntwo\nthree";
+        // "one" is bytes 0..3, CRLF at 3..5, "two" at 5..8, LF at 8, "three" at 9..
+        assert_eq!(line_home_offset(source, 2), 0);
+        assert_eq!(line_end_offset(source, 2), 3);
+        assert_eq!(
+            move_caret(source, 2, MoveDirection::Backward, MoveUnit::LineHome),
+            0
+        );
+        assert_eq!(
+            move_caret(source, 2, MoveDirection::Forward, MoveUnit::LineEnd),
+            3
+        );
+        // Already at line start: Home stays.
+        assert_eq!(line_home_offset(source, 0), 0);
+        // Second line.
+        assert_eq!(line_home_offset(source, 6), 5);
+        assert_eq!(line_end_offset(source, 6), 8);
+        // Final line without trailing terminator.
+        assert_eq!(line_home_offset(source, 10), 9);
+        assert_eq!(line_end_offset(source, 10), source.len());
+        // CR-only terminator.
+        assert_eq!(line_end_offset("a\rb", 1), 1);
+        assert_eq!(line_home_offset("a\rb", 2), 2);
+        assert_eq!(line_end_offset("a\rb", 2), 3);
     }
 
     #[test]
