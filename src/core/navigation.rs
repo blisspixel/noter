@@ -75,18 +75,21 @@ pub fn extend_selection(
     super::edit::Selection::new(selection.anchor(), active)
 }
 
-const fn snap_to_char_boundary(source: &str, offset: usize) -> usize {
+fn snap_to_char_boundary(source: &str, offset: usize) -> usize {
     if offset >= source.len() {
         return source.len();
     }
     if source.is_char_boundary(offset) {
         return offset;
     }
-    let mut candidate = offset;
-    while candidate > 0 && !source.is_char_boundary(candidate) {
-        candidate -= 1;
+    // Walk backward at most the maximum UTF-8 scalar width.
+    for distance in 1..=3 {
+        let candidate = offset.saturating_sub(distance);
+        if source.is_char_boundary(candidate) {
+            return candidate;
+        }
     }
-    candidate
+    0
 }
 
 fn move_by_character(source: &str, offset: usize, direction: MoveDirection) -> usize {
@@ -117,64 +120,53 @@ fn is_word_scalar(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
 }
 
-fn previous_char(source: &str, offset: usize) -> Option<(usize, char)> {
-    if offset == 0 {
-        return None;
-    }
-    source[..offset].char_indices().next_back()
-}
-
 fn move_by_word(source: &str, offset: usize, direction: MoveDirection) -> usize {
     match direction {
         MoveDirection::Forward => {
             if offset >= source.len() {
                 return source.len();
             }
-            let mut chars = source[offset..].char_indices();
+            let rest = &source[offset..];
+            let mut chars = rest.char_indices();
             let Some((_, first)) = chars.next() else {
                 return source.len();
             };
             // Skip pure whitespace so Ctrl+Right lands on the next token start.
             if first.is_whitespace() {
-                let mut end = offset + first.len_utf8();
-                for (rel, ch) in chars.by_ref() {
+                for (rel, ch) in chars {
                     if !ch.is_whitespace() {
                         return offset + rel;
                     }
-                    end = offset + rel + ch.len_utf8();
                 }
-                return end.min(source.len());
+                return source.len();
             }
             let class = is_word_scalar(first);
-            let mut end = offset + first.len_utf8();
             for (rel, ch) in chars {
                 if ch.is_whitespace() || is_word_scalar(ch) != class {
                     return offset + rel;
                 }
-                end = offset + rel + ch.len_utf8();
             }
-            end
+            source.len()
         }
         MoveDirection::Backward => {
-            let Some((mut cursor, last)) = previous_char(source, offset) else {
-                return 0;
-            };
-            if last.is_whitespace() {
-                // Land after the last non-whitespace scalar (or 0).
-                while let Some((index, ch)) = previous_char(source, cursor) {
-                    if !ch.is_whitespace() {
-                        return index + ch.len_utf8();
-                    }
-                    cursor = index;
-                }
+            if offset == 0 {
                 return 0;
             }
+            // Finite reverse walk over scalars (allocation is bounded by offset).
+            let mut chars: Vec<(usize, char)> = source[..offset].char_indices().collect();
+            // Skip trailing whitespace so Ctrl+Left lands on the prior token start.
+            while chars.last().is_some_and(|(_, ch)| ch.is_whitespace()) {
+                chars.pop();
+            }
+            let Some((_, last)) = chars.pop() else {
+                return 0;
+            };
             let class = is_word_scalar(last);
-            while let Some((index, ch)) = previous_char(source, cursor) {
+            while let Some((index, ch)) = chars.last().copied() {
                 if ch.is_whitespace() || is_word_scalar(ch) != class {
-                    return cursor;
+                    return index + ch.len_utf8();
                 }
-                cursor = index;
+                chars.pop();
             }
             0
         }
@@ -187,26 +179,10 @@ fn move_by_line(source: &str, offset: usize, direction: MoveDirection) -> usize 
             if offset == 0 {
                 return 0;
             }
-            // Find the logical line that contains `offset` (or ends just before it).
-            let mut line = 1_usize;
-            let mut line_start = 0_usize;
-            let mut bytes = source.bytes().enumerate().peekable();
-            while let Some((index, byte)) = bytes.next() {
-                if index >= offset {
-                    break;
-                }
-                if byte == b'\r' && bytes.peek().is_some_and(|(_, next)| *next == b'\n') {
-                    bytes.next();
-                    line += 1;
-                    line_start = index + 2;
-                } else if byte == b'\r' || byte == b'\n' {
-                    line += 1;
-                    line_start = index + 1;
-                }
-            }
+            let line = logical_line_at(source, offset);
+            let line_start = line_start_offset(source, line).unwrap_or(0);
             if offset == line_start {
-                // Already at line start: jump to previous line start when possible.
-                if line <= 1 {
+                if line == 1 {
                     return 0;
                 }
                 line_start_offset(source, line - 1).unwrap_or(0)
@@ -215,26 +191,45 @@ fn move_by_line(source: &str, offset: usize, direction: MoveDirection) -> usize 
             }
         }
         MoveDirection::Forward => {
-            // Move to the start of the next logical line, or document end.
-            let mut bytes = source.bytes().enumerate().peekable();
-            while let Some((index, byte)) = bytes.next() {
-                if index < offset {
-                    if byte == b'\r' && bytes.peek().is_some_and(|(_, next)| *next == b'\n') {
-                        bytes.next();
-                    }
-                    continue;
-                }
-                if byte == b'\r' && bytes.peek().is_some_and(|(_, next)| *next == b'\n') {
-                    bytes.next();
-                    return bytes.peek().map_or(source.len(), |(next, _)| *next);
-                }
-                if byte == b'\r' || byte == b'\n' {
-                    return bytes.peek().map_or(source.len(), |(next, _)| *next);
+            let line = logical_line_at(source, offset);
+            match line_start_offset(source, line + 1) {
+                Ok(next_start) => next_start,
+                Err(LineNavigationError::OutOfRange { .. } | LineNavigationError::Zero) => {
+                    source.len()
                 }
             }
-            source.len()
         }
     }
+}
+
+/// One-based logical line containing `offset` (or the line ending just before it).
+fn logical_line_at(source: &str, offset: usize) -> usize {
+    if offset == 0 {
+        return 1;
+    }
+    let mut line = 1_usize;
+    let mut index = 0_usize;
+    let bytes = source.as_bytes();
+    while index < offset && index < bytes.len() {
+        if bytes[index] == b'\r' {
+            if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
+                index += 2;
+            } else {
+                index += 1;
+            }
+            line += 1;
+            continue;
+        }
+        if bytes[index] == b'\n' {
+            index += 1;
+            line += 1;
+            continue;
+        }
+        index += 1;
+    }
+    // When offset sits exactly at a terminator end, line already advanced.
+    // When offset is mid-line, line is the containing line.
+    line
 }
 
 /// Returns the UTF-8 byte offset at the start of a one-based logical line.
@@ -396,9 +391,15 @@ mod tests {
             move_caret(source, 15, MoveDirection::Backward, MoveUnit::Word),
             8
         );
+        // Backward from start of "world_1" skips spaces and lands on ",".
         assert_eq!(
             move_caret(source, 8, MoveDirection::Backward, MoveUnit::Word),
-            6
+            5
+        );
+        // One more step lands on "hello".
+        assert_eq!(
+            move_caret(source, 5, MoveDirection::Backward, MoveUnit::Word),
+            0
         );
     }
 
@@ -439,5 +440,138 @@ mod tests {
         let extended = extend_selection(source, selection, MoveDirection::Forward, MoveUnit::Word);
         assert_eq!(extended.anchor(), 1);
         assert_eq!(extended.active(), 6);
+    }
+
+    #[test]
+    fn snap_to_char_boundary_handles_exact_and_interior_offsets() {
+        let source = "aé你"; // 1 + 2 + 3 bytes
+        assert_eq!(snap_to_char_boundary(source, 0), 0);
+        assert_eq!(snap_to_char_boundary(source, 1), 1);
+        assert_eq!(snap_to_char_boundary(source, 2), 1); // mid é
+        assert_eq!(snap_to_char_boundary(source, 3), 3); // start of 你
+        assert_eq!(snap_to_char_boundary(source, 4), 3); // mid 你
+        assert_eq!(snap_to_char_boundary(source, 5), 3); // mid 你
+        assert_eq!(snap_to_char_boundary(source, source.len()), source.len());
+        assert_eq!(
+            snap_to_char_boundary(source, source.len() + 10),
+            source.len()
+        );
+        assert_eq!(snap_to_char_boundary("", 0), 0);
+        assert_eq!(snap_to_char_boundary("", 3), 0);
+    }
+
+    #[test]
+    fn word_moves_skip_whitespace_and_land_on_token_starts() {
+        let source = "ab  cd!";
+        // Forward from start of spaces lands on "cd".
+        assert_eq!(
+            move_caret(source, 2, MoveDirection::Forward, MoveUnit::Word),
+            4
+        );
+        // Forward from trailing punctuation.
+        assert_eq!(
+            move_caret(source, 6, MoveDirection::Forward, MoveUnit::Word),
+            7
+        );
+        // Backward from spaces lands at start of "ab".
+        assert_eq!(
+            move_caret(source, 3, MoveDirection::Backward, MoveUnit::Word),
+            0
+        );
+        // Backward from end of "cd" lands at start of "cd".
+        assert_eq!(
+            move_caret(source, 6, MoveDirection::Backward, MoveUnit::Word),
+            4
+        );
+        // Backward from document end over punctuation.
+        assert_eq!(
+            move_caret(source, 7, MoveDirection::Backward, MoveUnit::Word),
+            6
+        );
+        assert_eq!(
+            move_caret(source, 0, MoveDirection::Backward, MoveUnit::Word),
+            0
+        );
+        assert_eq!(
+            move_caret(source, source.len(), MoveDirection::Forward, MoveUnit::Word),
+            source.len()
+        );
+        // Trailing whitespace only: forward reaches end; backward reaches 0.
+        assert_eq!(
+            move_caret("  ", 0, MoveDirection::Forward, MoveUnit::Word),
+            2
+        );
+        assert_eq!(
+            move_caret("  ", 2, MoveDirection::Backward, MoveUnit::Word),
+            0
+        );
+    }
+
+    #[test]
+    fn line_moves_from_start_middle_and_mixed_terminators() {
+        let source = "a\r\nb\nc\rd";
+        // Line starts: 0, 3 ("b"), 5 ("c"), 7 ("d")
+        assert_eq!(line_start_offset(source, 1), Ok(0));
+        assert_eq!(line_start_offset(source, 2), Ok(3));
+        assert_eq!(line_start_offset(source, 3), Ok(5));
+        assert_eq!(line_start_offset(source, 4), Ok(7));
+
+        // Middle of line 1 -> line start.
+        assert_eq!(
+            move_caret(source, 1, MoveDirection::Backward, MoveUnit::Line),
+            0
+        );
+        // Already at line 2 start -> previous line start.
+        assert_eq!(
+            move_caret(source, 3, MoveDirection::Backward, MoveUnit::Line),
+            0
+        );
+        // Forward from line 1 middle -> line 2 start.
+        assert_eq!(
+            move_caret(source, 1, MoveDirection::Forward, MoveUnit::Line),
+            3
+        );
+        // Forward from last line -> document end.
+        assert_eq!(
+            move_caret(source, 7, MoveDirection::Forward, MoveUnit::Line),
+            source.len()
+        );
+        // Backward from first line start stays put.
+        assert_eq!(
+            move_caret(source, 0, MoveDirection::Backward, MoveUnit::Line),
+            0
+        );
+        // CR-only boundary.
+        assert_eq!(
+            move_caret(source, 6, MoveDirection::Forward, MoveUnit::Line),
+            7
+        );
+        assert_eq!(
+            move_caret(source, 7, MoveDirection::Backward, MoveUnit::Line),
+            5
+        );
+        // Empty and single-line documents.
+        assert_eq!(move_caret("", 0, MoveDirection::Forward, MoveUnit::Line), 0);
+        assert_eq!(
+            move_caret("solo", 2, MoveDirection::Forward, MoveUnit::Line),
+            4
+        );
+        assert_eq!(
+            move_caret("solo", 2, MoveDirection::Backward, MoveUnit::Line),
+            0
+        );
+    }
+
+    #[test]
+    fn logical_line_at_matches_line_start_table() {
+        let source = "a\r\nb\nc\rd";
+        assert_eq!(logical_line_at(source, 0), 1);
+        assert_eq!(logical_line_at(source, 1), 1);
+        assert_eq!(logical_line_at(source, 3), 2);
+        assert_eq!(logical_line_at(source, 4), 2);
+        assert_eq!(logical_line_at(source, 5), 3);
+        assert_eq!(logical_line_at(source, 7), 4);
+        assert_eq!(logical_line_at(source, source.len()), 4);
+        assert_eq!(logical_line_at("", 0), 1);
     }
 }
