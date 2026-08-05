@@ -204,24 +204,28 @@ fn move_by_line(source: &str, offset: usize, direction: MoveDirection) -> usize 
 
 /// One-based logical line of the caret at `offset`.
 ///
-/// Counts only terminators whose full sequence lies strictly before `offset`.
-/// Iteration is a bounded `for` over `[0, offset)` so mutants cannot hang.
+/// Counts terminators that end strictly before `offset`. A CRLF pair counts as
+/// one terminator. The scan is a single forward pass over the prefix bytes so
+/// it always terminates under mutation.
 fn logical_line_at(source: &str, offset: usize) -> usize {
-    let end = offset.min(source.len());
-    let bytes = source.as_bytes();
+    let prefix = &source.as_bytes()[..offset.min(source.len())];
     let mut line = 1_usize;
-    let mut skip_next = false;
-    for index in 0..end {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-        match bytes[index] {
-            b'\r' if index + 1 < end && bytes[index + 1] == b'\n' => {
-                line += 1;
-                skip_next = true;
+    let mut pending_cr = false;
+    for &byte in prefix {
+        if pending_cr {
+            pending_cr = false;
+            if byte == b'\n' {
+                // Second half of CRLF: already counted with the CR.
+                continue;
             }
-            b'\r' | b'\n' => line += 1,
+            // Bare CR was already counted; still process this byte.
+        }
+        match byte {
+            b'\r' => {
+                line += 1;
+                pending_cr = true;
+            }
+            b'\n' => line += 1,
             _ => {}
         }
     }
@@ -579,7 +583,10 @@ mod tests {
         assert_eq!(logical_line_at("\n\n", 1), 2);
         assert_eq!(logical_line_at("\n\n", 2), 3);
         assert_eq!(logical_line_at("\r\n", 1), 2);
+        // CRLF is one terminator: double-counting would yield 3.
         assert_eq!(logical_line_at("\r\n", 2), 2);
+        assert_eq!(logical_line_at("\r\n\n", 3), 3);
+        assert_eq!(logical_line_at("\r\rx", 3), 3);
         assert_eq!(logical_line_at("solo", 4), 1);
     }
 }
