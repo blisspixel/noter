@@ -7,7 +7,7 @@
 **Exact-head CI:** [31030331218](https://github.com/blisspixel/noter/actions/runs/31030331218)
 (`headSha` matches the subject commit; conclusion success)
 
-**Status:** Partial dogfood gate record. This is **not** an `0.1.0-alpha.2`
+**Status:** Partial dogfood gate record. This is **not** a `0.1.0-alpha.2`
 label claim and is **not** a full release-candidate matrix.
 
 ## Purpose
