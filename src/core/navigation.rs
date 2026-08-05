@@ -455,7 +455,12 @@ mod tests {
             5
         );
         assert_eq!(
-            move_caret("hello\r\nx", 7, MoveDirection::Backward, MoveUnit::Character),
+            move_caret(
+                "hello\r\nx",
+                7,
+                MoveDirection::Backward,
+                MoveUnit::Character
+            ),
             5
         );
         assert!(!is_lf_of_crlf(b"\nonly", 0));
