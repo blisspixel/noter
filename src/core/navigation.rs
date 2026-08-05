@@ -92,11 +92,31 @@ fn snap_to_char_boundary(source: &str, mut offset: usize) -> usize {
         offset = snapped;
     }
     // Never leave the caret between CR and LF of a CRLF pair.
-    let bytes = source.as_bytes();
-    if offset > 0 && offset < bytes.len() && bytes[offset] == b'\n' && bytes[offset - 1] == b'\r' {
-        return offset - 1;
+    if is_lf_of_crlf(source.as_bytes(), offset) {
+        return offset.saturating_sub(1);
     }
     offset
+}
+
+/// True when `offset` points at the LF of a CRLF pair.
+fn is_lf_of_crlf(bytes: &[u8], offset: usize) -> bool {
+    matches!(
+        bytes.get(offset.saturating_sub(1)..=offset),
+        Some([b'\r', b'\n'])
+    ) && offset > 0
+}
+
+/// True when `offset` is the start of a CRLF pair.
+fn is_crlf_start(bytes: &[u8], offset: usize) -> bool {
+    matches!(
+        bytes.get(offset..offset.saturating_add(2)),
+        Some([b'\r', b'\n'])
+    )
+}
+
+/// True when `offset` is immediately after a CRLF pair.
+fn is_after_crlf(bytes: &[u8], offset: usize) -> bool {
+    offset >= 2 && matches!(bytes.get(offset - 2..offset), Some([b'\r', b'\n']))
 }
 
 fn move_by_character(source: &str, offset: usize, direction: MoveDirection) -> usize {
@@ -107,7 +127,7 @@ fn move_by_character(source: &str, offset: usize, direction: MoveDirection) -> u
                 return 0;
             }
             // Treat CRLF as one character step.
-            if offset >= 2 && bytes[offset - 1] == b'\n' && bytes[offset - 2] == b'\r' {
+            if is_after_crlf(bytes, offset) {
                 return offset - 2;
             }
             source
@@ -120,7 +140,7 @@ fn move_by_character(source: &str, offset: usize, direction: MoveDirection) -> u
             if offset >= source.len() {
                 return source.len();
             }
-            if bytes[offset] == b'\r' && offset + 1 < bytes.len() && bytes[offset + 1] == b'\n' {
+            if is_crlf_start(bytes, offset) {
                 return offset + 2;
             }
             source[offset..]
@@ -390,6 +410,15 @@ mod tests {
         );
         // Mid-CRLF (LF index) snaps to CR before the move.
         assert_eq!(snap_to_char_boundary(source, 2), 1);
+        assert!(is_lf_of_crlf(source.as_bytes(), 2));
+        assert!(!is_lf_of_crlf(source.as_bytes(), 0));
+        assert!(!is_lf_of_crlf(b"\n", 0));
+        assert!(is_crlf_start(source.as_bytes(), 1));
+        assert!(!is_crlf_start(source.as_bytes(), 0));
+        assert!(!is_crlf_start(b"\r", 0));
+        assert!(is_after_crlf(source.as_bytes(), 3));
+        assert!(!is_after_crlf(source.as_bytes(), 2));
+        assert!(!is_after_crlf(source.as_bytes(), 1));
         assert_eq!(
             move_caret(source, 2, MoveDirection::Forward, MoveUnit::Character),
             3
@@ -402,6 +431,19 @@ mod tests {
         assert_eq!(
             move_caret(source, 2, MoveDirection::Backward, MoveUnit::Line),
             0
+        );
+        // Lone CR / LF are ordinary character steps.
+        assert_eq!(
+            move_caret("a\rb", 1, MoveDirection::Forward, MoveUnit::Character),
+            2
+        );
+        assert_eq!(
+            move_caret("a\nb", 1, MoveDirection::Forward, MoveUnit::Character),
+            2
+        );
+        assert_eq!(
+            move_caret("a\rb", 2, MoveDirection::Backward, MoveUnit::Character),
+            1
         );
     }
 
