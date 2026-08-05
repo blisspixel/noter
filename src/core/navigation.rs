@@ -202,33 +202,29 @@ fn move_by_line(source: &str, offset: usize, direction: MoveDirection) -> usize 
     }
 }
 
-/// One-based logical line containing `offset` (or the line ending just before it).
+/// One-based logical line of the caret at `offset`.
+///
+/// Counts only terminators whose full sequence lies strictly before `offset`.
+/// Iteration is a bounded `for` over `[0, offset)` so mutants cannot hang.
 fn logical_line_at(source: &str, offset: usize) -> usize {
-    if offset == 0 {
-        return 1;
-    }
-    let mut line = 1_usize;
-    let mut index = 0_usize;
+    let end = offset.min(source.len());
     let bytes = source.as_bytes();
-    while index < offset && index < bytes.len() {
-        if bytes[index] == b'\r' {
-            if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
-                index += 2;
-            } else {
-                index += 1;
+    let mut line = 1_usize;
+    let mut skip_next = false;
+    for index in 0..end {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        match bytes[index] {
+            b'\r' if index + 1 < end && bytes[index + 1] == b'\n' => {
+                line += 1;
+                skip_next = true;
             }
-            line += 1;
-            continue;
+            b'\r' | b'\n' => line += 1,
+            _ => {}
         }
-        if bytes[index] == b'\n' {
-            index += 1;
-            line += 1;
-            continue;
-        }
-        index += 1;
     }
-    // When offset sits exactly at a terminator end, line already advanced.
-    // When offset is mid-line, line is the containing line.
     line
 }
 
@@ -565,13 +561,25 @@ mod tests {
     #[test]
     fn logical_line_at_matches_line_start_table() {
         let source = "a\r\nb\nc\rd";
+        // a \r \n b \n c \r d
+        // 0 1  2  3 4  5 6  7
         assert_eq!(logical_line_at(source, 0), 1);
         assert_eq!(logical_line_at(source, 1), 1);
+        // Mid-CRLF counts CR alone once CR is strictly before offset.
+        assert_eq!(logical_line_at(source, 2), 2);
         assert_eq!(logical_line_at(source, 3), 2);
         assert_eq!(logical_line_at(source, 4), 2);
         assert_eq!(logical_line_at(source, 5), 3);
+        assert_eq!(logical_line_at(source, 6), 3);
         assert_eq!(logical_line_at(source, 7), 4);
         assert_eq!(logical_line_at(source, source.len()), 4);
+        assert_eq!(logical_line_at(source, source.len() + 5), 4);
         assert_eq!(logical_line_at("", 0), 1);
+        assert_eq!(logical_line_at("\n\n", 0), 1);
+        assert_eq!(logical_line_at("\n\n", 1), 2);
+        assert_eq!(logical_line_at("\n\n", 2), 3);
+        assert_eq!(logical_line_at("\r\n", 1), 2);
+        assert_eq!(logical_line_at("\r\n", 2), 2);
+        assert_eq!(logical_line_at("solo", 4), 1);
     }
 }
