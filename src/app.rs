@@ -33,6 +33,7 @@ use crate::editor_settings::{
 use crate::find_ui::{FindBar, FindBarAction, ReplaceScope};
 use crate::go_to_line_ui::{GoToLineAction, GoToLineDialog};
 use crate::idle_screen::IdleScreen;
+use crate::keyboard_nav::{KeyboardPlatform, consume_navigation_gestures};
 use crate::markdown_ui::{MarkdownEditor, MarkdownProjectionLimit, markdown_projection_limit};
 use crate::theme::{self, AppTheme, THEME_STORAGE_KEY};
 
@@ -2656,6 +2657,23 @@ impl NoterApp {
         let observed_at = edit_timestamp(ui);
         let origin = direct_input_origin(ui, EditOrigin::TextInput);
         let editor_id = self.editor_id();
+        // Apply pure word/line-home/document policy before TextEdit so Ctrl/Cmd
+        // and Home/End share one path with unit tests. Plain arrows stay with
+        // egui for platform grapheme movement.
+        let editor_focused = ui.memory(|memory| memory.has_focus(editor_id));
+        if editor_focused {
+            let gestures =
+                consume_navigation_gestures(ui, KeyboardPlatform::from_egui(ui.ctx().os()));
+            if !gestures.is_empty() {
+                let mut next = self.selection;
+                for gesture in gestures {
+                    next = gesture.apply(&self.text, next);
+                }
+                self.selection = valid_selection_or_end(&self.text, next);
+                self.pending_selection_restore = Some(self.selection);
+                self.preserve_focus_on_selection_restore = true;
+            }
+        }
         let restored_selection = self
             .pending_selection_restore
             .take()

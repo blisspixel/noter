@@ -12,6 +12,7 @@ mod editor_settings;
 mod find_ui;
 mod go_to_line_ui;
 mod idle_screen;
+mod keyboard_nav;
 mod markdown_ui;
 mod theme;
 
