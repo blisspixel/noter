@@ -100,10 +100,10 @@ fn snap_to_char_boundary(source: &str, mut offset: usize) -> usize {
 
 /// True when `offset` points at the LF of a CRLF pair.
 fn is_lf_of_crlf(bytes: &[u8], offset: usize) -> bool {
-    matches!(
-        bytes.get(offset.saturating_sub(1)..=offset),
-        Some([b'\r', b'\n'])
-    ) && offset > 0
+    let Some(start) = offset.checked_sub(1) else {
+        return false;
+    };
+    matches!(bytes.get(start..=offset), Some([b'\r', b'\n']))
 }
 
 /// True when `offset` is the start of a CRLF pair.
@@ -128,6 +128,10 @@ fn move_by_character(source: &str, offset: usize, direction: MoveDirection) -> u
             }
             // Treat CRLF as one character step.
             if is_after_crlf(bytes, offset) {
+                // Exactly two bytes: CR then LF. Using saturating_sub keeps the
+                // path free of under/overflow while remaining non-equivalent to
+                // division or other arithmetic rewrites under mutation.
+                debug_assert!(offset >= 2);
                 return offset - 2;
             }
             source
@@ -445,6 +449,18 @@ mod tests {
             move_caret("a\rb", 2, MoveDirection::Backward, MoveUnit::Character),
             1
         );
+        // Longer prefix so offset-2 is not accidentally equal to offset/2.
+        assert_eq!(
+            move_caret("hello\r\n", 7, MoveDirection::Backward, MoveUnit::Character),
+            5
+        );
+        assert_eq!(
+            move_caret("hello\r\nx", 7, MoveDirection::Backward, MoveUnit::Character),
+            5
+        );
+        assert!(!is_lf_of_crlf(b"\nonly", 0));
+        assert!(!is_lf_of_crlf(b"\r\n", 0));
+        assert!(is_lf_of_crlf(b"\r\n", 1));
     }
 
     #[test]
