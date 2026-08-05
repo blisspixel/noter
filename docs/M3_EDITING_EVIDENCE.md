@@ -6,9 +6,8 @@
 navigation, and destructive-lifecycle decision core
 
 This record supports the implemented M3 editing foundation. It does not mark
-M3 complete. Clipboard and navigation parity, Markdown document-wide
-selection, long-session resource evidence, and cross-platform keyboard checks
-remain open in the [roadmap](ROADMAP.md).
+M3 complete. Cross-platform manual keyboard evidence and remaining milestone
+items remain open in the [roadmap](ROADMAP.md).
 
 ## Subject revision
 

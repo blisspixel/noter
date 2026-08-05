@@ -210,11 +210,12 @@ struct Selection {
 The status bar reports one-based logical line and Unicode-scalar column in v0.1.
 Pure caret policy for character, classic word token, logical line step, line
 home/end, and document endpoints lives in `core::navigation::move_caret` and
-returns validated UTF-8 byte offsets. Text Mode applies word, Home/End, and
-document gestures through `keyboard_nav` before `TextEdit` so Windows-like
-Ctrl+Arrow / Ctrl+Home-End and macOS Option-word / Cmd-line-document policies
-share one pure path with unit tests. Plain arrow keys remain with egui for
-platform grapheme movement until the M5 production editor.
+returns validated UTF-8 byte offsets. Text Mode and the Markdown active-block
+editor apply word, Home/End, and document gestures through `keyboard_nav`
+before `TextEdit` so Windows-like Ctrl+Arrow / Ctrl+Home-End and macOS
+Option-word / Cmd-line-document policies share one pure path with unit tests.
+Plain arrow keys remain with egui for platform grapheme movement until the M5
+production editor.
 
 ### 4.3 Encoding
 

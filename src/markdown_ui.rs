@@ -7,6 +7,7 @@ use noter::core::markdown::recoverable_emphasis_spans;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag};
 
 use crate::bounded_text_input::{BoundedTextBuffer, sanitize_bounded_text_events};
+use crate::keyboard_nav::{KeyboardPlatform, consume_navigation_gestures};
 
 const ACTIVE_EDITOR_ID: &str = "noter-markdown-active-block";
 const EXPANDED_FORMAT_MIN_WIDTH: f32 = 480.0;
@@ -550,6 +551,22 @@ impl CharSelection {
         } else {
             Self::new(range.end, range.start)
         }
+    }
+
+    /// Converts character indices into the pure caret byte selection.
+    fn to_byte_selection(self, source: &str) -> Selection {
+        Selection::new(
+            char_index_to_byte(source, self.anchor),
+            char_index_to_byte(source, self.active),
+        )
+    }
+
+    /// Builds a character selection from a validated UTF-8 byte selection.
+    fn from_byte_selection(source: &str, selection: Selection) -> Self {
+        Self::new(
+            byte_index_to_char(source, selection.anchor()),
+            byte_index_to_char(source, selection.active()),
+        )
     }
 }
 
@@ -1481,20 +1498,41 @@ impl MarkdownEditor {
             return (false, false, None);
         };
         let editor_id = active.editor_id();
+        // Apply pure word/line-home/document policy before TextEdit so Markdown
+        // shares one path with Text Mode and unit tests. Plain arrows stay with
+        // egui for platform grapheme movement.
+        let editor_focused = ui.memory(|memory| memory.has_focus(editor_id));
+        let mut restore_selection = false;
+        if editor_focused {
+            let gestures =
+                consume_navigation_gestures(ui, KeyboardPlatform::from_egui(ui.ctx().os()));
+            if !gestures.is_empty() {
+                let mut next = active.selection.to_byte_selection(&active.draft);
+                for gesture in gestures {
+                    next = gesture.apply(&active.draft, next);
+                }
+                active.selection = CharSelection::from_byte_selection(&active.draft, next);
+                restore_selection = true;
+            }
+        }
         let finish_requested = prepare_escape_finish(ui, editor_id);
         let rows = logical_lines(&active.draft).count().max(1) + 1;
         let input_origin = direct_input_origin(ui);
         let selection = active.selection.ordered_range();
         let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
         let restore_focus = active.request_focus;
-        if restore_focus {
+        if restore_focus || restore_selection {
             let anchor = egui::text::CCursor::new(active.selection.anchor);
             let caret = egui::text::CCursor::new(active.selection.active);
             state
                 .cursor
                 .set_char_range(Some(egui::text::CCursorRange::two(anchor, caret)));
-            ui.memory_mut(|memory| memory.request_focus(editor_id));
-            active.request_focus = false;
+            // Navigation keeps an already-focused editor; only activation and
+            // formatting reassert focus (mirrors Text Mode preserve_focus).
+            if restore_focus {
+                ui.memory_mut(|memory| memory.request_focus(editor_id));
+                active.request_focus = false;
+            }
         }
         state.clear_undoer();
         state.store(ui.ctx(), editor_id);
@@ -3268,6 +3306,16 @@ fn char_index_to_byte(source: &str, char_index: usize) -> usize {
         .char_indices()
         .nth(char_index)
         .map_or(source.len(), |(index, _)| index)
+}
+
+fn byte_index_to_char(source: &str, byte_index: usize) -> usize {
+    // Pure navigation always returns char boundaries. Snap mid-codepoint
+    // offsets rather than panic if a caller ever hands a bad offset.
+    let mut end = byte_index.min(source.len());
+    while end > 0 && !source.is_char_boundary(end) {
+        end -= 1;
+    }
+    source[..end].chars().count()
 }
 
 fn remap_disjoint_selection(
@@ -6339,6 +6387,103 @@ mod tests {
         let current = (cursor, source);
         assert!(!state.undoer().has_undo(&current));
         assert!(!state.undoer().has_redo(&current));
+    }
+
+    #[test]
+    fn active_editor_applies_pure_line_home_and_end_navigation() {
+        // Plain Home/End resolve on every KeyboardPlatform, so this integration
+        // check is host-OS independent.
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        editor.activate_with_selection(0..11, "hello world".to_owned(), CharSelection::caret(11));
+        let mut source = "hello world".to_owned();
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(640.0);
+            assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
+        });
+        assert!(
+            editor.is_editing(),
+            "the first paint should leave the block active"
+        );
+
+        let mut home = egui::RawInput::default();
+        home.events.push(egui::Event::Key {
+            key: egui::Key::Home,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = context.run_ui(home, |ui| {
+            ui.set_width(640.0);
+            assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
+        });
+        assert_eq!(
+            editor.source_selection(),
+            Some(Selection::caret(0)),
+            "Home must move the active-block caret to the line start"
+        );
+
+        let mut end = egui::RawInput::default();
+        end.events.push(egui::Event::Key {
+            key: egui::Key::End,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = context.run_ui(end, |ui| {
+            ui.set_width(640.0);
+            assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
+        });
+        assert_eq!(
+            editor.source_selection(),
+            Some(Selection::caret(11)),
+            "End must move the active-block caret to the line content end"
+        );
+        assert_eq!(source, "hello world");
+    }
+
+    #[test]
+    fn active_editor_extends_selection_with_shift_end() {
+        let context = egui::Context::default();
+        let mut editor = MarkdownEditor::default();
+        editor.activate_with_selection(0..11, "hello world".to_owned(), CharSelection::caret(0));
+        let mut source = "hello world".to_owned();
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(640.0);
+            let _ = editor.show(ui, &mut source);
+        });
+
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::End,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        });
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(640.0);
+            assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
+        });
+        assert_eq!(
+            editor.source_selection(),
+            Some(Selection::new(0, 11)),
+            "Shift+End must keep the anchor and extend the active caret"
+        );
+    }
+
+    #[test]
+    fn char_and_byte_selection_round_trip_multibyte() {
+        let source = "café world";
+        // "café" is 5 bytes (é is 2); caret after é is char index 4, byte 5.
+        let chars = CharSelection::new(0, 4);
+        let bytes = chars.to_byte_selection(source);
+        assert_eq!(bytes, Selection::new(0, 5));
+        assert_eq!(CharSelection::from_byte_selection(source, bytes), chars);
     }
 
     #[test]
