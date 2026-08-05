@@ -75,28 +75,40 @@ pub fn extend_selection(
     super::edit::Selection::new(selection.anchor(), active)
 }
 
-fn snap_to_char_boundary(source: &str, offset: usize) -> usize {
+fn snap_to_char_boundary(source: &str, mut offset: usize) -> usize {
     if offset >= source.len() {
         return source.len();
     }
-    if source.is_char_boundary(offset) {
-        return offset;
-    }
-    // Walk backward at most the maximum UTF-8 scalar width.
-    for distance in 1..=3 {
-        let candidate = offset.saturating_sub(distance);
-        if source.is_char_boundary(candidate) {
-            return candidate;
+    if !source.is_char_boundary(offset) {
+        // Walk backward at most the maximum UTF-8 scalar width.
+        let mut snapped = 0_usize;
+        for distance in 1..=3 {
+            let candidate = offset.saturating_sub(distance);
+            if source.is_char_boundary(candidate) {
+                snapped = candidate;
+                break;
+            }
         }
+        offset = snapped;
     }
-    0
+    // Never leave the caret between CR and LF of a CRLF pair.
+    let bytes = source.as_bytes();
+    if offset > 0 && offset < bytes.len() && bytes[offset] == b'\n' && bytes[offset - 1] == b'\r' {
+        return offset - 1;
+    }
+    offset
 }
 
 fn move_by_character(source: &str, offset: usize, direction: MoveDirection) -> usize {
+    let bytes = source.as_bytes();
     match direction {
         MoveDirection::Backward => {
             if offset == 0 {
                 return 0;
+            }
+            // Treat CRLF as one character step.
+            if offset >= 2 && bytes[offset - 1] == b'\n' && bytes[offset - 2] == b'\r' {
+                return offset - 2;
             }
             source
                 .char_indices()
@@ -107,6 +119,9 @@ fn move_by_character(source: &str, offset: usize, direction: MoveDirection) -> u
         MoveDirection::Forward => {
             if offset >= source.len() {
                 return source.len();
+            }
+            if bytes[offset] == b'\r' && offset + 1 < bytes.len() && bytes[offset + 1] == b'\n' {
+                return offset + 2;
             }
             source[offset..]
                 .chars()
@@ -357,6 +372,36 @@ mod tests {
         assert_eq!(
             move_caret(source, 2, MoveDirection::Forward, MoveUnit::Character),
             "aé".len()
+        );
+    }
+
+    #[test]
+    fn character_moves_never_split_crlf() {
+        let source = "a\r\nb";
+        // Forward from CR jumps past the full CRLF pair.
+        assert_eq!(
+            move_caret(source, 1, MoveDirection::Forward, MoveUnit::Character),
+            3
+        );
+        // Backward from after CRLF jumps over the pair.
+        assert_eq!(
+            move_caret(source, 3, MoveDirection::Backward, MoveUnit::Character),
+            1
+        );
+        // Mid-CRLF (LF index) snaps to CR before the move.
+        assert_eq!(snap_to_char_boundary(source, 2), 1);
+        assert_eq!(
+            move_caret(source, 2, MoveDirection::Forward, MoveUnit::Character),
+            3
+        );
+        assert_eq!(
+            move_caret(source, 2, MoveDirection::Backward, MoveUnit::Character),
+            0
+        );
+        // Line backward from mid-CRLF must not move forward.
+        assert_eq!(
+            move_caret(source, 2, MoveDirection::Backward, MoveUnit::Line),
+            0
         );
     }
 
