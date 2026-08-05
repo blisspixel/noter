@@ -58,8 +58,9 @@ does not expand unsafe UI surface.
 6. **Partial:** M2 installed-product evidence — disposable Windows source
    install recorded; interactive About GUI and packaged installers remain open.
    Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
-7. **Gate:** cross-platform correctness matrix on one immutable green commit →
-   tag `0.1.0-alpha.2` only when that matrix and the recovery path pass.
+7. **Partial gate:** [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md)
+   scores the dogfood rows at exact-head `85bf83d`. Live GUI force-kill timing
+   and interactive non-Windows smoke remain open before the version label.
 
 ### Toward `0.1.0-beta.1`
 
@@ -112,9 +113,11 @@ Discard, and shows persist failure, and Edit-menu Cut / Copy / Paste on the
 shared edit-command path, pure caret navigation for character, word, line home
 and end, and document units, a long-session undo history bound fixture, and
 platform keyboard policy that routes word / Home-End / document gestures
-through that pure path in Text Mode and the Markdown active block. Remaining
-alpha.2 work is remaining M1/M2 fixtures and the cross-platform correctness
-matrix.
+through that pure path in Text Mode and the Markdown active block. A partial
+alpha.2 correctness matrix at exact-head `85bf83d` is recorded in
+[ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md). Remaining work
+before the version label is live GUI force-kill recovery timing, interactive
+non-Windows smoke, and optional additional M1/M2 environments.
 
 ## Product boundaries
 
@@ -434,8 +437,10 @@ encode/validate with UTF-8 boundary selection checks, and private durable
 recovery storage (atomic install/replace, quarantine with reported failures,
 full directory walk with a 32-offer cap) are implemented in the library.
 Application wiring (startup offer UI, idle persist effects, state-directory
-path resolution), overwrite-with-second-confirm, and crash-fault evidence
-remain open for `0.1.0-alpha.2`.
+path resolution) and overwrite-with-second-confirm are implemented. Live
+GUI force-kill recovery timing and the remaining interactive matrix rows in
+[ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) remain open
+before the `0.1.0-alpha.2` label.
 
 ### Exit criteria
 
@@ -637,8 +642,9 @@ when they document evidence links.
 3. **Partial evidence:** disposable Windows source install and related unit
    paths. Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
    Interactive About GUI, theme GUI relaunch, and packaged installers remain.
-4. **Gate:** cross-platform correctness matrix on one green commit → tag
-   `0.1.0-alpha.2`.
+4. **Partial:** [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) at
+   exact-head `85bf83d`; finish live GUI force-kill recovery and interactive
+   non-Windows smoke, then tag `0.1.0-alpha.2` only on that green commit.
 5. **Then `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
    production editor contract is stable.

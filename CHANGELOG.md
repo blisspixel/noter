@@ -7,6 +7,9 @@ release, so current work remains under Unreleased.
 
 ### Added
 
+- Record a partial `0.1.0-alpha.2` correctness matrix at exact-head `85bf83d`
+  mapping dogfood-critical recovery, conflict, clipboard, and navigation rows
+  to automated proof without claiming the version label.
 - Record partial M2 installed-product evidence for a disposable Windows
   PowerShell source install at commit `91ed8d7` with exact-head main CI.
 - Route Markdown active-block word, Home/End, and document keyboard gestures
