@@ -7,6 +7,9 @@ release, so current work remains under Unreleased.
 
 ### Added
 
+- Add pure UTF-8 caret navigation for character, classic word token, logical
+  line, and document endpoints, plus a long-session undo history fixture that
+  proves retained history never exceeds configured ceilings.
 - Wire private crash recovery into the application: dirty-session persist under
   the per-user state directory, startup Restore / Discard, quarantine notices,
   Save and Discard cleanup, and a visible recovery persist-failure notice.
