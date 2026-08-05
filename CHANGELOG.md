@@ -7,6 +7,8 @@ release, so current work remains under Unreleased.
 
 ### Added
 
+- Route Markdown active-block word, Home/End, and document keyboard gestures
+  through the same pure caret path as Text Mode.
 - Route Text Mode word, Home/End, and document keyboard gestures through pure
   caret navigation with Windows-like Ctrl and macOS Option/Cmd policies, leaving
   plain arrows to egui.

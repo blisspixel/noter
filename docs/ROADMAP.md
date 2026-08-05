@@ -49,7 +49,8 @@ does not expand unsafe UI surface.
 3. **Finish M3 clipboard command path** — Edit-menu Cut / Copy / Paste share one
    path with platform shortcuts and `EditTransaction` intent.
 4. **Close remaining M3 navigation and long-session gaps** — platform keyboard
-   policy, long-session memory fixture, cross-platform evidence.
+   policy and long-session memory fixture are in tree; cross-platform manual
+   evidence remains.
 5. **Land remaining M1 filesystem fixtures** as environments allow — macOS,
    SMB, cloud-sync, removable, weak FS, second-identity, crash-persistence.
    Does not block dogfood on platforms already covered.
@@ -108,10 +109,10 @@ schedules dirty persist, offers startup Restore / Discard, deletes on Save or
 Discard, and shows persist failure, and Edit-menu Cut / Copy / Paste on the
 shared edit-command path, pure caret navigation for character, word, line home
 and end, and document units, a long-session undo history bound fixture, and
-Text Mode platform keyboard policy that routes word / Home-End / document
-gestures through that pure path. Remaining alpha.2 work is Markdown adapter
-parity for the same gestures, remaining M1/M2 fixtures, and the cross-platform
-correctness matrix.
+platform keyboard policy that routes word / Home-End / document gestures
+through that pure path in Text Mode and the Markdown active block. Remaining
+alpha.2 work is remaining M1/M2 fixtures and the cross-platform correctness
+matrix.
 
 ## Product boundaries
 
@@ -360,9 +361,9 @@ inactive Markdown content now preserves source direction and exact UTF-8
 boundaries, retains native cross-label feedback, and performs bounded edge
 autoscroll before activating one contiguous source-backed edit range. The
 shared Edit-menu Cut / Copy / Paste path is implemented. Pure caret navigation,
-a long-session history bound fixture, and Text Mode platform keyboard policy
-for word / Home-End / document gestures are implemented. Markdown keyboard
-parity and cross-platform manual evidence remain open.
+a long-session history bound fixture, and platform keyboard policy for word /
+Home-End / document gestures in Text Mode and the Markdown active block are
+implemented. Cross-platform manual evidence remains open.
 
 Escape now commits same-frame Markdown input before leaving the active range
 and carries the final directional source selection into shared history. Go To
@@ -375,9 +376,8 @@ lifecycle decisions against independent reference models. The
 [exact-commit M3 editing record](M3_EDITING_EVIDENCE.md) reports 256 generated
 mutations: 216 caught, 40 compiler-unviable, zero missed, and zero timed out,
 with no recognized infrastructure failure. This is focused Windows-local
-evidence, not M3 completion. Markdown keyboard parity for pure navigation,
-revision-safe background indexing, and cross-platform manual evidence remain
-open.
+evidence, not M3 completion. Revision-safe background indexing and
+cross-platform manual evidence remain open.
 
 ## M4: Lifecycle, Recovery, and Conflicts
 
@@ -626,9 +626,8 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 Ordered for `0.1.0-alpha.2` first. Completed historical items stay listed only
 when they document evidence links.
 
-1. **In progress:** Markdown keyboard navigation parity with Text Mode; Text
-   Mode word / Home-End / document policy and long-session history fixture are
-   implemented.
+1. **Done in tree:** Markdown keyboard navigation parity with Text Mode; pure
+   word / Home-End / document policy and long-session history fixture.
 2. **Parallel evidence:** remaining M1 fixtures (macOS, SMB, cloud, removable,
    weak FS, second-identity, crash-persistence). Evidence:
    [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
