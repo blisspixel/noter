@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-08-04
+**Updated:** 2026-08-05
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -41,23 +41,25 @@ does not expand unsafe UI surface.
 
 ### Toward `0.1.0-alpha.2` (correctness alpha)
 
-1. **Wire M4 recovery into the application** — schedule dirty persist, startup
-   Restore / Discard / quarantine notice, delete on Save or Discard, visible
-   persist failure. Library record format and private store already exist.
-2. **Complete external-change overwrite** — second confirmation before replacing
-   a detected disk revision; Keep Editing still never rebaselines.
-3. **Finish M3 clipboard command path** — Edit-menu Cut / Copy / Paste share one
-   path with platform shortcuts and `EditTransaction` intent.
-4. **Close remaining M3 navigation and long-session gaps** — platform keyboard
-   policy and long-session memory fixture are in tree; cross-platform manual
-   evidence remains.
-5. **Land remaining M1 filesystem fixtures** as environments allow — macOS,
+1. **Done:** Wire M4 recovery into the application — schedule dirty persist,
+   startup Restore / Discard / quarantine notice, delete on Save or Discard,
+   visible persist failure.
+2. **Done:** Complete external-change overwrite — second confirmation before
+   replacing a detected disk revision; Keep Editing still never rebaselines.
+3. **Done:** Finish M3 clipboard command path — Edit-menu Cut / Copy / Paste
+   share one path with platform shortcuts and `EditTransaction` intent.
+4. **Done in tree:** M3 navigation and long-session gaps — pure caret policy,
+   long-session history fixture, Text Mode and Markdown active-block platform
+   keyboard policy. Cross-platform manual keyboard evidence remains.
+5. **Partial:** remaining M1 filesystem fixtures as environments allow — macOS,
    SMB, cloud-sync, removable, weak FS, second-identity, crash-persistence.
-   Does not block dogfood on platforms already covered.
-6. **Complete M2 installed-product evidence** — About, updates, theme
-   persistence, disposable source installs.
-7. **Run the cross-platform correctness matrix** on one immutable green commit
-   and label `0.1.0-alpha.2` only when that matrix and the recovery path pass.
+   Does not block dogfood on platforms already covered. Evidence:
+   [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
+6. **Partial:** M2 installed-product evidence — disposable Windows source
+   install recorded; interactive About GUI and packaged installers remain open.
+   Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
+7. **Gate:** cross-platform correctness matrix on one immutable green commit →
+   tag `0.1.0-alpha.2` only when that matrix and the recovery path pass.
 
 ### Toward `0.1.0-beta.1`
 
@@ -272,9 +274,10 @@ runtime theme-file loading, persistence, and error UX remain open work.
 Hinting, subpixel positioning, real heading and emphasis weights, and
 theme-correct text coverage transfer are verified explicitly rather than
 assumed from toolkit defaults. The early source-backed Markdown slice is visible
-for product evaluation but remains governed by M6. M2 still needs installed-app
-semantic automation, cross-platform visual and persistence evidence, and
-disposable clean-user installer tests before verification.
+for product evaluation but remains governed by M6. A disposable Windows PowerShell source install is recorded in
+[M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md). M2 still needs installed
+GUI semantic automation, cross-platform visual and persistence evidence, and
+disposable clean-user packaged-installer tests before verification.
 
 ### Exit criteria
 
@@ -626,13 +629,14 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 Ordered for `0.1.0-alpha.2` first. Completed historical items stay listed only
 when they document evidence links.
 
-1. **Done in tree:** Markdown keyboard navigation parity with Text Mode; pure
-   word / Home-End / document policy and long-session history fixture.
-2. **Parallel evidence:** remaining M1 fixtures (macOS, SMB, cloud, removable,
+1. **Done:** Markdown keyboard navigation parity with Text Mode; pure word /
+   Home-End / document policy and long-session history fixture.
+2. **Partial evidence:** remaining M1 fixtures (macOS, SMB, cloud, removable,
    weak FS, second-identity, crash-persistence). Evidence:
    [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
-3. **Parallel evidence:** M2 installed About, updates, theme persistence,
-   disposable source installs.
+3. **Partial evidence:** disposable Windows source install and related unit
+   paths. Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
+   Interactive About GUI, theme GUI relaunch, and packaged installers remain.
 4. **Gate:** cross-platform correctness matrix on one green commit → tag
    `0.1.0-alpha.2`.
 5. **Then `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
