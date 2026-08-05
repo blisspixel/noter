@@ -94,19 +94,18 @@ pub fn line_end_offset(source: &str, offset: usize) -> usize {
 }
 
 fn content_end_before_line_start(source: &str, next_line_start: usize) -> usize {
+    if next_line_start == 0 {
+        return 0;
+    }
     let bytes = source.as_bytes();
-    if next_line_start >= 2
-        && bytes[next_line_start - 2] == b'\r'
-        && bytes[next_line_start - 1] == b'\n'
-    {
-        return next_line_start - 2;
+    // Prefer CRLF as a single terminator, then bare CR or LF.
+    match bytes.get(next_line_start - 1) {
+        Some(b'\n') if next_line_start >= 2 && bytes.get(next_line_start - 2) == Some(&b'\r') => {
+            next_line_start - 2
+        }
+        Some(b'\n' | b'\r') => next_line_start - 1,
+        _ => next_line_start,
     }
-    if next_line_start >= 1
-        && (bytes[next_line_start - 1] == b'\n' || bytes[next_line_start - 1] == b'\r')
-    {
-        return next_line_start - 1;
-    }
-    next_line_start
 }
 
 /// Extends a directional selection by moving only the active caret.
@@ -612,6 +611,13 @@ mod tests {
         assert_eq!(line_end_offset("a\rb", 1), 1);
         assert_eq!(line_home_offset("a\rb", 2), 2);
         assert_eq!(line_end_offset("a\rb", 2), 3);
+        // Bare LF and document without terminator.
+        assert_eq!(line_end_offset("a\nb", 1), 1);
+        assert_eq!(line_end_offset("solo", 2), 4);
+        assert_eq!(content_end_before_line_start("", 0), 0);
+        assert_eq!(content_end_before_line_start("x", 0), 0);
+        assert_eq!(content_end_before_line_start("a\r\nb", 3), 1);
+        assert_eq!(content_end_before_line_start("a\nb", 2), 1);
     }
 
     #[test]
