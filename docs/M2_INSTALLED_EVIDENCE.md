@@ -13,10 +13,10 @@ This record covers a disposable PowerShell source install of Noter from a clean
 MSI, or Homebrew package was exercised. No real user document, account, remote
 service, or telemetry was involved.
 
-Exact-head CI run
-[31010637393](https://github.com/blisspixel/noter/actions/runs/31010637393) on
-the merged PR that produced this commit is green across fmt/clippy, docs, three
-platform test jobs, and the supported-platform mutation union.
+Exact-head CI on `main` for this commit is run
+[31017380468](https://github.com/blisspixel/noter/actions/runs/31017380468)
+(`headSha` `91ed8d7…`). It is green across fmt/clippy, docs, three platform
+test jobs, and the supported-platform mutation union.
 
 ## Environment
 
@@ -69,7 +69,7 @@ GUI quit/relaunch are not claimed by this record.
 | Requested evidence | Availability on 2026-08-05 | Disposition |
 | --- | --- | --- |
 | Disposable Windows PowerShell source install | Available | Executed as described above |
-| Hosted Windows / Linux / macOS source-install steps in CI | Available | Pass on exact-head run `31010637393` |
+| Hosted Windows / Linux / macOS source-install steps in CI | Available | Pass on exact-head main run `31017380468` |
 | Theme persistence unit round-trip | Available | Pass |
 | Update-status CLI path opens in-app status | Available | Pass |
 | Interactive About dialog on installed GUI | Display session required | Not executed in this record |
