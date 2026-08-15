@@ -488,7 +488,7 @@ fn classify_edit_intent(
         && edit.removed.is_empty()
         && !edit.inserted.is_empty()
         && before == range.start
-        && after != /* ~ changed by cargo-mutants ~ */ range.start.saturating_add(edit.inserted.len())
+        && after == range.start.saturating_add(edit.inserted.len())
     {
         return EditIntent::Insert;
     }
