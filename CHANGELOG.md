@@ -54,6 +54,9 @@ release, so current work remains under Unreleased.
 
 ### Fixed
 
+- Update `webbrowser` to 1.2.4 for RUSTSEC-2026-0257, where Unix `BROWSER`
+  handling allowed browser argument injection. The dependency reaches Noter
+  through `eframe`, and only an explicitly clicked link uses it.
 - An idle window no longer holds a CPU core. The window title was sent as a
   viewport command on every frame, and every viewport command requests a
   repaint, so the event loop never slept. The title is now sent only when it
