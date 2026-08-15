@@ -1213,6 +1213,11 @@ mod tests {
             state.reduce(RecoveryScheduleCommand::Tick { now: clock(2.0) }),
             RecoveryScheduleEffect::Persist { .. }
         ));
+        // A dirty document with a persist already in flight needs no further
+        // wake-up; the acknowledgement drives the next decision.
+        assert!(state.is_dirty());
+        assert_eq!(state.in_flight_revision(), Some(Revision::new(1)));
+        assert_eq!(state.next_persist_delay(clock(2.0)), None);
 
         // Continuous typing is capped by the maximum dirty interval, not the
         // idle debounce, so the reported delay must follow the earlier bound.
