@@ -48,10 +48,17 @@ const RELEASES_URL: &str = "https://github.com/blisspixel/noter/releases";
 const UPDATE_WINDOW_TITLE: &str = "Update status";
 const UNCERTAIN_SAVE_ABANDON_GUIDANCE: &str = "Cancel this dialog and reconcile every uncertain save outcome before attempting another save. Your current text remains editable.";
 const MENU_BAR_HEIGHT: f32 = 30.0;
+/// Horizontal gap between top-level menu names.
+///
+/// Menu names are separate targets, not one run of words, so they need visible
+/// air between them at every supported width.
+const MENU_ITEM_SPACING: f32 = 8.0;
+/// Horizontal gap between the Mode and Theme controls in the top bar.
+const TOP_CONTROL_SPACING: f32 = 4.0;
 const EDITOR_TOOLBAR_HEIGHT: f32 = 40.0;
 const STATUS_BAR_HEIGHT: f32 = 26.0;
 const EXPANDED_TOP_CONTROLS_MIN_WIDTH: f32 = 600.0;
-const EXPANDED_TOP_CONTROLS_WIDTH: f32 = 326.0;
+const EXPANDED_TOP_CONTROLS_WIDTH: f32 = 372.0;
 const COMPACT_TOP_CONTROLS_WIDTH: f32 = 280.0;
 const MARKDOWN_READING_TOP_PADDING: f32 = 16.0;
 const MARKDOWN_READING_BOTTOM_PADDING: f32 = 48.0;
@@ -90,12 +97,11 @@ impl DocumentView {
     }
 }
 
-const fn document_view_button_width(view: DocumentView) -> f32 {
-    match view {
-        DocumentView::Text => 52.0,
-        DocumentView::Markdown => 86.0,
-    }
-}
+/// One width for every Mode button, sized for the longest label.
+///
+/// Two segments of the same control must not change size with their text, or
+/// the pair reads as a layout accident rather than one switch.
+const DOCUMENT_VIEW_BUTTON_WIDTH: f32 = 96.0;
 
 #[derive(Default, Debug)]
 pub struct LaunchOptions {
@@ -1643,7 +1649,7 @@ impl NoterApp {
                         .max_rect(menu_rect)
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 );
-                menu_ui.spacing_mut().item_spacing.x = 2.0;
+                menu_ui.spacing_mut().item_spacing.x = MENU_ITEM_SPACING;
                 egui::MenuBar::new().ui(&mut menu_ui, |ui| {
                     ui.menu_button("File", |ui| self.show_file_menu(ui, file_command));
                     if expanded {
@@ -1673,7 +1679,7 @@ impl NoterApp {
     }
 
     fn show_top_controls(&mut self, ui: &mut egui::Ui, expanded: bool) {
-        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().item_spacing.x = TOP_CONTROL_SPACING;
         if !expanded {
             self.show_document_mode_menu_button(ui);
             let theme_label = format!("Theme: {}", self.theme.compact_label());
@@ -1690,7 +1696,7 @@ impl NoterApp {
             let is_selected = self.view == view;
             let response = ui.add(
                 egui::Button::selectable(is_selected, view.label())
-                    .min_size(egui::vec2(document_view_button_width(view), 28.0)),
+                    .min_size(egui::vec2(DOCUMENT_VIEW_BUTTON_WIDTH, 28.0)),
             );
             response.widget_info(|| {
                 egui::WidgetInfo::selected(
@@ -4009,6 +4015,118 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn text_bounds(shape: &egui::Shape, label: &str) -> Option<egui::Rect> {
+        match shape {
+            egui::Shape::Text(text) if text.galley.job.text == label => {
+                Some(text.visual_bounding_rect())
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| text_bounds(shape, label)),
+            _ => None,
+        }
+    }
+
+    fn rendered_bounds(output: &egui::FullOutput, label: &str) -> egui::Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| text_bounds(&shape.shape, label))
+            .unwrap_or_else(|| panic!("expected the UI to render `{label}`"))
+    }
+
+    #[test]
+    fn menu_names_stay_separated_and_inside_the_narrowest_expanded_bar() {
+        // The expanded bar is tightest at its own threshold width, where the
+        // reserved Mode and Theme controls leave the least room for names.
+        let context = egui::Context::default();
+        crate::theme::configure_styles(&context);
+        let names = ["File", "Edit", "View", "Help"];
+        let mut expanded_widths = 0_usize;
+
+        for width in [
+            EXPANDED_TOP_CONTROLS_MIN_WIDTH,
+            EXPANDED_TOP_CONTROLS_MIN_WIDTH + 40.0,
+            900.0,
+            1_400.0,
+        ] {
+            let mut app = NoterApp::default();
+            let output = context.run_ui(ui_input(width, 300.0, 0.0), |ui| {
+                let (mut file, mut edit, mut view) = (None, None, None);
+                app.show_menu(ui, &mut file, &mut edit, &mut view);
+            });
+            if output
+                .shapes
+                .iter()
+                .all(|shape| text_bounds(&shape.shape, "Edit").is_none())
+            {
+                // Still the compact bar at this width; it shows File and More.
+                continue;
+            }
+            expanded_widths += 1;
+
+            let bounds = names.map(|name| rendered_bounds(&output, name));
+            let controls_start = rendered_bounds(&output, "Mode").left();
+            for (name, rect) in names.iter().zip(bounds) {
+                assert!(
+                    rect.right() < controls_start,
+                    "`{name}` reaches {} and collides with the controls at {controls_start}",
+                    rect.right()
+                );
+            }
+            for pair in bounds.windows(2) {
+                assert!(
+                    pair[1].left() - pair[0].right() >= MENU_ITEM_SPACING,
+                    "menu names must keep at least {MENU_ITEM_SPACING} points of air apart"
+                );
+            }
+        }
+
+        assert!(
+            expanded_widths > 0,
+            "at least one sampled width must show the expanded menu bar"
+        );
+    }
+
+    #[test]
+    fn both_document_mode_segments_share_one_width() {
+        let context = egui::Context::default();
+        crate::theme::configure_styles(&context);
+        let mut widths = Vec::new();
+        for view in [DocumentView::Text, DocumentView::Markdown] {
+            let mut app = NoterApp {
+                view,
+                ..NoterApp::default()
+            };
+            let output = context.run_ui(ui_input(900.0, 300.0, 0.0), |ui| {
+                let (mut file, mut edit, mut view_command) = (None, None, None);
+                app.show_menu(ui, &mut file, &mut edit, &mut view_command);
+            });
+            widths.push((
+                rendered_bounds(&output, "Text"),
+                rendered_bounds(&output, "Markdown"),
+            ));
+        }
+
+        // The selected segment is the one that paints a background, so equal
+        // label centers in both modes prove the pair does not resize.
+        let (text_in_text_mode, markdown_in_text_mode) = widths[0];
+        let (text_in_markdown_mode, markdown_in_markdown_mode) = widths[1];
+        assert_eq!(text_in_text_mode.center(), text_in_markdown_mode.center());
+        assert_eq!(
+            markdown_in_text_mode.center(),
+            markdown_in_markdown_mode.center()
+        );
+        // Equal centers alone would also hold if both segments grew with their
+        // labels, so pin the step to the shared width. Glyph bearings move the
+        // measured centers by a fraction of a point.
+        let step = markdown_in_text_mode.center().x - text_in_text_mode.center().x;
+        let expected_step = DOCUMENT_VIEW_BUTTON_WIDTH + TOP_CONTROL_SPACING;
+        assert!(
+            (step - expected_step).abs() < 1.0,
+            "Mode segments stepped {step} apart, expected about {expected_step}; \
+             a label wider than DOCUMENT_VIEW_BUTTON_WIDTH would resize its segment"
+        );
     }
 
     #[test]

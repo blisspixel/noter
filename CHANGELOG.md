@@ -80,6 +80,10 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
+- Give the top-level menu names visible space instead of a two-point gap, and
+  keep every name clear of the Mode and Theme controls at every expanded width.
+- Give both Mode segments one width sized for the longest label, so the switch
+  no longer changes shape when the active view changes.
 - Accept command-line `--theme` and `--view` values in any letter case.
 - Track the update status as one state instead of two independent flags, so the
   status cannot be open and unnamed at the same time.
