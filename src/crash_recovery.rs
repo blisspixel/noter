@@ -374,6 +374,17 @@ impl CrashRecoverySession {
         self.apply_schedule_effect(effect, Some((document, selection)));
     }
 
+    /// Returns how long the interface may sleep before the next [`Self::on_tick`].
+    ///
+    /// The interface only draws when something asks it to, so an idle window
+    /// would otherwise never reach a due persist.
+    pub fn next_persist_delay(&self) -> Option<Duration> {
+        if self.unavailable || self.store.is_none() || self.active_offer().is_some() {
+            return None;
+        }
+        self.schedule.next_persist_delay(self.monotonic_now())
+    }
+
     /// Records a successful Save and deletes the owned recovery record.
     pub fn on_saved_clean(&mut self, revision: Revision) {
         if self.unavailable || self.store.is_none() {

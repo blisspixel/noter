@@ -7,6 +7,18 @@ release, so current work remains under Unreleased.
 
 ### Added
 
+- Fail closed on a startup document argument that cannot be opened: a missing
+  path, a directory, or an unreadable file now prints one line to standard error
+  and exits 2 instead of opening a window that looks like a new blank document.
+  Content problems such as invalid UTF-8 still open the window and report there,
+  because those also arrive from the Open dialog and desktop file associations.
+- Name the window `Update status - Noter` while the status opened by
+  `noter update` is showing, so that session is distinguishable from a blank
+  editor without reading the window contents.
+- Answer `noter update --help` with the usage block instead of an error, and
+  state the FILE and local-only update contract in that block.
+- Add `RecoveryScheduleState::next_persist_delay`, the pure wake-up deadline an
+  interface needs to keep the recovery-point objective while it sleeps.
 - Record a partial `0.1.0-alpha.2` correctness matrix at exact-head `85bf83d`
   mapping dogfood-critical recovery, conflict, clipboard, and navigation rows
   to automated proof without claiming the version label.
@@ -42,6 +54,14 @@ release, so current work remains under Unreleased.
 
 ### Fixed
 
+- An idle window no longer holds a CPU core. The window title was sent as a
+  viewport command on every frame, and every viewport command requests a
+  repaint, so the event loop never slept. The title is now sent only when it
+  changes, and a dirty document books its own repaint from the recovery
+  schedule so sleeping cannot lengthen the recovery-point objective. A local
+  Windows release measurement fell from 100.2 percent of one core to 0.42
+  percent over 15 idle seconds, with the working set down from 87.2 MiB to
+  67.2 MiB.
 - Recovery persist no longer leaves Unix-exchanged or hard-linked stage files
   after a successful commit.
 - Recovery scan no longer treats a missing quarantine source as success or
@@ -57,6 +77,9 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
+- Accept command-line `--theme` and `--view` values in any letter case.
+- Track the update status as one state instead of two independent flags, so the
+  status cannot be open and unnamed at the same time.
 - Lead the public README with a clean-app stance: privacy first, zero spyware,
   zero telemetry, zero activity logging, free writing, and only the tool you
   asked for, while keeping an honest alpha status and network claims.

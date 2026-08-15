@@ -17,12 +17,12 @@ mod markdown_ui;
 mod theme;
 
 use std::ffi::{OsStr, OsString};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use app::{DocumentView, LaunchOptions, NoterApp};
 use theme::AppTheme;
 
-const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --theme system|light|dark|green|amber\n  --view text|markdown\n  -h, --help\n  -V, --version";
+const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --theme system|light|dark|green|amber\n  --view text|markdown\n  -h, --help\n  -V, --version\n\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` opens the local update status window and makes no network\nrequest. Option values are case-insensitive.";
 const THEME_ERROR_VALUES: &str = "system, light, dark, green, or amber";
 
 fn main() -> eframe::Result {
@@ -50,6 +50,16 @@ fn main() -> eframe::Result {
             return Ok(());
         }
     };
+
+    if let Some(path) = launch.initial_path.as_deref()
+        && let Err(message) = check_document_argument(path)
+    {
+        write_line(
+            std::io::stderr().lock(),
+            &format!("noter: {message}\n\n{HELP}"),
+        );
+        std::process::exit(2);
+    }
 
     let screenshot_qa = launch.screenshot_path.is_some();
     let mut viewport = eframe::egui::ViewportBuilder::default()
@@ -93,7 +103,11 @@ fn parse_launch_request(args: impl IntoIterator<Item = OsString>) -> Result<Laun
         .is_some_and(|argument| argument == OsStr::new("update"))
     {
         args.next();
-        if args.next().is_some() {
+        if let Some(argument) = args.next() {
+            // Asking a command what it does must never be the error case.
+            if argument == OsStr::new("-h") || argument == OsStr::new("--help") {
+                return Ok(LaunchRequest::Help);
+            }
             return Err("`noter update` does not accept additional arguments".to_owned());
         }
         return Ok(LaunchRequest::Run(LaunchOptions {
@@ -161,6 +175,34 @@ fn parse_launch_request(args: impl IntoIterator<Item = OsString>) -> Result<Laun
     Ok(LaunchRequest::Run(options))
 }
 
+/// Rejects a startup document argument that cannot name an openable file.
+///
+/// A mistyped path, a directory, or a file the user cannot read is an argument
+/// mistake, so it fails on the command line exactly like an invalid `--theme`
+/// rather than opening a window that looks like a new blank document. Problems
+/// with the file's *content*, such as invalid UTF-8 or an oversized document,
+/// still open the window and report there, because those also arrive from the
+/// Open dialog and from a desktop file association.
+fn check_document_argument(path: &Path) -> Result<(), String> {
+    let cannot_open = |reason: &str| format!("cannot open `{}`: {reason}", escaped_cli_path(path));
+    let metadata = std::fs::metadata(path).map_err(|error| cannot_open(&open_failure(&error)))?;
+    if metadata.is_dir() {
+        return Err(cannot_open("path is a directory"));
+    }
+    std::fs::File::open(path)
+        .map(drop)
+        .map_err(|error| cannot_open(&open_failure(&error)))
+}
+
+/// Describes a filesystem failure without leaking the operating-system code.
+fn open_failure(error: &std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => "no such file".to_owned(),
+        std::io::ErrorKind::PermissionDenied => "permission denied".to_owned(),
+        _ => error.to_string(),
+    }
+}
+
 fn unicode_option_value(option: &str, value: OsString) -> Result<String, String> {
     value
         .into_string()
@@ -168,7 +210,7 @@ fn unicode_option_value(option: &str, value: OsString) -> Result<String, String>
 }
 
 fn parse_theme(value: &str) -> Result<AppTheme, String> {
-    AppTheme::from_storage_value(value).ok_or_else(|| {
+    AppTheme::from_storage_value(&value.to_ascii_lowercase()).ok_or_else(|| {
         format!(
             "unknown theme `{}`; expected {THEME_ERROR_VALUES}",
             escaped_cli_value(value)
@@ -177,7 +219,7 @@ fn parse_theme(value: &str) -> Result<AppTheme, String> {
 }
 
 fn parse_view(value: &str) -> Result<DocumentView, String> {
-    match value {
+    match value.to_ascii_lowercase().as_str() {
         "text" => Ok(DocumentView::Text),
         "markdown" => Ok(DocumentView::Markdown),
         _ => Err(format!(
@@ -189,6 +231,22 @@ fn parse_view(value: &str) -> Result<DocumentView, String> {
 
 fn escaped_cli_value(value: &str) -> String {
     value.escape_debug().collect()
+}
+
+/// Escapes only control characters so a reported path stays readable.
+///
+/// Full debug escaping would double every separator in a Windows path, which
+/// makes the message harder to read than the mistake it reports.
+fn escaped_cli_path(path: &Path) -> String {
+    let mut escaped = String::new();
+    for character in path.display().to_string().chars() {
+        if character.is_control() {
+            escaped.extend(character.escape_debug());
+        } else {
+            escaped.push(character);
+        }
+    }
+    escaped
 }
 
 #[cfg(test)]
@@ -280,6 +338,69 @@ mod tests {
                 .expect_err("an unknown Unicode theme must be rejected")
                 .contains("grün")
         );
+    }
+
+    #[test]
+    fn option_values_are_case_insensitive() {
+        let LaunchRequest::Run(options) = parse(&["--theme", "LIGHT", "--view", "Markdown"])
+            .expect("shouted option values should parse")
+        else {
+            panic!("the arguments should launch the application");
+        };
+
+        assert_eq!(options.theme, Some(AppTheme::Light));
+        assert_eq!(options.view, Some(DocumentView::Markdown));
+    }
+
+    #[test]
+    fn update_explains_itself_instead_of_rejecting_help() {
+        assert!(matches!(
+            parse(&["update", "--help"]),
+            Ok(LaunchRequest::Help)
+        ));
+        assert!(matches!(parse(&["update", "-h"]), Ok(LaunchRequest::Help)));
+        assert!(parse(&["update", "note.md"]).is_err());
+    }
+
+    #[test]
+    fn a_readable_file_argument_is_accepted() {
+        let directory = tempfile::tempdir().expect("a temporary directory should be available");
+        let path = directory.path().join("notes.md");
+        std::fs::write(&path, "# notes\n").expect("the fixture should be writable");
+
+        assert_eq!(check_document_argument(&path), Ok(()));
+    }
+
+    #[test]
+    fn a_missing_file_argument_fails_closed_with_its_path() {
+        let directory = tempfile::tempdir().expect("a temporary directory should be available");
+        let path = directory.path().join("does-not-exist.md");
+
+        let error = check_document_argument(&path).expect_err("a missing path must be refused");
+
+        assert!(error.starts_with("cannot open `"));
+        assert!(error.ends_with(": no such file"));
+        assert!(error.contains("does-not-exist.md"));
+    }
+
+    #[test]
+    fn a_directory_argument_fails_closed() {
+        let directory = tempfile::tempdir().expect("a temporary directory should be available");
+
+        let error =
+            check_document_argument(directory.path()).expect_err("a directory must be refused");
+
+        assert!(error.ends_with(": path is a directory"));
+    }
+
+    #[test]
+    fn reported_paths_cannot_inject_terminal_control_characters() {
+        let escaped = escaped_cli_path(Path::new("notes\n\u{1b}[31m.md"));
+
+        assert!(!escaped.contains(['\n', '\u{1b}']));
+        assert!(escaped.contains("\\n"));
+        // Ordinary separators stay readable rather than doubled.
+        assert_eq!(escaped_cli_path(Path::new("a/b c.md")), "a/b c.md");
     }
 
     #[test]

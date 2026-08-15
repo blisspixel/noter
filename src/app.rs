@@ -44,6 +44,8 @@ const ABOUT_PRIVACY: &str = "Noter has no accounts, telemetry, or background net
 const ABOUT_LINK_BEHAVIOR: &str = "The project link opens in your default browser.";
 const UPDATE_STATUS: &str = "No Noter release has been published yet. This source build cannot safely self-update without verified release artifacts.";
 const RELEASES_URL: &str = "https://github.com/blisspixel/noter/releases";
+/// Names the window opened by `noter update` while its status is still shown.
+const UPDATE_WINDOW_TITLE: &str = "Update status";
 const UNCERTAIN_SAVE_ABANDON_GUIDANCE: &str = "Cancel this dialog and reconcile every uncertain save outcome before attempting another save. Your current text remains editable.";
 const MENU_BAR_HEIGHT: f32 = 30.0;
 const EDITOR_TOOLBAR_HEIGHT: f32 = 40.0;
@@ -402,6 +404,27 @@ impl SaveAttempt {
     }
 }
 
+/// Whether the local update status is showing, and what opened it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum UpdateStatusState {
+    #[default]
+    Closed,
+    /// Opened from Help > Check for Updates during an editing session.
+    Open,
+    /// Opened by `noter update`, which also names the window while it shows.
+    OpenedByLaunch,
+}
+
+impl UpdateStatusState {
+    const fn is_open(self) -> bool {
+        !matches!(self, Self::Closed)
+    }
+
+    const fn names_the_window(self) -> bool {
+        matches!(self, Self::OpenedByLaunch)
+    }
+}
+
 pub struct NoterApp {
     text: String,
     document: Document,
@@ -426,7 +449,9 @@ pub struct NoterApp {
     save_recoveries: Vec<SaveRecovery>,
     pending_recovery_reconciliation: Option<usize>,
     about_open: bool,
-    updates_open: bool,
+    updates: UpdateStatusState,
+    /// The last title handed to the window manager, so repeats are not resent.
+    sent_window_title: Option<String>,
     pending_hard_link_save: Option<PendingHardLinkSave>,
     lifecycle: LifecycleState,
     conflict: ConflictState,
@@ -462,7 +487,8 @@ impl Default for NoterApp {
             save_recoveries: Vec::new(),
             pending_recovery_reconciliation: None,
             about_open: false,
-            updates_open: false,
+            updates: UpdateStatusState::Closed,
+            sent_window_title: None,
             pending_hard_link_save: None,
             lifecycle: LifecycleState::default(),
             conflict: ConflictState::default(),
@@ -498,7 +524,11 @@ impl NoterApp {
             theme: selected_theme,
             text_wrap: TextWrap::from_storage(cc.storage),
             editor_zoom: EditorZoom::from_storage(cc.storage),
-            updates_open: options.show_updates,
+            updates: if options.show_updates {
+                UpdateStatusState::OpenedByLaunch
+            } else {
+                UpdateStatusState::Closed
+            },
             crash_recovery: CrashRecoverySession::open_default(),
             ..Self::default()
         };
@@ -952,7 +982,7 @@ impl NoterApp {
             || self.pending_recovery_reconciliation.is_some()
             || self.crash_recovery.active_offer().is_some()
             || self.about_open
-            || self.updates_open
+            || self.updates.is_open()
         {
             return;
         }
@@ -1551,16 +1581,37 @@ impl NoterApp {
         self.preserve_focus_on_selection_restore = true;
     }
 
-    fn update_title(&self, ctx: &egui::Context) {
+    /// Returns the window title for the current session and document state.
+    ///
+    /// A session started by `noter update` names the update status it opened
+    /// with, so an outside observer can tell that window apart from a blank
+    /// editor. Dismissing the status returns the window to document titles.
+    fn window_title(&self) -> String {
+        if self.updates.names_the_window() {
+            return format!("{UPDATE_WINDOW_TITLE} - Noter");
+        }
         let dirty = if self.document.is_dirty() { "*" } else { "" };
-        let title = self.document.path().map_or_else(
+        self.document.path().map_or_else(
             || format!("Untitled{dirty} - Noter"),
             |path| {
                 let file_name = path.file_name().unwrap_or_default().to_string_lossy();
                 format!("{file_name}{dirty} - Noter")
             },
-        );
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        )
+    }
+
+    /// Sends the window title only when it actually changes.
+    ///
+    /// Every viewport command requests a repaint, so sending an unchanged title
+    /// each frame would hold the event loop awake and burn a core while the
+    /// window sits idle.
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let title = self.window_title();
+        if self.sent_window_title.as_deref() == Some(title.as_str()) {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+        self.sent_window_title = Some(title);
     }
 
     fn show_menu(
@@ -2018,7 +2069,7 @@ impl NoterApp {
     }
 
     const fn open_updates(&mut self) {
-        self.updates_open = true;
+        self.updates = UpdateStatusState::Open;
     }
 
     fn show_about(&mut self, ctx: &egui::Context) {
@@ -2050,11 +2101,11 @@ impl NoterApp {
     }
 
     fn show_updates(&mut self, ctx: &egui::Context) {
-        if !self.updates_open {
+        if !self.updates.is_open() {
             return;
         }
 
-        let mut open = self.updates_open;
+        let mut open = true;
         let mut close = false;
         egui::Window::new("Noter Updates")
             .open(&mut open)
@@ -2071,7 +2122,9 @@ impl NoterApp {
                     close = true;
                 }
             });
-        self.updates_open = dialog_remains_open(open, close);
+        if !dialog_remains_open(open, close) {
+            self.updates = UpdateStatusState::Closed;
+        }
     }
 
     fn show_unsaved_changes_confirmation(&mut self, ctx: &egui::Context) {
@@ -2849,6 +2902,11 @@ impl NoterApp {
         }
         if !recovery_offer_open {
             self.crash_recovery.on_tick(&self.document, self.selection);
+            if let Some(delay) = self.crash_recovery.next_persist_delay() {
+                // The window sleeps when nothing is happening, so a dirty
+                // document has to book its own wake-up for the next persist.
+                ui.ctx().request_repaint_after(delay);
+            }
             if self.crash_recovery.has_persist_failure()
                 && self.error_msg.as_deref() != Some(RECOVERY_PERSIST_FAILURE_MESSAGE)
             {
@@ -3941,6 +3999,60 @@ mod tests {
         app
     }
 
+    fn viewport_titles(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .viewport_output
+            .values()
+            .flat_map(|viewport| viewport.commands.iter())
+            .filter_map(|command| match command {
+                egui::ViewportCommand::Title(title) => Some(title.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_unchanged_window_title_is_never_resent() {
+        // Every viewport command requests a repaint, so a title resent each
+        // frame would keep an idle window painting at full speed.
+        let mut app = NoterApp::default();
+        let context = egui::Context::default();
+
+        let first = context.run_ui(ui_input(600.0, 400.0, 0.0), |ui| app.update_title(ui.ctx()));
+        let repeat = context.run_ui(ui_input(600.0, 400.0, 0.1), |ui| app.update_title(ui.ctx()));
+        app.document
+            .replace_text("unsaved text")
+            .expect("the test edit should advance the document revision");
+        let edited = context.run_ui(ui_input(600.0, 400.0, 0.2), |ui| app.update_title(ui.ctx()));
+
+        assert_eq!(viewport_titles(&first), ["Untitled - Noter"]);
+        assert!(viewport_titles(&repeat).is_empty());
+        assert_eq!(viewport_titles(&edited), ["Untitled* - Noter"]);
+    }
+
+    #[test]
+    fn an_update_session_names_its_window_until_the_status_closes() {
+        let mut app = NoterApp {
+            updates: UpdateStatusState::OpenedByLaunch,
+            ..NoterApp::default()
+        };
+        assert_eq!(app.window_title(), "Update status - Noter");
+
+        let context = egui::Context::default();
+        // The floating status window settles its layout on the second pass.
+        let _ = context.run_ui(ui_input(600.0, 400.0, 0.0), |ui| app.show_updates(ui.ctx()));
+        let opened = context.run_ui(ui_input(600.0, 400.0, 0.05), |ui| {
+            app.show_updates(ui.ctx());
+        });
+        let close = text_position(&rendered_text(&opened), "Close") + egui::vec2(4.0, 4.0);
+        let _ = context.run_ui(click_input(600.0, 400.0, 0.1, close), |ui| {
+            app.show_updates(ui.ctx());
+        });
+
+        assert_eq!(app.updates, UpdateStatusState::Closed);
+        assert_eq!(app.window_title(), "Untitled - Noter");
+    }
+
     #[test]
     fn about_action_opens_and_renders_the_window() {
         let mut app = NoterApp::default();
@@ -3978,7 +4090,7 @@ mod tests {
         let mut app = NoterApp::default();
         app.open_updates();
 
-        assert!(app.updates_open);
+        assert!(app.updates.is_open());
         let context = egui::Context::default();
         context.enable_accesskit();
         let output = context.run_ui(egui::RawInput::default(), |ui| app.show_updates(ui.ctx()));
@@ -3994,7 +4106,7 @@ mod tests {
             UPDATE_STATUS,
             "No Noter release has been published yet. This source build cannot safely self-update without verified release artifacts."
         );
-        assert!(app.updates_open);
+        assert!(app.updates.is_open());
     }
 
     #[test]
@@ -4009,13 +4121,13 @@ mod tests {
         let _ = context.run_ui(click_input(600.0, 300.0, 0.1, updates), |ui| {
             app.show_help_menu(ui);
         });
-        assert!(app.updates_open);
+        assert!(app.updates.is_open());
         assert!(!app.about_open);
 
         let _ = context.run_ui(click_input(600.0, 300.0, 0.2, about), |ui| {
             app.show_help_menu(ui);
         });
-        assert!(app.updates_open);
+        assert!(app.updates.is_open());
         assert!(app.about_open);
     }
 
