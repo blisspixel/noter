@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-08-05
+**Updated:** 2026-08-15
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -51,36 +51,40 @@ does not expand unsafe UI surface.
 4. **Done in tree:** M3 navigation and long-session gaps — pure caret policy,
    long-session history fixture, Text Mode and Markdown active-block platform
    keyboard policy. Cross-platform manual keyboard evidence remains.
-5. **Partial:** remaining M1 filesystem fixtures as environments allow — macOS,
+5. **Done:** first-contact cost and command-line honesty — an idle window sleeps
+   instead of holding a core, an unopenable startup path fails closed on the
+   command line, and `noter update` names its own window. Idle cost is measured
+   on Windows only; the other supported platforms remain open evidence.
+6. **Partial:** remaining M1 filesystem fixtures as environments allow — macOS,
    SMB, cloud-sync, removable, weak FS, second-identity, crash-persistence.
    Does not block dogfood on platforms already covered. Evidence:
    [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
-6. **Partial:** M2 installed-product evidence — disposable Windows source
+7. **Partial:** M2 installed-product evidence — disposable Windows source
    install recorded; interactive About GUI and packaged installers remain open.
    Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
-7. **Partial gate:** [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md)
+8. **Partial gate:** [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md)
    scores the dogfood rows at exact-head `85bf83d`. Live GUI force-kill timing
    and interactive non-Windows smoke remain open before the version label.
 
 ### Toward `0.1.0-beta.1`
 
-8. **Execute the M5 editor feasibility gate** — rope-backed or proven bounded
+9. **Execute the M5 editor feasibility gate** — rope-backed or proven bounded
    path, IME, AccessKit, display scale, 50 MiB corpus route.
-9. **Expand Markdown to continuous whole-document editing** on the production
-   editor foundation (still source-backed; no proprietary model).
+10. **Expand Markdown to continuous whole-document editing** on the production
+    editor foundation (still source-backed; no proprietary model).
 
 ### Toward `0.1.0-rc.1` and `0.1.0`
 
-10. **Complete M6 quality engine** — conformance, diagnostics, Format Document
+11. **Complete M6 quality engine** — conformance, diagnostics, Format Document
     with diff and semantic equivalence, async revision-tagged parse.
-11. **Complete M7 distribution** — signed/attested artifacts where credentials
+12. **Complete M7 distribution** — signed/attested artifacts where credentials
     exist, clean-machine install/upgrade/uninstall, updater policy.
-12. **RC dogfood** — minimum 14-day multi-person, multi-platform use without
+13. **RC dogfood** — minimum 14-day multi-person, multi-platform use without
     data loss; then publish `0.1.0`.
 
 ### After `0.1.0`
 
-13. Only ratified post-release work. Non-goals in REQUIREMENTS stay out unless
+14. Only ratified post-release work. Non-goals in REQUIREMENTS stay out unless
     product decision and a new roadmap entry promote them.
 
 ## Milestone status
@@ -274,6 +278,21 @@ also reflects document state: Reload is unavailable for an untitled document.
 Built-in palette extension is data-driven and invalid palettes fail closed to
 Dark. The safe custom-theme contract is documented;
 runtime theme-file loading, persistence, and error UX remain open work.
+An adversarial first-contact playtest of the installed
+`0.1.0-alpha.1` product closed three prototype-shell defects. An idle window
+held a full CPU core because the window title was resent as a viewport command
+every frame and every viewport command requests a repaint; the title is now sent
+only on change, and a dirty document books its own repaint from the recovery
+schedule so sleeping cannot lengthen the recovery-point objective. A local
+Windows release measurement fell from 100.2 percent of one core to 0.42 percent
+over 15 idle seconds, with the working set down from 87.2 MiB to 67.2 MiB; the
+same measurement on macOS and Linux remains open. A startup document path that
+is missing, a directory, or unreadable now fails closed with one line on
+standard error and exit 2, matching the existing invalid-option contract, while
+content failures still report in the window because they also arrive from the
+Open dialog and desktop file associations. `noter update` names its window
+`Update status - Noter` while that status shows, and `noter update --help`
+prints usage instead of an error.
 Hinting, subpixel positioning, real heading and emphasis weights, and
 theme-correct text coverage transfer are verified explicitly rather than
 assumed from toolkit defaults. The early source-backed Markdown slice is visible
@@ -292,6 +311,8 @@ disposable clean-user packaged-installer tests before verification.
   installed application, not only state-unit tests.
 - Source install helpers are idempotent, path-safe, and tested in disposable
   standard-user environments.
+- An idle window's processor and memory cost is measured on every supported
+  platform, not only Windows.
 - The public README remains concise and truthful.
 
 ## M3: Editing Transactions and Text Commands
@@ -437,7 +458,10 @@ encode/validate with UTF-8 boundary selection checks, and private durable
 recovery storage (atomic install/replace, quarantine with reported failures,
 full directory walk with a 32-offer cap) are implemented in the library.
 Application wiring (startup offer UI, idle persist effects, state-directory
-path resolution) and overwrite-with-second-confirm are implemented. Live
+path resolution) and overwrite-with-second-confirm are implemented. The pure
+schedule also reports the deadline of its next due persist, so an interface that
+sleeps between frames still wakes to meet the recovery-point objective instead of
+silently extending it to the next unrelated repaint. Live
 GUI force-kill recovery timing and the remaining interactive matrix rows in
 [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) remain open
 before the `0.1.0-alpha.2` label.
@@ -636,19 +660,22 @@ when they document evidence links.
 
 1. **Done:** Markdown keyboard navigation parity with Text Mode; pure word /
    Home-End / document policy and long-session history fixture.
-2. **Partial evidence:** remaining M1 fixtures (macOS, SMB, cloud, removable,
+2. **Done, partial evidence:** first-contact cost and command-line honesty from
+   the installed-product playtest. Idle-cost measurement on macOS and Linux
+   remains open.
+3. **Partial evidence:** remaining M1 fixtures (macOS, SMB, cloud, removable,
    weak FS, second-identity, crash-persistence). Evidence:
    [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
-3. **Partial evidence:** disposable Windows source install and related unit
+4. **Partial evidence:** disposable Windows source install and related unit
    paths. Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
    Interactive About GUI, theme GUI relaunch, and packaged installers remain.
-4. **Partial:** [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) at
+5. **Partial:** [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) at
    exact-head `85bf83d`; finish live GUI force-kill recovery and interactive
    non-Windows smoke, then tag `0.1.0-alpha.2` only on that green commit.
-5. **Then `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
+6. **Then `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
    production editor contract is stable.
-6. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
+7. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
    dogfood, public release.
 
 ### Completed foundations (historical)

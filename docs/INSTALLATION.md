@@ -1,6 +1,6 @@
 # Installation and Updates
 
-**Reviewed:** 2026-07-31
+**Reviewed:** 2026-08-15
 
 **Current availability:** Source installation is supported for development and
 evaluation. Noter has not published a signed binary release, native package, or
@@ -60,7 +60,9 @@ noter
 ```
 
 Pass an existing document path to open it directly, for example
-`noter README.md` from the repository checkout.
+`noter README.md` from the repository checkout. Noter never creates that file
+for you: a mistyped path fails on the command line instead of opening a window
+that looks like a new blank document.
 
 If `noter` is not found, use the exact path printed by the installer or add its
 parent `bin` directory to `PATH`. The default is Cargo's per-user binary
@@ -70,6 +72,40 @@ on macOS and Linux.
 Noter remains under active development. Keep backups and do not use it as the
 only editor for important files until the release evidence in the roadmap is
 complete.
+
+## Command-line contract
+
+```text
+noter [OPTIONS] [--] [FILE]
+noter update
+```
+
+| Invocation | Exit | Behavior |
+| --- | --- | --- |
+| `noter --version`, `noter -V` | 0 | Prints `noter <version>` and exits |
+| `noter --help`, `noter -h`, `noter update --help` | 0 | Prints the usage block and exits |
+| `noter` | runs | Opens an untitled document |
+| `noter FILE` | runs | Opens an existing readable file |
+| `noter update` | runs | Opens the local update status, titled `Update status - Noter` |
+| Unknown option, invalid or missing option value, second document path | 2 | One line on standard error, then usage |
+| FILE missing, a directory, or unreadable | 2 | `noter: cannot open ...`, then usage |
+
+`--theme system\|light\|dark\|green\|amber` and `--view text\|markdown` select the
+startup theme and view. Their values are accepted in any letter case. `--` ends
+option parsing so a document path may begin with `-`.
+
+Argument mistakes fail on the command line. Problems with a file's *content*,
+such as invalid UTF-8 or a document above the current interactive size limit,
+open the window and report there, because those also reach Noter through the
+Open dialog and desktop file associations rather than through a terminal.
+
+The window title names the open document and marks unsaved changes with `*`. It
+does not name the active view; the Mode control in the upper right of the window
+shows and switches Text Mode and Markdown Mode.
+
+An idle Noter window sleeps. It repaints on input, on the bounded external-change
+check while focused, and when a dirty document is due to write its private
+recovery copy.
 
 ## Update a source installation
 
@@ -189,6 +225,10 @@ root. Use that same root for future updates and uninstallation.
 The current dialog explains that no verified release exists and can open the
 GitHub releases page only after an explicit user action. It does not query an
 API, download an artifact, or replace the application.
+
+A session started by `noter update` names its window `Update status - Noter`
+until the status is closed, so the command is not mistaken for a blank editor.
+Closing the status returns the window to ordinary document titles.
 
 This boundary avoids presenting a source checkout as a secure release channel.
 Documentation will not recommend piping a script from a mutable branch into a

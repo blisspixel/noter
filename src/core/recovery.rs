@@ -611,6 +611,36 @@ impl RecoveryScheduleState {
         self.epoch
     }
 
+    /// Returns how long an adapter may sleep before the next `Tick` is due.
+    ///
+    /// `None` means no persist is outstanding, so the adapter needs no timer at
+    /// all. `Some(Duration::ZERO)` means a persist is already due. An adapter
+    /// that only ticks while it happens to be drawing would silently lengthen
+    /// the recovery-point objective, so it must schedule a wake-up from this
+    /// value instead.
+    pub fn next_persist_delay(self, now: RecoveryClock) -> Option<Duration> {
+        if !self.dirty || self.in_flight_revision.is_some() {
+            return None;
+        }
+        if self.last_persisted_revision == Some(self.current_revision) {
+            return None;
+        }
+        let last_edit_at = self.last_edit_at?;
+        let dirty_since = self.dirty_since?;
+        let (Some(idle), Some(dirty_for)) = (
+            now.elapsed().checked_sub(last_edit_at.elapsed()),
+            now.elapsed().checked_sub(dirty_since.elapsed()),
+        ) else {
+            // A clock regression is already due, exactly as `tick` decides.
+            return Some(Duration::ZERO);
+        };
+        Some(
+            RECOVERY_IDLE_DEBOUNCE
+                .saturating_sub(idle)
+                .min(RECOVERY_MAX_DIRTY_INTERVAL.saturating_sub(dirty_for)),
+        )
+    }
+
     /// Applies one scheduling command and returns the adapter effect.
     pub fn reduce(&mut self, command: RecoveryScheduleCommand) -> RecoveryScheduleEffect {
         match command {
@@ -1154,6 +1184,57 @@ mod tests {
             validate_recovery_record(&bad),
             RecoveryStartupDisposition::Quarantine(RecoveryQuarantineReason::ContentTooLarge)
         );
+    }
+
+    #[test]
+    fn the_next_persist_delay_matches_the_moment_a_tick_becomes_due() {
+        fn clock(seconds: f64) -> RecoveryClock {
+            RecoveryClock::new(Duration::from_secs_f64(seconds))
+        }
+
+        let mut state = RecoveryScheduleState::default();
+        // A clean document needs no timer at all, so the window can sleep.
+        assert_eq!(state.next_persist_delay(clock(0.0)), None);
+
+        let _ = state.reduce(RecoveryScheduleCommand::Edited {
+            revision: Revision::new(1),
+            now: clock(0.0),
+        });
+        assert_eq!(
+            state.next_persist_delay(clock(0.0)),
+            Some(RECOVERY_IDLE_DEBOUNCE)
+        );
+        assert_eq!(
+            state.next_persist_delay(clock(1.5)),
+            Some(Duration::from_millis(500))
+        );
+        // Waking at the reported delay must find the tick due.
+        assert!(matches!(
+            state.reduce(RecoveryScheduleCommand::Tick { now: clock(2.0) }),
+            RecoveryScheduleEffect::Persist { .. }
+        ));
+        // A dirty document with a persist already in flight needs no further
+        // wake-up; the acknowledgement drives the next decision.
+        assert!(state.is_dirty());
+        assert_eq!(state.in_flight_revision(), Some(Revision::new(1)));
+        assert_eq!(state.next_persist_delay(clock(2.0)), None);
+
+        // Continuous typing is capped by the maximum dirty interval, not the
+        // idle debounce, so the reported delay must follow the earlier bound.
+        let mut typing = RecoveryScheduleState::default();
+        for second in 0..14_u32 {
+            let _ = typing.reduce(RecoveryScheduleCommand::Edited {
+                revision: Revision::new(u64::from(second) + 1),
+                now: clock(f64::from(second)),
+            });
+        }
+        assert_eq!(
+            typing.next_persist_delay(clock(13.0)),
+            Some(Duration::from_secs(2))
+        );
+
+        // A clock regression is already due rather than a long sleep.
+        assert_eq!(typing.next_persist_delay(clock(0.0)), Some(Duration::ZERO));
     }
 
     #[test]
