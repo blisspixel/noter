@@ -7,6 +7,9 @@ release, so current work remains under Unreleased.
 
 ### Added
 
+- Add a [playtest brief](docs/PLAYTEST.md) that records what changed for the
+  current round, which findings were fixed or declined, what is deliberately
+  still open, and which product surfaces remain unexercised.
 - Fail closed on a startup document argument that cannot be opened: a missing
   path, a directory, or an unreadable file now prints one line to standard error
   and exits 2 instead of opening a window that looks like a new blank document.

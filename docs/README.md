@@ -14,6 +14,7 @@ each topic.
 | Build, test, or update screenshots | [Development guide](DEVELOPMENT.md) |
 | Prepare or verify a release | [Release process](RELEASING.md) |
 | Contribute a change | [Contributing guide](../CONTRIBUTING.md) |
+| Play-test the current build | [Playtest brief](PLAYTEST.md) |
 | Review local-data and network behavior | [Privacy contract](PRIVACY.md) |
 | Report a vulnerability | [Security policy](../SECURITY.md) |
 
@@ -45,6 +46,8 @@ each topic.
 ## Planning and evidence
 
 - [Roadmap](ROADMAP.md) owns milestone order, status, and exit criteria.
+- [Playtest brief](PLAYTEST.md) records what changed for the current round, what
+  is deliberately still open, and which surfaces remain unexercised.
 - [Research](RESEARCH.md) records dated primary-source findings behind product
   and engineering decisions.
 - [Engineering baseline](BASELINE.md) records measured checkpoints and known
