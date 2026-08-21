@@ -199,7 +199,12 @@ impl ConflictState {
 
     fn observed(&mut self, kind: ExternalChangeKind, revision: Revision) -> ConflictEffect {
         if !kind.requires_prompt() {
-            if matches!(self.phase, ConflictPhase::Prompting { .. }) {
+            if matches!(
+                self.phase,
+                ConflictPhase::Prompting { .. }
+                    | ConflictPhase::ConfirmOverwrite { .. }
+                    | ConflictPhase::KeptEditing { .. }
+            ) {
                 self.phase = ConflictPhase::Idle;
             }
             return ConflictEffect::None;
@@ -214,10 +219,11 @@ impl ConflictState {
                 kind: current,
                 revision: current_revision,
             } if current == kind && current_revision == revision => ConflictEffect::None,
-            ConflictPhase::KeptEditing {
-                kind: current,
-                revision: current_revision,
-            } if current == kind && current_revision == revision => ConflictEffect::None,
+            // Keep Editing is a decision about the disk version. Local typing
+            // must not reopen the prompt; a different disk classification must.
+            ConflictPhase::KeptEditing { kind: current, .. } if current == kind => {
+                ConflictEffect::None
+            }
             ConflictPhase::Idle
             | ConflictPhase::Prompting { .. }
             | ConflictPhase::ConfirmOverwrite { .. }
@@ -415,6 +421,38 @@ mod tests {
             state.reduce(ConflictCommand::Observed {
                 kind: ExternalChangeKind::Deleted,
                 revision,
+            }),
+            ConflictEffect::Prompt(ExternalChangeKind::Deleted)
+        );
+    }
+
+    #[test]
+    fn keep_editing_does_not_reprompt_when_only_the_local_revision_moves() {
+        let mut state = ConflictState::default();
+        assert_eq!(
+            state.reduce(ConflictCommand::Observed {
+                kind: ExternalChangeKind::ContentOrIdentityChanged,
+                revision: Revision::new(3),
+            }),
+            ConflictEffect::Prompt(ExternalChangeKind::ContentOrIdentityChanged)
+        );
+        assert_eq!(
+            state.reduce(ConflictCommand::Decide(ConflictDecision::KeepEditing)),
+            ConflictEffect::None
+        );
+
+        assert_eq!(
+            state.reduce(ConflictCommand::Observed {
+                kind: ExternalChangeKind::ContentOrIdentityChanged,
+                revision: Revision::new(4),
+            }),
+            ConflictEffect::None
+        );
+        assert!(!state.is_prompting());
+        assert_eq!(
+            state.reduce(ConflictCommand::Observed {
+                kind: ExternalChangeKind::Deleted,
+                revision: Revision::new(5),
             }),
             ConflictEffect::Prompt(ExternalChangeKind::Deleted)
         );

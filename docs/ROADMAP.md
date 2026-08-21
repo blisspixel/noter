@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-08-15
+**Updated:** 2026-08-21
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -23,7 +23,7 @@ criteria and evidence land on one immutable green commit.
 | Version | Product meaning | Primary milestones | Status |
 | --- | --- | --- | --- |
 | `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1–M4 and M6 partial | Current crate version |
-| `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups | Finish M4 recovery wiring; M3 clipboard/navigation; remaining M1/M2 evidence; conflict overwrite confirm | **Next** |
+| `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups | Recovery, clipboard, overwrite confirm, and first-contact honesty are in tree; remaining live GUI force-kill and non-Windows smoke evidence | **Next** |
 | `0.1.0-beta.1` | Production editor path: measured performance, IME, accessibility | M5 feasibility gate and production editor; continuous Markdown editing foundation | After alpha.2 |
 | `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.1 |
 | `0.1.0` | First public-quality release | Every v0.1 requirement in REQUIREMENTS has evidence | After successful RC dogfood |
@@ -461,7 +461,10 @@ Application wiring (startup offer UI, idle persist effects, state-directory
 path resolution) and overwrite-with-second-confirm are implemented. The pure
 schedule also reports the deadline of its next due persist, so an interface that
 sleeps between frames still wakes to meet the recovery-point objective instead of
-silently extending it to the next unrelated repaint. Live
+silently extending it to the next unrelated repaint. Durable recovery write and
+`fsync` run on a dedicated `noter-recovery` worker rather than the render
+thread; the UI only captures a revision snapshot and applies epoch-tagged
+completions. Live
 GUI force-kill recovery timing and the remaining interactive matrix rows in
 [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) remain open
 before the `0.1.0-alpha.2` label.

@@ -941,12 +941,33 @@ Text Mode schedules no Markdown work.
 
 ## 13. Performance and concurrency
 
-Noter uses bounded worker threads and message passing, not a general async
-runtime, unless later evidence justifies one. Work items carry cancellation and
-revision tokens. The current block-focused Markdown slice parses synchronously;
-moving that work behind revision-tagged background parsing is an M6 requirement.
-At that milestone, the render thread must not wait for disk sync, full-file
-search, recovery serialization, or Markdown parsing.
+Noter does not try to occupy every core on a 6- or 16-core machine. A notepad's
+critical path is one caret and one document. Spreading that path across a thread
+pool would add scheduling noise, battery cost, and races without making typing
+faster. Extra cores are used only to keep that path free.
+
+The process is therefore:
+
+- **One UI / render thread.** All input, layout, and egui painting stay here.
+  The GPU already does the actual raster work off this core.
+- **One recovery I/O worker.** Snapshot capture (an in-memory copy of the current
+  revision) stays on the UI thread. Durable write and `fsync` run on a dedicated
+  `noter-recovery` thread. Completions are epoch-tagged so a late write cannot
+  revive a record after Save or Discard. The UI polls a 16 ms timer while a
+  persist is in flight instead of blocking the frame.
+- **No general async runtime.** Bounded worker threads and message passing,
+  unless later evidence justifies `tokio` or similar. Work items carry
+  cancellation and revision tokens.
+- **Not used:** rayon over the document, blake3's multithreaded hasher, or a
+  pool sized to hardware concurrency. Interactive files are capped at 8 MiB
+  until M5; hashing and edits on that size are cheaper than thread-handoff.
+
+The current block-focused Markdown slice still parses synchronously. Moving
+parse, diagnostics, and full-file search behind revision-tagged background
+workers is an M6 requirement. At that milestone the render thread must not wait
+for disk sync, full-file search, recovery serialization, or Markdown parsing.
+M5 may add a layout/search worker only after the production editor gate proves
+it is required.
 
 The benchmark corpus contains:
 

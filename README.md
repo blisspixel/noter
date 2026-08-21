@@ -29,7 +29,8 @@ dossier.
 - **Local by default.** A compiled desktop app with a native window and GPU
   renderer. No WebView, no browser engine, no JavaScript runtime inside the
   editor, no remote content fetch while you write. An idle window sleeps instead
-  of spending your battery on a render loop.
+  of spending your battery on a render loop (measured on Windows; other
+  platforms remain open evidence).
 - **One document, full attention.** Classic single-file focus instead of a
   workspace that wants to become a platform.
 - **Two exact views of the same source.** Text Mode shows every character.

@@ -3,10 +3,16 @@
 //! Pure scheduling and on-disk record integrity live in `noter::core::recovery`
 //! and `noter::core::recovery_store`. This module owns process identity, wall
 //! and monotonic clocks, the private recovery root under the eframe state
-//! directory, and the small state machine that surfaces startup offers and
-//! persist failures without writing a user document path.
+//! directory, one dedicated persist worker thread, and the small state machine
+//! that surfaces startup offers and persist failures without writing a user
+//! document path. Snapshot capture stays on the UI thread; durable write and
+//! `fsync` run on the worker so typing is not stalled by disk.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use getrandom::fill as fill_random;
@@ -35,6 +41,20 @@ pub const RECOVERY_UNAVAILABLE_MESSAGE: &str = "Private crash recovery is unavai
 
 /// Maximum length of a quarantine notice shown at startup.
 const MAX_QUARANTINE_NOTICE_BYTES: usize = 240;
+
+struct PersistJob {
+    store: RecoveryStore,
+    snapshot: RecoverySnapshot,
+    revision: Revision,
+    epoch: u64,
+}
+
+struct PersistOutcome {
+    revision: Revision,
+    epoch: u64,
+    instance_id: RecoveryInstanceId,
+    succeeded: bool,
+}
 
 /// Resolves the per-user state directory used for preferences and recovery.
 ///
@@ -100,6 +120,10 @@ pub struct CrashRecoverySession {
     quarantine_notices: Vec<String>,
     persist_failure: bool,
     unavailable: bool,
+    persist_jobs: Option<Sender<PersistJob>>,
+    persist_outcomes: Option<Receiver<PersistOutcome>>,
+    persist_worker: Option<JoinHandle<()>>,
+    persist_epoch_gate: Arc<AtomicU64>,
 }
 
 impl CrashRecoverySession {
@@ -123,6 +147,7 @@ impl CrashRecoverySession {
         }
         match RecoveryStore::open(recovery_root) {
             Ok(store) => {
+                session.attach_persist_worker();
                 session.store = Some(store);
                 session.ingest_scan();
             }
@@ -131,6 +156,25 @@ impl CrashRecoverySession {
             }
         }
         session
+    }
+
+    fn attach_persist_worker(&mut self) {
+        let (job_tx, job_rx) = mpsc::channel::<PersistJob>();
+        let (outcome_tx, outcome_rx) = mpsc::channel::<PersistOutcome>();
+        let epoch_gate = Arc::clone(&self.persist_epoch_gate);
+        if let Ok(handle) = thread::Builder::new()
+            .name("noter-recovery".to_owned())
+            .spawn(move || persist_worker_loop(job_rx, outcome_tx, epoch_gate))
+        {
+            self.persist_jobs = Some(job_tx);
+            self.persist_outcomes = Some(outcome_rx);
+            self.persist_worker = Some(handle);
+        } else {
+            // Persist stays inline if the process cannot create a worker.
+            self.persist_jobs = None;
+            self.persist_outcomes = None;
+            self.persist_worker = None;
+        }
     }
 
     fn unavailable() -> Self {
@@ -161,6 +205,10 @@ impl CrashRecoverySession {
             quarantine_notices: Vec::new(),
             persist_failure: false,
             unavailable,
+            persist_jobs: None,
+            persist_outcomes: None,
+            persist_worker: None,
+            persist_epoch_gate: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -298,6 +346,16 @@ impl CrashRecoverySession {
         self.finish_offer_slot(index);
     }
 
+    /// Hides startup recovery offers for this session without deleting records.
+    ///
+    /// Explicit file opens and screenshot automation skip the interactive review
+    /// so those launches stay deterministic. Discard remains an explicit choice.
+    /// A later untitled launch scans the same private store and can offer restore.
+    pub fn defer_startup_offers(&mut self) {
+        self.startup_offers.clear();
+        self.active_offer_index = None;
+    }
+
     fn finish_offer_slot(&mut self, index: usize) {
         if index < self.startup_offers.len() {
             self.startup_offers.remove(index);
@@ -353,6 +411,7 @@ impl CrashRecoverySession {
         if !document.is_dirty() {
             return;
         }
+        self.poll_persist_outcomes();
         let revision = document.revision();
         let now = self.monotonic_now();
         let effect = self
@@ -369,6 +428,7 @@ impl CrashRecoverySession {
         if self.active_offer().is_some() {
             return;
         }
+        self.poll_persist_outcomes();
         let now = self.monotonic_now();
         let effect = self.schedule.reduce(RecoveryScheduleCommand::Tick { now });
         self.apply_schedule_effect(effect, Some((document, selection)));
@@ -390,9 +450,12 @@ impl CrashRecoverySession {
         if self.unavailable || self.store.is_none() {
             return;
         }
+        self.poll_persist_outcomes();
         let effect = self
             .schedule
             .reduce(RecoveryScheduleCommand::BecameClean { revision });
+        self.persist_epoch_gate
+            .store(self.schedule.epoch(), Ordering::Release);
         self.apply_schedule_effect(effect, None);
         self.persist_failure = false;
     }
@@ -402,7 +465,10 @@ impl CrashRecoverySession {
         if self.unavailable || self.store.is_none() {
             return;
         }
+        self.poll_persist_outcomes();
         let effect = self.schedule.reduce(RecoveryScheduleCommand::Discarded);
+        self.persist_epoch_gate
+            .store(self.schedule.epoch(), Ordering::Release);
         self.apply_schedule_effect(effect, None);
         self.persist_failure = false;
         self.begin_fresh_identity();
@@ -474,7 +540,35 @@ impl CrashRecoverySession {
         let Some(store) = self.store.as_ref() else {
             return;
         };
-        if store.persist(&snapshot).is_ok() {
+        let job = PersistJob {
+            store: store.clone(),
+            snapshot,
+            revision,
+            epoch,
+        };
+        if let Some(jobs) = self.persist_jobs.as_ref() {
+            match jobs.send(job) {
+                Ok(()) => return,
+                Err(error) => {
+                    self.persist_snapshot_inline(&error.0.snapshot, revision, epoch);
+                    return;
+                }
+            }
+        }
+        self.persist_snapshot_inline(&job.snapshot, revision, epoch);
+    }
+
+    fn persist_snapshot_inline(
+        &mut self,
+        snapshot: &RecoverySnapshot,
+        revision: Revision,
+        epoch: u64,
+    ) {
+        let now = self.monotonic_now();
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        if store.persist(snapshot).is_ok() {
             let _ = self
                 .schedule
                 .reduce(RecoveryScheduleCommand::PersistAcknowledged { revision, epoch });
@@ -491,8 +585,132 @@ impl CrashRecoverySession {
         }
     }
 
+    fn poll_persist_outcomes(&mut self) {
+        let batch = {
+            let Some(outcomes) = self.persist_outcomes.as_mut() else {
+                return;
+            };
+            let mut batch = Vec::new();
+            while let Ok(outcome) = outcomes.try_recv() {
+                batch.push(outcome);
+            }
+            batch
+        };
+        for outcome in batch {
+            self.apply_persist_outcome(&outcome);
+        }
+    }
+
+    fn apply_persist_outcome(&mut self, outcome: &PersistOutcome) {
+        let now = self.monotonic_now();
+        if outcome.epoch != self.schedule.epoch() {
+            if let Some(store) = self.store.as_ref() {
+                let _ = store.delete_instance(outcome.instance_id);
+            }
+            return;
+        }
+        if outcome.succeeded {
+            let _ = self
+                .schedule
+                .reduce(RecoveryScheduleCommand::PersistAcknowledged {
+                    revision: outcome.revision,
+                    epoch: outcome.epoch,
+                });
+            self.persist_failure = false;
+        } else {
+            let _ = self
+                .schedule
+                .reduce(RecoveryScheduleCommand::PersistFailed {
+                    revision: outcome.revision,
+                    epoch: outcome.epoch,
+                    now,
+                });
+            self.persist_failure = true;
+        }
+    }
+
     fn monotonic_now(&self) -> RecoveryClock {
         RecoveryClock::new(self.session_started.elapsed())
+    }
+
+    #[cfg(test)]
+    fn wait_for_persist(&mut self, document: &Document, selection: Selection) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let expected = document.revision();
+        loop {
+            self.poll_persist_outcomes();
+            if self.schedule.in_flight_revision().is_none()
+                && self.schedule.last_persisted_revision() == Some(expected)
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "recovery persist worker did not finish"
+            );
+            thread::sleep(Duration::from_millis(1));
+            self.on_tick(document, selection);
+        }
+    }
+}
+
+impl Drop for CrashRecoverySession {
+    fn drop(&mut self) {
+        self.persist_jobs.take();
+        if let Some(handle) = self.persist_worker.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+// Channels and the epoch gate are moved onto the worker even though the loop
+// only borrows them; they must not stay on the UI thread.
+#[allow(clippy::needless_pass_by_value)]
+fn persist_worker_loop(
+    jobs: Receiver<PersistJob>,
+    outcomes: Sender<PersistOutcome>,
+    epoch_gate: Arc<AtomicU64>,
+) {
+    while let Ok(job) = jobs.recv() {
+        let instance_id = job.snapshot.instance_id();
+        let current_epoch = epoch_gate.load(Ordering::Acquire);
+        if job.epoch != current_epoch {
+            let _ = job.store.delete_instance(instance_id);
+            if outcomes
+                .send(PersistOutcome {
+                    revision: job.revision,
+                    epoch: job.epoch,
+                    instance_id,
+                    succeeded: false,
+                })
+                .is_err()
+            {
+                break;
+            }
+            continue;
+        }
+        let succeeded = job.store.persist(&job.snapshot).is_ok();
+        if epoch_gate.load(Ordering::Acquire) != job.epoch {
+            let _ = job.store.delete_instance(instance_id);
+            let _ = outcomes.send(PersistOutcome {
+                revision: job.revision,
+                epoch: job.epoch,
+                instance_id,
+                succeeded: false,
+            });
+            continue;
+        }
+        if outcomes
+            .send(PersistOutcome {
+                revision: job.revision,
+                epoch: job.epoch,
+                instance_id,
+                succeeded,
+            })
+            .is_err()
+        {
+            break;
+        }
     }
 }
 
@@ -624,6 +842,31 @@ mod tests {
     }
 
     #[test]
+    fn defer_startup_offers_hides_review_without_deleting_records() {
+        let dir = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        store
+            .persist(&sample_snapshot(4, b"keep this recovery"))
+            .expect("persist");
+        let mut session = CrashRecoverySession::open_at(dir.path());
+        assert!(session.active_offer().is_some());
+
+        session.defer_startup_offers();
+
+        assert!(session.active_offer().is_none());
+        let entries = store.scan_startup().expect("rescan");
+        assert_eq!(entries.len(), 1);
+        match entries[0].disposition() {
+            RecoveryStartupDisposition::Offer(record) => {
+                assert_eq!(record.content(), b"keep this recovery");
+            }
+            RecoveryStartupDisposition::Quarantine(_) => {
+                panic!("deferring offers must not quarantine a valid record")
+            }
+        }
+    }
+
+    #[test]
     fn dirty_edit_persists_after_idle_debounce() {
         let dir = tempdir().expect("tempdir");
         let mut session = CrashRecoverySession::open_at(dir.path());
@@ -635,6 +878,7 @@ mod tests {
             .checked_sub(Duration::from_secs(3))
             .expect("clock");
         session.on_tick(&document, Selection::caret(0));
+        session.wait_for_persist(&document, Selection::caret(0));
         assert!(!session.has_persist_failure());
         let store = RecoveryStore::open(dir.path()).expect("store");
         let entries = store.scan_startup().expect("scan");
@@ -655,6 +899,7 @@ mod tests {
             .checked_sub(Duration::from_secs(3))
             .expect("clock");
         session.on_tick(&first, Selection::caret(0));
+        session.wait_for_persist(&first, Selection::caret(0));
 
         session.begin_fresh_identity();
         assert!(!session.is_unavailable());
@@ -667,6 +912,7 @@ mod tests {
             .checked_sub(Duration::from_secs(3))
             .expect("clock");
         session.on_tick(&second, Selection::caret(0));
+        session.wait_for_persist(&second, Selection::caret(0));
 
         let entries = RecoveryStore::open(dir.path())
             .expect("store")
@@ -704,6 +950,7 @@ mod tests {
             .checked_sub(Duration::from_secs(3))
             .expect("clock");
         session.on_tick(&document, Selection::caret(0));
+        session.wait_for_persist(&document, Selection::caret(0));
         assert_eq!(
             RecoveryStore::open(dir.path())
                 .expect("store")
@@ -713,13 +960,23 @@ mod tests {
             1
         );
         session.on_saved_clean(document.revision());
-        assert!(
-            RecoveryStore::open(dir.path())
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            session.poll_persist_outcomes();
+            if RecoveryStore::open(dir.path())
                 .expect("store")
                 .scan_startup()
                 .expect("scan")
                 .is_empty()
-        );
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "save cleanup must delete the recovery record, including a late worker write"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[test]

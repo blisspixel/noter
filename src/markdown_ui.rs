@@ -455,6 +455,12 @@ impl MarkdownCommand {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingInlineReopen {
+    marker: &'static str,
+    caret_chars: usize,
+}
+
 #[derive(Debug)]
 struct ActiveBlock {
     source_range: Range<usize>,
@@ -464,6 +470,7 @@ struct ActiveBlock {
     dirty: bool,
     pending_origin: Option<EditOrigin>,
     request_focus: bool,
+    pending_reopen: Option<PendingInlineReopen>,
 }
 
 impl ActiveBlock {
@@ -477,6 +484,7 @@ impl ActiveBlock {
             dirty: false,
             pending_origin: None,
             request_focus: true,
+            pending_reopen: None,
         }
     }
 
@@ -491,6 +499,7 @@ impl ActiveBlock {
         self.dirty = true;
         self.pending_origin = Some(EditOrigin::MarkdownFormatting);
         self.request_focus = true;
+        self.pending_reopen = None;
     }
 
     fn apply_block_style(&mut self, style: BlockStyle) {
@@ -501,12 +510,86 @@ impl ActiveBlock {
         if changed {
             self.dirty = true;
             self.pending_origin = Some(EditOrigin::MarkdownFormatting);
+            self.pending_reopen = None;
         }
         self.request_focus = true;
     }
 
     fn command_is_active(&self, command: MarkdownCommand) -> bool {
         markdown_command_is_active(&self.draft, self.selection.ordered_range(), command)
+    }
+
+    fn apply_line_break_and_reopen_policy(&mut self, ui: &egui::Ui) -> bool {
+        if self.selection.anchor != self.selection.active {
+            self.pending_reopen = None;
+            return false;
+        }
+
+        if let Some(pending) = self.pending_reopen
+            && self.selection.active != pending.caret_chars
+        {
+            self.pending_reopen = None;
+        }
+
+        let reopened = if let Some(pending) = self.pending_reopen
+            && let Some((inserted, origin)) = take_nonbreak_inserts(ui)
+        {
+            if let Some((text, caret)) = reopen_inline_run_around_text(
+                &self.draft,
+                self.selection.active,
+                pending.marker,
+                &inserted,
+            ) {
+                self.draft = text;
+                self.selection = CharSelection::caret(caret);
+            } else {
+                let byte = char_index_to_byte(&self.draft, self.selection.active);
+                self.draft.insert_str(byte, &inserted);
+                self.selection =
+                    CharSelection::caret(self.selection.active + inserted.chars().count());
+            }
+            self.pending_reopen = None;
+            self.dirty = true;
+            self.pending_origin.get_or_insert(origin);
+            true
+        } else {
+            false
+        };
+
+        let closed_run = if let Some(closed) =
+            close_inline_run_for_line_break(&self.draft, self.selection.active)
+            && consume_plain_enter(ui)
+        {
+            self.draft = closed.text;
+            self.selection = CharSelection::caret(closed.caret_chars);
+            self.pending_reopen = Some(PendingInlineReopen {
+                marker: closed.marker,
+                caret_chars: closed.caret_chars,
+            });
+            self.dirty = true;
+            self.pending_origin.get_or_insert(EditOrigin::MarkdownInput);
+            true
+        } else {
+            false
+        };
+
+        reopened || closed_run
+    }
+
+    fn apply_focused_editor_input(&mut self, ui: &egui::Ui, os: egui::os::OperatingSystem) -> bool {
+        let gestures = consume_navigation_gestures(ui, KeyboardPlatform::from_egui(os));
+        let restored_navigation = if gestures.is_empty() {
+            false
+        } else {
+            let mut next = self.selection.to_byte_selection(&self.draft);
+            for gesture in gestures {
+                next = gesture.apply(&self.draft, next);
+            }
+            self.selection = CharSelection::from_byte_selection(&self.draft, next);
+            true
+        };
+        let restored_break = self.apply_line_break_and_reopen_policy(ui);
+        restored_navigation || restored_break
     }
 
     fn block_style(&self) -> BlockStyleState {
@@ -1502,19 +1585,8 @@ impl MarkdownEditor {
         // shares one path with Text Mode and unit tests. Plain arrows stay with
         // egui for platform grapheme movement.
         let editor_focused = ui.memory(|memory| memory.has_focus(editor_id));
-        let mut restore_selection = false;
-        if editor_focused {
-            let gestures =
-                consume_navigation_gestures(ui, KeyboardPlatform::from_egui(ui.ctx().os()));
-            if !gestures.is_empty() {
-                let mut next = active.selection.to_byte_selection(&active.draft);
-                for gesture in gestures {
-                    next = gesture.apply(&active.draft, next);
-                }
-                active.selection = CharSelection::from_byte_selection(&active.draft, next);
-                restore_selection = true;
-            }
-        }
+        let restore_selection =
+            editor_focused && active.apply_focused_editor_input(ui, ui.ctx().os());
         let finish_requested = prepare_escape_finish(ui, editor_id);
         let rows = logical_lines(&active.draft).count().max(1) + 1;
         let input_origin = direct_input_origin(ui);
@@ -1692,6 +1764,55 @@ fn is_plain_escape_press(event: &egui::Event) -> bool {
             ..
         } if !modifiers.any()
     )
+}
+
+fn is_plain_enter_press(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            pressed: true,
+            modifiers,
+            ..
+        } if !modifiers.any()
+    )
+}
+
+fn consume_plain_enter(ui: &egui::Ui) -> bool {
+    let present = ui.input(|input| input.events.iter().any(is_plain_enter_press));
+    if present {
+        ui.input_mut(|input| input.events.retain(|event| !is_plain_enter_press(event)));
+    }
+    present
+}
+
+fn contains_line_break(text: &str) -> bool {
+    text.as_bytes()
+        .iter()
+        .any(|byte| *byte == b'\n' || *byte == b'\r')
+}
+
+fn take_nonbreak_inserts(ui: &egui::Ui) -> Option<(String, EditOrigin)> {
+    let mut collected = String::new();
+    let mut origin = EditOrigin::MarkdownInput;
+    ui.input_mut(|input| {
+        let mut remaining = Vec::with_capacity(input.events.len());
+        for event in input.events.drain(..) {
+            match &event {
+                egui::Event::Text(text) if !contains_line_break(text) => collected.push_str(text),
+                egui::Event::Paste(text) if !contains_line_break(text) => {
+                    collected.push_str(text);
+                    origin = EditOrigin::Paste;
+                }
+                egui::Event::Ime(egui::ImeEvent::Commit(text)) if !contains_line_break(text) => {
+                    collected.push_str(text);
+                }
+                _ => remaining.push(event),
+            }
+        }
+        input.events = remaining;
+    });
+    (!collected.is_empty()).then_some((collected, origin))
 }
 
 fn consume_format_shortcut(input: &mut egui::InputState, shortcut: egui::KeyboardShortcut) -> bool {
@@ -2952,6 +3073,120 @@ fn selected_inline_source_range(
         })
 }
 
+const INLINE_LINE_BREAK_MARKERS: [&str; 4] = ["**", "~~", "*", "`"];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ClosedInlineBreak {
+    text: String,
+    caret_chars: usize,
+    marker: &'static str,
+}
+
+fn inline_marker_event_match(marker: &str) -> fn(&Event<'_>) -> bool {
+    match marker {
+        "**" => |event| matches!(event, Event::Start(Tag::Strong)),
+        "*" => |event| matches!(event, Event::Start(Tag::Emphasis)),
+        "~~" => |event| matches!(event, Event::Start(Tag::Strikethrough)),
+        "`" => |event| matches!(event, Event::Code(_)),
+        _ => |_| false,
+    }
+}
+
+fn empty_marker_pair_at_caret(source: &str, caret_bytes: usize) -> Option<&'static str> {
+    INLINE_LINE_BREAK_MARKERS.into_iter().find(|marker| {
+        let width = marker.len();
+        caret_bytes >= width
+            && caret_bytes + width <= source.len()
+            && source.get(caret_bytes - width..caret_bytes) == Some(*marker)
+            && source.get(caret_bytes..caret_bytes + width) == Some(*marker)
+    })
+}
+
+fn close_inline_run_for_line_break(source: &str, caret_chars: usize) -> Option<ClosedInlineBreak> {
+    if source.is_empty() {
+        return None;
+    }
+    let caret_bytes = char_index_to_byte(source, caret_chars);
+    if !source.is_char_boundary(caret_bytes) {
+        return None;
+    }
+
+    if let Some(marker) = empty_marker_pair_at_caret(source, caret_bytes) {
+        let width = marker.len();
+        let mut text =
+            String::with_capacity(source.len().saturating_sub(2 * width).saturating_add(1));
+        text.push_str(&source[..caret_bytes - width]);
+        text.push('\n');
+        text.push_str(&source[caret_bytes + width..]);
+        let caret = byte_index_to_char(&text, caret_bytes - width + 1);
+        return Some(ClosedInlineBreak {
+            text,
+            caret_chars: caret,
+            marker,
+        });
+    }
+
+    for marker in INLINE_LINE_BREAK_MARKERS {
+        let Some(range) = selected_inline_source_range(
+            source,
+            caret_chars..caret_chars,
+            inline_marker_event_match(marker),
+        ) else {
+            continue;
+        };
+        let closer_start = range.end.saturating_sub(marker.len());
+        if caret_bytes != closer_start
+            || !source.is_char_boundary(closer_start)
+            || source
+                .get(closer_start..range.end)
+                .is_none_or(|closer| closer != marker)
+        {
+            continue;
+        }
+        let opener_end = range.start.saturating_add(marker.len());
+        if caret_bytes <= opener_end || !source.is_char_boundary(opener_end) {
+            continue;
+        }
+        if contains_line_break(&source[opener_end..caret_bytes]) {
+            continue;
+        }
+        let mut text = String::with_capacity(source.len() + 1);
+        text.push_str(&source[..range.end]);
+        text.push('\n');
+        text.push_str(&source[range.end..]);
+        let caret = byte_index_to_char(&text, range.end + 1);
+        return Some(ClosedInlineBreak {
+            text,
+            caret_chars: caret,
+            marker,
+        });
+    }
+    None
+}
+
+fn reopen_inline_run_around_text(
+    source: &str,
+    caret_chars: usize,
+    marker: &str,
+    inserted: &str,
+) -> Option<(String, usize)> {
+    if marker.is_empty() || inserted.is_empty() || contains_line_break(inserted) {
+        return None;
+    }
+    let caret_bytes = char_index_to_byte(source, caret_chars);
+    if !source.is_char_boundary(caret_bytes) {
+        return None;
+    }
+    let mut text = String::with_capacity(source.len() + marker.len() * 2 + inserted.len());
+    text.push_str(&source[..caret_bytes]);
+    text.push_str(marker);
+    text.push_str(inserted);
+    text.push_str(marker);
+    text.push_str(&source[caret_bytes..]);
+    let caret = caret_chars + marker.chars().count() + inserted.chars().count();
+    Some((text, caret))
+}
+
 fn set_heading_style(source: &str, selection: Range<usize>, level: Option<usize>) -> CommandResult {
     let selection = bounded_char_range(source, selection);
     if source.is_empty() {
@@ -3946,6 +4181,128 @@ mod tests {
 
         assert_eq!(result.text, "Text **");
         assert_eq!(result.selection, 6..6);
+    }
+
+    #[test]
+    fn enter_at_the_end_of_an_inline_run_closes_before_the_break() {
+        let closed = close_inline_run_for_line_break("**hello**", 7).expect("end of strong");
+        assert_eq!(closed.text, "**hello**\n");
+        assert_eq!(closed.caret_chars, 10);
+        assert_eq!(closed.marker, "**");
+
+        let italic = close_inline_run_for_line_break("*hello*", 6).expect("end of emphasis");
+        assert_eq!(italic.text, "*hello*\n");
+        assert_eq!(italic.marker, "*");
+
+        let strike = close_inline_run_for_line_break("~~hello~~", 7).expect("end of strike");
+        assert_eq!(strike.text, "~~hello~~\n");
+        assert_eq!(strike.marker, "~~");
+
+        let code = close_inline_run_for_line_break("`hello`", 6).expect("end of code");
+        assert_eq!(code.text, "`hello`\n");
+        assert_eq!(code.marker, "`");
+    }
+
+    #[test]
+    fn enter_inside_an_inline_run_leaves_a_legal_span() {
+        assert_eq!(close_inline_run_for_line_break("**hello**", 4), None);
+        assert_eq!(close_inline_run_for_line_break("**a\nb**", 4), None);
+    }
+
+    #[test]
+    fn enter_between_empty_markers_does_not_leave_an_empty_pair() {
+        let closed = close_inline_run_for_line_break("Text ****", 7).expect("empty pair");
+        assert_eq!(closed.text, "Text \n");
+        assert_eq!(closed.caret_chars, 6);
+        assert_eq!(closed.marker, "**");
+    }
+
+    #[test]
+    fn next_character_reopens_the_closed_inline_run() {
+        let (text, caret) =
+            reopen_inline_run_around_text("**hello**\n", 10, "**", "b").expect("reopen");
+        assert_eq!(text, "**hello**\n**b**");
+        assert_eq!(caret, 13);
+    }
+
+    fn enter_key() -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn editor_with_active(draft: &str, caret_chars: usize) -> (MarkdownEditor, egui::Id) {
+        let mut active = ActiveBlock::new(0..draft.len(), draft.to_owned(), 1);
+        active.selection = CharSelection::caret(caret_chars);
+        let editor_id = active.editor_id();
+        let editor = MarkdownEditor {
+            active: Some(active),
+            finished_selection: None,
+            next_editor_serial: 1,
+            rendered_drag: None,
+            input_was_limited: false,
+        };
+        (editor, editor_id)
+    }
+
+    #[test]
+    fn markdown_enter_at_end_of_bold_reopens_on_the_next_character() {
+        let context = egui::Context::default();
+        let (mut editor, editor_id) = editor_with_active("**hello**", 7);
+        let mut source = "**hello**".to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        let mut enter = egui::RawInput::default();
+        enter.events.push(enter_key());
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, enter);
+        assert_eq!(source, "**hello**\n");
+
+        let mut typed = egui::RawInput::default();
+        typed.events.push(egui::Event::Text("b".to_owned()));
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, typed);
+        assert_eq!(source, "**hello**\n**b**");
+        assert!(!source.contains("****"));
+    }
+
+    #[test]
+    fn markdown_enter_then_escape_does_not_write_an_empty_marker_pair() {
+        let context = egui::Context::default();
+        let (mut editor, editor_id) = editor_with_active("**hello**", 7);
+        let mut source = "**hello**".to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        let mut enter = egui::RawInput::default();
+        enter.events.push(enter_key());
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, enter);
+
+        let mut escape = egui::RawInput::default();
+        escape.events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, escape);
+        assert_eq!(source, "**hello**\n");
+        assert!(!source.contains("****"));
+        assert!(!editor.is_editing());
     }
 
     #[test]
@@ -6005,6 +6362,7 @@ mod tests {
                 dirty: true,
                 pending_origin: Some(EditOrigin::MarkdownFormatting),
                 request_focus: false,
+                pending_reopen: None,
             }),
             finished_selection: None,
             rendered_drag: None,

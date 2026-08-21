@@ -131,6 +131,12 @@ complete.
   operation intent, and adjacent typing, Backspace, and forward Delete use the
   shared bounded coalescing policy. Parser workers and complete keyboard
   selection semantics are not implemented.
+- Enter at the end of a simple bold, italic, strikethrough, or inline-code run
+  closes that run on the current line. The same markers reopen only when the
+  next character is typed, so the file never stores an empty marker pair such as
+  `**\n**`. A line break in the middle of a run that CommonMark still treats as
+  one span is left unchanged. Escape after such an Enter commits the closed run
+  without writing empty markers.
 - GFM and CommonMark conformance, malformed-input behavior, IME, screen-reader,
   high-DPI, and large-file requirements still require release evidence.
 - The synchronous prototype accepts at most 1 MiB of source, 8,192 logical

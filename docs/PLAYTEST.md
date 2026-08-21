@@ -2,7 +2,7 @@
 
 **Updated:** 2026-08-16
 
-**Build under test:** `main` at commit `23e8c23` or later. `noter --version`
+**Build under test:** current `main` or this checkout. `noter --version`
 still prints `noter 0.1.0-alpha.1`, unchanged from the previous round, because
 the roadmap only allows the `0.1.0-alpha.2` label once its gates land on one
 green commit. **Identify the build by commit, not by version string.**
@@ -29,18 +29,21 @@ books its own repaint from the recovery schedule, so a sleeping window cannot
 silently lengthen the recovery-point objective; and `webbrowser` moved to 1.2.4
 for RUSTSEC-2026-0257.
 
+A later first-contact pass closed these additional defects:
+
+| Finding | Disposition |
+| --- | --- |
+| Bold (and italic, strike, inline code) collapsed on Enter at the end of a run | **Fixed.** Enter closes the run on the current line. Markers reopen only when the next character arrives. Empty `**\n**` pairs are never written. Mid-run Enter that stays a legal CommonMark span is unchanged. |
+| First untitled frame did not focus the editor | **Fixed.** Launch without a file puts the caret in the document so the first keystroke is the first character. |
+| Untitled status said `Saved` | **Fixed.** Never-saved documents report `Unsaved`. `Saved` is only after a successful commit to a path. |
+| Opening a file discarded private recovery records | **Fixed.** Explicit path launches skip the restore prompt without deleting records. A later untitled launch can still offer restore. Discard remains an explicit choice. |
+| Keep Editing re-prompted every inspect after local typing | **Fixed.** The prompt returns only when the disk classification changes. |
+
 The full command-line contract, including every exit status, is in
 [INSTALLATION.md](INSTALLATION.md).
 
 ## Known open, please do not re-report
 
-- **Bold does not survive Enter in Markdown Mode.** With the caret at the end of
-  an emphasized run, a line break strands the closing delimiter. CommonMark
-  refuses a closer that directly follows a break, so the formatting collapses and
-  the raw markers appear. Confirmed: `**a\nb**` stays bold, `**a\n**` does not.
-  The fix requires the reopened markers to be written only when the next
-  character arrives, so no empty marker pair is ever left in the file. Scheduled,
-  not shipped.
 - **Idle cost is measured on Windows only.** The previous round ran on Linux
   X11. A repeat measurement there is genuinely useful and is recorded as open M2
   evidence in the [roadmap](ROADMAP.md).

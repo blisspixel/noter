@@ -542,18 +542,20 @@ impl NoterApp {
             app.error_msg = Some(RECOVERY_UNAVAILABLE_MESSAGE.to_owned());
         }
         // Explicit file opens and screenshot automation skip interactive recovery
-        // offers so double-click open and capture remain deterministic.
+        // offers so double-click open and capture remain deterministic. Records
+        // stay on disk for a later untitled launch; Discard is a user choice.
         let skip_recovery_offers =
             options.initial_path.is_some() || options.screenshot_path.is_some();
         if skip_recovery_offers {
-            while app.crash_recovery.active_offer().is_some() {
-                app.crash_recovery.discard_active_offer();
-            }
+            app.crash_recovery.defer_startup_offers();
         }
         if let Some(path) = options.initial_path.clone() {
             app.open_path(&path, options.view);
         } else if let Some(view) = options.view {
             app.select_document_view(view);
+        }
+        if options.initial_path.is_none() && options.screenshot_path.is_none() {
+            app.request_untitled_editor_focus();
         }
 
         #[cfg(feature = "screenshot-qa")]
@@ -868,6 +870,12 @@ impl NoterApp {
             destination_label,
             message,
         })
+    }
+
+    fn request_untitled_editor_focus(&mut self) {
+        if self.crash_recovery.active_offer().is_none() {
+            self.pending_selection_restore = Some(self.selection);
+        }
     }
 
     fn start_new_document_unchecked(&mut self) {
@@ -2354,11 +2362,7 @@ impl NoterApp {
             column,
             selected_characters,
         } = self.status_snapshot();
-        let modified_label = if self.document.is_dirty() {
-            "Modified"
-        } else {
-            "Saved"
-        };
+        let modified_label = persistence_status_label(&self.document);
         egui::Panel::bottom("status_bar")
             .exact_size(STATUS_BAR_HEIGHT)
             .show(ui, |ui| {
@@ -2619,6 +2623,7 @@ impl NoterApp {
                     self.pointer_zoom.reset();
                 }
                 apply_editor_zoom(ui.style_mut(), self.editor_zoom);
+                let previous_selection = self.selection;
                 let outcome = match self.view {
                     DocumentView::Text => self.show_text_editor(ui),
                     DocumentView::Markdown => self.show_markdown_editor(ui),
@@ -2627,6 +2632,12 @@ impl NoterApp {
                     self.record_editor_change(outcome);
                 } else {
                     self.selection = valid_selection_or_end(&self.text, outcome.selection);
+                }
+                if self.selection != previous_selection {
+                    // Status is painted before the editor so Ln/Col can lag one
+                    // frame. Book a follow-up paint after caret-only movement,
+                    // including after the window has been sleeping.
+                    ui.ctx().request_repaint();
                 }
             });
     }
@@ -3015,6 +3026,13 @@ impl NoterApp {
                 ));
                 return;
             }
+            let preferred_view = self.crash_recovery.active_offer().and_then(|offer| {
+                std::str::from_utf8(offer.record().original_path())
+                    .ok()
+                    .filter(|path| !path.is_empty())
+                    .map(std::path::Path::new)
+                    .map(preferred_view_for_path)
+            });
             match self.crash_recovery.restore_active_offer() {
                 Ok((document, selection)) => {
                     self.text = String::from(document.rope());
@@ -3030,6 +3048,9 @@ impl NoterApp {
                     self.error_msg = None;
                     self.reset_external_conflict_state();
                     self.view = DocumentView::Text;
+                    if let Some(view) = preferred_view {
+                        self.select_document_view(view);
+                    }
                     self.crash_recovery
                         .on_edited(&self.document, self.selection);
                 }
@@ -3332,6 +3353,16 @@ fn hex_encoded_path(prefix: &str, bytes: &[u8]) -> String {
         output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+fn persistence_status_label(document: &Document) -> &'static str {
+    if document.is_dirty() {
+        "Modified"
+    } else if document.path().is_none() {
+        "Unsaved"
+    } else {
+        "Saved"
+    }
 }
 
 fn preferred_view_for_path(path: &std::path::Path) -> DocumentView {
@@ -4146,6 +4177,97 @@ mod tests {
         assert_eq!(viewport_titles(&first), ["Untitled - Noter"]);
         assert!(viewport_titles(&repeat).is_empty());
         assert_eq!(viewport_titles(&edited), ["Untitled* - Noter"]);
+    }
+
+    #[test]
+    fn untitled_first_frame_focuses_the_editor() {
+        let mut app = NoterApp::default();
+        app.request_untitled_editor_focus();
+        let context = egui::Context::default();
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| app.render_frame(ui));
+
+        assert!(context.memory(|memory| memory.has_focus(app.editor_id())));
+        assert_eq!(app.pending_selection_restore, None);
+    }
+
+    #[test]
+    fn untitled_first_keystroke_does_not_require_a_pointer_click() {
+        let mut app = NoterApp::default();
+        app.request_untitled_editor_focus();
+        let context = egui::Context::default();
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| app.render_frame(ui));
+        let mut typed = ui_input(800.0, 600.0, 0.05);
+        typed.events.push(egui::Event::Text("hello".to_owned()));
+        let _ = context.run_ui(typed, |ui| app.render_frame(ui));
+
+        assert_eq!(app.text, "hello");
+        assert!(app.document.is_dirty());
+        assert_eq!(persistence_status_label(&app.document), "Modified");
+    }
+
+    #[test]
+    fn persistence_status_distinguishes_untitled_from_saved() {
+        assert_eq!(persistence_status_label(&Document::new()), "Unsaved");
+
+        let mut dirty = Document::new();
+        dirty
+            .replace_text("draft")
+            .expect("fixture edit should advance the revision");
+        assert_eq!(persistence_status_label(&dirty), "Modified");
+
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("notes.txt");
+        fs::write(&path, "hello").expect("fixture file");
+        let saved = Document::from_path(&path).expect("open fixture");
+        assert_eq!(persistence_status_label(&saved), "Saved");
+    }
+
+    #[test]
+    fn launching_with_a_path_defers_recovery_offers_instead_of_discarding_them() {
+        use crate::crash_recovery::CrashRecoverySession;
+        use noter::core::recovery::{
+            RecoveryDocumentId, RecoveryInstanceId, RecoverySnapshot, RecoverySnapshotParts,
+            RecoveryStartupDisposition, RecoveryWallTime,
+        };
+        use noter::core::recovery_store::RecoveryStore;
+        use noter::core::revision::Revision;
+        use noter::core::text_format::{Bom, Encoding};
+
+        let directory = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(directory.path()).expect("store");
+        let snapshot = RecoverySnapshot::try_new(RecoverySnapshotParts {
+            document_id: RecoveryDocumentId::new([1; 16]),
+            instance_id: RecoveryInstanceId::new([7; 16]),
+            revision: Revision::new(1),
+            created_at: RecoveryWallTime::from_unix_millis(1),
+            updated_at: RecoveryWallTime::from_unix_millis(2),
+            original_path: b"notes.md".to_vec(),
+            bom: Bom::Absent,
+            encoding: Encoding::Utf8,
+            selection: Selection::caret(0),
+            content: b"keep me".to_vec(),
+        })
+        .expect("snapshot");
+        store.persist(&snapshot).expect("persist");
+
+        let mut app = NoterApp {
+            crash_recovery: CrashRecoverySession::open_at(directory.path()),
+            ..NoterApp::default()
+        };
+        assert!(app.crash_recovery.active_offer().is_some());
+        app.crash_recovery.defer_startup_offers();
+
+        assert!(app.crash_recovery.active_offer().is_none());
+        let entries = store.scan_startup().expect("rescan");
+        assert_eq!(entries.len(), 1);
+        match entries[0].disposition() {
+            RecoveryStartupDisposition::Offer(record) => {
+                assert_eq!(record.content(), b"keep me");
+            }
+            RecoveryStartupDisposition::Quarantine(_) => {
+                panic!("an explicit open must not delete a valid recovery record")
+            }
+        }
     }
 
     #[test]

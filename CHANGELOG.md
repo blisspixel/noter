@@ -57,6 +57,22 @@ release, so current work remains under Unreleased.
 
 ### Fixed
 
+- Close simple bold, italic, strikethrough, and inline-code runs before a line
+  break at the end of the run in Markdown Mode. The same markers reopen only
+  when the next character is typed, so the file never stores an empty pair such
+  as `**\n**`.
+- Focus the untitled editor on first launch so typing does not require a click.
+- Report `Unsaved` for a never-saved document instead of labeling it `Saved`.
+- Skip the startup recovery prompt on an explicit file open without deleting
+  the private recovery records. Discard remains an explicit choice.
+- Book a follow-up frame when only the caret moves so the status bar line and
+  column catch up after an idle window.
+- Persist crash-recovery records on a dedicated I/O thread so durable write and
+  `fsync` do not stall typing. Completions stay epoch-tagged; a late write
+  cannot revive a record after Save or Discard.
+- Keep Editing no longer reopens the external-change prompt just because the
+  local document revision moved. A different disk classification still prompts.
+
 - Update `webbrowser` to 1.2.4 for RUSTSEC-2026-0257, where Unix `BROWSER`
   handling allowed browser argument injection. The dependency reaches Noter
   through `eframe`, and only an explicitly clicked link uses it.

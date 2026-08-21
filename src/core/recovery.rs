@@ -26,6 +26,12 @@ pub const RECOVERY_IDLE_DEBOUNCE: Duration = Duration::from_secs(2);
 /// Persist at least this often while dirty and still editing.
 pub const RECOVERY_MAX_DIRTY_INTERVAL: Duration = Duration::from_secs(15);
 
+/// How often an adapter must poll while a persist is in flight off-thread.
+///
+/// The write itself must not run on the render thread. The scheduler still
+/// needs a wake-up so a completed worker result is applied promptly.
+pub const RECOVERY_IN_FLIGHT_POLL: Duration = Duration::from_millis(16);
+
 /// Maximum encoded original-path metadata retained in a recovery record.
 pub const MAX_RECOVERY_PATH_BYTES: usize = 128 * 1024;
 
@@ -614,12 +620,17 @@ impl RecoveryScheduleState {
     /// Returns how long an adapter may sleep before the next `Tick` is due.
     ///
     /// `None` means no persist is outstanding, so the adapter needs no timer at
-    /// all. `Some(Duration::ZERO)` means a persist is already due. An adapter
-    /// that only ticks while it happens to be drawing would silently lengthen
-    /// the recovery-point objective, so it must schedule a wake-up from this
-    /// value instead.
+    /// all. `Some(Duration::ZERO)` means a persist is already due. An in-flight
+    /// persist returns [`RECOVERY_IN_FLIGHT_POLL`] so the adapter can collect a
+    /// worker completion without blocking the render thread on disk I/O.
+    /// An adapter that only ticks while it happens to be drawing would silently
+    /// lengthen the recovery-point objective, so it must schedule a wake-up from
+    /// this value instead.
     pub fn next_persist_delay(self, now: RecoveryClock) -> Option<Duration> {
-        if !self.dirty || self.in_flight_revision.is_some() {
+        if self.in_flight_revision.is_some() {
+            return Some(RECOVERY_IN_FLIGHT_POLL);
+        }
+        if !self.dirty {
             return None;
         }
         if self.last_persisted_revision == Some(self.current_revision) {
@@ -1213,11 +1224,14 @@ mod tests {
             state.reduce(RecoveryScheduleCommand::Tick { now: clock(2.0) }),
             RecoveryScheduleEffect::Persist { .. }
         ));
-        // A dirty document with a persist already in flight needs no further
-        // wake-up; the acknowledgement drives the next decision.
+        // A dirty document with a persist in flight on a worker still needs a
+        // short poll so the completion can be applied without blocking typing.
         assert!(state.is_dirty());
         assert_eq!(state.in_flight_revision(), Some(Revision::new(1)));
-        assert_eq!(state.next_persist_delay(clock(2.0)), None);
+        assert_eq!(
+            state.next_persist_delay(clock(2.0)),
+            Some(RECOVERY_IN_FLIGHT_POLL)
+        );
 
         // Continuous typing is capped by the maximum dirty interval, not the
         // idle debounce, so the reported delay must follow the earlier bound.
