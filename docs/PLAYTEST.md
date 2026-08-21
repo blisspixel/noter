@@ -38,6 +38,8 @@ A later first-contact pass closed these additional defects:
 | Untitled status said `Saved` | **Fixed.** Never-saved documents report `Unsaved`. `Saved` is only after a successful commit to a path. |
 | Opening a file discarded private recovery records | **Fixed.** Explicit path launches skip the restore prompt without deleting records. A later untitled launch can still offer restore. Discard remains an explicit choice. |
 | Keep Editing re-prompted every inspect after local typing | **Fixed.** The prompt returns only when the disk classification changes. |
+| Recovery offer had no Cancel; Escape did nothing | **Fixed.** Later or Escape hides the offer and keeps the private copy. |
+| Enter in a list or quote dropped the marker | **Fixed.** `- ` and `> ` continue; an empty item exits. |
 
 The full command-line contract, including every exit status, is in
 [INSTALLATION.md](INSTALLATION.md).

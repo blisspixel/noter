@@ -137,6 +137,9 @@ complete.
   `**\n**`. A line break in the middle of a run that CommonMark still treats as
   one span is left unchanged. Escape after such an Enter commits the closed run
   without writing empty markers.
+- Enter in a `- ` list item or `> ` quote continues the same marker (and indent)
+  on the next line. Enter on an empty list or quote item removes that marker and
+  leaves a paragraph. Native line endings are preserved.
 - GFM and CommonMark conformance, malformed-input behavior, IME, screen-reader,
   high-DPI, and large-file requirements still require release evidence.
 - The synchronous prototype accepts at most 1 MiB of source, 8,192 logical

@@ -556,24 +556,48 @@ impl ActiveBlock {
             false
         };
 
-        let closed_run = if let Some(closed) =
-            close_inline_run_for_line_break(&self.draft, self.selection.active)
-            && consume_plain_enter(ui)
-        {
-            self.draft = closed.text;
-            self.selection = CharSelection::caret(closed.caret_chars);
-            self.pending_reopen = Some(PendingInlineReopen {
-                marker: closed.marker,
-                caret_chars: closed.caret_chars,
-            });
-            self.dirty = true;
-            self.pending_origin.get_or_insert(EditOrigin::MarkdownInput);
-            true
+        let caret = self.selection.active;
+        let handles_enter = close_inline_run_for_line_break(&self.draft, caret).is_some()
+            || continue_or_exit_line_prefix(&self.draft, caret).is_some();
+        let closed_run = if handles_enter && consume_plain_enter(ui) {
+            self.apply_consumed_enter_break()
         } else {
             false
         };
 
         reopened || closed_run
+    }
+
+    fn apply_consumed_enter_break(&mut self) -> bool {
+        let caret = self.selection.active;
+        let prefix = line_prefix_at(&self.draft, caret);
+        if let Some(closed) = close_inline_run_for_line_break(&self.draft, caret) {
+            let mut text = closed.text;
+            let mut next_caret = closed.caret_chars;
+            if let Some(prefix) = prefix.as_ref().filter(|prefix| !prefix.rest_is_empty) {
+                let byte = char_index_to_byte(&text, next_caret);
+                text.insert_str(byte, &prefix.marker);
+                next_caret += prefix.marker.chars().count();
+            }
+            self.draft = text;
+            self.selection = CharSelection::caret(next_caret);
+            self.pending_reopen = Some(PendingInlineReopen {
+                marker: closed.marker,
+                caret_chars: next_caret,
+            });
+            self.dirty = true;
+            self.pending_origin.get_or_insert(EditOrigin::MarkdownInput);
+            return true;
+        }
+        if let Some((text, next_caret)) = continue_or_exit_line_prefix(&self.draft, caret) {
+            self.draft = text;
+            self.selection = CharSelection::caret(next_caret);
+            self.pending_reopen = None;
+            self.dirty = true;
+            self.pending_origin.get_or_insert(EditOrigin::MarkdownInput);
+            return true;
+        }
+        false
     }
 
     fn apply_focused_editor_input(&mut self, ui: &egui::Ui, os: egui::os::OperatingSystem) -> bool {
@@ -3187,6 +3211,87 @@ fn reopen_inline_run_around_text(
     Some((text, caret))
 }
 
+struct LinePrefix {
+    marker: String,
+    rest_is_empty: bool,
+}
+
+fn line_prefix_at(source: &str, caret_chars: usize) -> Option<LinePrefix> {
+    let caret_bytes = char_index_to_byte(source, caret_chars);
+    let mut offset = 0;
+    for line in logical_lines(source) {
+        let content = line.content();
+        let content_end = offset + content.len();
+        let ending_len = line.ending().map_or(0, |ending| ending.as_str().len());
+        if caret_bytes >= offset && caret_bytes <= content_end {
+            return parse_list_or_quote_prefix(content);
+        }
+        offset = content_end + ending_len;
+        if offset >= source.len() {
+            break;
+        }
+    }
+    None
+}
+
+fn parse_list_or_quote_prefix(content: &str) -> Option<LinePrefix> {
+    let trimmed = content.trim_start_matches([' ', '\t']);
+    let indent_len = content.len().saturating_sub(trimmed.len());
+    let marker = if trimmed.starts_with("- ") {
+        "- "
+    } else if trimmed.starts_with("> ") {
+        "> "
+    } else {
+        return None;
+    };
+    let after = trimmed.get(marker.len()..)?;
+    Some(LinePrefix {
+        marker: format!("{}{marker}", &content[..indent_len]),
+        rest_is_empty: after.trim().is_empty(),
+    })
+}
+
+fn continue_or_exit_line_prefix(source: &str, caret_chars: usize) -> Option<(String, usize)> {
+    let caret_bytes = char_index_to_byte(source, caret_chars);
+    let mut offset = 0;
+    for line in logical_lines(source) {
+        let content = line.content();
+        let content_end = offset + content.len();
+        let ending_len = line.ending().map_or(0, |ending| ending.as_str().len());
+        if caret_bytes >= offset && caret_bytes <= content_end {
+            let prefix = parse_list_or_quote_prefix(content)?;
+            if prefix.rest_is_empty {
+                let mut text =
+                    String::with_capacity(source.len().saturating_sub(prefix.marker.len()));
+                text.push_str(&source[..offset]);
+                text.push_str(&source[content_end..]);
+                let caret = byte_index_to_char(&text, offset);
+                return Some((text, caret));
+            }
+            let rel = caret_bytes.saturating_sub(offset).min(content.len());
+            let full_end = content_end + ending_len;
+            let insert_ending = line.ending().map_or("\n", |ending| ending.as_str());
+            let mut text =
+                String::with_capacity(source.len() + insert_ending.len() + prefix.marker.len());
+            text.push_str(&source[..offset + rel]);
+            text.push_str(insert_ending);
+            text.push_str(&prefix.marker);
+            text.push_str(&source[offset + rel..content_end]);
+            text.push_str(&source[full_end..]);
+            let caret = byte_index_to_char(
+                &text,
+                offset + rel + insert_ending.len() + prefix.marker.len(),
+            );
+            return Some((text, caret));
+        }
+        offset = content_end + ending_len;
+        if offset >= source.len() {
+            break;
+        }
+    }
+    None
+}
+
 fn set_heading_style(source: &str, selection: Range<usize>, level: Option<usize>) -> CommandResult {
     let selection = bounded_char_range(source, selection);
     if source.is_empty() {
@@ -4225,6 +4330,37 @@ mod tests {
         assert_eq!(caret, 13);
     }
 
+    #[test]
+    fn enter_continues_a_list_item_and_quote() {
+        let (text, caret) = continue_or_exit_line_prefix("- item", 6).expect("list");
+        assert_eq!(text, "- item\n- ");
+        assert_eq!(caret, 9);
+
+        let (text, caret) =
+            continue_or_exit_line_prefix(&"- hello|there".replace('|', ""), 7).expect("split");
+        assert_eq!(text, "- hello\n- there");
+        assert_eq!(caret, 10);
+
+        let (text, caret) = continue_or_exit_line_prefix("> quoted\r\n", 8).expect("quote crlf");
+        assert_eq!(text, "> quoted\r\n> ");
+        assert_eq!(caret, 12);
+
+        let (text, caret) = continue_or_exit_line_prefix("  - nested", 10).expect("indent");
+        assert_eq!(text, "  - nested\n  - ");
+        assert_eq!(caret, 15);
+    }
+
+    #[test]
+    fn enter_on_an_empty_list_item_exits_the_list() {
+        let (text, caret) = continue_or_exit_line_prefix("- item\n- ", 9).expect("exit");
+        assert_eq!(text, "- item\n");
+        assert_eq!(caret, 7);
+
+        let (text, caret) = continue_or_exit_line_prefix("- ", 2).expect("empty");
+        assert_eq!(text, "");
+        assert_eq!(caret, 0);
+    }
+
     fn enter_key() -> egui::Event {
         egui::Event::Key {
             key: egui::Key::Enter,
@@ -4272,6 +4408,25 @@ mod tests {
         let _ = show_markdown_frame(&context, &mut editor, &mut source, typed);
         assert_eq!(source, "**hello**\n**b**");
         assert!(!source.contains("****"));
+    }
+
+    #[test]
+    fn markdown_enter_continues_a_list_item() {
+        let context = egui::Context::default();
+        let (mut editor, editor_id) = editor_with_active("- item", 6);
+        let mut source = "- item".to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        let mut enter = egui::RawInput::default();
+        enter.events.push(enter_key());
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, enter);
+        assert_eq!(source, "- item\n- ");
     }
 
     #[test]

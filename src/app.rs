@@ -2997,7 +2997,8 @@ impl NoterApp {
         let content_preview_len = offer.record().content().len();
         let mut restore = false;
         let mut discard = false;
-        egui::Modal::new(egui::Id::new("startup-crash-recovery")).show(ctx, |ui| {
+        let mut later = false;
+        let response = egui::Modal::new(egui::Id::new("startup-crash-recovery")).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.heading("Recover unsaved work?");
             ui.add_space(8.0);
@@ -3005,12 +3006,15 @@ impl NoterApp {
                 "Noter found a private recovery copy for \"{label}\" ({content_preview_len} bytes)."
             ));
             ui.label(
-                "Restore opens it as an unsaved document in this window. Discard deletes only that private recovery copy. Your original file on disk is not changed until you Save.",
+                "Restore opens it as an unsaved document in this window. Later hides this offer for now and keeps the private copy. Discard deletes only that private recovery copy. Your original file on disk is not changed until you Save.",
             );
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 restore = ui
                     .add(egui::Button::new("Restore").min_size(egui::vec2(100.0, 28.0)))
+                    .clicked();
+                later = ui
+                    .add(egui::Button::new("Later").min_size(egui::vec2(100.0, 28.0)))
                     .clicked();
                 discard = ui
                     .add(egui::Button::new("Discard").min_size(egui::vec2(100.0, 28.0)))
@@ -3022,7 +3026,7 @@ impl NoterApp {
                 && offer.record().content().len() > INTERACTIVE_TEXT_MAX_BYTES
             {
                 self.error_msg = Some(format!(
-                    "The recovered document is larger than the current {INTERACTIVE_TEXT_MAX_LABEL} interactive limit and was not opened. Use Discard to remove only the private recovery copy, or restore it with a future virtualized editor."
+                    "The recovered document is larger than the current {INTERACTIVE_TEXT_MAX_LABEL} interactive limit and was not opened. Use Later to keep the private copy, Discard to remove only that copy, or restore it with a future virtualized editor."
                 ));
                 return;
             }
@@ -3053,11 +3057,16 @@ impl NoterApp {
                     }
                     self.crash_recovery
                         .on_edited(&self.document, self.selection);
+                    // Remaining offers stay on disk for a later untitled launch.
+                    // Presenting the next one now would replace this restored document.
+                    self.crash_recovery.defer_startup_offers();
                 }
                 Err(message) => {
                     self.error_msg = Some(message);
                 }
             }
+        } else if later || response.should_close() {
+            self.crash_recovery.defer_startup_offers();
         } else if discard {
             self.crash_recovery.discard_active_offer();
         }

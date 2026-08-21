@@ -72,6 +72,11 @@ release, so current work remains under Unreleased.
   cannot revive a record after Save or Discard.
 - Keep Editing no longer reopens the external-change prompt just because the
   local document revision moved. A different disk classification still prompts.
+- Escape or Later on the startup recovery offer hides it without deleting the
+  private copy. Restore no longer immediately replaces the recovered document
+  with the next offer.
+- Enter in a Markdown list item or quote continues the marker; Enter on an empty
+  item exits to a paragraph.
 
 - Update `webbrowser` to 1.2.4 for RUSTSEC-2026-0257, where Unix `BROWSER`
   handling allowed browser argument injection. The dependency reaches Noter

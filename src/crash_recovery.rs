@@ -828,6 +828,38 @@ mod tests {
     }
 
     #[test]
+    fn restore_then_later_keeps_remaining_records_on_disk() {
+        let dir = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        store
+            .persist(&sample_snapshot(1, b"first"))
+            .expect("persist first");
+        store
+            .persist(&sample_snapshot(2, b"second"))
+            .expect("persist second");
+        let mut session = CrashRecoverySession::open_at(dir.path());
+        assert!(session.active_offer().is_some());
+
+        let (document, _) = session.restore_active_offer().expect("restore");
+        let restored = String::from(document.rope());
+        assert!(restored == "first" || restored == "second");
+        session.defer_startup_offers();
+
+        assert!(session.active_offer().is_none());
+        let remaining = store
+            .scan_startup()
+            .expect("rescan")
+            .into_iter()
+            .filter_map(|entry| match entry.disposition() {
+                RecoveryStartupDisposition::Offer(record) => Some(record.content().to_vec()),
+                RecoveryStartupDisposition::Quarantine(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(remaining.len(), 1);
+        assert_ne!(remaining[0], restored.as_bytes());
+    }
+
+    #[test]
     fn discard_offer_deletes_record() {
         let dir = tempdir().expect("tempdir");
         let store = RecoveryStore::open(dir.path()).expect("store");
