@@ -5710,17 +5710,9 @@ mod tests {
         assert_eq!(fs::read_to_string(&enter_first)?, "");
         assert!(!app.document.is_dirty());
 
-        for (events, expected_text, expected_selection) in [
-            (
-                vec![enter(), key_press(egui::Modifiers::NONE, egui::Key::F3)],
-                " one",
-                Selection::new(1, 4),
-            ),
-            (
-                vec![key_press(egui::Modifiers::NONE, egui::Key::F3), enter()],
-                "one ",
-                Selection::caret(4),
-            ),
+        for (find_first, expected_text, expected_selection) in [
+            (false, " one", Selection::new(1, 4)),
+            (true, "one ", Selection::caret(4)),
         ] {
             let source = "one one";
             let mut app = NoterApp {
@@ -5732,8 +5724,14 @@ mod tests {
             let context = egui::Context::default();
             theme::configure_styles(&context);
             focus_empty_replacement_field(&mut app, &context, 2.0);
+            let shortcut = EditCommand::FindNext.shortcut(context.os());
+            let find_next = key_press(shortcut.modifiers, shortcut.logical_key);
             let mut input = ui_input(1_200.0, 760.0, 2.1);
-            input.events = events;
+            input.events = if find_first {
+                vec![find_next, enter()]
+            } else {
+                vec![enter(), find_next]
+            };
             let _ = context.run_ui(input, |ui| app.render_frame(ui));
             let _ = context.run_ui(ui_input(1_200.0, 760.0, 2.2), |ui| {
                 app.render_frame(ui);
