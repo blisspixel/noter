@@ -2,7 +2,7 @@
 
 **Recorded:** 2026-08-22
 
-**Implementation commit:** `f0789a67f21dc777e3ad3b8db979fadeb236c8f4`
+**Implementation commit:** `0191374da115be1bc5bacf1c24e05dc772e37a14`
 
 **Exact-head CI:** Required on the final evidence commit before the tag is
 created. GitHub branch protection and the Release workflow are the authoritative
@@ -35,7 +35,7 @@ Rows use:
 
 | Field | Value |
 | --- | --- |
-| Noter implementation commit | `f0789a67f21dc777e3ad3b8db979fadeb236c8f4` |
+| Noter implementation commit | `0191374da115be1bc5bacf1c24e05dc772e37a14` |
 | Tree | Feature implementation frozen at the named commit; this evidence document is its descendant |
 | Build profiles | Locked workspace tests and release all-features Windows GUI |
 | Tester | Automated maintainer session with live native UI inspection on the development host |

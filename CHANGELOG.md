@@ -25,7 +25,7 @@ release, so current work remains under Unreleased.
 - Add `RecoveryScheduleState::next_persist_delay`, the pure wake-up deadline an
   interface needs to keep the recovery-point objective while it sleeps.
 - Record the `0.1.0-alpha.2` correctness matrix against implementation commit
-  `f0789a6`, mapping dogfood-critical recovery, conflict, clipboard,
+  `0191374`, mapping dogfood-critical recovery, conflict, clipboard,
   navigation, coverage, security review, and live native recovery evidence to
   the scoped prerelease decision.
 - Record partial M2 installed-product evidence for a disposable Windows
