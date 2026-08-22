@@ -41,25 +41,25 @@ does not expand unsafe UI surface.
 
 ### Toward `0.1.0-alpha.2` (correctness alpha)
 
-1. **Done:** Wire M4 recovery into the application — schedule dirty persist,
+1. **Done:** Wire M4 recovery into the application: schedule dirty persist,
    startup Restore / Discard / quarantine notice, delete on Save or Discard,
    visible persist failure.
-2. **Done:** Complete external-change overwrite — second confirmation before
+2. **Done:** Complete external-change overwrite: second confirmation before
    replacing a detected disk revision; Keep Editing still never rebaselines.
-3. **Done:** Finish M3 clipboard command path — Edit-menu Cut / Copy / Paste
+3. **Done:** Finish M3 clipboard command path: Edit-menu Cut / Copy / Paste
    share one path with platform shortcuts and `EditTransaction` intent.
-4. **Done in tree:** M3 navigation and long-session gaps — pure caret policy,
+4. **Done in tree:** M3 navigation and long-session gaps: pure caret policy,
    long-session history fixture, Text Mode and Markdown active-block platform
    keyboard policy. Cross-platform manual keyboard evidence remains.
-5. **Done:** first-contact cost and command-line honesty — an idle window sleeps
+5. **Done:** first-contact cost and command-line honesty: an idle window sleeps
    instead of holding a core, an unopenable startup path fails closed on the
    command line, and `noter update` names its own window. Idle cost is measured
    on Windows only; the other supported platforms remain open evidence.
-6. **Partial:** remaining M1 filesystem fixtures as environments allow — macOS,
+6. **Partial:** remaining M1 filesystem fixtures as environments allow: macOS,
    SMB, cloud-sync, removable, weak FS, second-identity, crash-persistence.
    Does not block dogfood on platforms already covered. Evidence:
    [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
-7. **Partial:** M2 installed-product evidence — disposable Windows source
+7. **Partial:** M2 installed-product evidence: disposable Windows source
    install recorded; interactive About GUI and packaged installers remain open.
    Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
 8. **Release gate in progress:**
@@ -74,18 +74,18 @@ does not expand unsafe UI surface.
 
 ### Toward `0.1.0-beta.1`
 
-9. **Execute the M5 editor feasibility gate** — rope-backed or proven bounded
+9. **Execute the M5 editor feasibility gate**: rope-backed or proven bounded
    path, IME, AccessKit, display scale, 50 MiB corpus route.
 10. **Expand Markdown to continuous whole-document editing** on the production
     editor foundation (still source-backed; no proprietary model).
 
 ### Toward `0.1.0-rc.1` and `0.1.0`
 
-11. **Complete M6 quality engine** — conformance, diagnostics, Format Document
+11. **Complete M6 quality engine**: conformance, diagnostics, Format Document
     with diff and semantic equivalence, async revision-tagged parse.
-12. **Complete M7 distribution** — signed/attested artifacts where credentials
+12. **Complete M7 distribution**: signed/attested artifacts where credentials
     exist, clean-machine install/upgrade/uninstall, updater policy.
-13. **RC dogfood** — minimum 14-day multi-person, multi-platform use without
+13. **RC dogfood**: minimum 14-day multi-person, multi-platform use without
     data loss; then publish `0.1.0`.
 
 ### After `0.1.0`
