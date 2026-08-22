@@ -38,7 +38,7 @@ PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 REVIEWED_RELEASE_WORKFLOW_SHA256 = (
     "88acb9efe083ade4f378a230f35128374cf989fb54b72f8e373432e975ff0d67"
 )
-REVIEWED_WIX_SHA256 = "777e3bbc058b30611dc274390eb44059a97375c2ca49cf2af910bc386e2cfada"
+REVIEWED_WIX_SHA256 = "90d3892cab5d6b450a76a5f1b1596a061306f2bddcac2908c7e59a99a00fa6be"
 REVIEWED_CI_WORKFLOW_SHA256 = (
     "a780e39abf437619c0eec44b27d9269712e1191504df7c1a8b0c17fdebb384bc"
 )
@@ -132,7 +132,7 @@ def validate_manifest(text: str) -> list[str]:
     errors: list[str] = []
     requirements = {
         'cargo-dist-version = "0.32.0"': "pinned cargo-dist version",
-        'version = "0.1.0-alpha.1"': "prerelease package version",
+        'version = "0.1.0-alpha.2"': "prerelease package version",
         'installers = ["shell", "powershell", "homebrew", "msi"]': (
             "cross-platform installer set"
         ),
@@ -492,9 +492,9 @@ def validate_wix(contents: bytes) -> list[str]:
         errors.append(
             "MSI product and package identities must rotate per release build"
         )
-    if product.get("Version") != "0.0.1":
+    if product.get("Version") != "0.0.2":
         errors.append("MSI package version differs from its monotonic release sequence")
-    if display_version.get("Value") != "0.1.0-alpha.1":
+    if display_version.get("Value") != "0.1.0-alpha.2":
         errors.append("MSI display version differs from the Noter package version")
     if major_upgrade.get("AllowSameVersionUpgrades") is not None:
         errors.append("MSI must not permit ambiguous same-version upgrades")
@@ -566,15 +566,15 @@ def validate_license_inventory(
                 "CI test job differs from its reviewed cross-platform program"
             )
     for text, expected, description in [
-        (manifest, 'version = "0.1.0-alpha.1"', "root prerelease version"),
+        (manifest, 'version = "0.1.0-alpha.2"', "root prerelease version"),
         (
             manifest,
-            'noter-platform = { version = "=0.1.0-alpha.1"',
+            'noter-platform = { version = "=0.1.0-alpha.2"',
             "path dependency prerelease version",
         ),
         (
             platform_manifest,
-            'version = "0.1.0-alpha.1"',
+            'version = "0.1.0-alpha.2"',
             "platform crate prerelease version",
         ),
         (about_config, "ignore-dev-dependencies = true", "runtime-only inventory"),

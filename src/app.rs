@@ -33,7 +33,10 @@ use crate::editor_settings::{
 use crate::find_ui::{FindBar, FindBarAction, ReplaceScope};
 use crate::go_to_line_ui::{GoToLineAction, GoToLineDialog};
 use crate::idle_screen::IdleScreen;
-use crate::keyboard_nav::{KeyboardPlatform, consume_navigation_gestures};
+use crate::keyboard_nav::{
+    KeyboardPlatform, consume_navigation_gestures, editor_event_orders_input,
+    resolve_navigation_gesture,
+};
 use crate::markdown_ui::{MarkdownEditor, MarkdownProjectionLimit, markdown_projection_limit};
 use crate::theme::{self, AppTheme, THEME_STORAGE_KEY};
 
@@ -42,7 +45,7 @@ const ABOUT_SUMMARY: &str = "A focused editor for plain text and Markdown files.
 const ABOUT_MARKDOWN_STATUS: &str = "Markdown Mode provides a formatted, direct editing surface while keeping ordinary Markdown source authoritative on disk.";
 const ABOUT_PRIVACY: &str = "Noter has no accounts, telemetry, or background network activity.";
 const ABOUT_LINK_BEHAVIOR: &str = "The project link opens in your default browser.";
-const UPDATE_STATUS: &str = "No Noter release has been published yet. This source build cannot safely self-update without verified release artifacts.";
+const UPDATE_STATUS: &str = "Noter does not check for updates in the background. Open the releases page to compare this version with published builds.";
 const RELEASES_URL: &str = "https://github.com/blisspixel/noter/releases";
 /// Names the window opened by `noter update` while its status is still shown.
 const UPDATE_WINDOW_TITLE: &str = "Update status";
@@ -271,6 +274,83 @@ fn zoom_command_from_wheel_delta(delta: egui::Vec2) -> Option<ViewCommand> {
     })
 }
 
+fn shortcut_matches_event(event: &egui::Event, shortcut: egui::KeyboardShortcut) -> bool {
+    matches!(
+        event,
+        egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } if *key == shortcut.logical_key && modifiers.matches_logically(shortcut.modifiers)
+    )
+}
+
+fn file_command_for_shortcut_event(event: &egui::Event) -> Option<FileCommand> {
+    FileCommand::SHORTCUTS_IN_PRECEDENCE_ORDER
+        .into_iter()
+        .find_map(|(command, shortcut)| shortcut_matches_event(event, shortcut).then_some(command))
+}
+
+fn edit_command_for_shortcut_event(
+    event: &egui::Event,
+    operating_system: egui::os::OperatingSystem,
+    document_shortcuts_enabled: bool,
+    go_to_line_shortcut_enabled: bool,
+) -> Option<EditCommand> {
+    let alternate_redo = egui::KeyboardShortcut::new(
+        egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+        egui::Key::Z,
+    );
+    if document_shortcuts_enabled && shortcut_matches_event(event, alternate_redo) {
+        return Some(EditCommand::Redo);
+    }
+    EditCommand::INPUT_PRECEDENCE.into_iter().find(|candidate| {
+        if !document_shortcuts_enabled
+            && matches!(
+                candidate,
+                EditCommand::Undo
+                    | EditCommand::Redo
+                    | EditCommand::Cut
+                    | EditCommand::Copy
+                    | EditCommand::Paste
+                    | EditCommand::SelectAll
+            )
+        {
+            return false;
+        }
+        if !go_to_line_shortcut_enabled && *candidate == EditCommand::GoToLine {
+            return false;
+        }
+        shortcut_matches_event(event, candidate.shortcut(operating_system))
+    })
+}
+
+fn view_command_for_shortcut_event(
+    event: &egui::Event,
+    document_shortcuts_enabled: bool,
+) -> Option<ViewCommand> {
+    if document_shortcuts_enabled {
+        for command in [ViewCommand::ToggleDocumentView, ViewCommand::ToggleWordWrap] {
+            if shortcut_matches_event(event, command.shortcut()) {
+                return Some(command);
+            }
+        }
+    }
+    for command in [
+        ViewCommand::ToggleFullscreen,
+        ViewCommand::ResetZoom,
+        ViewCommand::ZoomIn,
+        ViewCommand::ZoomOut,
+    ] {
+        if shortcut_matches_event(event, command.shortcut()) {
+            return Some(command);
+        }
+    }
+    shortcut_matches_event(event, egui::gui_zoom::kb_shortcuts::ZOOM_IN_SECONDARY)
+        .then_some(ViewCommand::ZoomIn)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ViewCommandFocus {
     RestoreDocument,
@@ -281,6 +361,35 @@ enum ViewCommandFocus {
 struct ViewCommandRequest {
     command: ViewCommand,
     focus: ViewCommandFocus,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InputShortcut {
+    File(FileCommand),
+    Edit(EditCommand),
+    View(ViewCommandRequest),
+}
+
+fn input_shortcut_for_event(
+    event: &egui::Event,
+    operating_system: egui::os::OperatingSystem,
+    document_shortcuts_enabled: bool,
+    go_to_line_shortcut_enabled: bool,
+) -> Option<InputShortcut> {
+    if let Some(command) = file_command_for_shortcut_event(event) {
+        return Some(InputShortcut::File(command));
+    }
+    if let Some(command) = edit_command_for_shortcut_event(
+        event,
+        operating_system,
+        document_shortcuts_enabled,
+        go_to_line_shortcut_enabled,
+    ) {
+        return Some(InputShortcut::Edit(command));
+    }
+    view_command_for_shortcut_event(event, document_shortcuts_enabled)
+        .map(ViewCommandRequest::restore_document)
+        .map(InputShortcut::View)
 }
 
 impl ViewCommandRequest {
@@ -444,6 +553,7 @@ pub struct NoterApp {
     pending_selection_restore: Option<Selection>,
     preserve_focus_on_selection_restore: bool,
     pending_document_view: Option<DocumentView>,
+    deferred_input_events: Vec<egui::Event>,
     view: DocumentView,
     theme: AppTheme,
     text_wrap: TextWrap,
@@ -482,6 +592,7 @@ impl Default for NoterApp {
             pending_selection_restore: None,
             preserve_focus_on_selection_restore: false,
             pending_document_view: None,
+            deferred_input_events: Vec::new(),
             view: DocumentView::Text,
             theme: AppTheme::System,
             text_wrap: TextWrap::default(),
@@ -606,7 +717,7 @@ impl NoterApp {
                 self.markdown_issue_cache = None;
                 self.error_msg = None;
                 self.reset_external_conflict_state();
-                self.crash_recovery.begin_fresh_identity();
+                self.begin_fresh_recovery_identity();
                 self.view = DocumentView::Text;
                 self.select_document_view(
                     requested_view.unwrap_or_else(|| preferred_view_for_path(path)),
@@ -900,7 +1011,7 @@ impl NoterApp {
         // Clean New skips the discard prompt, so rotate recovery identity here
         // the same way Open and dirty-Discard do. Otherwise later dirty
         // snapshots would reuse the previous session's instance file.
-        self.crash_recovery.begin_fresh_identity();
+        self.begin_fresh_recovery_identity();
     }
 
     fn request_new_document(&mut self, ctx: &egui::Context) {
@@ -959,7 +1070,45 @@ impl NoterApp {
             .lifecycle
             .reduce(LifecycleCommand::Decide(DirtyDecision::Discard));
         self.crash_recovery.on_discarded();
-        self.apply_lifecycle_effect(effect, ctx);
+        self.surface_recovery_unavailable();
+        match effect {
+            LifecycleEffect::Continue(action) => {
+                self.execute_abandon_action(action, ctx);
+                self.rearm_recovery_after_incomplete_abandon(action, ctx);
+            }
+            other => self.apply_lifecycle_effect(other, ctx),
+        }
+    }
+
+    fn rearm_recovery_after_incomplete_abandon(
+        &mut self,
+        action: PendingAbandonAction,
+        ctx: &egui::Context,
+    ) {
+        if !matches!(
+            action,
+            PendingAbandonAction::Open | PendingAbandonAction::Reload
+        ) || !self.document.is_dirty()
+        {
+            return;
+        }
+        self.crash_recovery
+            .on_edited(&self.document, self.selection);
+        if let Some(delay) = self.crash_recovery.next_persist_delay() {
+            ctx.request_repaint_after(delay);
+        }
+        self.surface_recovery_unavailable();
+    }
+
+    fn begin_fresh_recovery_identity(&mut self) {
+        self.crash_recovery.begin_fresh_identity();
+        self.surface_recovery_unavailable();
+    }
+
+    fn surface_recovery_unavailable(&mut self) {
+        if self.crash_recovery.is_unavailable() {
+            self.error_msg = Some(RECOVERY_UNAVAILABLE_MESSAGE.to_owned());
+        }
     }
 
     fn save_pending_abandon(&mut self, ctx: &egui::Context) {
@@ -1209,101 +1358,130 @@ impl NoterApp {
         }
     }
 
-    fn collect_shortcut(ui: &egui::Ui) -> Option<FileCommand> {
-        let mut command = None;
-
-        ui.input_mut(|i| {
-            for (candidate, shortcut) in FileCommand::SHORTCUTS_IN_PRECEDENCE_ORDER {
-                if i.consume_shortcut(&shortcut) {
-                    command = Some(candidate);
-                    break;
-                }
-            }
+    fn restore_deferred_input(&mut self, ui: &egui::Ui) {
+        if self.deferred_input_events.is_empty() {
+            return;
+        }
+        ui.input_mut(|input| {
+            self.deferred_input_events.append(&mut input.events);
+            std::mem::swap(&mut self.deferred_input_events, &mut input.events);
         });
-
-        command
     }
 
-    fn collect_edit_shortcut(
+    fn defer_input_events(&mut self, mut deferred: Vec<egui::Event>) {
+        deferred.append(&mut self.deferred_input_events);
+        self.deferred_input_events = deferred;
+    }
+
+    fn blocking_modal_open(&self) -> bool {
+        self.crash_recovery.active_offer().is_some()
+            || self.pending_recovery_reconciliation.is_some()
+            || self.pending_hard_link_save.is_some()
+            || self.lifecycle.pending_intent().is_some()
+            || self.conflict.is_prompting()
+    }
+
+    fn discard_deferred_input(&mut self) {
+        self.deferred_input_events.clear();
+        self.find_bar.discard_deferred_input();
+        self.markdown_editor.discard_deferred_input();
+    }
+
+    fn serialize_next_text_navigation(&mut self, ui: &egui::Ui) {
+        let mut deferred = Vec::new();
+        let platform = KeyboardPlatform::from_egui(ui.ctx().os());
+        ui.input_mut(|input| {
+            let Some(position) = input.events.iter().position(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if resolve_navigation_gesture(*key, *modifiers, platform).is_some()
+                )
+            }) else {
+                return;
+            };
+            if input.events[..position]
+                .iter()
+                .any(editor_event_orders_input)
+            {
+                deferred = input.events.split_off(position);
+            } else if position + 1 < input.events.len() {
+                deferred = input.events.split_off(position + 1);
+            }
+        });
+        if !deferred.is_empty() {
+            self.defer_input_events(deferred);
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn collect_input_shortcut(
+        &mut self,
         ui: &egui::Ui,
         document_shortcuts_enabled: bool,
         go_to_line_shortcut_enabled: bool,
-    ) -> Option<EditCommand> {
-        let mut command = None;
+    ) -> Option<InputShortcut> {
+        let mut deferred = Vec::new();
         let operating_system = ui.ctx().os();
-        ui.input_mut(|input| {
-            let alternate_redo = egui::KeyboardShortcut::new(
-                egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
-                egui::Key::Z,
-            );
-            if document_shortcuts_enabled && input.consume_shortcut(&alternate_redo) {
-                command = Some(EditCommand::Redo);
-                return;
+        let command = ui.input_mut(|input| {
+            let (position, command) =
+                input
+                    .events
+                    .iter()
+                    .enumerate()
+                    .find_map(|(position, event)| {
+                        input_shortcut_for_event(
+                            event,
+                            operating_system,
+                            document_shortcuts_enabled,
+                            go_to_line_shortcut_enabled,
+                        )
+                        .map(|command| (position, command))
+                    })?;
+            if input.events[..position]
+                .iter()
+                .any(editor_event_orders_input)
+            {
+                deferred = input.events.split_off(position);
+                return None;
             }
-            for candidate in EditCommand::INPUT_PRECEDENCE {
-                if !document_shortcuts_enabled
-                    && matches!(
-                        candidate,
-                        EditCommand::Undo
-                            | EditCommand::Redo
-                            | EditCommand::Cut
-                            | EditCommand::Copy
-                            | EditCommand::Paste
-                            | EditCommand::SelectAll
-                    )
-                {
-                    continue;
-                }
-                if !go_to_line_shortcut_enabled && candidate == EditCommand::GoToLine {
-                    continue;
-                }
-                let shortcut = candidate.shortcut(operating_system);
-                if input.consume_shortcut(&shortcut) {
-                    command = Some(candidate);
-                    break;
-                }
-            }
+            input.events.remove(position);
+            deferred = input.events.split_off(position);
+            Some(command)
         });
+        if !deferred.is_empty() {
+            self.defer_input_events(deferred);
+            ui.ctx().request_repaint();
+        }
         command
     }
 
-    fn collect_view_shortcut(
-        ui: &egui::Ui,
-        document_shortcuts_enabled: bool,
-    ) -> Option<ViewCommandRequest> {
-        let mut command = None;
-        ui.input_mut(|input| {
-            if document_shortcuts_enabled {
-                if input.consume_shortcut(&ViewCommand::ToggleDocumentView.shortcut()) {
-                    command = Some(ViewCommand::ToggleDocumentView);
-                }
-                if command.is_none()
-                    && input.consume_shortcut(&ViewCommand::ToggleWordWrap.shortcut())
-                {
-                    command = Some(ViewCommand::ToggleWordWrap);
-                }
+    fn execute_input_shortcut(
+        &mut self,
+        shortcut: Option<InputShortcut>,
+        commands_enabled: bool,
+        context: &egui::Context,
+    ) -> bool {
+        if !commands_enabled {
+            return false;
+        }
+        match shortcut {
+            Some(InputShortcut::File(command)) => self.execute_file_command(command, context),
+            Some(InputShortcut::Edit(command)) => {
+                self.execute_edit_command(command, context);
+                return true;
             }
-            if command.is_none()
-                && input.consume_shortcut(&ViewCommand::ToggleFullscreen.shortcut())
-            {
-                command = Some(ViewCommand::ToggleFullscreen);
+            Some(InputShortcut::View(command)) => {
+                self.execute_view_command(command, context);
+                self.apply_pending_document_view();
             }
-            if command.is_none()
-                && input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_RESET)
-            {
-                command = Some(ViewCommand::ResetZoom);
-            } else if command.is_none()
-                && (input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_IN)
-                    || input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_IN_SECONDARY))
-            {
-                command = Some(ViewCommand::ZoomIn);
-            } else if command.is_none()
-                && input.consume_shortcut(&egui::gui_zoom::kb_shortcuts::ZOOM_OUT)
-            {
-                command = Some(ViewCommand::ZoomOut);
-            }
-        });
-        command.map(ViewCommandRequest::restore_document)
+            None => {}
+        }
+        false
     }
 
     fn execute_file_command(&mut self, command: FileCommand, ctx: &egui::Context) {
@@ -1386,12 +1564,15 @@ impl NoterApp {
     fn execute_view_command(&mut self, request: ViewCommandRequest, ctx: &egui::Context) {
         let ViewCommandRequest { command, focus } = request;
         match command {
-            ViewCommand::ToggleWordWrap if self.view == DocumentView::Text => {
+            ViewCommand::ToggleWordWrap
+                if self.pending_document_view.unwrap_or(self.view) == DocumentView::Text =>
+            {
                 self.text_wrap.toggle();
             }
             ViewCommand::ToggleWordWrap => return,
             ViewCommand::ToggleDocumentView => {
-                let next = match self.view {
+                let effective_view = self.pending_document_view.unwrap_or(self.view);
+                let next = match effective_view {
                     DocumentView::Text => DocumentView::Markdown,
                     DocumentView::Markdown => DocumentView::Text,
                 };
@@ -2759,6 +2940,7 @@ impl NoterApp {
         // egui for platform grapheme movement.
         let editor_focused = ui.memory(|memory| memory.has_focus(editor_id));
         if editor_focused {
+            self.serialize_next_text_navigation(ui);
             let gestures =
                 consume_navigation_gestures(ui, KeyboardPlatform::from_egui(ui.ctx().os()));
             if !gestures.is_empty() {
@@ -2901,28 +3083,40 @@ impl NoterApp {
     }
 
     fn render_frame(&mut self, ui: &mut egui::Ui) {
+        let blocking_modal_at_start = self.blocking_modal_open();
+        let mut blocking_modal_input = if blocking_modal_at_start {
+            ui.input_mut(|input| std::mem::take(&mut input.events))
+        } else {
+            self.restore_deferred_input(ui);
+            self.find_bar.restore_deferred_input(ui);
+            self.markdown_editor.restore_deferred_input(ui);
+            Vec::new()
+        };
         let document_shortcuts_enabled =
             !self.find_bar.owns_text_focus(ui.ctx()) && !self.go_to_line.owns_text_focus(ui.ctx());
-        let mut file_command = Self::collect_shortcut(ui);
-        let mut view_command = Self::collect_view_shortcut(ui, document_shortcuts_enabled);
         let go_to_line_shortcut_enabled =
             document_shortcuts_enabled && self.view == DocumentView::Text;
-        let mut edit_command = Self::collect_edit_shortcut(
+        let input_shortcut = self.collect_input_shortcut(
             ui,
             document_shortcuts_enabled,
             go_to_line_shortcut_enabled,
         );
+        let mut file_command = None;
+        let mut edit_command = None;
+        let mut view_command = None;
         self.show_menu(ui, &mut file_command, &mut edit_command, &mut view_command);
         self.show_error(ui);
         self.show_crash_recovery_quarantine_notices(ui);
         self.show_crash_recovery_persist_failure(ui);
         self.show_save_recovery_notice(ui);
         let recovery_offer_open = self.crash_recovery.active_offer().is_some();
-        let commands_enabled = self.pending_hard_link_save.is_none()
-            && self.lifecycle.pending_intent().is_none()
-            && !self.conflict.is_prompting()
-            && !recovery_offer_open;
-        let edit_executed = if commands_enabled {
+        let commands_enabled = !blocking_modal_at_start;
+        let input_edit_executed =
+            self.execute_input_shortcut(input_shortcut, commands_enabled, ui.ctx());
+        if !blocking_modal_at_start && self.blocking_modal_open() {
+            self.discard_deferred_input();
+        }
+        let menu_edit_executed = if commands_enabled {
             edit_command.take().is_some_and(|command| {
                 self.execute_edit_command(command, ui.ctx());
                 true
@@ -2934,12 +3128,15 @@ impl NoterApp {
         self.show_format_toolbar(ui, &mut view_command);
         if commands_enabled && let Some(command) = view_command {
             self.execute_view_command(command, ui.ctx());
+            self.apply_pending_document_view();
         }
         self.show_status(ui);
         self.show_editor(ui);
+        self.markdown_editor.finish_input_frame();
         self.apply_pending_document_view();
         if commands_enabled
-            && !edit_executed
+            && !input_edit_executed
+            && !menu_edit_executed
             && let Some(command) = file_command
         {
             self.execute_file_command(command, ui.ctx());
@@ -2966,6 +3163,15 @@ impl NoterApp {
         self.show_about(ui.ctx());
         self.show_updates(ui.ctx());
         self.show_go_to_line(ui.ctx());
+        if !blocking_modal_input.is_empty() {
+            ui.input_mut(|input| {
+                blocking_modal_input.append(&mut input.events);
+                std::mem::swap(&mut blocking_modal_input, &mut input.events);
+            });
+        }
+        if !blocking_modal_at_start && self.blocking_modal_open() {
+            self.discard_deferred_input();
+        }
         if recovery_offer_open {
             self.show_startup_recovery_offer(ui.ctx());
         } else if self.pending_recovery_reconciliation.is_some() {
@@ -3836,23 +4042,36 @@ mod tests {
         input
     }
 
-    fn shortcut_input(modifiers: egui::Modifiers, key: egui::Key) -> egui::RawInput {
-        let mut input = egui::RawInput::default();
-        input.events.push(egui::Event::Key {
+    fn key_press(modifiers: egui::Modifiers, key: egui::Key) -> egui::Event {
+        egui::Event::Key {
             key,
             physical_key: None,
             pressed: true,
             repeat: false,
             modifiers,
-        });
-        input
+        }
+    }
+
+    fn shortcut_input(modifiers: egui::Modifiers, key: egui::Key) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![key_press(modifiers, key)],
+            ..Default::default()
+        }
+    }
+
+    fn repeated_shortcut_input(modifiers: egui::Modifiers, key: egui::Key) -> egui::RawInput {
+        let event = key_press(modifiers, key);
+        egui::RawInput {
+            events: vec![event.clone(), event],
+            ..Default::default()
+        }
     }
 
     fn collect_shortcut_from_input(input: egui::RawInput) -> Option<FileCommand> {
-        let context = egui::Context::default();
-        let mut command = None;
-        let _ = context.run_ui(input, |ui| command = NoterApp::collect_shortcut(ui));
-        command
+        match collect_input_shortcut_from_input(input, egui::os::OperatingSystem::Nix, true, true) {
+            Some(InputShortcut::File(command)) => Some(command),
+            _ => None,
+        }
     }
 
     fn collect_edit_shortcut_from_input(input: egui::RawInput) -> Option<EditCommand> {
@@ -3863,13 +4082,10 @@ mod tests {
         input: egui::RawInput,
         operating_system: egui::os::OperatingSystem,
     ) -> Option<EditCommand> {
-        let context = egui::Context::default();
-        context.set_os(operating_system);
-        let mut command = None;
-        let _ = context.run_ui(input, |ui| {
-            command = NoterApp::collect_edit_shortcut(ui, true, true);
-        });
-        command
+        match collect_input_shortcut_from_input(input, operating_system, true, true) {
+            Some(InputShortcut::Edit(command)) => Some(command),
+            _ => None,
+        }
     }
 
     fn collect_edit_shortcut_from_input_with_document_focus(
@@ -3888,16 +4104,15 @@ mod tests {
         document_shortcuts_enabled: bool,
         go_to_line_shortcut_enabled: bool,
     ) -> Option<EditCommand> {
-        let context = egui::Context::default();
-        let mut command = None;
-        let _ = context.run_ui(input, |ui| {
-            command = NoterApp::collect_edit_shortcut(
-                ui,
-                document_shortcuts_enabled,
-                go_to_line_shortcut_enabled,
-            );
-        });
-        command
+        match collect_input_shortcut_from_input(
+            input,
+            egui::os::OperatingSystem::Nix,
+            document_shortcuts_enabled,
+            go_to_line_shortcut_enabled,
+        ) {
+            Some(InputShortcut::Edit(command)) => Some(command),
+            _ => None,
+        }
     }
 
     fn collect_view_shortcut_from_input(input: egui::RawInput) -> Option<ViewCommandRequest> {
@@ -3908,10 +4123,33 @@ mod tests {
         input: egui::RawInput,
         document_shortcuts_enabled: bool,
     ) -> Option<ViewCommandRequest> {
+        match collect_input_shortcut_from_input(
+            input,
+            egui::os::OperatingSystem::Nix,
+            document_shortcuts_enabled,
+            document_shortcuts_enabled,
+        ) {
+            Some(InputShortcut::View(command)) => Some(command),
+            _ => None,
+        }
+    }
+
+    fn collect_input_shortcut_from_input(
+        input: egui::RawInput,
+        operating_system: egui::os::OperatingSystem,
+        document_shortcuts_enabled: bool,
+        go_to_line_shortcut_enabled: bool,
+    ) -> Option<InputShortcut> {
         let context = egui::Context::default();
+        context.set_os(operating_system);
+        let mut app = NoterApp::default();
         let mut command = None;
         let _ = context.run_ui(input, |ui| {
-            command = NoterApp::collect_view_shortcut(ui, document_shortcuts_enabled);
+            command = app.collect_input_shortcut(
+                ui,
+                document_shortcuts_enabled,
+                go_to_line_shortcut_enabled,
+            );
         });
         command
     }
@@ -3921,6 +4159,20 @@ mod tests {
         let mut origin = fallback;
         let _ = context.run_ui(input, |ui| origin = direct_input_origin(ui, fallback));
         origin
+    }
+
+    fn focus_empty_replacement_field(app: &mut NoterApp, context: &egui::Context, time: f64) {
+        app.find_bar.open(true, &app.text, app.selection);
+        app.find_bar.set_replacement_for_test(String::new());
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, time), |ui| {
+            app.render_frame(ui);
+        });
+        let replacement_id = egui::Id::new("noter-find-replacement");
+        context.memory_mut(|memory| memory.request_focus(replacement_id));
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, time + 0.01), |ui| {
+            app.render_frame(ui);
+        });
+        assert!(context.memory(|memory| memory.has_focus(replacement_id)));
     }
 
     fn show_menu_frame(
@@ -4249,6 +4501,124 @@ mod tests {
     }
 
     #[test]
+    fn text_input_and_custom_navigation_share_the_ordered_queue() {
+        let run = |events: Vec<egui::Event>| {
+            let source = "ab cd";
+            let selection = Selection::caret(2);
+            let mut app = NoterApp {
+                text: source.to_owned(),
+                document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+                selection,
+                pending_selection_restore: Some(selection),
+                ..NoterApp::default()
+            };
+            let context = egui::Context::default();
+            context.set_os(egui::os::OperatingSystem::Windows);
+            theme::configure_styles(&context);
+            let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| {
+                app.render_frame(ui);
+            });
+            let mut input = ui_input(800.0, 600.0, 0.1);
+            input.events = events;
+            let _ = context.run_ui(input, |ui| app.render_frame(ui));
+            let _ = context.run_ui(ui_input(800.0, 600.0, 0.2), |ui| {
+                app.render_frame(ui);
+            });
+            (app.text, app.selection)
+        };
+        let word_right = || key_press(egui::Modifiers::CTRL, egui::Key::ArrowRight);
+
+        assert_eq!(
+            run(vec![egui::Event::Text(" ".to_owned()), word_right()]),
+            ("ab  cd".to_owned(), Selection::caret(4))
+        );
+        assert_eq!(
+            run(vec![word_right(), egui::Event::Text("x".to_owned())]),
+            ("ab xcd".to_owned(), Selection::caret(4))
+        );
+    }
+
+    #[test]
+    fn navigation_text_and_save_keep_their_original_order() -> std::io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("ordered-save.txt");
+        fs::write(&path, "ab cd")?;
+        let selection = Selection::caret(2);
+        let mut app = NoterApp {
+            text: "ab cd".to_owned(),
+            document: Document::from_path(&path).expect("fixture should load"),
+            selection,
+            pending_selection_restore: Some(selection),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        context.set_os(egui::os::OperatingSystem::Windows);
+        theme::configure_styles(&context);
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| app.render_frame(ui));
+
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+        let mut input = ui_input(800.0, 600.0, 0.1);
+        input.events = vec![
+            key_press(egui::Modifiers::CTRL, egui::Key::ArrowRight),
+            egui::Event::Text("x".to_owned()),
+            key_press(command, egui::Key::S),
+        ];
+        let _ = context.run_ui(input, |ui| app.render_frame(ui));
+        assert_eq!(app.text, "ab cd");
+        assert_eq!(fs::read_to_string(&path)?, "ab cd");
+
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.2), |ui| app.render_frame(ui));
+        assert_eq!(app.text, "ab xcd");
+        assert_eq!(fs::read_to_string(&path)?, "ab cd");
+
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.3), |ui| app.render_frame(ui));
+        assert_eq!(fs::read_to_string(path)?, "ab xcd");
+        assert!(!app.document.is_dirty());
+        Ok(())
+    }
+
+    #[test]
+    fn navigation_text_and_mode_keep_their_original_order() {
+        let selection = Selection::caret(2);
+        let mut app = NoterApp {
+            text: "ab cd".to_owned(),
+            document: Document::from_bytes(b"ab cd").expect("fixture should load"),
+            selection,
+            pending_selection_restore: Some(selection),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        context.set_os(egui::os::OperatingSystem::Windows);
+        theme::configure_styles(&context);
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| app.render_frame(ui));
+
+        let mode = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            shift: true,
+            ..egui::Modifiers::NONE
+        };
+        let mut input = ui_input(800.0, 600.0, 0.1);
+        input.events = vec![
+            key_press(egui::Modifiers::CTRL, egui::Key::ArrowRight),
+            egui::Event::Text("x".to_owned()),
+            key_press(mode, egui::Key::M),
+        ];
+        let _ = context.run_ui(input, |ui| app.render_frame(ui));
+        for time in [0.2, 0.3] {
+            let _ = context.run_ui(ui_input(800.0, 600.0, time), |ui| app.render_frame(ui));
+        }
+
+        assert_eq!(app.text, "ab xcd");
+        assert_eq!(app.view, DocumentView::Markdown);
+        assert!(app.deferred_input_events.is_empty());
+    }
+
+    #[test]
     fn persistence_status_distinguishes_untitled_from_saved() {
         assert_eq!(persistence_status_label(&Document::new()), "Unsaved");
 
@@ -4387,9 +4757,26 @@ mod tests {
         }
         assert_eq!(
             UPDATE_STATUS,
-            "No Noter release has been published yet. This source build cannot safely self-update without verified release artifacts."
+            "Noter does not check for updates in the background. Open the releases page to compare this version with published builds."
         );
         assert!(app.updates.is_open());
+    }
+
+    #[test]
+    fn identity_rotation_failure_surfaces_recovery_unavailability() {
+        let directory = tempdir().expect("tempdir");
+        let blocked_root = directory.path().join("blocked-recovery-root");
+        std::fs::write(&blocked_root, b"not a directory").expect("blocking file");
+        let mut app = NoterApp {
+            crash_recovery: CrashRecoverySession::open_at(blocked_root),
+            ..NoterApp::default()
+        };
+        assert!(app.crash_recovery.is_unavailable());
+        app.error_msg = None;
+
+        app.begin_fresh_recovery_identity();
+
+        assert_eq!(app.error_msg.as_deref(), Some(RECOVERY_UNAVAILABLE_MESSAGE));
     }
 
     #[test]
@@ -4775,6 +5162,210 @@ mod tests {
     }
 
     #[test]
+    fn repeated_view_shortcuts_execute_once_per_input_event() {
+        let wrap = egui::Modifiers {
+            alt: true,
+            ..egui::Modifiers::NONE
+        };
+        let mode = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            shift: true,
+            ..egui::Modifiers::NONE
+        };
+        let context = egui::Context::default();
+        let mut app = NoterApp::default();
+        let initially_wrapped = app.text_wrap.is_wrapped();
+        let collect_next = |app: &mut NoterApp, input: egui::RawInput| {
+            let mut command = None;
+            let _ = context.run_ui(input, |ui| {
+                app.restore_deferred_input(ui);
+                command = app.collect_input_shortcut(ui, true, true);
+            });
+            command
+        };
+
+        for input in [
+            repeated_shortcut_input(wrap, egui::Key::Z),
+            egui::RawInput::default(),
+        ] {
+            let Some(InputShortcut::View(command)) = collect_next(&mut app, input) else {
+                panic!("each Wrap event should produce one command");
+            };
+            app.execute_view_command(command, &context);
+        }
+        assert_eq!(app.text_wrap.is_wrapped(), initially_wrapped);
+
+        for input in [
+            repeated_shortcut_input(mode, egui::Key::M),
+            egui::RawInput::default(),
+        ] {
+            let Some(InputShortcut::View(command)) = collect_next(&mut app, input) else {
+                panic!("each Mode event should produce one command");
+            };
+            app.execute_view_command(command, &context);
+            app.apply_pending_document_view();
+        }
+        assert_eq!(app.view, DocumentView::Text);
+    }
+
+    #[test]
+    fn mode_shortcuts_serialize_with_enter_in_both_editor_directions() {
+        let mode_modifiers = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            shift: true,
+            ..egui::Modifiers::NONE
+        };
+        let run = |start_view: DocumentView, events: Vec<egui::Event>| {
+            let source = "- item";
+            let selection = Selection::caret(source.len());
+            let mut app = NoterApp {
+                text: source.to_owned(),
+                document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+                selection,
+                pending_selection_restore: Some(selection),
+                view: start_view,
+                ..NoterApp::default()
+            };
+            let context = egui::Context::default();
+            theme::configure_styles(&context);
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+                app.render_frame(ui);
+            });
+            let mut input = ui_input(1_200.0, 760.0, 0.1);
+            input.events = events;
+            let _ = context.run_ui(input, |ui| app.render_frame(ui));
+            for (step, time) in [0.2, 0.3, 0.4].into_iter().enumerate() {
+                let _ = context.run_ui(ui_input(1_200.0, 760.0, time), |ui| {
+                    app.render_frame(ui);
+                });
+                assert!(
+                    step < 2
+                        || (app.deferred_input_events.is_empty()
+                            && !app.markdown_editor.has_deferred_input()),
+                    "serialized input should drain within the bounded follow-up frames"
+                );
+            }
+            (app.view, app.text)
+        };
+        let mode = || key_press(mode_modifiers, egui::Key::M);
+        let enter = || key_press(egui::Modifiers::NONE, egui::Key::Enter);
+
+        assert_eq!(
+            run(DocumentView::Markdown, vec![mode(), enter()]),
+            (DocumentView::Text, "- item\n".to_owned())
+        );
+        assert_eq!(
+            run(DocumentView::Markdown, vec![enter(), mode()]),
+            (DocumentView::Text, "- item\n- ".to_owned())
+        );
+        assert_eq!(
+            run(DocumentView::Text, vec![mode(), enter()]),
+            (DocumentView::Markdown, "- item\n- ".to_owned())
+        );
+        assert_eq!(
+            run(DocumentView::Text, vec![enter(), mode()]),
+            (DocumentView::Markdown, "- item\n".to_owned())
+        );
+    }
+
+    #[test]
+    fn markdown_text_format_and_mode_shortcuts_share_one_ordered_queue() {
+        let source = "ab";
+        let selection = Selection::caret(1);
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection,
+            pending_selection_restore: Some(selection),
+            view: DocumentView::Markdown,
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+            app.render_frame(ui);
+        });
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+        let mode = command.plus(egui::Modifiers::SHIFT);
+        let mut input = ui_input(1_200.0, 760.0, 0.1);
+        input.events = vec![
+            egui::Event::Text("x".to_owned()),
+            key_press(command, egui::Key::B),
+            key_press(mode, egui::Key::M),
+        ];
+        let _ = context.run_ui(input, |ui| app.render_frame(ui));
+        for time in [0.2, 0.3, 0.4] {
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, time), |ui| {
+                app.render_frame(ui);
+            });
+        }
+
+        assert_eq!(app.view, DocumentView::Text);
+        assert_eq!(app.text, "ax****b");
+        assert!(app.deferred_input_events.is_empty());
+        assert!(!app.markdown_editor.has_deferred_input());
+    }
+
+    #[test]
+    fn destructive_prompt_discards_trailing_input_and_blocks_editor_mutation() {
+        let mut document = Document::new();
+        document
+            .replace_text("dirty")
+            .expect("fixture edit should make the document dirty");
+        let selection = Selection::caret(5);
+        let mut app = NoterApp {
+            text: "dirty".to_owned(),
+            document,
+            selection,
+            pending_selection_restore: Some(selection),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+            app.render_frame(ui);
+        });
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+        let mut request_new = ui_input(1_200.0, 760.0, 0.1);
+        request_new.events = vec![
+            key_press(command, egui::Key::N),
+            egui::Event::Text("x".to_owned()),
+        ];
+        let _ = context.run_ui(request_new, |ui| app.render_frame(ui));
+
+        assert_eq!(
+            app.lifecycle.pending_intent(),
+            Some(PendingAbandonAction::New)
+        );
+        assert_eq!(app.text, "dirty");
+        assert_eq!(String::from(app.document.rope()), "dirty");
+        assert!(app.deferred_input_events.is_empty());
+
+        let mut typed_behind_modal = ui_input(1_200.0, 760.0, 0.2);
+        typed_behind_modal.events = vec![egui::Event::Text("y".to_owned())];
+        let _ = context.run_ui(typed_behind_modal, |ui| app.render_frame(ui));
+        assert_eq!(app.text, "dirty");
+        assert_eq!(String::from(app.document.rope()), "dirty");
+
+        app.cancel_pending_abandon();
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.3), |ui| {
+            app.render_frame(ui);
+        });
+        assert_eq!(app.text, "dirty");
+        assert!(app.lifecycle.pending_intent().is_none());
+    }
+
+    #[test]
     fn switching_mode_by_command_does_not_change_bytes() {
         let source = "# Heading\n\nParagraph";
         let mut app = NoterApp {
@@ -4938,6 +5529,49 @@ mod tests {
     }
 
     #[test]
+    fn wheel_and_keyboard_zoom_events_execute_in_queue_order_at_the_bound() {
+        let source = "# Zoom sample";
+        let mut app = NoterApp {
+            view: DocumentView::Markdown,
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            ..NoterApp::default()
+        };
+        while app.editor_zoom.zoom_in() {}
+        assert_eq!(app.editor_zoom.percent(), 300);
+        let revision = app.document.revision();
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+        let initial = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| app.render_frame(ui));
+        let reset = text_position(&rendered_text(&initial), "300%") + egui::vec2(4.0, 4.0);
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+        let mut input = ui_input(1_200.0, 760.0, 0.1);
+        input.events = vec![
+            egui::Event::PointerMoved(reset),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -12.0),
+                modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+            },
+            key_press(command, egui::Key::Plus),
+        ];
+        let _ = context.run_ui(input, |ui| app.render_frame(ui));
+        assert_eq!(app.editor_zoom.percent(), 290);
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.2), |ui| {
+            app.render_frame(ui);
+        });
+
+        assert_eq!(app.editor_zoom.percent(), 300);
+        assert_eq!(app.document.revision(), revision);
+        assert_eq!(String::from(app.document.rope()), source);
+    }
+
+    #[test]
     fn pointer_zoom_applies_only_over_the_document_and_preserves_control_type() {
         let source = "zoom sample";
         let mut app = NoterApp {
@@ -5017,6 +5651,129 @@ mod tests {
         let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| app.render_frame(ui));
 
         assert!(context.memory(|memory| memory.has_focus(app.editor_id())));
+    }
+
+    #[test]
+    fn find_replace_and_app_shortcuts_share_one_ordered_queue() -> std::io::Result<()> {
+        let directory = tempdir()?;
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+        let enter = || key_press(egui::Modifiers::NONE, egui::Key::Enter);
+
+        let save_first = directory.path().join("save-first.txt");
+        fs::write(&save_first, "one")?;
+        let mut app = NoterApp {
+            text: "one".to_owned(),
+            document: Document::from_path(&save_first).expect("fixture should load"),
+            selection: Selection::new(0, 3),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+        focus_empty_replacement_field(&mut app, &context, 0.0);
+        let mut input = ui_input(1_200.0, 760.0, 0.1);
+        input.events = vec![key_press(command, egui::Key::S), enter()];
+        let _ = context.run_ui(input, |ui| app.render_frame(ui));
+        assert_eq!(app.text, "one");
+        assert_eq!(fs::read_to_string(&save_first)?, "one");
+        assert!(!app.document.is_dirty());
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.2), |ui| {
+            app.render_frame(ui);
+        });
+        assert_eq!(app.text, "");
+        assert_eq!(fs::read_to_string(&save_first)?, "one");
+        assert!(app.document.is_dirty());
+
+        let enter_first = directory.path().join("enter-first.txt");
+        fs::write(&enter_first, "one")?;
+        let mut app = NoterApp {
+            text: "one".to_owned(),
+            document: Document::from_path(&enter_first).expect("fixture should load"),
+            selection: Selection::new(0, 3),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+        focus_empty_replacement_field(&mut app, &context, 1.0);
+        let mut input = ui_input(1_200.0, 760.0, 1.1);
+        input.events = vec![enter(), key_press(command, egui::Key::S)];
+        let _ = context.run_ui(input, |ui| app.render_frame(ui));
+        assert_eq!(app.text, "");
+        assert_eq!(fs::read_to_string(&enter_first)?, "one");
+        assert!(app.document.is_dirty());
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, 1.2), |ui| {
+            app.render_frame(ui);
+        });
+        assert_eq!(fs::read_to_string(&enter_first)?, "");
+        assert!(!app.document.is_dirty());
+
+        for (events, expected_text, expected_selection) in [
+            (
+                vec![enter(), key_press(egui::Modifiers::NONE, egui::Key::F3)],
+                " one",
+                Selection::new(1, 4),
+            ),
+            (
+                vec![key_press(egui::Modifiers::NONE, egui::Key::F3), enter()],
+                "one ",
+                Selection::caret(4),
+            ),
+        ] {
+            let source = "one one";
+            let mut app = NoterApp {
+                text: source.to_owned(),
+                document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+                selection: Selection::new(0, 3),
+                ..NoterApp::default()
+            };
+            let context = egui::Context::default();
+            theme::configure_styles(&context);
+            focus_empty_replacement_field(&mut app, &context, 2.0);
+            let mut input = ui_input(1_200.0, 760.0, 2.1);
+            input.events = events;
+            let _ = context.run_ui(input, |ui| app.render_frame(ui));
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 2.2), |ui| {
+                app.render_frame(ui);
+            });
+            assert_eq!(app.text, expected_text);
+            assert_eq!(app.selection, expected_selection);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn find_escape_never_routes_query_text_into_the_document() {
+        let escape = || key_press(egui::Modifiers::NONE, egui::Key::Escape);
+        for events in [
+            vec![egui::Event::Text("x".to_owned()), escape()],
+            vec![escape(), egui::Event::Text("x".to_owned())],
+        ] {
+            let source = "body";
+            let mut app = NoterApp {
+                text: source.to_owned(),
+                document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+                selection: Selection::caret(source.len()),
+                ..NoterApp::default()
+            };
+            let context = egui::Context::default();
+            theme::configure_styles(&context);
+            app.find_bar.open(false, &app.text, app.selection);
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+                app.render_frame(ui);
+            });
+            let mut input = ui_input(1_200.0, 760.0, 0.1);
+            input.events = events;
+            let _ = context.run_ui(input, |ui| app.render_frame(ui));
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.2), |ui| {
+                app.render_frame(ui);
+            });
+            assert_eq!(app.text, source);
+            assert_eq!(String::from(app.document.rope()), source);
+            assert!(!app.document.is_dirty());
+        }
     }
 
     #[test]
@@ -7274,6 +8031,28 @@ mod tests {
         assert!(!app.document.is_dirty());
         assert!(app.lifecycle.pending_intent().is_none());
         assert!(!app.lifecycle.close_authorized(app.document.revision()));
+    }
+
+    #[test]
+    fn incomplete_open_after_discard_rearms_dirty_recovery() {
+        use crate::crash_recovery::CrashRecoverySession;
+
+        let directory = tempdir().expect("tempdir");
+        let mut app = NoterApp {
+            text: "unsaved text".to_owned(),
+            crash_recovery: CrashRecoverySession::open_at(directory.path()),
+            ..NoterApp::default()
+        };
+        app.document
+            .replace_text(&app.text)
+            .expect("the test edit should advance the document revision");
+        app.crash_recovery.on_discarded();
+        let context = egui::Context::default();
+
+        app.rearm_recovery_after_incomplete_abandon(PendingAbandonAction::Open, &context);
+
+        assert!(app.document.is_dirty());
+        assert!(app.crash_recovery.next_persist_delay().is_some());
     }
 
     #[test]

@@ -5,6 +5,8 @@ release, so current work remains under Unreleased.
 
 ## Unreleased
 
+## 0.1.0-alpha.2 - 2026-08-22
+
 ### Added
 
 - Add a [playtest brief](docs/PLAYTEST.md) that records what changed for the
@@ -57,6 +59,49 @@ release, so current work remains under Unreleased.
 
 ### Fixed
 
+- Bound Markdown's automatic inline reopening and list, quote, and inline-run
+  Enter transforms before they mutate the active draft. Input at the document
+  ceiling is rejected or UTF-8-truncated without removing an existing suffix.
+- Preserve repeated and interleaved Enter, text, paste, and IME events in
+  Markdown Mode, keep following lines separate, and apply automatic list or
+  quote continuation only when the caret is at or after the complete source
+  marker. Pending inline-marker reopening also stops at the first earlier
+  order-sensitive event.
+- Keep custom word, line, and document navigation behind earlier text, paste,
+  IME, pointer, and accessibility events from the same input frame in both
+  editor modes.
+- Keep Markdown formatting shortcuts behind earlier ordered editor input from
+  the same frame instead of applying them before those bytes.
+- Preserve Find and Replace input order around Enter so navigation and
+  replacement use only text that arrived before the command.
+- Serialize file, edit, view, navigation, formatting, Enter, and Find or Replace
+  commands through one ordered input path. Repeated commands execute once per
+  event, and text, paste, IME, wheel, pointer, touch, and accessibility input
+  cannot be overtaken by a later shortcut from the same frame.
+- Preserve deferred Markdown ownership across frames only while the active
+  editor still owns the sequence. Pointer, touch, Tab, accessibility-focus, and
+  window-focus changes release later input instead of routing it back into a
+  control that lost focus.
+- Isolate destructive confirmation and recovery dialogs from editor input.
+  Input that opened a blocking prompt is discarded behind it, and deferred
+  editor input is held until an already-open prompt is resolved.
+- Keep a window's recovery lease for its complete lifetime, including after
+  Save, and remove only the recovery record when content becomes clean.
+- Treat recovery lease acquisition and ownership-probe errors as unavailable
+  recovery instead of exposing a potentially live record to another window.
+- Keep recovery worker epochs monotonic across New, Open, Restore, and Discard,
+  and ignore stale UI completions without deleting a newer record.
+- Transfer Restore to a newly leased durable record before deleting the startup
+  copy. Identity, lease, or write failure keeps the original offer and reports
+  the unavailable recovery state instead of leaving restored text only in
+  memory.
+- Rearm dirty-document recovery when Open is cancelled or Open or Reload fails
+  after an explicit Discard decision, so the document left on screen does not
+  remain without a scheduled recovery record.
+- Let the Windows benchmark harness briefly observe a process whose exit raced
+  `TerminateProcess`, avoiding a false cleanup failure after bounded-output
+  termination while sharing the existing absolute process-tree deadline across
+  every captured handle.
 - Close simple bold, italic, strikethrough, and inline-code runs before a line
   break at the end of the run in Markdown Mode. The same markers reopen only
   when the next character is typed, so the file never stores an empty pair such
@@ -86,7 +131,6 @@ release, so current work remains under Unreleased.
 - A living Noter window holds an exclusive recovery lease so another window
   cannot Restore or Discard its in-flight private copy. A crash releases the
   lease so the next launch can offer restore.
-
 - Update `webbrowser` to 1.2.4 for RUSTSEC-2026-0257, where Unix `BROWSER`
   handling allowed browser argument injection. The dependency reaches Noter
   through `eframe`, and only an explicitly clicked link uses it.
@@ -113,6 +157,10 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
+- Define the scoped alpha publication gate separately from the complete RC and
+  stable release matrix. Alpha limitations must be recorded and assigned to a
+  later blocking milestone, and critical or high security or data-safety
+  defects can never be deferred.
 - Give the top-level menu names visible space instead of a two-point gap, and
   keep every name clear of the Mode and Theme controls at every expanded width.
 - Give both Mode segments one width sized for the longest label, so the switch

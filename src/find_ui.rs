@@ -57,6 +57,7 @@ pub struct FindBar {
     cache: Option<SearchCache>,
     feedback: Option<FindFeedback>,
     input_notice: Option<&'static str>,
+    deferred_input_events: Vec<egui::Event>,
 }
 
 impl FindBar {
@@ -101,43 +102,111 @@ impl FindBar {
         if !self.open {
             return None;
         }
-        if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            self.open = false;
-            return Some(FindBarAction::Close);
-        }
+        self.restore_deferred_input(ui);
 
         let query_has_focus = ui.memory(|memory| memory.has_focus(egui::Id::new(FIND_QUERY_ID)));
         let replacement_has_focus =
             ui.memory(|memory| memory.has_focus(egui::Id::new(REPLACEMENT_ID)));
+        let previous_focused_field = ui.memory(|memory| {
+            if memory.had_focus_last_frame(egui::Id::new(REPLACEMENT_ID)) {
+                Some(egui::Id::new(REPLACEMENT_ID))
+            } else if memory.had_focus_last_frame(egui::Id::new(FIND_QUERY_ID)) {
+                Some(egui::Id::new(FIND_QUERY_ID))
+            } else {
+                None
+            }
+        });
         let replace_on_enter = replacement_has_focus
             && self
                 .prepared_search(revision, source)
                 .ok()
                 .is_some_and(|search| search.matches_range(source, selection.ordered_range()));
-        let mut action = if query_has_focus || replacement_has_focus {
-            ui.input_mut(|input| {
-                if input.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter) {
-                    Some(FindBarAction::Previous)
-                } else if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
-                    Some(if replace_on_enter {
-                        FindBarAction::Replace
-                    } else {
-                        FindBarAction::Next
-                    })
-                } else {
-                    None
-                }
-            })
-        } else {
-            None
-        };
+        let mut action = self.take_key_action(
+            ui,
+            query_has_focus || replacement_has_focus,
+            replace_on_enter,
+            previous_focused_field,
+        );
         egui::Panel::top("find_replace_bar").show(ui, |ui| {
             self.show_find_row(ui, revision, source, selection, &mut action);
             if self.replace_visible {
                 self.show_replace_row(ui, revision, source, selection, &mut action);
             }
         });
+        if action == Some(FindBarAction::Close) {
+            self.open = false;
+            self.deferred_input_events.clear();
+        }
 
+        action
+    }
+
+    pub(crate) fn restore_deferred_input(&mut self, ui: &egui::Ui) {
+        if self.deferred_input_events.is_empty() {
+            return;
+        }
+        ui.input_mut(|input| {
+            self.deferred_input_events.append(&mut input.events);
+            std::mem::swap(&mut self.deferred_input_events, &mut input.events);
+        });
+    }
+
+    pub(crate) fn discard_deferred_input(&mut self) {
+        self.deferred_input_events.clear();
+    }
+
+    fn take_key_action(
+        &mut self,
+        ui: &egui::Ui,
+        accept_enter: bool,
+        replace_on_enter: bool,
+        previous_focused_field: Option<egui::Id>,
+    ) -> Option<FindBarAction> {
+        let mut deferred = Vec::new();
+        let action = ui.input_mut(|input| {
+            let (position, action) =
+                input
+                    .events
+                    .iter()
+                    .enumerate()
+                    .find_map(|(position, event)| {
+                        find_key_action(event, accept_enter, replace_on_enter)
+                            .map(|action| (position, action))
+                    })?;
+            let prefix = &input.events[..position];
+            let must_defer = if action == FindBarAction::Close {
+                prefix
+                    .iter()
+                    .any(crate::keyboard_nav::editor_event_orders_input)
+            } else {
+                prefix
+                    .iter()
+                    .any(crate::keyboard_nav::editor_event_may_change_focus)
+            };
+            if must_defer {
+                deferred = input.events.split_off(position);
+                return None;
+            }
+            input.events.remove(position);
+            let suffix = input.events.split_off(position);
+            if action != FindBarAction::Close {
+                deferred = suffix;
+            }
+            Some(action)
+        });
+        if !deferred.is_empty() {
+            self.deferred_input_events = deferred;
+            ui.ctx().request_repaint();
+        }
+        if action.is_none()
+            && previous_focused_field.is_some()
+            && self.deferred_input_events.iter().any(|event| {
+                find_key_action(event, false, replace_on_enter) == Some(FindBarAction::Close)
+            })
+            && let Some(field) = previous_focused_field
+        {
+            ui.memory_mut(|memory| memory.request_focus(field));
+        }
         action
     }
 
@@ -451,6 +520,37 @@ impl FindBar {
     }
 }
 
+fn find_key_action(
+    event: &egui::Event,
+    accept_enter: bool,
+    replace_on_enter: bool,
+) -> Option<FindBarAction> {
+    let egui::Event::Key {
+        key,
+        pressed: true,
+        modifiers,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    if *key == egui::Key::Escape && modifiers.matches_logically(egui::Modifiers::NONE) {
+        Some(FindBarAction::Close)
+    } else if !accept_enter || *key != egui::Key::Enter {
+        None
+    } else if modifiers.matches_logically(egui::Modifiers::SHIFT) {
+        Some(FindBarAction::Previous)
+    } else if modifiers.matches_logically(egui::Modifiers::NONE) {
+        Some(if replace_on_enter {
+            FindBarAction::Replace
+        } else {
+            FindBarAction::Next
+        })
+    } else {
+        None
+    }
+}
+
 fn selected_query(source: &str, selection: Selection) -> Option<&str> {
     let range = selection.ordered_range();
     let selected = source.get(range.start()..range.end())?;
@@ -464,6 +564,36 @@ fn selected_query(source: &str, selection: Selection) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn enter_key() -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn focused_bar(replace_visible: bool) -> (egui::Context, FindBar) {
+        let source = "one two one";
+        let selection = Selection::new(0, 3);
+        let context = egui::Context::default();
+        let mut bar = FindBar::default();
+        bar.open(replace_visible, source, selection);
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(bar.show(ui, Revision::INITIAL, source, selection), None);
+        });
+        if replace_visible {
+            context.memory_mut(|memory| {
+                memory.request_focus(egui::Id::new(REPLACEMENT_ID));
+            });
+            let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                assert_eq!(bar.show(ui, Revision::INITIAL, source, selection), None);
+            });
+        }
+        (context, bar)
+    }
 
     #[test]
     fn opening_prefills_a_bounded_single_line_selection_and_uses_safe_scope() {
@@ -583,6 +713,200 @@ mod tests {
                 Some(FindBarAction::Close)
             );
         });
+        assert!(!bar.is_open());
+    }
+
+    #[test]
+    fn find_and_replace_enter_actions_preserve_input_event_order() {
+        let source = "one two one";
+        let selection = Selection::new(0, 3);
+
+        let (context, mut bar) = focused_bar(false);
+        let prefix = egui::RawInput {
+            events: vec![egui::Event::Text("x".to_owned()), enter_key()],
+            ..Default::default()
+        };
+        let _ = context.run_ui(prefix, |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, selection),
+                Some(FindBarAction::Next)
+            );
+        });
+        assert_eq!(bar.query, "onex");
+
+        let (context, mut bar) = focused_bar(false);
+        let suffix = egui::RawInput {
+            events: vec![enter_key(), egui::Event::Text("x".to_owned())],
+            ..Default::default()
+        };
+        let _ = context.run_ui(suffix, |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, selection),
+                Some(FindBarAction::Next)
+            );
+        });
+        assert_eq!(bar.query, "one");
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(bar.show(ui, Revision::INITIAL, source, selection), None);
+        });
+        assert_eq!(bar.query, "onex");
+
+        let (context, mut bar) = focused_bar(false);
+        let repeated = egui::RawInput {
+            events: vec![enter_key(), enter_key()],
+            ..Default::default()
+        };
+        let _ = context.run_ui(repeated, |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, selection),
+                Some(FindBarAction::Next)
+            );
+        });
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, selection),
+                Some(FindBarAction::Next)
+            );
+        });
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(bar.show(ui, Revision::INITIAL, source, selection), None);
+        });
+    }
+
+    #[test]
+    fn replacement_enter_actions_preserve_input_event_order() {
+        let source = "one two one";
+        let selection = Selection::new(0, 3);
+
+        let (context, mut bar) = focused_bar(true);
+        let prefix = egui::RawInput {
+            events: vec![egui::Event::Text("x".to_owned()), enter_key()],
+            ..Default::default()
+        };
+        let _ = context.run_ui(prefix, |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, selection),
+                Some(FindBarAction::Replace)
+            );
+        });
+        assert_eq!(bar.replacement, "x");
+
+        let (context, mut bar) = focused_bar(true);
+        let suffix = egui::RawInput {
+            events: vec![enter_key(), egui::Event::Text("x".to_owned())],
+            ..Default::default()
+        };
+        let _ = context.run_ui(suffix, |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, selection),
+                Some(FindBarAction::Replace)
+            );
+        });
+        assert!(bar.replacement.is_empty());
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(bar.show(ui, Revision::INITIAL, source, selection), None);
+        });
+        assert_eq!(bar.replacement, "x");
+
+        let (context, mut bar) = focused_bar(true);
+        let repeated = egui::RawInput {
+            events: vec![enter_key(), enter_key()],
+            ..Default::default()
+        };
+        let _ = context.run_ui(repeated, |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, selection),
+                Some(FindBarAction::Replace)
+            );
+        });
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, selection),
+                Some(FindBarAction::Replace)
+            );
+        });
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(bar.show(ui, Revision::INITIAL, source, selection), None);
+        });
+    }
+
+    #[test]
+    fn find_enter_waits_for_an_earlier_focus_change() {
+        let source = "one two one";
+        let selection = Selection::new(0, 3);
+
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut bar = FindBar::default();
+        bar.open(true, source, selection);
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(bar.show(ui, Revision::INITIAL, source, selection), None);
+        });
+        let focus_replacement =
+            egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Focus,
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: egui::Id::new(REPLACEMENT_ID).accesskit_id(),
+                data: None,
+            });
+        let focus_then_enter = egui::RawInput {
+            events: vec![focus_replacement, enter_key()],
+            ..Default::default()
+        };
+        let _ = context.run_ui(focus_then_enter, |ui| {
+            assert_eq!(bar.show(ui, Revision::INITIAL, source, selection), None);
+        });
+        assert!(context.memory(|memory| memory.has_focus(egui::Id::new(REPLACEMENT_ID))));
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, selection),
+                Some(FindBarAction::Replace)
+            );
+        });
+    }
+
+    #[test]
+    fn find_escape_keeps_field_text_on_its_correct_side_of_close() {
+        let source = "one two one";
+        let selection = Selection::new(0, 3);
+        let escape = || egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+
+        let (context, mut bar) = focused_bar(false);
+        let text_then_escape = egui::RawInput {
+            events: vec![egui::Event::Text("x".to_owned()), escape()],
+            ..Default::default()
+        };
+        let _ = context.run_ui(text_then_escape, |ui| {
+            assert_eq!(bar.show(ui, Revision::INITIAL, source, selection), None);
+        });
+        assert_eq!(bar.query, "onex");
+        assert!(bar.is_open());
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, selection),
+                Some(FindBarAction::Close)
+            );
+        });
+        assert!(!bar.is_open());
+
+        let (context, mut bar) = focused_bar(false);
+        let escape_then_text = egui::RawInput {
+            events: vec![escape(), egui::Event::Text("x".to_owned())],
+            ..Default::default()
+        };
+        let _ = context.run_ui(escape_then_text, |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, selection),
+                Some(FindBarAction::Close)
+            );
+        });
+        assert_eq!(bar.query, "one");
         assert!(!bar.is_open());
     }
 

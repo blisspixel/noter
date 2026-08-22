@@ -2,9 +2,10 @@
 
 **Reviewed:** 2026-08-02
 
-**Current status:** The distribution workflow is prepared, but Noter has not
-published a supported binary release. Running a publication job requires an
-explicit release decision after every gate below passes.
+**Current status:** Noter publishes explicitly scoped prerelease builds for
+careful dogfood. No supported stable binary release has been published. Running
+a publication job requires an explicit release decision and evidence for the
+applicable checkpoint.
 
 ## Release outputs
 
@@ -28,6 +29,13 @@ not describe unsigned artifacts as signed.
 
 ## Required release gate
 
+The complete gate below applies to a release candidate or stable release. An
+earlier alpha prerelease may publish only when the roadmap defines a narrower
+checkpoint, a dedicated correctness matrix records every pass and limitation,
+deferred rows are assigned to a later blocking milestone, and the release notes
+state the backup, signing, and platform-evidence limits. No checkpoint may
+defer a critical or high security or data-safety defect.
+
 1. The version, lockfile, changelog, and release notes agree.
 2. The candidate is the exact clean tip of the protected `main` branch.
 3. Required CI, dependency audit, license policy, coverage, mutation, and
@@ -46,7 +54,7 @@ not describe unsigned artifacts as signed.
 
 The first public artifact should remain a prerelease until the full M7 exit
 criteria are met. The current workflow rejects stable version tags and accepts
-only a matching prerelease version such as `0.1.0-alpha.1` committed in both
+only a matching prerelease version such as `0.1.0-alpha.2` committed in both
 workspace packages.
 
 Windows Installer compares only the first three numeric ProductVersion fields.

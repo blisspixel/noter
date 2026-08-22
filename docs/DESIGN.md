@@ -612,7 +612,10 @@ the trusted save expectation and saves.
 
 Dialogs cannot directly mutate document state. They emit commands to the same
 dispatcher used by keyboard shortcuts and menus. Repeated close events are
-idempotent while a decision is open.
+idempotent while a decision is open. Discard advances recovery before the
+selected action runs. If an Open dialog is cancelled, or Open or Reload fails,
+the still-dirty document is immediately registered with the fresh recovery
+identity and its next persistence wake-up is scheduled.
 
 ### 7.2 Recovery storage
 
@@ -656,6 +659,24 @@ completion cannot reintroduce recovery after clean state. Clock regression
 schedules an immediate persist rather than disabling the recovery-point
 objective. A recovery write failure is a visible warning and never permits
 silent close.
+
+Each process holds an exclusive sibling lease for the complete lifetime of its
+current recovery instance. Save removes only the content record, not that
+lease, so later unsaved edits under the same identity remain hidden from other
+living windows. New, Open, Restore, and Discard advance the scheduler epoch,
+publish it to the worker gate, release the prior lease, and acquire the new
+lease. Lease acquisition or ownership-probe errors make recovery unavailable
+for that session or startup scan. Unknown ownership never exposes Restore or
+Discard. The single FIFO worker conditionally removes stale records before or
+immediately after its own write; stale UI acknowledgements are inert so they
+cannot delete a newer worker result.
+
+Restore first reserves the successor identity and exclusive lease, then writes
+the recovered bytes under that successor, and only then deletes the startup
+record. A crash between those steps can leave two private copies but never zero.
+If identity, lease, write, or old-record cleanup fails, the startup offer stays
+open and the application reports the failure instead of installing a dirty
+document whose only remaining copy is memory.
 
 Startup walks the entire records directory. Valid records are offered (at most
 32 per launch); surplus valid records remain for a later session. Corrupt or

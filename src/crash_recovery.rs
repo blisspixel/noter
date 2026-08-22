@@ -34,11 +34,16 @@ pub const RECOVERY_STATE_SUBDIR: &str = "recovery";
 /// Application id shared with eframe persistence (`app.ron`).
 pub const NOTER_APP_ID: &str = "Noter";
 
+#[cfg(feature = "screenshot-qa")]
+const SCREENSHOT_QA_STATE_DIRECTORY_ENV: &str = "NOTER_SCREENSHOT_QA_STATE_DIRECTORY";
+
 /// User-visible message when a recovery write fails. No paths or content.
 pub const RECOVERY_PERSIST_FAILURE_MESSAGE: &str = "Noter could not update its private recovery copy of this document. Your text is still in this window. Keep the window open and save when you can.";
 
 /// User-visible message when the recovery store cannot open.
-pub const RECOVERY_UNAVAILABLE_MESSAGE: &str = "Private crash recovery is unavailable in this session because Noter could not open its per-user recovery folder. Saves still work; keep backups of important work.";
+pub const RECOVERY_UNAVAILABLE_MESSAGE: &str = "Private crash recovery is unavailable in this session because Noter could not safely open or own its private recovery storage. Saves still work; keep backups of important work.";
+
+const RECOVERY_RESTORE_RETAINED_MESSAGE: &str = "Noter could not safely transfer this recovery copy to the current window. The private recovery copy was kept. Choose Later, keep backups, and retry after checking the recovery storage.";
 
 /// Maximum length of a quarantine notice shown at startup.
 const MAX_QUARANTINE_NOTICE_BYTES: usize = 240;
@@ -53,8 +58,14 @@ struct PersistJob {
 struct PersistOutcome {
     revision: Revision,
     epoch: u64,
-    instance_id: RecoveryInstanceId,
     succeeded: bool,
+}
+
+struct PreparedRecoveryIdentity {
+    document_id: RecoveryDocumentId,
+    instance_id: RecoveryInstanceId,
+    created_wall: RecoveryWallTime,
+    live_lease: File,
 }
 
 /// Resolves the per-user state directory used for preferences and recovery.
@@ -62,6 +73,10 @@ struct PersistOutcome {
 /// Matches eframe's `storage_dir("Noter")` layout documented in INSTALLATION.md.
 #[must_use]
 pub fn noter_state_directory() -> Option<PathBuf> {
+    #[cfg(feature = "screenshot-qa")]
+    if let Some(path) = std::env::var_os(SCREENSHOT_QA_STATE_DIRECTORY_ENV) {
+        return Some(PathBuf::from(path));
+    }
     eframe::storage_dir(NOTER_APP_ID)
 }
 
@@ -152,7 +167,9 @@ impl CrashRecoverySession {
                 session.attach_persist_worker();
                 session.store = Some(store);
                 session.acquire_live_lease();
-                session.ingest_scan();
+                if !session.unavailable {
+                    session.ingest_scan();
+                }
             }
             Err(_) => {
                 session.unavailable = true;
@@ -294,26 +311,24 @@ impl CrashRecoverySession {
 
     /// Restores the active offer into an in-memory dirty document and selection.
     ///
-    /// The on-disk recovery record for that instance is removed after a successful
-    /// load so a later launch does not re-offer the same bytes.
+    /// The offered instance record is removed only after the same bytes have
+    /// been durably written under a newly leased successor identity.
     ///
     /// # Errors
     ///
-    /// Returns an error when there is no open offer or content cannot become a
-    /// document.
+    /// Returns an error when there is no open offer, content cannot become a
+    /// document, or the durable successor transfer cannot complete. Transfer
+    /// failure keeps the offered record open.
     pub fn restore_active_offer(&mut self) -> Result<(Document, Selection), String> {
         let index = self
             .active_offer_index
             .ok_or_else(|| "No recovery offer is open.".to_owned())?;
-        let offer = self
+        let record = self
             .startup_offers
-            .get_mut(index)
+            .get(index)
+            .filter(|offer| offer.is_open())
+            .map(|offer| offer.record.clone())
             .ok_or_else(|| "No recovery offer is open.".to_owned())?;
-        if !offer.is_open() {
-            return Err("No recovery offer is open.".to_owned());
-        }
-        let _ = offer.offer.decide(RecoveryOfferDecision::Restore);
-        let record = offer.record.clone();
         let selection = record.selection();
 
         let mut document = Document::from_bytes(record.content())
@@ -321,13 +336,43 @@ impl CrashRecoverySession {
         document.mark_recovered_dirty();
         debug_assert!(document.is_dirty());
 
-        if let Some(store) = self.store.as_ref() {
-            let _ = store.delete_instance(record.instance_id());
+        let Ok(prepared) = self.prepare_fresh_identity(record.document_id()) else {
+            self.mark_unavailable_for_identity_failure();
+            return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
+        };
+        let Ok(replacement_snapshot) = RecoverySnapshot::try_new(RecoverySnapshotParts {
+            document_id: prepared.document_id,
+            instance_id: prepared.instance_id,
+            revision: document.revision(),
+            created_at: prepared.created_wall,
+            updated_at: wall_now(),
+            original_path: record.original_path().to_vec(),
+            bom: record.bom(),
+            encoding: record.encoding(),
+            selection,
+            content: record.content().to_vec(),
+        }) else {
+            self.release_prepared_identity(prepared);
+            return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
+        };
+        let Some(store) = self.store.as_ref() else {
+            self.release_prepared_identity(prepared);
+            self.mark_unavailable_for_identity_failure();
+            return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
+        };
+        if store.persist(&replacement_snapshot).is_err()
+            || store.delete_instance(record.instance_id()).is_err()
+        {
+            let _ = store.delete_record(prepared.instance_id);
+            self.release_prepared_identity(prepared);
+            return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
         }
 
+        if let Some(offer) = self.startup_offers.get_mut(index) {
+            let _ = offer.offer.decide(RecoveryOfferDecision::Restore);
+        }
         self.finish_offer_slot(index);
-        self.begin_fresh_identity();
-        self.document_id = record.document_id();
+        self.commit_fresh_identity(prepared);
         Ok((document, selection))
     }
 
@@ -384,20 +429,55 @@ impl CrashRecoverySession {
     /// unavailable for the rest of the session so the adapter never persists
     /// with a weak or zero identity that could collide with another session.
     pub fn begin_fresh_identity(&mut self) {
+        let prepared =
+            random_document_id().and_then(|document_id| self.prepare_fresh_identity(document_id));
+        match prepared {
+            Ok(prepared) => self.commit_fresh_identity(prepared),
+            Err(()) => self.mark_unavailable_for_identity_failure(),
+        }
+    }
+
+    fn prepare_fresh_identity(
+        &self,
+        document_id: RecoveryDocumentId,
+    ) -> Result<PreparedRecoveryIdentity, ()> {
+        if self.unavailable {
+            return Err(());
+        }
+        let store = self.store.as_ref().ok_or(())?;
+        let instance_id = random_instance_id()?;
+        let live_lease = store.try_hold_live_lease(instance_id).map_err(|_| ())?;
+        Ok(PreparedRecoveryIdentity {
+            document_id,
+            instance_id,
+            created_wall: wall_now(),
+            live_lease,
+        })
+    }
+
+    fn commit_fresh_identity(&mut self, prepared: PreparedRecoveryIdentity) {
         let previous_instance = self.instance_id;
-        match (random_document_id(), random_instance_id()) {
-            (Ok(document_id), Ok(instance_id)) => {
-                self.document_id = document_id;
-                self.instance_id = instance_id;
-                self.created_wall = wall_now();
-                self.schedule = RecoveryScheduleState::default();
-                self.persist_failure = false;
-                self.release_live_lease_for(previous_instance);
-                self.acquire_live_lease();
-            }
-            _ => {
-                self.mark_unavailable_for_identity_failure();
-            }
+        let previous_lease = self.live_lease.take();
+        self.document_id = prepared.document_id;
+        self.instance_id = prepared.instance_id;
+        self.created_wall = prepared.created_wall;
+        self.schedule.reset_for_new_identity();
+        self.persist_epoch_gate
+            .store(self.schedule.epoch(), Ordering::Release);
+        self.persist_failure = false;
+        self.unavailable = false;
+        self.live_lease = Some(prepared.live_lease);
+        drop(previous_lease);
+        if let Some(store) = self.store.as_ref() {
+            let _ = fs::remove_file(store.live_path(previous_instance));
+        }
+    }
+
+    fn release_prepared_identity(&self, prepared: PreparedRecoveryIdentity) {
+        let instance_id = prepared.instance_id;
+        drop(prepared.live_lease);
+        if let Some(store) = self.store.as_ref() {
+            let _ = fs::remove_file(store.live_path(instance_id));
         }
     }
 
@@ -408,6 +488,9 @@ impl CrashRecoverySession {
         };
         if let Ok(file) = store.try_hold_live_lease(self.instance_id) {
             self.live_lease = Some(file);
+        } else {
+            self.unavailable = true;
+            self.persist_failure = false;
         }
     }
 
@@ -420,7 +503,9 @@ impl CrashRecoverySession {
 
     fn mark_unavailable_for_identity_failure(&mut self) {
         self.unavailable = true;
-        self.schedule = RecoveryScheduleState::default();
+        self.schedule.reset_for_new_identity();
+        self.persist_epoch_gate
+            .store(self.schedule.epoch(), Ordering::Release);
         self.persist_failure = false;
     }
 
@@ -522,7 +607,7 @@ impl CrashRecoverySession {
             }
             RecoveryScheduleEffect::DeleteOwned { epoch: _ } => {
                 if let Some(store) = self.store.as_ref() {
-                    let _ = store.delete_instance(self.instance_id);
+                    let _ = store.delete_record(self.instance_id);
                 }
             }
         }
@@ -628,9 +713,6 @@ impl CrashRecoverySession {
     fn apply_persist_outcome(&mut self, outcome: &PersistOutcome) {
         let now = self.monotonic_now();
         if outcome.epoch != self.schedule.epoch() {
-            if let Some(store) = self.store.as_ref() {
-                let _ = store.delete_instance(outcome.instance_id);
-            }
             return;
         }
         if outcome.succeeded {
@@ -701,12 +783,11 @@ fn persist_worker_loop(
         let instance_id = job.snapshot.instance_id();
         let current_epoch = epoch_gate.load(Ordering::Acquire);
         if job.epoch != current_epoch {
-            let _ = job.store.delete_instance(instance_id);
+            let _ = job.store.delete_record(instance_id);
             if outcomes
                 .send(PersistOutcome {
                     revision: job.revision,
                     epoch: job.epoch,
-                    instance_id,
                     succeeded: false,
                 })
                 .is_err()
@@ -717,11 +798,10 @@ fn persist_worker_loop(
         }
         let succeeded = job.store.persist(&job.snapshot).is_ok();
         if epoch_gate.load(Ordering::Acquire) != job.epoch {
-            let _ = job.store.delete_instance(instance_id);
+            let _ = job.store.delete_record(instance_id);
             let _ = outcomes.send(PersistOutcome {
                 revision: job.revision,
                 epoch: job.epoch,
-                instance_id,
                 succeeded: false,
             });
             continue;
@@ -730,7 +810,6 @@ fn persist_worker_loop(
             .send(PersistOutcome {
                 revision: job.revision,
                 epoch: job.epoch,
-                instance_id,
                 succeeded,
             })
             .is_err()
@@ -800,7 +879,7 @@ mod tests {
     use super::*;
     use noter::core::recovery::{
         RecoveryDocumentId, RecoveryInstanceId, RecoverySnapshot, RecoverySnapshotParts,
-        RecoveryWallTime,
+        RecoveryWallTime, validate_recovery_record,
     };
     use noter::core::revision::Revision;
     use noter::core::text_format::{Bom, Encoding};
@@ -827,6 +906,26 @@ mod tests {
             created_at: RecoveryWallTime::from_unix_millis(1),
             updated_at: RecoveryWallTime::from_unix_millis(2),
             original_path: b"notes.txt".to_vec(),
+            bom: Bom::Absent,
+            encoding: Encoding::Utf8,
+            selection: Selection::caret(0),
+            content: content.to_vec(),
+        })
+        .expect("snapshot")
+    }
+
+    fn snapshot_for(
+        instance_id: RecoveryInstanceId,
+        revision: Revision,
+        content: &[u8],
+    ) -> RecoverySnapshot {
+        RecoverySnapshot::try_new(RecoverySnapshotParts {
+            document_id: RecoveryDocumentId::new([2; 16]),
+            instance_id,
+            revision,
+            created_at: RecoveryWallTime::from_unix_millis(1),
+            updated_at: RecoveryWallTime::from_unix_millis(2),
+            original_path: b"recovery-test.txt".to_vec(),
             bom: Bom::Absent,
             encoding: Encoding::Utf8,
             selection: Selection::caret(0),
@@ -864,6 +963,32 @@ mod tests {
         assert_eq!(selection, Selection::caret(0));
         assert!(session.active_offer().is_none());
         assert!(store.scan_startup().expect("rescan").is_empty());
+    }
+
+    #[test]
+    fn restore_keeps_the_durable_offer_when_successor_storage_is_unavailable() {
+        let dir = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        let snapshot = sample_snapshot(8, b"only durable recovery");
+        let original_record = store.record_path(snapshot.instance_id());
+        store.persist(&snapshot).expect("persist");
+        let mut session = CrashRecoverySession::open_at(dir.path());
+        assert!(session.active_offer().is_some());
+
+        session.store = None;
+        let Err(error) = session.restore_active_offer() else {
+            panic!("restore must stop before deleting the only record");
+        };
+
+        assert_eq!(error, RECOVERY_RESTORE_RETAINED_MESSAGE);
+        assert!(session.is_unavailable());
+        assert!(session.active_offer().is_some());
+        assert!(original_record.exists());
+        let encoded = fs::read(original_record).expect("retained record");
+        let RecoveryStartupDisposition::Offer(record) = validate_recovery_record(&encoded) else {
+            panic!("retained record must remain valid");
+        };
+        assert_eq!(record.content(), b"only durable recovery");
     }
 
     #[test]
@@ -959,6 +1084,96 @@ mod tests {
             .active_offer()
             .expect("dead window should offer restore");
         assert_eq!(offer.record().content(), b"owned draft");
+    }
+
+    #[test]
+    fn stale_worker_outcome_cannot_delete_a_newer_record() {
+        let dir = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        let mut session = CrashRecoverySession::open_at(dir.path());
+        let instance_id = session.instance_id;
+        let stale_revision = Revision::new(1);
+        let current_revision = Revision::new(2);
+
+        let _ = session
+            .schedule
+            .reduce(RecoveryScheduleCommand::BecameClean {
+                revision: stale_revision,
+            });
+        let current_epoch = session.schedule.epoch();
+        let _ = session.schedule.reduce(RecoveryScheduleCommand::Edited {
+            revision: current_revision,
+            now: RecoveryClock::new(Duration::ZERO),
+        });
+        let _ = session.schedule.reduce(RecoveryScheduleCommand::Tick {
+            now: RecoveryClock::new(Duration::from_secs(2)),
+        });
+
+        let (jobs_tx, jobs_rx) = mpsc::channel();
+        let (outcomes_tx, outcomes_rx) = mpsc::channel();
+        let gate = Arc::new(AtomicU64::new(current_epoch));
+        let worker_gate = Arc::clone(&gate);
+        let worker = thread::spawn(move || {
+            persist_worker_loop(jobs_rx, outcomes_tx, worker_gate);
+        });
+        jobs_tx
+            .send(PersistJob {
+                store: store.clone(),
+                snapshot: snapshot_for(instance_id, stale_revision, b"stale"),
+                revision: stale_revision,
+                epoch: current_epoch - 1,
+            })
+            .expect("stale job");
+        jobs_tx
+            .send(PersistJob {
+                store: store.clone(),
+                snapshot: snapshot_for(instance_id, current_revision, b"newer recovery"),
+                revision: current_revision,
+                epoch: current_epoch,
+            })
+            .expect("current job");
+        drop(jobs_tx);
+        worker.join().expect("worker");
+
+        session.persist_outcomes = Some(outcomes_rx);
+        session.poll_persist_outcomes();
+
+        assert_eq!(
+            session.schedule.last_persisted_revision(),
+            Some(current_revision)
+        );
+        let encoded = fs::read(store.record_path(instance_id)).expect("current record");
+        let RecoveryStartupDisposition::Offer(record) = validate_recovery_record(&encoded) else {
+            panic!("current record must remain valid");
+        };
+        assert_eq!(record.content(), b"newer recovery");
+    }
+
+    #[test]
+    fn lease_errors_disable_recovery_and_fail_startup_scan_closed() {
+        let dir = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        let mut owner = CrashRecoverySession::open_at(dir.path());
+        let owner_instance = owner.instance_id;
+        let mut document = Document::new();
+        document.replace_text("live unsaved work").expect("edit");
+        owner.on_edited(&document, Selection::caret(0));
+        owner.session_started = Instant::now()
+            .checked_sub(Duration::from_secs(3))
+            .expect("clock");
+        owner.on_tick(&document, Selection::caret(0));
+        owner.wait_for_persist(&document, Selection::caret(0));
+
+        owner.release_live_lease_for(owner_instance);
+        fs::create_dir(store.live_path(owner_instance)).expect("blocking lease path");
+        owner.acquire_live_lease();
+
+        assert!(owner.is_unavailable());
+        assert!(store.record_path(owner_instance).exists());
+        let other = CrashRecoverySession::open_at(dir.path());
+        assert!(other.is_unavailable());
+        assert!(other.active_offer().is_none());
+        assert!(store.record_path(owner_instance).exists());
     }
 
     #[test]
@@ -1066,6 +1281,75 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    #[test]
+    fn save_keeps_the_live_lease_for_later_unsaved_edits() {
+        let dir = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        let mut owner = CrashRecoverySession::open_at(dir.path());
+        let owner_instance = owner.instance_id;
+        let mut document = Document::new();
+        document.replace_text("before save").expect("edit");
+        owner.on_edited(&document, Selection::caret(0));
+        owner.session_started = Instant::now()
+            .checked_sub(Duration::from_secs(3))
+            .expect("clock");
+        owner.on_tick(&document, Selection::caret(0));
+        owner.wait_for_persist(&document, Selection::caret(0));
+
+        owner.on_saved_clean(document.revision());
+
+        assert!(store.live_path(owner_instance).exists());
+        assert!(store.instance_is_live(owner_instance).expect("probe"));
+        document.replace_text("after save").expect("second edit");
+        owner.on_edited(&document, Selection::caret(0));
+        owner.session_started = Instant::now()
+            .checked_sub(Duration::from_secs(6))
+            .expect("clock");
+        owner.on_tick(&document, Selection::caret(0));
+        owner.wait_for_persist(&document, Selection::caret(0));
+
+        let other = CrashRecoverySession::open_at(dir.path());
+        assert!(other.active_offer().is_none());
+        assert!(store.record_path(owner_instance).exists());
+    }
+
+    #[test]
+    fn fresh_identity_keeps_worker_epoch_in_sync() {
+        let dir = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        let mut session = CrashRecoverySession::open_at(dir.path());
+        let mut first = Document::new();
+        first.replace_text("first document").expect("edit");
+        session.on_edited(&first, Selection::caret(0));
+        session.session_started = Instant::now()
+            .checked_sub(Duration::from_secs(3))
+            .expect("clock");
+        session.on_tick(&first, Selection::caret(0));
+        session.wait_for_persist(&first, Selection::caret(0));
+        session.on_saved_clean(first.revision());
+
+        let previous_epoch = session.schedule.epoch();
+        session.begin_fresh_identity();
+        let second_instance = session.instance_id;
+        assert_eq!(session.schedule.epoch(), previous_epoch.wrapping_add(1));
+        assert_eq!(
+            session.persist_epoch_gate.load(Ordering::Acquire),
+            session.schedule.epoch()
+        );
+
+        let mut second = Document::new();
+        second.replace_text("second document").expect("edit");
+        session.on_edited(&second, Selection::caret(0));
+        session.session_started = Instant::now()
+            .checked_sub(Duration::from_secs(6))
+            .expect("clock");
+        session.on_tick(&second, Selection::caret(0));
+        session.wait_for_persist(&second, Selection::caret(0));
+
+        assert!(!session.has_persist_failure());
+        assert!(store.record_path(second_instance).exists());
     }
 
     #[test]

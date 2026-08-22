@@ -109,6 +109,12 @@ contrast, demo content, dimensions, and the absence of private data. The manual
 release expectations are in
 [manual-test-matrix.md](manual-test-matrix.md).
 
+Builds with `screenshot-qa` also honor
+`NOTER_SCREENSHOT_QA_STATE_DIRECTORY` as an isolated state root for live crash
+recovery exercises. Production builds ignore that environment variable. Use a
+new temporary directory for each exercise and remove it after the process is
+closed and the evidence has been reviewed.
+
 ## Repository hygiene
 
 - Keep application code in `src/` or the appropriate workspace crate.

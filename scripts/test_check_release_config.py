@@ -600,7 +600,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
 
     def test_rejects_an_msi_without_a_monotonic_package_sequence(self) -> None:
-        changed = self.wix.replace(b"Version='0.0.1'", b"Version='$(var.Version)'", 1)
+        changed = self.wix.replace(b"Version='0.0.2'", b"Version='$(var.Version)'", 1)
         self.assertIn(
             "MSI package version differs from its monotonic release sequence",
             validate_wix(changed),

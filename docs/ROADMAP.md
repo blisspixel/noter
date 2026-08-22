@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-08-21
+**Updated:** 2026-08-22
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -22,8 +22,8 @@ criteria and evidence land on one immutable green commit.
 
 | Version | Product meaning | Primary milestones | Status |
 | --- | --- | --- | --- |
-| `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1–M4 and M6 partial | Current crate version |
-| `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups | Recovery, clipboard, overwrite confirm, and first-contact honesty are in tree; remaining live GUI force-kill and non-Windows smoke evidence | **Next** |
+| `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1–M4 and M6 partial | Prior crate checkpoint |
+| `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups | Recovery, clipboard, overwrite confirm, first-contact honesty, and alpha evidence | **Release candidate** |
 | `0.1.0-beta.1` | Production editor path: measured performance, IME, accessibility | M5 feasibility gate and production editor; continuous Markdown editing foundation | After alpha.2 |
 | `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.1 |
 | `0.1.0` | First public-quality release | Every v0.1 requirement in REQUIREMENTS has evidence | After successful RC dogfood |
@@ -62,9 +62,15 @@ does not expand unsafe UI surface.
 7. **Partial:** M2 installed-product evidence — disposable Windows source
    install recorded; interactive About GUI and packaged installers remain open.
    Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
-8. **Partial gate:** [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md)
-   scores the dogfood rows at exact-head `85bf83d`. Live GUI force-kill timing
-   and interactive non-Windows smoke remain open before the version label.
+8. **Release gate in progress:**
+   [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) records the
+   current implementation commit, local gates, and a 2026-08-22 Windows live
+   GUI pass covering idle recovery persistence, force-kill, restart offer,
+   exact restored editor text, explicit discard, and clean lease removal.
+   Interactive non-Windows GUI smoke is explicitly deferred to beta.1 because
+   this release host has no interactive non-Windows desktop. Alpha.2 remains a
+   prerelease, and exact-head hosted Windows, Linux, and macOS CI is still
+   required before its tag.
 
 ### Toward `0.1.0-beta.1`
 
@@ -100,12 +106,12 @@ does not expand unsafe UI surface.
 | M6 | Native Markdown editor and quality engine | In progress |
 | M7 | Cross-platform distribution and first public-quality release | Planned |
 
-## Next checkpoint: `0.1.0-alpha.2` correctness alpha
+## Current checkpoint: `0.1.0-alpha.2` correctness alpha
 
-The next product checkpoint is a dogfoodable correctness alpha, not a relabeling
-of incomplete work. Kill-process recovery, clipboard parity, conflict overwrite
-confirmation, and the remaining trust evidence are required. M5 through M7
-remain first-release work after that checkpoint.
+The current product checkpoint is a dogfoodable correctness alpha, not a claim
+of public-release completeness. Kill-process recovery, clipboard parity,
+conflict overwrite confirmation, and the alpha trust evidence are included. M5
+through M7 remain first-release work after this checkpoint.
 
 The current tree already has deterministic Undo coalescing, bounded Find and
 Replace, the pure lifecycle reducer, external-change Reload / Keep Editing /
@@ -117,11 +123,17 @@ Discard, and shows persist failure, and Edit-menu Cut / Copy / Paste on the
 shared edit-command path, pure caret navigation for character, word, line home
 and end, and document units, a long-session undo history bound fixture, and
 platform keyboard policy that routes word / Home-End / document gestures
-through that pure path in Text Mode and the Markdown active block. A partial
-alpha.2 correctness matrix at exact-head `85bf83d` is recorded in
-[ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md). Remaining work
-before the version label is live GUI force-kill recovery timing, interactive
-non-Windows smoke, and optional additional M1/M2 environments.
+through that pure path in Text Mode and the Markdown active block. Recovery
+record cleanup now preserves the process-lifetime live lease, ownership errors
+fail closed, identity changes keep worker epochs monotonic, and stale UI
+completions cannot delete newer records. Markdown automatic Enter and inline
+reopening are preflighted against the active source budget so an oversized
+operation cannot remove an existing suffix. The alpha.2 correctness record in
+[ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) includes the live
+Windows force-kill and restore result. Interactive non-Windows GUI smoke is
+deferred to beta.1 with the limitation stated in the release evidence. Optional
+additional M1 and M2 environments remain valuable but do not block this
+careful prerelease dogfood checkpoint.
 
 ## Product boundaries
 
@@ -464,12 +476,13 @@ sleeps between frames still wakes to meet the recovery-point objective instead o
 silently extending it to the next unrelated repaint. Durable recovery write and
 `fsync` run on a dedicated `noter-recovery` worker rather than the render
 thread; the UI only captures a revision snapshot and applies epoch-tagged
-completions. A living window holds an exclusive lease on its instance so
-another Noter process cannot Restore or Discard that in-flight copy; a crash
-releases the lease. Live
-GUI force-kill recovery timing and the remaining interactive matrix rows in
-[ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) remain open
-before the `0.1.0-alpha.2` label.
+completions. A living window holds an exclusive lease on its instance for the
+entire identity lifetime, including across Save, so another Noter process
+cannot Restore or Discard that in-flight copy. Lease acquisition and probe
+errors fail closed, and a crash releases the lease. A live Windows GUI test
+proved idle persistence, force-kill, startup Restore, exact recovered editor
+text, and explicit-discard cleanup. Interactive non-Windows GUI recovery and
+navigation remain a beta.1 gate and are not claimed by the alpha.2 prerelease.
 
 ### Exit criteria
 
@@ -660,8 +673,8 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 
 ## Immediate backlog (maps to version train)
 
-Ordered for `0.1.0-alpha.2` first. Completed historical items stay listed only
-when they document evidence links.
+The alpha.2 correctness work is complete pending immutable exact-head CI and
+publication. The next implementation gate is beta.1 editor feasibility.
 
 1. **Done:** Markdown keyboard navigation parity with Text Mode; pure word /
    Home-End / document policy and long-session history fixture.
@@ -674,10 +687,11 @@ when they document evidence links.
 4. **Partial evidence:** disposable Windows source install and related unit
    paths. Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
    Interactive About GUI, theme GUI relaunch, and packaged installers remain.
-5. **Partial:** [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) at
-   exact-head `85bf83d`; finish live GUI force-kill recovery and interactive
-   non-Windows smoke, then tag `0.1.0-alpha.2` only on that green commit.
-6. **Then `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
+5. **Alpha.2 release evidence:** keep
+   [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) paired with the
+   immutable implementation commit, then tag only after the final evidence head
+   and protected-main head both pass exact-head CI.
+6. **Next, `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
    production editor contract is stable.
 7. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC

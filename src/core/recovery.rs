@@ -617,6 +617,19 @@ impl RecoveryScheduleState {
         self.epoch
     }
 
+    /// Clears document-specific scheduling state while advancing the epoch.
+    ///
+    /// Adapters use this when a window starts tracking a new document
+    /// identity. Keeping the epoch monotonic invalidates queued work from the
+    /// previous identity without making a fresh worker job look stale.
+    pub fn reset_for_new_identity(&mut self) {
+        let epoch = self.epoch.wrapping_add(1);
+        *self = Self {
+            epoch,
+            ..Self::default()
+        };
+    }
+
     /// Returns how long an adapter may sleep before the next `Tick` is due.
     ///
     /// `None` means no persist is outstanding, so the adapter needs no timer at
@@ -1671,6 +1684,27 @@ mod tests {
         );
         assert!(!state.is_dirty());
         assert_eq!(state.current_revision(), Revision::INITIAL);
+    }
+
+    #[test]
+    fn new_identity_clears_document_state_and_advances_epoch() {
+        let mut state = RecoveryScheduleState::default();
+        let _ = state.reduce(RecoveryScheduleCommand::Edited {
+            revision: Revision::new(7),
+            now: RecoveryClock::new(Duration::from_secs(0)),
+        });
+        let _ = state.reduce(RecoveryScheduleCommand::Tick {
+            now: RecoveryClock::new(Duration::from_secs(2)),
+        });
+        let previous_epoch = state.epoch();
+
+        state.reset_for_new_identity();
+
+        assert_eq!(state.epoch(), previous_epoch.wrapping_add(1));
+        assert!(!state.is_dirty());
+        assert_eq!(state.current_revision(), Revision::INITIAL);
+        assert!(state.in_flight_revision().is_none());
+        assert!(state.last_persisted_revision().is_none());
     }
 
     #[test]

@@ -6,8 +6,13 @@ use noter::core::line_endings::logical_lines;
 use noter::core::markdown::recoverable_emphasis_spans;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag};
 
-use crate::bounded_text_input::{BoundedTextBuffer, sanitize_bounded_text_events};
-use crate::keyboard_nav::{KeyboardPlatform, consume_navigation_gestures};
+use crate::bounded_text_input::{
+    BoundedTextBuffer, sanitize_bounded_text_events, truncate_to_utf8_byte_limit,
+};
+use crate::keyboard_nav::{
+    KeyboardPlatform, consume_navigation_gestures, editor_event_may_change_focus,
+    editor_event_orders_input, resolve_navigation_gesture,
+};
 
 const ACTIVE_EDITOR_ID: &str = "noter-markdown-active-block";
 const EXPANDED_FORMAT_MIN_WIDTH: f32 = 480.0;
@@ -519,10 +524,14 @@ impl ActiveBlock {
         markdown_command_is_active(&self.draft, self.selection.ordered_range(), command)
     }
 
-    fn apply_line_break_and_reopen_policy(&mut self, ui: &egui::Ui) -> bool {
+    fn apply_line_break_and_reopen_policy(
+        &mut self,
+        ui: &egui::Ui,
+        maximum_draft_bytes: usize,
+    ) -> (bool, bool) {
         if self.selection.anchor != self.selection.active {
             self.pending_reopen = None;
-            return false;
+            return (false, false);
         }
 
         if let Some(pending) = self.pending_reopen
@@ -531,44 +540,61 @@ impl ActiveBlock {
             self.pending_reopen = None;
         }
 
-        let reopened = if let Some(pending) = self.pending_reopen
-            && let Some((inserted, origin)) = take_nonbreak_inserts(ui)
-        {
+        let (reopened, reopen_was_limited) = if let Some(pending) = self.pending_reopen
+            && let Some(insert) = take_leading_nonbreak_inserts(
+                ui,
+                maximum_draft_bytes.saturating_sub(self.draft.len()),
+            ) {
             if let Some((text, caret)) = reopen_inline_run_around_text(
                 &self.draft,
                 self.selection.active,
                 pending.marker,
-                &inserted,
-            ) {
+                &insert.text,
+            )
+            .filter(|(text, _)| text.len() <= maximum_draft_bytes)
+            {
                 self.draft = text;
                 self.selection = CharSelection::caret(caret);
-            } else {
+            } else if !insert.text.is_empty() {
                 let byte = char_index_to_byte(&self.draft, self.selection.active);
-                self.draft.insert_str(byte, &inserted);
+                self.draft.insert_str(byte, &insert.text);
                 self.selection =
-                    CharSelection::caret(self.selection.active + inserted.chars().count());
+                    CharSelection::caret(self.selection.active + insert.text.chars().count());
             }
             self.pending_reopen = None;
-            self.dirty = true;
-            self.pending_origin.get_or_insert(origin);
-            true
+            let changed = !insert.text.is_empty();
+            if changed {
+                self.dirty = true;
+                self.pending_origin.get_or_insert(insert.origin);
+            }
+            (changed, insert.was_limited)
         } else {
-            false
+            (false, false)
         };
 
         let caret = self.selection.active;
         let handles_enter = close_inline_run_for_line_break(&self.draft, caret).is_some()
             || continue_or_exit_line_prefix(&self.draft, caret).is_some();
-        let closed_run = if handles_enter && consume_plain_enter(ui) {
-            self.apply_consumed_enter_break()
+        let enter_count = if handles_enter {
+            consume_leading_plain_enters(ui)
         } else {
-            false
+            0
         };
+        let mut handled_break = false;
+        let mut break_was_limited = false;
+        for _ in 0..enter_count {
+            let (changed, was_limited) = self.apply_consumed_enter_break(maximum_draft_bytes);
+            handled_break |= changed;
+            break_was_limited |= was_limited;
+        }
 
-        reopened || closed_run
+        (
+            reopened || handled_break,
+            reopen_was_limited || break_was_limited,
+        )
     }
 
-    fn apply_consumed_enter_break(&mut self) -> bool {
+    fn apply_consumed_enter_break(&mut self, maximum_draft_bytes: usize) -> (bool, bool) {
         let caret = self.selection.active;
         let prefix = line_prefix_at(&self.draft, caret);
         if let Some(closed) = close_inline_run_for_line_break(&self.draft, caret) {
@@ -579,6 +605,9 @@ impl ActiveBlock {
                 text.insert_str(byte, &prefix.marker);
                 next_caret += prefix.marker.chars().count();
             }
+            if text.len() > maximum_draft_bytes {
+                return (false, true);
+            }
             self.draft = text;
             self.selection = CharSelection::caret(next_caret);
             self.pending_reopen = Some(PendingInlineReopen {
@@ -587,20 +616,37 @@ impl ActiveBlock {
             });
             self.dirty = true;
             self.pending_origin.get_or_insert(EditOrigin::MarkdownInput);
-            return true;
+            return (true, false);
         }
         if let Some((text, next_caret)) = continue_or_exit_line_prefix(&self.draft, caret) {
+            if text.len() > maximum_draft_bytes {
+                return (false, true);
+            }
             self.draft = text;
             self.selection = CharSelection::caret(next_caret);
             self.pending_reopen = None;
             self.dirty = true;
             self.pending_origin.get_or_insert(EditOrigin::MarkdownInput);
-            return true;
+            return (true, false);
         }
-        false
+        if self.draft.len() >= maximum_draft_bytes {
+            return (false, true);
+        }
+        let byte = char_index_to_byte(&self.draft, caret);
+        self.draft.insert(byte, '\n');
+        self.selection = CharSelection::caret(caret + 1);
+        self.pending_reopen = None;
+        self.dirty = true;
+        self.pending_origin.get_or_insert(EditOrigin::MarkdownInput);
+        (true, false)
     }
 
-    fn apply_focused_editor_input(&mut self, ui: &egui::Ui, os: egui::os::OperatingSystem) -> bool {
+    fn apply_focused_editor_input(
+        &mut self,
+        ui: &egui::Ui,
+        os: egui::os::OperatingSystem,
+        maximum_draft_bytes: usize,
+    ) -> (bool, bool) {
         let gestures = consume_navigation_gestures(ui, KeyboardPlatform::from_egui(os));
         let restored_navigation = if gestures.is_empty() {
             false
@@ -612,8 +658,9 @@ impl ActiveBlock {
             self.selection = CharSelection::from_byte_selection(&self.draft, next);
             true
         };
-        let restored_break = self.apply_line_break_and_reopen_policy(ui);
-        restored_navigation || restored_break
+        let (restored_break, input_was_limited) =
+            self.apply_line_break_and_reopen_policy(ui, maximum_draft_bytes);
+        (restored_navigation || restored_break, input_was_limited)
     }
 
     fn block_style(&self) -> BlockStyleState {
@@ -926,6 +973,9 @@ pub struct MarkdownEditor {
     next_editor_serial: u64,
     rendered_drag: Option<RenderedDragSelection>,
     input_was_limited: bool,
+    deferred_input_events: Vec<egui::Event>,
+    deferred_input_owns_editor: bool,
+    deferred_input_restored: bool,
 }
 
 impl MarkdownEditor {
@@ -934,6 +984,9 @@ impl MarkdownEditor {
         self.finished_selection = None;
         self.rendered_drag = None;
         self.input_was_limited = false;
+        self.deferred_input_events.clear();
+        self.deferred_input_owns_editor = false;
+        self.deferred_input_restored = false;
         self.next_editor_serial = self.next_editor_serial.wrapping_add(1);
     }
 
@@ -1459,6 +1512,7 @@ impl MarkdownEditor {
     fn finish_active(&mut self) {
         self.retire_active();
         self.rendered_drag = None;
+        self.deferred_input_events.clear();
     }
 
     fn retire_active(&mut self) {
@@ -1586,18 +1640,20 @@ impl MarkdownEditor {
         ui: &mut egui::Ui,
         maximum_draft_bytes: usize,
     ) -> (bool, bool, Option<MarkdownProjectionLimit>) {
+        if !self.deferred_input_restored {
+            let _ = self.restore_deferred_input(ui);
+        }
+        let restored_deferred_input = std::mem::take(&mut self.deferred_input_restored);
         let editor_id = self.active.as_ref().map(ActiveBlock::editor_id);
-        let format_command = editor_id
-            .filter(|editor_id| ui.memory(|memory| memory.has_focus(*editor_id)))
-            .and_then(|_| {
-                ui.input_mut(|input| {
-                    MarkdownCommand::WITH_SHORTCUTS.into_iter().find(|command| {
-                        command
-                            .shortcut()
-                            .is_some_and(|shortcut| consume_format_shortcut(input, shortcut))
-                    })
-                })
-            });
+        let editor_accepts_input = editor_id.is_some_and(|editor_id| {
+            restored_deferred_input || ui.memory(|memory| memory.has_focus(editor_id))
+        });
+        if editor_accepts_input {
+            self.serialize_next_custom_input(ui);
+        }
+        let format_command = editor_accepts_input
+            .then(|| Self::take_format_command(ui))
+            .flatten();
         if let Some(command) = format_command {
             self.apply_command(command);
         }
@@ -1608,9 +1664,12 @@ impl MarkdownEditor {
         // Apply pure word/line-home/document policy before TextEdit so Markdown
         // shares one path with Text Mode and unit tests. Plain arrows stay with
         // egui for platform grapheme movement.
-        let editor_focused = ui.memory(|memory| memory.has_focus(editor_id));
-        let restore_selection =
-            editor_focused && active.apply_focused_editor_input(ui, ui.ctx().os());
+        let (restore_selection, policy_was_limited) = if editor_accepts_input {
+            active.apply_focused_editor_input(ui, ui.ctx().os(), maximum_draft_bytes)
+        } else {
+            (false, false)
+        };
+        self.input_was_limited |= policy_was_limited;
         let finish_requested = prepare_escape_finish(ui, editor_id);
         let rows = logical_lines(&active.draft).count().max(1) + 1;
         let input_origin = direct_input_origin(ui);
@@ -1686,6 +1745,80 @@ impl MarkdownEditor {
         output.state.clear_undoer();
         output.state.store(ui.ctx(), output.response.id);
         (changed, finish_requested, live_projection_limit)
+    }
+
+    pub(crate) fn restore_deferred_input(&mut self, ui: &egui::Ui) -> bool {
+        if self.deferred_input_events.is_empty() {
+            return false;
+        }
+        ui.input_mut(|input| {
+            self.deferred_input_events.append(&mut input.events);
+            std::mem::swap(&mut self.deferred_input_events, &mut input.events);
+        });
+        self.deferred_input_restored = std::mem::take(&mut self.deferred_input_owns_editor);
+        self.deferred_input_restored
+    }
+
+    pub(crate) fn discard_deferred_input(&mut self) {
+        self.deferred_input_events.clear();
+        self.deferred_input_owns_editor = false;
+        self.deferred_input_restored = false;
+    }
+
+    pub(crate) const fn finish_input_frame(&mut self) {
+        self.deferred_input_restored = false;
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn has_deferred_input(&self) -> bool {
+        !self.deferred_input_events.is_empty()
+    }
+
+    fn take_format_command(ui: &egui::Ui) -> Option<MarkdownCommand> {
+        ui.input_mut(|input| {
+            let (position, command) =
+                input
+                    .events
+                    .iter()
+                    .enumerate()
+                    .find_map(|(position, event)| {
+                        format_command_for_event(event).map(|command| (position, command))
+                    })?;
+            input.events.remove(position);
+            Some(command)
+        })
+    }
+
+    fn serialize_next_custom_input(&mut self, ui: &egui::Ui) {
+        let mut deferred = Vec::new();
+        let mut deferred_owns_editor = false;
+        let platform = KeyboardPlatform::from_egui(ui.ctx().os());
+        ui.input_mut(|input| {
+            let Some(position) = input
+                .events
+                .iter()
+                .position(|event| markdown_custom_input_event(event, platform))
+            else {
+                return;
+            };
+            if input.events[..position]
+                .iter()
+                .any(editor_event_orders_input)
+            {
+                deferred_owns_editor = !input.events[..position]
+                    .iter()
+                    .any(editor_event_may_change_focus);
+                deferred = input.events.split_off(position);
+            } else if position + 1 < input.events.len() {
+                deferred_owns_editor = true;
+                deferred = input.events.split_off(position + 1);
+            }
+        });
+        if !deferred.is_empty() {
+            self.deferred_input_events = deferred;
+            self.deferred_input_owns_editor = deferred_owns_editor;
+            ui.ctx().request_repaint();
+        }
     }
 }
 
@@ -1802,12 +1935,24 @@ fn is_plain_enter_press(event: &egui::Event) -> bool {
     )
 }
 
-fn consume_plain_enter(ui: &egui::Ui) -> bool {
-    let present = ui.input(|input| input.events.iter().any(is_plain_enter_press));
-    if present {
-        ui.input_mut(|input| input.events.retain(|event| !is_plain_enter_press(event)));
-    }
-    present
+fn consume_leading_plain_enters(ui: &egui::Ui) -> usize {
+    let mut count = 0;
+    ui.input_mut(|input| {
+        let mut blocked = false;
+        input.events.retain(|event| {
+            if blocked {
+                return true;
+            }
+            if is_plain_enter_press(event) {
+                count += 1;
+                false
+            } else {
+                blocked = editor_event_orders_input(event);
+                true
+            }
+        });
+    });
+    count
 }
 
 fn contains_line_break(text: &str) -> bool {
@@ -1816,43 +1961,176 @@ fn contains_line_break(text: &str) -> bool {
         .any(|byte| *byte == b'\n' || *byte == b'\r')
 }
 
-fn take_nonbreak_inserts(ui: &egui::Ui) -> Option<(String, EditOrigin)> {
+struct NonbreakInsert {
+    text: String,
+    origin: EditOrigin,
+    was_limited: bool,
+}
+
+fn take_leading_nonbreak_inserts(ui: &egui::Ui, maximum_bytes: usize) -> Option<NonbreakInsert> {
     let mut collected = String::new();
     let mut origin = EditOrigin::MarkdownInput;
+    let mut consumed = false;
+    let mut was_limited = false;
     ui.input_mut(|input| {
         let mut remaining = Vec::with_capacity(input.events.len());
-        for event in input.events.drain(..) {
-            match &event {
-                egui::Event::Text(text) if !contains_line_break(text) => collected.push_str(text),
-                egui::Event::Paste(text) if !contains_line_break(text) => {
-                    collected.push_str(text);
+        let mut blocked = false;
+        let mut events = std::mem::take(&mut input.events).into_iter().peekable();
+        while let Some(event) = events.next() {
+            if blocked {
+                remaining.push(event);
+                continue;
+            }
+            if is_text_key_precursor(&event, events.peek()) {
+                continue;
+            }
+            let inserted = match event {
+                egui::Event::Text(text) | egui::Event::Ime(egui::ImeEvent::Commit(text))
+                    if !contains_line_break(&text) =>
+                {
+                    consumed = true;
+                    Some(text)
+                }
+                egui::Event::Paste(text) if !contains_line_break(&text) => {
+                    consumed = true;
                     origin = EditOrigin::Paste;
+                    Some(text)
                 }
-                egui::Event::Ime(egui::ImeEvent::Commit(text)) if !contains_line_break(text) => {
-                    collected.push_str(text);
+                event => {
+                    blocked = editor_event_orders_input(&event);
+                    remaining.push(event);
+                    None
                 }
-                _ => remaining.push(event),
+            };
+            if let Some(mut inserted) = inserted {
+                let available = maximum_bytes.saturating_sub(collected.len());
+                was_limited |= truncate_to_utf8_byte_limit(&mut inserted, available);
+                collected.push_str(&inserted);
             }
         }
         input.events = remaining;
     });
-    (!collected.is_empty()).then_some((collected, origin))
+    consumed.then_some(NonbreakInsert {
+        text: collected,
+        origin,
+        was_limited,
+    })
 }
 
-fn consume_format_shortcut(input: &mut egui::InputState, shortcut: egui::KeyboardShortcut) -> bool {
-    let pressed_once = input.events.iter().any(|event| {
-        matches!(
-            event,
-            egui::Event::Key {
-                key,
-                pressed: true,
-                repeat: false,
-                modifiers,
-                ..
-            } if *key == shortcut.logical_key && modifiers.matches_logically(shortcut.modifiers)
-        )
-    });
-    pressed_once && input.consume_shortcut(&shortcut)
+fn is_text_key_precursor(event: &egui::Event, next: Option<&egui::Event>) -> bool {
+    let egui::Event::Key {
+        key, pressed: true, ..
+    } = event
+    else {
+        return false;
+    };
+    printable_text_key(*key) && next.is_some_and(is_nonbreak_insert_event)
+}
+
+fn is_nonbreak_insert_event(event: &egui::Event) -> bool {
+    match event {
+        egui::Event::Text(text)
+        | egui::Event::Paste(text)
+        | egui::Event::Ime(egui::ImeEvent::Commit(text)) => !contains_line_break(text),
+        _ => false,
+    }
+}
+
+const fn printable_text_key(key: egui::Key) -> bool {
+    matches!(
+        key,
+        egui::Key::Space
+            | egui::Key::Colon
+            | egui::Key::Comma
+            | egui::Key::Backslash
+            | egui::Key::Slash
+            | egui::Key::Pipe
+            | egui::Key::Questionmark
+            | egui::Key::Exclamationmark
+            | egui::Key::OpenBracket
+            | egui::Key::CloseBracket
+            | egui::Key::OpenCurlyBracket
+            | egui::Key::CloseCurlyBracket
+            | egui::Key::Backtick
+            | egui::Key::Minus
+            | egui::Key::Period
+            | egui::Key::Plus
+            | egui::Key::Equals
+            | egui::Key::Semicolon
+            | egui::Key::Quote
+            | egui::Key::Num0
+            | egui::Key::Num1
+            | egui::Key::Num2
+            | egui::Key::Num3
+            | egui::Key::Num4
+            | egui::Key::Num5
+            | egui::Key::Num6
+            | egui::Key::Num7
+            | egui::Key::Num8
+            | egui::Key::Num9
+            | egui::Key::A
+            | egui::Key::B
+            | egui::Key::C
+            | egui::Key::D
+            | egui::Key::E
+            | egui::Key::F
+            | egui::Key::G
+            | egui::Key::H
+            | egui::Key::I
+            | egui::Key::J
+            | egui::Key::K
+            | egui::Key::L
+            | egui::Key::M
+            | egui::Key::N
+            | egui::Key::O
+            | egui::Key::P
+            | egui::Key::Q
+            | egui::Key::R
+            | egui::Key::S
+            | egui::Key::T
+            | egui::Key::U
+            | egui::Key::V
+            | egui::Key::W
+            | egui::Key::X
+            | egui::Key::Y
+            | egui::Key::Z
+            | egui::Key::IntlBackslash
+    )
+}
+
+fn format_command_for_event(event: &egui::Event) -> Option<MarkdownCommand> {
+    let egui::Event::Key {
+        key,
+        pressed: true,
+        modifiers,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    MarkdownCommand::WITH_SHORTCUTS.into_iter().find(|command| {
+        command.shortcut().is_some_and(|shortcut| {
+            *key == shortcut.logical_key && modifiers.matches_logically(shortcut.modifiers)
+        })
+    })
+}
+
+fn markdown_custom_input_event(event: &egui::Event, platform: KeyboardPlatform) -> bool {
+    if format_command_for_event(event).is_some()
+        || is_plain_enter_press(event)
+        || is_plain_escape_press(event)
+    {
+        return true;
+    }
+    matches!(
+        event,
+        egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } if resolve_navigation_gesture(*key, *modifiers, platform).is_some()
+    )
 }
 
 fn restorable_source_edit_range(source: &str, selection: Selection) -> Option<Range<usize>> {
@@ -3260,6 +3538,10 @@ fn continue_or_exit_line_prefix(source: &str, caret_chars: usize) -> Option<(Str
         let ending_len = line.ending().map_or(0, |ending| ending.as_str().len());
         if caret_bytes >= offset && caret_bytes <= content_end {
             let prefix = parse_list_or_quote_prefix(content)?;
+            let rel = caret_bytes.saturating_sub(offset).min(content.len());
+            if rel < prefix.marker.len() {
+                return None;
+            }
             if prefix.rest_is_empty {
                 let mut text =
                     String::with_capacity(source.len().saturating_sub(prefix.marker.len()));
@@ -3268,7 +3550,6 @@ fn continue_or_exit_line_prefix(source: &str, caret_chars: usize) -> Option<(Str
                 let caret = byte_index_to_char(&text, offset);
                 return Some((text, caret));
             }
-            let rel = caret_bytes.saturating_sub(offset).min(content.len());
             let full_end = content_end + ending_len;
             let insert_ending = line.ending().map_or("\n", |ending| ending.as_str());
             let mut text =
@@ -3277,6 +3558,9 @@ fn continue_or_exit_line_prefix(source: &str, caret_chars: usize) -> Option<(Str
             text.push_str(insert_ending);
             text.push_str(&prefix.marker);
             text.push_str(&source[offset + rel..content_end]);
+            if full_end < source.len() {
+                text.push_str(insert_ending);
+            }
             text.push_str(&source[full_end..]);
             let caret = byte_index_to_char(
                 &text,
@@ -4348,6 +4632,26 @@ mod tests {
         let (text, caret) = continue_or_exit_line_prefix("  - nested", 10).expect("indent");
         assert_eq!(text, "  - nested\n  - ");
         assert_eq!(caret, 15);
+
+        for (source, caret) in [
+            ("- item", 0),
+            ("- item", 1),
+            ("> quote", 0),
+            ("> quote", 1),
+            ("  - nested", 3),
+        ] {
+            assert_eq!(continue_or_exit_line_prefix(source, caret), None);
+        }
+
+        let (text, caret) =
+            continue_or_exit_line_prefix("- item\nnext", 6).expect("following LF line");
+        assert_eq!(text, "- item\n- \nnext");
+        assert_eq!(caret, 9);
+
+        let (text, caret) =
+            continue_or_exit_line_prefix("> quoted\r\nnext", 8).expect("following CRLF line");
+        assert_eq!(text, "> quoted\r\n> \r\nnext");
+        assert_eq!(caret, 12);
     }
 
     #[test]
@@ -4381,6 +4685,9 @@ mod tests {
             next_editor_serial: 1,
             rendered_drag: None,
             input_was_limited: false,
+            deferred_input_events: Vec::new(),
+            deferred_input_owns_editor: false,
+            deferred_input_restored: false,
         };
         (editor, editor_id)
     }
@@ -4430,6 +4737,404 @@ mod tests {
     }
 
     #[test]
+    fn markdown_preserves_each_batched_enter_event() {
+        let context = egui::Context::default();
+        let (mut editor, editor_id) = editor_with_active("- item", 6);
+        let mut source = "- item".to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        let mut enter = egui::RawInput::default();
+        enter.events.extend([enter_key(), enter_key()]);
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, enter);
+        assert_eq!(source, "- item\n- ");
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        assert_eq!(source, "- item\n");
+    }
+
+    #[test]
+    fn markdown_preserves_edit_event_order_around_enter() {
+        for (label, edit_event) in [
+            ("text", egui::Event::Text("x".to_owned())),
+            ("paste", egui::Event::Paste("x".to_owned())),
+            (
+                "IME commit",
+                egui::Event::Ime(egui::ImeEvent::Commit("x".to_owned())),
+            ),
+        ] {
+            let context = egui::Context::default();
+            let (mut editor, editor_id) = editor_with_active("- item", 6);
+            let mut source = "- item".to_owned();
+            context.memory_mut(|memory| memory.request_focus(editor_id));
+            let _ = show_markdown_frame(
+                &context,
+                &mut editor,
+                &mut source,
+                egui::RawInput::default(),
+            );
+
+            let mut input = egui::RawInput::default();
+            input.events.extend([edit_event, enter_key()]);
+            let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+            let _ = show_markdown_frame(
+                &context,
+                &mut editor,
+                &mut source,
+                egui::RawInput::default(),
+            );
+
+            assert_eq!(source, "- itemx\n- ", "{label}");
+        }
+
+        let context = egui::Context::default();
+        let (mut editor, editor_id) = editor_with_active("- item", 6);
+        let mut source = "- item".to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let mut input = egui::RawInput::default();
+        input
+            .events
+            .extend([enter_key(), egui::Event::Text("x".to_owned())]);
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        assert_eq!(source, "- item\n- x");
+    }
+
+    #[test]
+    fn markdown_preserves_text_before_navigation_in_the_same_frame() {
+        let context = egui::Context::default();
+        context.set_os(egui::os::OperatingSystem::Windows);
+        let (mut editor, editor_id) = editor_with_active("ab cd", 2);
+        let mut source = "ab cd".to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        let mut input = egui::RawInput::default();
+        input.events.extend([
+            egui::Event::Text(" ".to_owned()),
+            egui::Event::Key {
+                key: egui::Key::ArrowRight,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::CTRL,
+            },
+        ]);
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        assert_eq!(source, "ab  cd");
+        assert_eq!(editor.source_selection(), Some(Selection::caret(4)));
+
+        let context = egui::Context::default();
+        context.set_os(egui::os::OperatingSystem::Windows);
+        let (mut editor, editor_id) = editor_with_active("ab cd", 2);
+        let mut source = "ab cd".to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let mut input = egui::RawInput::default();
+        input.events.extend([
+            egui::Event::Key {
+                key: egui::Key::ArrowRight,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::CTRL,
+            },
+            egui::Event::Text("x".to_owned()),
+        ]);
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        assert_eq!(source, "ab xcd");
+        assert_eq!(editor.source_selection(), Some(Selection::caret(4)));
+    }
+
+    #[test]
+    fn pending_inline_reopen_preserves_interleaved_event_order() {
+        let prepare_pending = || {
+            let context = egui::Context::default();
+            let (mut editor, editor_id) = editor_with_active("**hello**", 7);
+            let mut source = "**hello**".to_owned();
+            context.memory_mut(|memory| memory.request_focus(editor_id));
+            let _ = show_markdown_frame(
+                &context,
+                &mut editor,
+                &mut source,
+                egui::RawInput::default(),
+            );
+            let mut enter = egui::RawInput::default();
+            enter.events.push(enter_key());
+            let _ = show_markdown_frame(&context, &mut editor, &mut source, enter);
+            assert_eq!(source, "**hello**\n");
+            (context, editor, source)
+        };
+
+        let (context, mut editor, mut source) = prepare_pending();
+        let mut enter_then_text = egui::RawInput::default();
+        enter_then_text
+            .events
+            .extend([enter_key(), egui::Event::Text("x".to_owned())]);
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, enter_then_text);
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        assert_eq!(source, "**hello**\n\nx");
+
+        let (context, mut editor, mut source) = prepare_pending();
+        let mut text_around_enter = egui::RawInput::default();
+        text_around_enter.events.extend([
+            egui::Event::Text("a".to_owned()),
+            enter_key(),
+            egui::Event::Text("b".to_owned()),
+        ]);
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, text_around_enter);
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        assert_eq!(source, "**hello**\n**a**\n**b**");
+
+        let (context, mut editor, mut source) = prepare_pending();
+        let mut native_text = egui::RawInput::default();
+        native_text.events.extend([
+            egui::Event::Key {
+                key: egui::Key::B,
+                physical_key: Some(egui::Key::B),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Text("b".to_owned()),
+        ]);
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, native_text);
+        assert_eq!(source, "**hello**\n**b**");
+    }
+
+    #[test]
+    fn markdown_format_shortcut_stays_behind_earlier_text() {
+        let bold_shortcut = || egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        let run = |events: Vec<egui::Event>| {
+            let context = egui::Context::default();
+            let (mut editor, editor_id) = editor_with_active("ab", 1);
+            let mut source = "ab".to_owned();
+            context.memory_mut(|memory| memory.request_focus(editor_id));
+            let _ = show_markdown_frame(
+                &context,
+                &mut editor,
+                &mut source,
+                egui::RawInput::default(),
+            );
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+            let _ = show_markdown_frame(
+                &context,
+                &mut editor,
+                &mut source,
+                egui::RawInput::default(),
+            );
+            source
+        };
+
+        assert_eq!(
+            run(vec![egui::Event::Text("x".to_owned()), bold_shortcut()]),
+            "ax****b"
+        );
+        assert_eq!(
+            run(vec![bold_shortcut(), egui::Event::Text("x".to_owned())]),
+            "a**x**b"
+        );
+        assert_eq!(
+            run(vec![
+                egui::Event::PointerMoved(egui::pos2(1.0, 1.0)),
+                bold_shortcut(),
+                egui::Event::Text("x".to_owned()),
+            ]),
+            "a**x**b"
+        );
+
+        let context = egui::Context::default();
+        let (mut editor, editor_id) = editor_with_active("ab", 1);
+        editor
+            .active
+            .as_mut()
+            .expect("fixture should have an active editor")
+            .selection = CharSelection::new(0, 2);
+        let mut source = "ab".to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let input = egui::RawInput {
+            events: vec![bold_shortcut(), bold_shortcut()],
+            ..Default::default()
+        };
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        assert_eq!(source, "ab");
+        assert!(editor.deferred_input_events.is_empty());
+    }
+
+    #[test]
+    fn globally_restored_markdown_input_keeps_editor_ownership_after_focus_loss() {
+        let context = egui::Context::default();
+        let (mut editor, editor_id) = editor_with_active("ab", 1);
+        let mut source = "ab".to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let mut input = egui::RawInput::default();
+        input.events.extend([
+            egui::Event::Text("x".to_owned()),
+            egui::Event::Key {
+                key: egui::Key::B,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+            egui::Event::PointerMoved(egui::pos2(1.0, 1.0)),
+        ]);
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+        assert_eq!(source, "axb");
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert!(editor.restore_deferred_input(ui));
+            ui.memory_mut(|memory| memory.request_focus(egui::Id::new("other-control")));
+            assert_eq!(
+                editor.show(ui, &mut source),
+                MarkdownShowOutcome::Changed(EditOrigin::MarkdownFormatting)
+            );
+        });
+
+        assert_eq!(source, "ax****b");
+        assert!(editor.has_deferred_input());
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        assert!(!editor.has_deferred_input());
+    }
+
+    #[test]
+    fn focus_changing_prefix_releases_a_deferred_markdown_shortcut() {
+        let context = egui::Context::default();
+        let (mut editor, editor_id) = editor_with_active("ab", 1);
+        let mut source = "ab".to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+        let input = egui::RawInput {
+            events: vec![
+                egui::Event::PointerButton {
+                    pos: egui::pos2(1.0, 1.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::Key {
+                    key: egui::Key::B,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                },
+            ],
+            ..Default::default()
+        };
+        let _ = context.run_ui(input, |ui| editor.serialize_next_custom_input(ui));
+        assert!(editor.has_deferred_input());
+        assert!(!editor.deferred_input_owns_editor);
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert!(!editor.restore_deferred_input(ui));
+            ui.memory_mut(|memory| memory.request_focus(egui::Id::new("other-control")));
+            assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
+        });
+
+        assert_eq!(source, "ab");
+    }
+
+    #[test]
     fn markdown_enter_then_escape_does_not_write_an_empty_marker_pair() {
         let context = egui::Context::default();
         let (mut editor, editor_id) = editor_with_active("**hello**", 7);
@@ -4458,6 +5163,50 @@ mod tests {
         assert_eq!(source, "**hello**\n");
         assert!(!source.contains("****"));
         assert!(!editor.is_editing());
+    }
+
+    #[test]
+    fn markdown_escape_serializes_with_text_in_both_orders() {
+        let escape = || egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let run = |events: Vec<egui::Event>| {
+            let context = egui::Context::default();
+            let (mut editor, editor_id) = editor_with_active("ab", 1);
+            let mut source = "ab".to_owned();
+            context.memory_mut(|memory| memory.request_focus(editor_id));
+            let _ = show_markdown_frame(
+                &context,
+                &mut editor,
+                &mut source,
+                egui::RawInput::default(),
+            );
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+            let _ = show_markdown_frame(
+                &context,
+                &mut editor,
+                &mut source,
+                egui::RawInput::default(),
+            );
+            (source, editor.is_editing())
+        };
+
+        assert_eq!(
+            run(vec![escape(), egui::Event::Text("x".to_owned())]),
+            ("ab".to_owned(), false)
+        );
+        assert_eq!(
+            run(vec![egui::Event::Text("x".to_owned()), escape()]),
+            ("axb".to_owned(), false)
+        );
     }
 
     #[test]
@@ -4980,9 +5729,12 @@ mod tests {
         });
         let _ = context.run_ui(repeated, |ui| {
             ui.set_width(800.0);
-            assert!(!editor.show(ui, &mut source).changed());
+            assert_eq!(
+                editor.show(ui, &mut source),
+                MarkdownShowOutcome::Changed(EditOrigin::MarkdownFormatting)
+            );
         });
-        assert_eq!(source, "**text**");
+        assert_eq!(source, "text");
 
         let mut released = egui::RawInput::default();
         released.events.push(egui::Event::Key {
@@ -5012,7 +5764,7 @@ mod tests {
                 MarkdownShowOutcome::Changed(EditOrigin::MarkdownFormatting)
             );
         });
-        assert_eq!(source, "text");
+        assert_eq!(source, "**text**");
     }
 
     #[test]
@@ -6358,6 +7110,9 @@ mod tests {
             next_editor_serial: 1,
             rendered_drag: None,
             input_was_limited: false,
+            deferred_input_events: Vec::new(),
+            deferred_input_owns_editor: false,
+            deferred_input_restored: false,
         };
         let mut source = "text".to_owned();
 
@@ -6523,6 +7278,9 @@ mod tests {
             rendered_drag: None,
             next_editor_serial: 2,
             input_was_limited: false,
+            deferred_input_events: Vec::new(),
+            deferred_input_owns_editor: false,
+            deferred_input_restored: false,
         };
 
         assert!(editor.commit_pending_source(&mut source).is_none());
@@ -6575,6 +7333,9 @@ mod tests {
             next_editor_serial: 1,
             rendered_drag: None,
             input_was_limited: false,
+            deferred_input_events: Vec::new(),
+            deferred_input_owns_editor: false,
+            deferred_input_restored: false,
         };
         let context = egui::Context::default();
         let mut outcome = MarkdownShowOutcome::Unchanged;
@@ -6608,6 +7369,9 @@ mod tests {
             next_editor_serial: 1,
             rendered_drag: None,
             input_was_limited: false,
+            deferred_input_events: Vec::new(),
+            deferred_input_owns_editor: false,
+            deferred_input_restored: false,
         };
         let mut source = "# A\n\nParagraph\n".to_owned();
 
@@ -6638,6 +7402,9 @@ mod tests {
             next_editor_serial: 1,
             rendered_drag: None,
             input_was_limited: false,
+            deferred_input_events: Vec::new(),
+            deferred_input_owns_editor: false,
+            deferred_input_restored: false,
         };
         let mut source = "# A\n\nParagraph\n".to_owned();
 
@@ -6683,6 +7450,9 @@ mod tests {
             next_editor_serial: 1,
             rendered_drag: None,
             input_was_limited: false,
+            deferred_input_events: Vec::new(),
+            deferred_input_owns_editor: false,
+            deferred_input_restored: false,
         };
         let mut source = "Paragraph\n\n# A".to_owned();
 
@@ -6755,6 +7525,9 @@ mod tests {
                     next_editor_serial: 1,
                     rendered_drag: None,
                     input_was_limited: false,
+                    deferred_input_events: Vec::new(),
+                    deferred_input_owns_editor: false,
+                    deferred_input_restored: false,
                 };
                 let mut source = "abcXYZ".to_owned();
 
@@ -6814,6 +7587,9 @@ mod tests {
                 next_editor_serial: 1,
                 rendered_drag: None,
                 input_was_limited: false,
+                deferred_input_events: Vec::new(),
+                deferred_input_owns_editor: false,
+                deferred_input_restored: false,
             };
             let mut source = "# A".to_owned();
 
@@ -7028,6 +7804,96 @@ mod tests {
         assert_eq!(source, "text1234");
         assert!(editor.take_input_was_limited());
         assert!(!editor.take_input_was_limited());
+    }
+
+    #[test]
+    fn bounded_inline_reopen_never_truncates_existing_suffix() {
+        let context = egui::Context::default();
+        let mut source = "**hi** TAIL".to_owned();
+        let maximum = source.len() + 1;
+        let (mut editor, editor_id) = editor_with_active(&source, 4);
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(640.0);
+            let _ = editor.show_with_source_byte_limit(ui, &mut source, maximum);
+        });
+        let mut enter = egui::RawInput::default();
+        enter.events.push(enter_key());
+        let _ = context.run_ui(enter, |ui| {
+            ui.set_width(640.0);
+            assert!(
+                editor
+                    .show_with_source_byte_limit(ui, &mut source, maximum)
+                    .changed()
+            );
+        });
+        assert_eq!(source, "**hi**\n TAIL");
+
+        let mut paste = egui::RawInput::default();
+        paste.events.push(egui::Event::Paste("ABCDE".to_owned()));
+        let _ = context.run_ui(paste, |ui| {
+            ui.set_width(640.0);
+            assert_eq!(
+                editor.show_with_source_byte_limit(ui, &mut source, maximum),
+                MarkdownShowOutcome::Unchanged
+            );
+        });
+
+        assert_eq!(source, "**hi**\n TAIL");
+        assert!(editor.take_input_was_limited());
+    }
+
+    #[test]
+    fn bounded_list_continuation_never_truncates_existing_suffix() {
+        let context = egui::Context::default();
+        let mut source = "- itemTAIL".to_owned();
+        let maximum = source.len();
+        let (mut editor, editor_id) = editor_with_active(&source, 6);
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(640.0);
+            let _ = editor.show_with_source_byte_limit(ui, &mut source, maximum);
+        });
+        let mut enter = egui::RawInput::default();
+        enter.events.push(enter_key());
+        let _ = context.run_ui(enter, |ui| {
+            ui.set_width(640.0);
+            assert_eq!(
+                editor.show_with_source_byte_limit(ui, &mut source, maximum),
+                MarkdownShowOutcome::Unchanged
+            );
+        });
+
+        assert_eq!(source, "- itemTAIL");
+        assert!(editor.take_input_was_limited());
+    }
+
+    #[test]
+    fn bounded_inline_enter_never_truncates_existing_suffix() {
+        let context = egui::Context::default();
+        let mut source = "**hi** TAIL".to_owned();
+        let maximum = source.len();
+        let (mut editor, editor_id) = editor_with_active(&source, 4);
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(640.0);
+            let _ = editor.show_with_source_byte_limit(ui, &mut source, maximum);
+        });
+        let mut enter = egui::RawInput::default();
+        enter.events.push(enter_key());
+        let _ = context.run_ui(enter, |ui| {
+            ui.set_width(640.0);
+            assert_eq!(
+                editor.show_with_source_byte_limit(ui, &mut source, maximum),
+                MarkdownShowOutcome::Unchanged
+            );
+        });
+
+        assert_eq!(source, "**hi** TAIL");
+        assert!(editor.take_input_was_limited());
     }
 
     #[test]

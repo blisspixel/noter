@@ -2,13 +2,26 @@
 
 **Reviewed:** 2026-08-15
 
-**Current availability:** Source installation is supported for development and
-evaluation. Noter has not published a signed binary release, native package, or
-self-updating release channel. The cross-platform distribution workflow is
-prepared for dry runs, but preparation is not release approval. See the
+**Current availability:** The `0.1.0-alpha.2` release candidate is prepared for
+careful evaluation with backups. Its release page is created only after the
+protected-main publication workflow succeeds. Published artifacts include
+platform archives, a Windows MSI, checksums, SBOMs, and GitHub build provenance.
+Windows and macOS artifacts are not yet platform-signed, and no self-updating
+release channel exists. Source installation remains supported. See the
 [release process](RELEASING.md).
 
-## Prerequisites
+## Prerelease artifacts
+
+The publication location is the
+[GitHub release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-alpha.2).
+If that page is not present, publication has not completed and the source path
+below remains the available route. After publication, download an archive or
+installer before executing it, verify its SHA-256 entry and GitHub attestation,
+and inspect the provided installer script if you choose that route. Do not pipe
+a remote installer into a shell. The Windows MSI is an unsigned evaluation
+package, not a supported stable installer.
+
+## Source prerequisites
 
 Install the following before using the source installer:
 
@@ -20,7 +33,7 @@ The repository pins Rust in `rust-toolchain.toml`. Rustup and Cargo may download
 that toolchain and locked dependencies from their configured sources during the
 first build.
 
-## Quick install
+## Source install
 
 Windows PowerShell:
 
@@ -222,9 +235,9 @@ root. Use that same root for future updates and uninstallation.
 ## Current update actions
 
 `Help > Check for Updates` and `noter update` open the same local status dialog.
-The current dialog explains that no verified release exists and can open the
-GitHub releases page only after an explicit user action. It does not query an
-API, download an artifact, or replace the application.
+The current dialog explains that Noter does not check in the background and can
+open the GitHub releases page only after an explicit user action. It does not
+query an API, download an artifact, or replace the application.
 
 A session started by `noter update` names its window `Update status - Noter`
 until the status is closed, so the command is not mistaken for a blank editor.

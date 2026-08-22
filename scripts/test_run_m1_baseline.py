@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import math
 import os
 import subprocess
 import sys
@@ -316,6 +317,73 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(job._kernel32.waits, [(47, 30_000), (49, 30_000)])
         self.assertEqual(job._kernel32.closed, [47, 49])
         self.assertEqual(sleep.call_count, 2)
+
+    def test_windows_process_termination_tolerates_an_exit_race(self):
+        class Kernel32:
+            def __init__(self):
+                self.waits = []
+
+            @staticmethod
+            def TerminateProcess(_handle, _exit_code):
+                return False
+
+            def WaitForSingleObject(self, handle, timeout_ms):
+                self.waits.append((handle, timeout_ms))
+                return 0
+
+        class Ctypes:
+            @staticmethod
+            def get_last_error():
+                return 5
+
+        job = object.__new__(baseline._WindowsProcessJob)
+        job._kernel32 = Kernel32()
+        job._ctypes = Ctypes()
+
+        with patch.object(baseline.time, "monotonic", return_value=10.0):
+            job._terminate_process_handles([47], 11.0)
+
+        self.assertEqual(
+            job._kernel32.waits,
+            [
+                (
+                    47,
+                    math.ceil(
+                        baseline.WINDOWS_PROCESS_TERMINATION_GRACE_SECONDS * 1_000
+                    ),
+                )
+            ],
+        )
+
+    def test_windows_process_termination_grace_shares_the_cleanup_deadline(self):
+        class Kernel32:
+            def __init__(self):
+                self.waits = []
+
+            @staticmethod
+            def TerminateProcess(_handle, _exit_code):
+                return False
+
+            def WaitForSingleObject(self, handle, timeout_ms):
+                self.waits.append((handle, timeout_ms))
+                return 0 if len(self.waits) == 1 else 258
+
+        class Ctypes:
+            @staticmethod
+            def get_last_error():
+                return 5
+
+        job = object.__new__(baseline._WindowsProcessJob)
+        job._kernel32 = Kernel32()
+        job._ctypes = Ctypes()
+
+        with (
+            patch.object(baseline.time, "monotonic", side_effect=[9.0, 11.0]),
+            self.assertRaisesRegex(OSError, "TerminateProcess failed"),
+        ):
+            job._terminate_process_handles([47, 49], 10.0)
+
+        self.assertEqual(job._kernel32.waits, [(47, 1_000), (49, 0)])
 
     def test_windows_job_rescans_a_nonempty_snapshot_without_openable_handles(self):
         class Kernel32:

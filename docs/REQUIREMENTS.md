@@ -167,7 +167,13 @@ Feature presence alone is not verification.
   writes the original file until the user invokes Save.
 - **FR-067 Recovery cleanup:** Remove a record only after a successful save or
   explicit discard. Corrupt records are quarantined and explained, not silently
-  deleted.
+  deleted. A living window retains its instance lease after Save and through
+  later edits. Startup ownership uncertainty fails closed without offering
+  Restore or Discard for the affected record. Restore establishes a leased
+  durable successor copy before deleting the offered record; transfer failure
+  keeps the offered record and does not replace the current document. If an
+  Open or Reload continued by Discard does not replace the dirty document,
+  recovery is immediately scheduled again for the document that remains.
 - **FR-068 Recovery failure:** A persistence failure is visible and does not
   suppress the classic dirty prompt.
 - **FR-069 External change:** Detect changed, replaced, deleted, or recreated

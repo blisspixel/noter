@@ -1,11 +1,10 @@
 # Playtest Brief
 
-**Updated:** 2026-08-16
+**Updated:** 2026-08-22
 
-**Build under test:** current `main` or this checkout. `noter --version`
-still prints `noter 0.1.0-alpha.1`, unchanged from the previous round, because
-the roadmap only allows the `0.1.0-alpha.2` label once its gates land on one
-green commit. **Identify the build by commit, not by version string.**
+**Build under test:** the current release-candidate checkout prints
+`noter 0.1.0-alpha.2`. The label is published only from its final protected-main
+commit. **Identify an unpublished build by commit, not only by version string.**
 
 This brief exists so a round is spent on unknowns instead of re-deriving what is
 already known. It records what changed since the last round, what is deliberately
@@ -52,24 +51,27 @@ The full command-line contract, including every exit status, is in
 - **Idle cost is measured on Windows only.** The previous round ran on Linux
   X11. A repeat measurement there is genuinely useful and is recorded as open M2
   evidence in the [roadmap](ROADMAP.md).
-- **No signed binary release exists.** Installation builds the locked source
-  checkout. This is stated in the root README and remains M7 work.
+- **Prerelease artifacts are unsigned.** The alpha.2 publication plan provides
+  archives, checksums, SBOMs, provenance, and a Windows MSI, but Windows and
+  macOS platform signing remains M7 work. Keep backups and verify downloaded
+  files after the release page is present.
 - **Files above 8 MiB are refused** before the editor mirrors them. This is
   deliberate containment, not the final limit; the measured large-file path is
   M5 work.
 
 ## Where the untested surface is
 
-The previous round could not drive the GUI, so the command-line face is now well
-covered and the application itself is barely covered. The unknowns are here:
+The 2026-08-22 Windows recovery exercise drove the live editor, force-killed the
+process after a private record appeared, restored the exact observed editor
+value after restart, and exited through explicit discard with no record or lease
+left. The remaining interactive unknowns are here:
 
 - the Mode control, and whether switching views leaves bytes byte-identical;
 - typing, Undo and Redo, and whether long editing sessions stay bounded;
 - Save, Save As, and the external-change prompts (Reload, Keep Editing, Save As,
   and overwrite second confirmation);
 - Find, Replace, Replace All scope, and Go To Line;
-- crash recovery: kill the process with unsaved changes and check the startup
-  Restore and Discard offer, including its timing;
+- crash recovery on interactive macOS, Linux X11, and Linux Wayland sessions;
 - the five themes as painted pixels, at display scales other than 100 percent;
 - keyboard-only operation, and screen-reader semantics.
 

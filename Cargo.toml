@@ -1,6 +1,6 @@
 [package]
 name = "noter"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 edition = "2024"
 rust-version = "1.97.1" # Verified and pinned by rust-toolchain.toml and CI.
 authors = ["Nick"]
@@ -41,7 +41,7 @@ blake3 = { version = "1.8", default-features = false, features = ["std"] }
 eframe = { version = "0.35", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
 getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
-noter-platform = { version = "=0.1.0-alpha.1", path = "crates/noter-platform" }
+noter-platform = { version = "=0.1.0-alpha.2", path = "crates/noter-platform" }
 pulldown-cmark = { version = "0.13", default-features = false }
 regex = { version = "1.13", default-features = false, features = ["perf", "std", "unicode-case"] }
 rfd = "0.17"

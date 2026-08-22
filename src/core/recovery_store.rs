@@ -150,12 +150,24 @@ impl RecoveryStore {
     }
 
     /// Returns whether another living Noter window still holds this instance.
-    pub fn instance_is_live(&self, instance_id: RecoveryInstanceId) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when ownership cannot be determined. Callers must
+    /// fail closed rather than expose a potentially live record for restore or
+    /// discard.
+    pub fn instance_is_live(&self, instance_id: RecoveryInstanceId) -> io::Result<bool> {
         let path = self.live_path(instance_id);
-        let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else {
-            return false;
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
         };
-        matches!(file.try_lock(), Err(TryLockError::WouldBlock))
+        match file.try_lock() {
+            Ok(()) => Ok(false),
+            Err(TryLockError::WouldBlock) => Ok(true),
+            Err(TryLockError::Error(error)) => Err(error),
+        }
     }
 
     /// Persists one recovery snapshot under its instance identity.
@@ -170,7 +182,25 @@ impl RecoveryStore {
         write_atomic_private(&destination, &encoded)
     }
 
-    /// Removes the active record for an owned instance after save or discard.
+    /// Removes only the active record for an owned instance after save or
+    /// worker invalidation. The process-lifetime live lease remains intact.
+    ///
+    /// Missing files are treated as success so cleanup is idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when an existing record cannot be removed.
+    pub fn delete_record(&self, instance_id: RecoveryInstanceId) -> io::Result<()> {
+        let path = self.record_path(instance_id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Removes a dead instance's record and stale live-lease sibling after an
+    /// explicit startup Restore or Discard decision.
     ///
     /// Missing files are treated as success so cleanup is idempotent.
     ///
@@ -178,12 +208,7 @@ impl RecoveryStore {
     ///
     /// Returns an I/O error when an existing record cannot be removed.
     pub fn delete_instance(&self, instance_id: RecoveryInstanceId) -> io::Result<()> {
-        let path = self.record_path(instance_id);
-        let record_result = match fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        };
+        let record_result = self.delete_record(instance_id);
         let _ = fs::remove_file(self.live_path(instance_id));
         record_result
     }
@@ -224,12 +249,14 @@ impl RecoveryStore {
                 Err(reason) => RecoveryStartupDisposition::Quarantine(reason),
             };
 
+            if let RecoveryStartupDisposition::Offer(record) = &disposition
+                && self.instance_is_live(record.instance_id())?
+            {
+                // Another living window owns this record. Leave it in place.
+                continue;
+            }
+
             match &disposition {
-                RecoveryStartupDisposition::Offer(record)
-                    if self.instance_is_live(record.instance_id()) =>
-                {
-                    // Another living window owns this record. Leave it in place.
-                }
                 RecoveryStartupDisposition::Offer(_) => {
                     if offer_count >= MAX_STARTUP_RECOVERY_OFFERS {
                         // Leave surplus valid records for a later launch.
@@ -525,11 +552,11 @@ mod tests {
         store.persist(&snapshot)?;
         let lease = store.try_hold_live_lease(snapshot.instance_id())?;
 
-        assert!(store.instance_is_live(snapshot.instance_id()));
+        assert!(store.instance_is_live(snapshot.instance_id())?);
         assert!(store.scan_startup()?.is_empty());
 
         drop(lease);
-        assert!(!store.instance_is_live(snapshot.instance_id()));
+        assert!(!store.instance_is_live(snapshot.instance_id())?);
         let entries = store.scan_startup()?;
         assert_eq!(entries.len(), 1);
         match entries[0].disposition() {
@@ -637,6 +664,37 @@ mod tests {
             .expect_err("directory at record path is not a successful missing delete");
         assert_ne!(error.kind(), io::ErrorKind::NotFound);
         assert!(path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn live_probe_errors_fail_closed() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let snapshot = sample_snapshot(43, b"protected recovery");
+        store.persist(&snapshot)?;
+        fs::create_dir(store.live_path(snapshot.instance_id()))?;
+
+        assert!(store.instance_is_live(snapshot.instance_id()).is_err());
+        assert!(store.scan_startup().is_err());
+        assert!(store.record_path(snapshot.instance_id()).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn record_cleanup_preserves_the_live_lease() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let snapshot = sample_snapshot(44, b"clean now");
+        store.persist(&snapshot)?;
+        let lease = store.try_hold_live_lease(snapshot.instance_id())?;
+
+        store.delete_record(snapshot.instance_id())?;
+
+        assert!(!store.record_path(snapshot.instance_id()).exists());
+        assert!(store.live_path(snapshot.instance_id()).exists());
+        assert!(store.instance_is_live(snapshot.instance_id())?);
+        drop(lease);
         Ok(())
     }
 
