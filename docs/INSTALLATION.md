@@ -1,6 +1,6 @@
 # Installation and Updates
 
-**Reviewed:** 2026-08-15
+**Reviewed:** 2026-08-22
 
 **Current availability:** The `0.1.0-alpha.2` release candidate is prepared for
 careful evaluation with backups. Its release page is created only after the
@@ -15,11 +15,16 @@ release channel exists. Source installation remains supported. See the
 The publication location is the
 [GitHub release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-alpha.2).
 If that page is not present, publication has not completed and the source path
-below remains the available route. After publication, download an archive or
-installer before executing it, verify its SHA-256 entry and GitHub attestation,
-and inspect the provided installer script if you choose that route. Do not pipe
-a remote installer into a shell. The Windows MSI is an unsigned evaluation
-package, not a supported stable installer.
+below remains the available route. After publication, download an asset before
+executing it and verify its GitHub attestation. Published SHA-256 sidecars and
+the unified checksum list cover the source archive, platform archives, and
+Windows MSI, but not installer scripts, the Homebrew formula, SBOMs, or the
+distribution manifest. For the strongest alpha path, manually download an
+archive and verify both its checksum and attestation before extraction. Inspect
+any installer script before use and never pipe a remote installer into a shell.
+The Windows MSI is an unsigned per-machine evaluation package. It requires
+elevation, installs under Program Files, and offers a system PATH entry; it is
+not a supported stable installer.
 
 ## Source prerequisites
 

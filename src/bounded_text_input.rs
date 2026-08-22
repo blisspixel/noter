@@ -2,6 +2,171 @@ use std::{any::TypeId, cell::RefCell, ops::Range};
 
 use eframe::egui;
 
+/// The authoritative action implied by the focused editor's IME events for
+/// this frame. A composing value belongs only to the widget's transient buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImeFrameState {
+    None,
+    Composing,
+    Committed,
+    Cancelled,
+}
+
+/// Focus to restore after an active composition consumes its final Commit.
+pub struct ImeCommitFocusRestore {
+    displaced: Option<egui::Id>,
+}
+
+impl ImeCommitFocusRestore {
+    pub fn restore(self, ui: &egui::Ui, editor_id: egui::Id) {
+        ui.memory_mut(|memory| {
+            if let Some(displaced) = self.displaced {
+                memory.request_focus(displaced);
+            } else {
+                memory.surrender_focus(editor_id);
+            }
+        });
+    }
+}
+
+/// Lets an already-active composition consume a final nonempty Commit even
+/// when another control claimed focus earlier in the same UI frame. The new
+/// focus owner is restored immediately after the editor processes the event.
+pub fn retain_active_ime_commit_focus(
+    ui: &egui::Ui,
+    editor_id: egui::Id,
+    composition_was_active: bool,
+) -> Option<ImeCommitFocusRestore> {
+    if !composition_was_active || ui.memory(|memory| memory.has_focus(editor_id)) {
+        return None;
+    }
+    let has_commit = ui.input(|input| {
+        input.events.iter().any(|event| {
+            matches!(event, egui::Event::Ime(egui::ImeEvent::Commit(text)) if !text.is_empty() && text != "\n" && text != "\r")
+        })
+    });
+    if !has_commit {
+        return None;
+    }
+    let displaced = ui.memory(egui::Memory::focused);
+    ui.memory_mut(|memory| memory.request_focus(editor_id));
+    Some(ImeCommitFocusRestore { displaced })
+}
+
+/// Removes an active composition's final Commit until the document editor is
+/// rendered. Every other event is returned for the caller to defer so controls
+/// rendered earlier cannot consume or overtake the terminal composition event.
+pub fn isolate_active_ime_commit(
+    ui: &egui::Ui,
+    composition_was_active: bool,
+) -> Option<(egui::Event, Vec<egui::Event>)> {
+    if !composition_was_active {
+        return None;
+    }
+    ui.input_mut(|input| {
+        let position = input.events.iter().position(|event| {
+            matches!(event, egui::Event::Ime(egui::ImeEvent::Commit(text)) if !text.is_empty() && text != "\n" && text != "\r")
+        })?;
+        let commit = input.events.remove(position);
+        let deferred = std::mem::take(&mut input.events);
+        Some((commit, deferred))
+    })
+}
+
+/// Keeps a completed composition and any following input in separate frames.
+/// This lets callers publish the commit before a second composition begins.
+pub fn take_events_after_ime_terminal(
+    ui: &egui::Ui,
+    owns_events: bool,
+    composition_was_active: bool,
+) -> Vec<egui::Event> {
+    if !owns_events {
+        return Vec::new();
+    }
+    ui.input_mut(|input| {
+        let mut composing = composition_was_active;
+        let terminal = input.events.iter().position(|event| match event {
+            egui::Event::Ime(egui::ImeEvent::Preedit { text, .. })
+                if text != "\n" && text != "\r" =>
+            {
+                if text.is_empty() {
+                    let was_composing = composing;
+                    composing = false;
+                    was_composing
+                } else {
+                    composing = true;
+                    false
+                }
+            }
+            egui::Event::Ime(egui::ImeEvent::Commit(text)) if text != "\n" && text != "\r" => {
+                let is_terminal = !text.is_empty() || composing;
+                composing = false;
+                is_terminal
+            }
+            _ => false,
+        });
+        terminal
+            .filter(|position| position + 1 < input.events.len())
+            .map_or_else(Vec::new, |position| input.events.split_off(position + 1))
+    })
+}
+
+/// Mirrors egui 0.35's `TextEdit` IME lifecycle without exposing its private
+/// cursor-purpose state. Empty preedit/commit payloads only cancel an active
+/// composition, and newline payloads are ignored by the widget.
+pub fn focused_ime_frame_state(
+    ui: &egui::Ui,
+    id: egui::Id,
+    composition_was_active: bool,
+) -> ImeFrameState {
+    if !ui.memory(|memory| memory.has_focus(id)) {
+        return if composition_was_active {
+            ImeFrameState::Cancelled
+        } else {
+            ImeFrameState::None
+        };
+    }
+
+    ui.input(|input| {
+        let mut composing = composition_was_active;
+        let mut terminal = ImeFrameState::None;
+        for event in &input.events {
+            match event {
+                egui::Event::Ime(egui::ImeEvent::Preedit { text, .. })
+                    if text != "\n" && text != "\r" =>
+                {
+                    if text.is_empty() {
+                        if composing {
+                            composing = false;
+                            terminal = ImeFrameState::Cancelled;
+                        }
+                    } else {
+                        composing = true;
+                        terminal = ImeFrameState::Composing;
+                    }
+                }
+                egui::Event::Ime(egui::ImeEvent::Commit(text)) if text != "\n" && text != "\r" => {
+                    if text.is_empty() {
+                        if composing {
+                            composing = false;
+                            terminal = ImeFrameState::Cancelled;
+                        }
+                    } else {
+                        composing = false;
+                        terminal = ImeFrameState::Committed;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if composing {
+            ImeFrameState::Composing
+        } else {
+            terminal
+        }
+    })
+}
+
 /// Truncates a string to an exact UTF-8 byte ceiling without splitting a
 /// scalar value.
 pub fn truncate_to_utf8_byte_limit(value: &mut String, maximum: usize) -> bool {
@@ -309,6 +474,31 @@ mod tests {
         });
 
         sanitized.expect("the sanitized event should remain available to TextEdit")
+    }
+
+    #[test]
+    fn ime_terminal_defers_the_next_composition_without_reordering() {
+        let context = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        let commit = egui::Event::Ime(egui::ImeEvent::Commit("漢".to_owned()));
+        let preedit = egui::Event::Ime(egui::ImeEvent::Preedit {
+            text: "次".to_owned(),
+            active_range_chars: Some(0..1),
+        });
+        let text = egui::Event::Text("tail".to_owned());
+        input
+            .events
+            .extend([commit.clone(), preedit.clone(), text.clone()]);
+
+        let mut retained = Vec::new();
+        let mut deferred = Vec::new();
+        let _ = context.run_ui(input, |ui| {
+            deferred = take_events_after_ime_terminal(ui, true, false);
+            retained = ui.input(|input| input.events.clone());
+        });
+
+        assert_eq!(retained, [commit]);
+        assert_eq!(deferred, [preedit, text]);
     }
 
     fn key(key: egui::Key) -> egui::Event {

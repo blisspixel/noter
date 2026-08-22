@@ -20,12 +20,15 @@ use getrandom::fill as fill_random;
 use noter::core::document::Document;
 use noter::core::edit::Selection;
 use noter::core::recovery::{
-    RecoveryClock, RecoveryDocumentId, RecoveryInstanceId, RecoveryOfferDecision,
-    RecoveryOfferState, RecoveryScheduleCommand, RecoveryScheduleEffect, RecoveryScheduleState,
-    RecoverySnapshot, RecoverySnapshotParts, RecoveryStartupDisposition, RecoveryWallTime,
-    ValidatedRecoveryRecord,
+    RecoveryClock, RecoveryDocumentId, RecoveryInstanceId, RecoveryLineageGeneration,
+    RecoveryOfferDecision, RecoveryOfferState, RecoveryScheduleCommand, RecoveryScheduleEffect,
+    RecoveryScheduleState, RecoverySnapshot, RecoverySnapshotParts, RecoveryWallTime,
+    ValidatedRecoveryMetadata,
 };
-use noter::core::recovery_store::{RecoveryScanEntry, RecoveryStore};
+use noter::core::recovery_store::{
+    RecoveryInstanceClaim, RecoveryOffer, RecoveryScanDisposition, RecoveryStartupScan,
+    RecoveryStore,
+};
 use noter::core::revision::Revision;
 
 /// Subdirectory of the eframe state root used for crash-recovery files.
@@ -40,8 +43,14 @@ const SCREENSHOT_QA_STATE_DIRECTORY_ENV: &str = "NOTER_SCREENSHOT_QA_STATE_DIREC
 /// User-visible message when a recovery write fails. No paths or content.
 pub const RECOVERY_PERSIST_FAILURE_MESSAGE: &str = "Noter could not update its private recovery copy of this document. Your text is still in this window. Keep the window open and save when you can.";
 
+/// User-visible message when an obsolete private recovery copy cannot be removed.
+pub const RECOVERY_CLEANUP_FAILURE_MESSAGE: &str = "Noter could not remove an obsolete private recovery copy. Your document was not changed by this cleanup failure. Keep backups and review any recovery offer after restarting.";
+
 /// User-visible message when the recovery store cannot open.
 pub const RECOVERY_UNAVAILABLE_MESSAGE: &str = "Private crash recovery is unavailable in this session because Noter could not safely open or own its private recovery storage. Saves still work; keep backups of important work.";
+
+/// User-visible message when bounded startup review leaves records untouched.
+pub const RECOVERY_SCAN_INCOMPLETE_MESSAGE: &str = "Noter stopped its bounded startup recovery review before checking every private record. Unreviewed records remain unchanged for a later launch.";
 
 const RECOVERY_RESTORE_RETAINED_MESSAGE: &str = "Noter could not safely transfer this recovery copy to the current window. The private recovery copy was kept. Choose Later, keep backups, and retry after checking the recovery storage.";
 
@@ -59,6 +68,7 @@ struct PersistOutcome {
     revision: Revision,
     epoch: u64,
     succeeded: bool,
+    cleanup_failed: bool,
 }
 
 struct PreparedRecoveryIdentity {
@@ -87,16 +97,16 @@ pub fn recovery_root_from_state(state_dir: impl AsRef<Path>) -> PathBuf {
 }
 
 /// One startup recovery candidate ready for an explicit user decision.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct StartupRecoveryOffer {
-    record: ValidatedRecoveryRecord,
+    artifact: RecoveryOffer,
     offer: RecoveryOfferState,
 }
 
 impl StartupRecoveryOffer {
-    /// Returns the validated recovery payload.
-    pub const fn record(&self) -> &ValidatedRecoveryRecord {
-        &self.record
+    /// Returns validated metadata without loading document content.
+    pub const fn metadata(&self) -> &ValidatedRecoveryMetadata {
+        self.artifact.metadata()
     }
 
     /// Returns whether the offer is still open.
@@ -106,7 +116,7 @@ impl StartupRecoveryOffer {
 
     /// Short label for UI without full paths when the original path is non-UTF-8.
     pub fn original_path_label(&self) -> String {
-        let bytes = self.record.original_path();
+        let bytes = self.metadata().original_path();
         if bytes.is_empty() {
             return "Untitled".to_owned();
         }
@@ -131,10 +141,13 @@ pub struct CrashRecoverySession {
     instance_id: RecoveryInstanceId,
     session_started: Instant,
     created_wall: RecoveryWallTime,
+    lineage_generation: RecoveryLineageGeneration,
+    predecessor_instance: Option<RecoveryInstanceId>,
     startup_offers: Vec<StartupRecoveryOffer>,
     active_offer_index: Option<usize>,
     quarantine_notices: Vec<String>,
     persist_failure: bool,
+    cleanup_failure: bool,
     unavailable: bool,
     persist_jobs: Option<Sender<PersistJob>>,
     persist_outcomes: Option<Receiver<PersistOutcome>>,
@@ -220,10 +233,13 @@ impl CrashRecoverySession {
             instance_id,
             session_started: Instant::now(),
             created_wall: wall_now(),
+            lineage_generation: RecoveryLineageGeneration::ROOT,
+            predecessor_instance: None,
             startup_offers: Vec::new(),
             active_offer_index: None,
             quarantine_notices: Vec::new(),
             persist_failure: false,
+            cleanup_failure: false,
             unavailable,
             persist_jobs: None,
             persist_outcomes: None,
@@ -237,29 +253,31 @@ impl CrashRecoverySession {
         let Some(store) = self.store.as_ref() else {
             return;
         };
-        let Ok(entries) = store.scan_startup() else {
+        let Ok(scan) = store.scan_startup() else {
             self.unavailable = true;
             return;
         };
-        self.apply_scan_entries(entries);
+        self.apply_scan_entries(scan);
     }
 
-    fn apply_scan_entries(&mut self, entries: Vec<RecoveryScanEntry>) {
+    fn apply_scan_entries(&mut self, scan: RecoveryStartupScan) {
         self.startup_offers.clear();
         self.quarantine_notices.clear();
         self.active_offer_index = None;
-        for entry in entries {
-            match entry.disposition() {
-                RecoveryStartupDisposition::Offer(record) => {
+        let scan_incomplete = scan.has_omissions();
+        let quarantine_results_omitted = scan.quarantine_results_omitted();
+        for entry in scan {
+            let quarantine_error = entry.quarantine_error().map(str::to_owned);
+            let (_, disposition) = entry.into_parts();
+            match disposition {
+                RecoveryScanDisposition::Offer(artifact) => {
                     let mut offer = RecoveryOfferState::default();
                     offer.present();
-                    self.startup_offers.push(StartupRecoveryOffer {
-                        record: record.clone(),
-                        offer,
-                    });
+                    self.startup_offers
+                        .push(StartupRecoveryOffer { artifact, offer });
                 }
-                RecoveryStartupDisposition::Quarantine(reason) => {
-                    let message = entry.quarantine_error().map_or_else(
+                RecoveryScanDisposition::Quarantine(reason) => {
+                    let message = quarantine_error.as_deref().map_or_else(
                         || reason.description().to_owned(),
                         |error| {
                             truncate_for_ui(
@@ -271,6 +289,15 @@ impl CrashRecoverySession {
                     self.quarantine_notices.push(message);
                 }
             }
+        }
+        if scan_incomplete {
+            self.quarantine_notices
+                .push(RECOVERY_SCAN_INCOMPLETE_MESSAGE.to_owned());
+        }
+        if quarantine_results_omitted != 0 {
+            self.quarantine_notices.push(format!(
+                "Noter reviewed {quarantine_results_omitted} additional damaged recovery record(s) without showing individual details."
+            ));
         }
         if !self.startup_offers.is_empty() {
             self.active_offer_index = Some(0);
@@ -287,9 +314,19 @@ impl CrashRecoverySession {
         self.persist_failure
     }
 
+    /// Returns whether an authorized recovery cleanup could not complete.
+    pub const fn has_cleanup_failure(&self) -> bool {
+        self.cleanup_failure
+    }
+
     /// Clears a dismissed persist-failure notice without claiming durability.
     pub const fn dismiss_persist_failure(&mut self) {
         self.persist_failure = false;
+    }
+
+    /// Hides the cleanup warning without claiming that deletion succeeded.
+    pub const fn dismiss_cleanup_failure(&mut self) {
+        self.cleanup_failure = false;
     }
 
     /// Returns quarantine notices collected at the last scan.
@@ -323,76 +360,120 @@ impl CrashRecoverySession {
         let index = self
             .active_offer_index
             .ok_or_else(|| "No recovery offer is open.".to_owned())?;
-        let record = self
-            .startup_offers
-            .get(index)
-            .filter(|offer| offer.is_open())
-            .map(|offer| offer.record.clone())
-            .ok_or_else(|| "No recovery offer is open.".to_owned())?;
+        let Some(store) = self.store.clone() else {
+            self.mark_unavailable_for_identity_failure();
+            return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
+        };
+        let (record, claim) = {
+            let offer = self
+                .startup_offers
+                .get(index)
+                .filter(|offer| offer.is_open())
+                .ok_or_else(|| "No recovery offer is open.".to_owned())?;
+            let claim = store
+                .claim_offered_record(offer.artifact.primary())
+                .map_err(|_| RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned())?;
+            let Ok(record) = store.load_claimed_record(offer.artifact.primary(), &claim) else {
+                self.cleanup_failure |= store.release_claim(claim).is_err();
+                return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
+            };
+            (record, claim)
+        };
         let selection = record.selection();
 
-        let mut document = Document::from_bytes(record.content())
-            .map_err(|error| format!("Recovered content could not be opened: {error}"))?;
+        let mut document = match Document::from_bytes(record.content()) {
+            Ok(document) => document,
+            Err(error) => {
+                self.cleanup_failure |= store.release_claim(claim).is_err();
+                return Err(format!("Recovered content could not be opened: {error}"));
+            }
+        };
         document.mark_recovered_dirty();
         debug_assert!(document.is_dirty());
 
         let Ok(prepared) = self.prepare_fresh_identity(record.document_id()) else {
+            self.cleanup_failure |= store.release_claim(claim).is_err();
             self.mark_unavailable_for_identity_failure();
             return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
         };
-        let Ok(replacement_snapshot) = RecoverySnapshot::try_new(RecoverySnapshotParts {
-            document_id: prepared.document_id,
-            instance_id: prepared.instance_id,
-            revision: document.revision(),
-            created_at: prepared.created_wall,
-            updated_at: wall_now(),
-            original_path: record.original_path().to_vec(),
-            bom: record.bom(),
-            encoding: record.encoding(),
-            selection,
-            content: record.content().to_vec(),
-        }) else {
+        let Ok(replacement_snapshot) = RecoverySnapshot::try_new_successor(
+            RecoverySnapshotParts {
+                document_id: prepared.document_id,
+                instance_id: prepared.instance_id,
+                revision: document.revision(),
+                created_at: prepared.created_wall,
+                updated_at: wall_now(),
+                original_path: record.original_path().to_vec(),
+                bom: record.bom(),
+                encoding: record.encoding(),
+                selection,
+                content: record.content().to_vec(),
+            },
+            record.metadata(),
+        ) else {
             self.release_prepared_identity(prepared);
+            self.cleanup_failure |= store.release_claim(claim).is_err();
             return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
         };
-        let Some(store) = self.store.as_ref() else {
+        if store.persist(&replacement_snapshot).is_err() {
             self.release_prepared_identity(prepared);
-            self.mark_unavailable_for_identity_failure();
-            return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
-        };
-        if store.persist(&replacement_snapshot).is_err()
-            || store.delete_instance(record.instance_id()).is_err()
-        {
-            let _ = store.delete_record(prepared.instance_id);
-            self.release_prepared_identity(prepared);
+            self.cleanup_failure |= store.release_claim(claim).is_err();
             return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
         }
 
         if let Some(offer) = self.startup_offers.get_mut(index) {
             let _ = offer.offer.decide(RecoveryOfferDecision::Restore);
         }
-        self.finish_offer_slot(index);
-        self.commit_fresh_identity(prepared);
+        let lineage_generation = replacement_snapshot.lineage_generation();
+        let predecessor_instance = replacement_snapshot.predecessor_instance();
+        let restored_offer = self
+            .take_offer_slot(index)
+            .expect("the active recovery offer must remain present");
+        self.commit_fresh_identity(prepared, lineage_generation, predecessor_instance);
+        let cleanup = cleanup_offer_artifacts(&store, restored_offer.artifact, &claim);
+        let release = store.release_claim(claim);
+        self.cleanup_failure |= cleanup.is_err() || release.is_err();
         Ok((document, selection))
     }
 
     /// Discards the active startup offer and deletes its on-disk record.
-    pub fn discard_active_offer(&mut self) {
+    pub fn discard_active_offer(&mut self) -> bool {
         let Some(index) = self.active_offer_index else {
-            return;
+            return false;
         };
-        let Some(offer) = self.startup_offers.get_mut(index) else {
-            return;
+        let Some(offer) = self.startup_offers.get(index) else {
+            return false;
         };
         if !offer.is_open() {
-            return;
+            return false;
         }
-        let instance = offer.record.instance_id();
-        let _ = offer.offer.decide(RecoveryOfferDecision::Discard);
-        if let Some(store) = self.store.as_ref() {
-            let _ = store.delete_instance(instance);
+        let Some(store) = self.store.clone() else {
+            self.cleanup_failure = true;
+            return false;
+        };
+        let Ok(claim) = store.claim_offered_record(offer.artifact.primary()) else {
+            self.cleanup_failure = true;
+            return false;
+        };
+        if store
+            .load_claimed_record(offer.artifact.primary(), &claim)
+            .is_err()
+        {
+            self.cleanup_failure = true;
+            let _ = store.release_claim(claim);
+            return false;
         }
-        self.finish_offer_slot(index);
+        let discarded_offer = self
+            .take_offer_slot(index)
+            .expect("the active recovery offer must remain present");
+        let cleanup = cleanup_offer_artifacts(&store, discarded_offer.artifact, &claim);
+        let release = store.release_claim(claim);
+        if cleanup.is_err() || release.is_err() {
+            self.cleanup_failure = true;
+            self.ingest_scan();
+            return false;
+        }
+        true
     }
 
     /// Hides startup recovery offers for this session without deleting records.
@@ -405,10 +486,9 @@ impl CrashRecoverySession {
         self.active_offer_index = None;
     }
 
-    fn finish_offer_slot(&mut self, index: usize) {
-        if index < self.startup_offers.len() {
-            self.startup_offers.remove(index);
-        }
+    fn take_offer_slot(&mut self, index: usize) -> Option<StartupRecoveryOffer> {
+        let removed =
+            (index < self.startup_offers.len()).then(|| self.startup_offers.remove(index));
         self.active_offer_index = if self.startup_offers.is_empty() {
             None
         } else {
@@ -421,6 +501,7 @@ impl CrashRecoverySession {
         {
             offer.offer.present();
         }
+        removed
     }
 
     /// Begins tracking a new editor identity after New / successful open / restore.
@@ -432,7 +513,9 @@ impl CrashRecoverySession {
         let prepared =
             random_document_id().and_then(|document_id| self.prepare_fresh_identity(document_id));
         match prepared {
-            Ok(prepared) => self.commit_fresh_identity(prepared),
+            Ok(prepared) => {
+                self.commit_fresh_identity(prepared, RecoveryLineageGeneration::ROOT, None);
+            }
             Err(()) => self.mark_unavailable_for_identity_failure(),
         }
     }
@@ -455,12 +538,19 @@ impl CrashRecoverySession {
         })
     }
 
-    fn commit_fresh_identity(&mut self, prepared: PreparedRecoveryIdentity) {
+    fn commit_fresh_identity(
+        &mut self,
+        prepared: PreparedRecoveryIdentity,
+        lineage_generation: RecoveryLineageGeneration,
+        predecessor_instance: Option<RecoveryInstanceId>,
+    ) {
         let previous_instance = self.instance_id;
         let previous_lease = self.live_lease.take();
         self.document_id = prepared.document_id;
         self.instance_id = prepared.instance_id;
         self.created_wall = prepared.created_wall;
+        self.lineage_generation = lineage_generation;
+        self.predecessor_instance = predecessor_instance;
         self.schedule.reset_for_new_identity();
         self.persist_epoch_gate
             .store(self.schedule.epoch(), Ordering::Release);
@@ -511,13 +601,22 @@ impl CrashRecoverySession {
 
     /// Notifies the scheduler that content is dirty at the given revision.
     pub fn on_edited(&mut self, document: &Document, selection: Selection) {
+        if !document.is_dirty() {
+            return;
+        }
+        self.on_retained(document, selection);
+    }
+
+    /// Notifies the scheduler that the in-memory content must be retained.
+    ///
+    /// This includes ordinary dirty edits and a clean loaded revision whose
+    /// trusted disk version was replaced externally. The latter must remain
+    /// recoverable without changing the document's save-conflict baseline.
+    pub fn on_retained(&mut self, document: &Document, selection: Selection) {
         if self.unavailable || self.store.is_none() {
             return;
         }
         if self.active_offer().is_some() {
-            return;
-        }
-        if !document.is_dirty() {
             return;
         }
         self.poll_persist_outcomes();
@@ -607,7 +706,7 @@ impl CrashRecoverySession {
             }
             RecoveryScheduleEffect::DeleteOwned { epoch: _ } => {
                 if let Some(store) = self.store.as_ref() {
-                    let _ = store.delete_record(self.instance_id);
+                    self.cleanup_failure |= store.delete_owned_artifacts(self.instance_id).is_err();
                 }
             }
         }
@@ -623,18 +722,22 @@ impl CrashRecoverySession {
         let now = self.monotonic_now();
         let content = document.to_bytes();
         let original_path = document.path().map(path_to_bytes).unwrap_or_default();
-        let Ok(snapshot) = RecoverySnapshot::try_new(RecoverySnapshotParts {
-            document_id: self.document_id,
-            instance_id: self.instance_id,
-            revision,
-            created_at: self.created_wall,
-            updated_at: wall_now(),
-            original_path,
-            bom: document.bom(),
-            encoding: document.encoding(),
-            selection,
-            content,
-        }) else {
+        let Ok(snapshot) = RecoverySnapshot::try_new_with_lineage(
+            RecoverySnapshotParts {
+                document_id: self.document_id,
+                instance_id: self.instance_id,
+                revision,
+                created_at: self.created_wall,
+                updated_at: wall_now(),
+                original_path,
+                bom: document.bom(),
+                encoding: document.encoding(),
+                selection,
+                content,
+            },
+            self.lineage_generation,
+            self.predecessor_instance,
+        ) else {
             let _ = self
                 .schedule
                 .reduce(RecoveryScheduleCommand::PersistFailed {
@@ -712,6 +815,9 @@ impl CrashRecoverySession {
 
     fn apply_persist_outcome(&mut self, outcome: &PersistOutcome) {
         let now = self.monotonic_now();
+        if outcome.cleanup_failed {
+            self.cleanup_failure = true;
+        }
         if outcome.epoch != self.schedule.epoch() {
             return;
         }
@@ -758,6 +864,16 @@ impl CrashRecoverySession {
             self.on_tick(document, selection);
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn force_due_persist_for_test(&mut self, document: &Document, selection: Selection) {
+        self.session_started = self
+            .session_started
+            .checked_sub(Duration::from_secs(3))
+            .expect("the recovery test clock must move backward");
+        self.on_tick(document, selection);
+        self.wait_for_persist(document, selection);
+    }
 }
 
 impl Drop for CrashRecoverySession {
@@ -769,6 +885,22 @@ impl Drop for CrashRecoverySession {
         let instance_id = self.instance_id;
         self.release_live_lease_for(instance_id);
     }
+}
+
+fn cleanup_offer_artifacts(
+    store: &RecoveryStore,
+    offer: RecoveryOffer,
+    primary_claim: &RecoveryInstanceClaim,
+) -> std::io::Result<()> {
+    let primary_instance = offer.metadata().instance_id();
+    for handle in offer.into_cleanup_handles() {
+        if handle.metadata().instance_id() == primary_instance {
+            store.delete_claimed_record(handle, primary_claim)?;
+        } else {
+            store.delete_offered_record(handle)?;
+        }
+    }
+    Ok(())
 }
 
 // Channels and the epoch gate are moved onto the worker even though the loop
@@ -783,12 +915,13 @@ fn persist_worker_loop(
         let instance_id = job.snapshot.instance_id();
         let current_epoch = epoch_gate.load(Ordering::Acquire);
         if job.epoch != current_epoch {
-            let _ = job.store.delete_record(instance_id);
+            let cleanup_failed = job.store.delete_record(instance_id).is_err();
             if outcomes
                 .send(PersistOutcome {
                     revision: job.revision,
                     epoch: job.epoch,
                     succeeded: false,
+                    cleanup_failed,
                 })
                 .is_err()
             {
@@ -798,11 +931,12 @@ fn persist_worker_loop(
         }
         let succeeded = job.store.persist(&job.snapshot).is_ok();
         if epoch_gate.load(Ordering::Acquire) != job.epoch {
-            let _ = job.store.delete_record(instance_id);
+            let cleanup_failed = job.store.delete_record(instance_id).is_err();
             let _ = outcomes.send(PersistOutcome {
                 revision: job.revision,
                 epoch: job.epoch,
                 succeeded: false,
+                cleanup_failed,
             });
             continue;
         }
@@ -811,6 +945,7 @@ fn persist_worker_loop(
                 revision: job.revision,
                 epoch: job.epoch,
                 succeeded,
+                cleanup_failed: false,
             })
             .is_err()
         {
@@ -879,7 +1014,7 @@ mod tests {
     use super::*;
     use noter::core::recovery::{
         RecoveryDocumentId, RecoveryInstanceId, RecoverySnapshot, RecoverySnapshotParts,
-        RecoveryWallTime, validate_recovery_record,
+        RecoveryStartupDisposition, RecoveryWallTime, validate_recovery_record,
     };
     use noter::core::revision::Revision;
     use noter::core::text_format::{Bom, Encoding};
@@ -900,7 +1035,7 @@ mod tests {
 
     fn sample_snapshot(instance: u8, content: &[u8]) -> RecoverySnapshot {
         RecoverySnapshot::try_new(RecoverySnapshotParts {
-            document_id: RecoveryDocumentId::new([1; 16]),
+            document_id: RecoveryDocumentId::new([instance; 16]),
             instance_id: RecoveryInstanceId::new([instance; 16]),
             revision: Revision::new(1),
             created_at: RecoveryWallTime::from_unix_millis(1),
@@ -954,7 +1089,7 @@ mod tests {
         let mut session = CrashRecoverySession::open_at(dir.path());
         assert!(!session.is_unavailable());
         let offer = session.active_offer().expect("offer");
-        assert_eq!(offer.record().content(), b"hello recovery");
+        assert_eq!(offer.metadata().content_len(), b"hello recovery".len());
         assert_eq!(offer.original_path_label(), "notes.txt");
 
         let (document, selection) = session.restore_active_offer().expect("restore");
@@ -963,6 +1098,45 @@ mod tests {
         assert_eq!(selection, Selection::caret(0));
         assert!(session.active_offer().is_none());
         assert!(store.scan_startup().expect("rescan").is_empty());
+    }
+
+    #[test]
+    fn stale_startup_discard_does_not_delete_the_replacement() {
+        let dir = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        let snapshot = sample_snapshot(6, b"keep after failed discard");
+        let record_path = store.record_path(snapshot.instance_id());
+        store.persist(&snapshot).expect("persist");
+        let mut session = CrashRecoverySession::open_at(dir.path());
+        assert!(session.active_offer().is_some());
+
+        fs::remove_file(&record_path).expect("replace record fixture");
+        fs::create_dir(&record_path).expect("block record deletion");
+        assert!(!session.discard_active_offer());
+        assert!(session.has_cleanup_failure());
+        assert!(record_path.is_dir());
+
+        fs::remove_dir(record_path).expect("clean fixture");
+    }
+
+    #[test]
+    fn failed_save_cleanup_surfaces_a_durable_warning() {
+        let dir = tempdir().expect("tempdir");
+        let mut session = CrashRecoverySession::open_at(dir.path());
+        let mut document = Document::new();
+        document.replace_text("dirty").expect("edit");
+        session.on_edited(&document, Selection::caret(5));
+        session.force_due_persist_for_test(&document, Selection::caret(5));
+
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        let record_path = store.record_path(session.instance_id);
+        fs::remove_file(&record_path).expect("replace record fixture");
+        fs::create_dir(&record_path).expect("block record deletion");
+
+        session.on_saved_clean(document.revision());
+        assert!(session.has_cleanup_failure());
+
+        fs::remove_dir(record_path).expect("clean fixture");
     }
 
     #[test]
@@ -992,6 +1166,74 @@ mod tests {
     }
 
     #[test]
+    fn restore_remains_successful_when_later_ancestor_cleanup_is_busy() {
+        let dir = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        let predecessor = sample_snapshot(1, b"causal recovery");
+        store.persist(&predecessor).expect("persist predecessor");
+        let predecessor_bytes =
+            fs::read(store.record_path(predecessor.instance_id())).expect("read predecessor");
+        let RecoveryStartupDisposition::Offer(predecessor_record) =
+            validate_recovery_record(&predecessor_bytes)
+        else {
+            panic!("predecessor record");
+        };
+        let successor = RecoverySnapshot::try_new_successor(
+            RecoverySnapshotParts {
+                document_id: predecessor.document_id(),
+                instance_id: RecoveryInstanceId::new([2; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(3),
+                updated_at: RecoveryWallTime::from_unix_millis(1),
+                original_path: b"notes.txt".to_vec(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::caret(0),
+                content: b"causal recovery".to_vec(),
+            },
+            predecessor_record.metadata(),
+        )
+        .expect("successor");
+        store.persist(&successor).expect("persist successor");
+
+        let mut session = CrashRecoverySession::open_at(dir.path());
+        let offer = session.active_offer().expect("coalesced successor offer");
+        assert_eq!(offer.metadata().instance_id(), successor.instance_id());
+        assert_eq!(offer.artifact.superseded().len(), 1);
+        let busy_ancestor = store
+            .try_hold_live_lease(predecessor.instance_id())
+            .expect("hold ancestor busy after startup scan");
+
+        let (document, _) = session
+            .restore_active_offer()
+            .expect("durable successor makes cleanup non-fatal");
+        assert_eq!(String::from(document.rope()), "causal recovery");
+        assert!(session.has_cleanup_failure());
+        assert!(session.active_offer().is_none());
+        let durable_successor = fs::read(store.record_path(session.instance_id))
+            .expect("replacement successor remains durable");
+        let RecoveryStartupDisposition::Offer(record) =
+            validate_recovery_record(&durable_successor)
+        else {
+            panic!("replacement successor record");
+        };
+        assert_eq!(
+            record.lineage_generation(),
+            Some(RecoveryLineageGeneration::new(2))
+        );
+        assert_eq!(record.predecessor_instance(), Some(successor.instance_id()));
+
+        session.on_saved_clean(document.revision());
+        assert!(
+            session.has_cleanup_failure(),
+            "cleaning the successor must not hide the unresolved ancestor cleanup"
+        );
+
+        drop(busy_ancestor);
+        fs::remove_file(store.live_path(predecessor.instance_id())).expect("remove test lease");
+    }
+
+    #[test]
     fn restore_then_later_keeps_remaining_records_on_disk() {
         let dir = tempdir().expect("tempdir");
         let store = RecoveryStore::open(dir.path()).expect("store");
@@ -1015,8 +1257,14 @@ mod tests {
             .expect("rescan")
             .into_iter()
             .filter_map(|entry| match entry.disposition() {
-                RecoveryStartupDisposition::Offer(record) => Some(record.content().to_vec()),
-                RecoveryStartupDisposition::Quarantine(_) => None,
+                RecoveryScanDisposition::Offer(offer) => Some(
+                    store
+                        .load_record(offer.primary())
+                        .expect("load remaining offer")
+                        .content()
+                        .to_vec(),
+                ),
+                RecoveryScanDisposition::Quarantine(_) => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(remaining.len(), 1);
@@ -1053,10 +1301,13 @@ mod tests {
         let entries = store.scan_startup().expect("rescan");
         assert_eq!(entries.len(), 1);
         match entries[0].disposition() {
-            RecoveryStartupDisposition::Offer(record) => {
+            RecoveryScanDisposition::Offer(offer) => {
+                let record = store
+                    .load_record(offer.primary())
+                    .expect("load deferred offer");
                 assert_eq!(record.content(), b"keep this recovery");
             }
-            RecoveryStartupDisposition::Quarantine(_) => {
+            RecoveryScanDisposition::Quarantine(_) => {
                 panic!("deferring offers must not quarantine a valid record")
             }
         }
@@ -1083,7 +1334,7 @@ mod tests {
         let offer = after
             .active_offer()
             .expect("dead window should offer restore");
-        assert_eq!(offer.record().content(), b"owned draft");
+        assert_eq!(offer.metadata().content_len(), b"owned draft".len());
     }
 
     #[test]
@@ -1234,8 +1485,14 @@ mod tests {
         let contents: Vec<_> = entries
             .iter()
             .filter_map(|entry| match entry.disposition() {
-                RecoveryStartupDisposition::Offer(record) => Some(record.content().to_vec()),
-                RecoveryStartupDisposition::Quarantine(_) => None,
+                RecoveryScanDisposition::Offer(offer) => Some(
+                    store
+                        .load_record(offer.primary())
+                        .expect("load abandoned offer")
+                        .content()
+                        .to_vec(),
+                ),
+                RecoveryScanDisposition::Quarantine(_) => None,
             })
             .collect();
         assert_eq!(contents, vec![b"first session".to_vec()]);

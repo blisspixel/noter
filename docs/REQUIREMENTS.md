@@ -150,19 +150,28 @@ Feature presence alone is not verification.
 
 - **FR-060 Dirty decision:** New, Open, Reload, Close, and Quit use one
   Save / Discard / Cancel state machine.
-- **FR-061 Window close:** Closing a dirty window cannot complete until Save
-  succeeds, Discard is explicitly confirmed, or the action is cancelled.
+- **FR-061 Window close:** Closing a dirty window, or a window retaining the
+  last in-memory copy of an externally replaced clean revision, cannot complete
+  until Save succeeds, Discard is explicitly confirmed, or the action is
+  cancelled.
 - **FR-062 Recovery location:** Store private recovery records in the
   per-user application state or local-data directory, never the general
   temporary directory.
-- **FR-063 Recovery point objective:** After the first edit, persist a valid
-  recovery record after at most 15 seconds of continued editing and normally
-  within 2 seconds of idle time.
+- **FR-063 Recovery point objective:** After the first edit or detection that
+  the loaded clean revision was replaced externally, persist a valid recovery
+  record after at most 15 seconds of continued activity and normally within 2
+  seconds of idle time. Undo and Redo reschedule the exact resulting revision
+  and directional selection.
 - **FR-064 Recovery integrity:** Each record has a schema version, random
-  document and instance IDs, revision, checksum, original-path metadata, and
-  atomic manifest update.
+  document and instance IDs, revision, original-path metadata, and integrity
+  protection. Schema v2 also protects causal generation, predecessor, every
+  encoded metadata field, and content with one whole-record checksum. Exact
+  schema v1 reads remain supported.
 - **FR-065 Recovery launch:** On startup, validate records and offer recovery
-  before replacing them with a normal untitled document.
+  before replacing them with a normal untitled document. Startup review has
+  explicit entry, aggregate-byte, offer, quarantine-result, and superseded-copy
+  bounds. It retains metadata and exact handles only, reports incomplete review,
+  and leaves unreviewed records untouched for a later launch.
 - **FR-066 Recovery isolation:** Recovered content opens as dirty and never
   writes the original file until the user invokes Save.
 - **FR-067 Recovery cleanup:** Remove a record only after a successful save or
@@ -174,11 +183,24 @@ Feature presence alone is not verification.
   keeps the offered record and does not replace the current document. If an
   Open or Reload continued by Discard does not replace the dirty document,
   recovery is immediately scheduled again for the document that remains.
+  Same-instance artifacts are ordered only by strict revision, and separate
+  instances are ordered only by a schema-v2 predecessor link with exactly the
+  next generation. Incomparable branches remain separate offers. Restore and
+  Discard reload and revalidate an exact open artifact under an exclusive dead-
+  instance claim before acting. Save removes only the current leased instance's
+  canonical and keyed temporary artifacts. Restore and Discard remove only
+  exact validated offer handles, never every record sharing a document ID.
+  Cleanup failure keeps a startup Discard record available when it remains on
+  disk, or surfaces a persistent warning. After a successor is durably
+  persisted, cleanup failure never rolls back or deletes that successor.
 - **FR-068 Recovery failure:** A persistence failure is visible and does not
   suppress the classic dirty prompt.
 - **FR-069 External change:** Detect changed, replaced, deleted, or recreated
   files on focus and periodic checks. Never overwrite a detected conflicting
-  revision without a user decision.
+  revision without a user decision. From detection until successful Save, Save
+  As, Reload, overwrite, explicit Discard, or proof that the trusted disk state
+  returned, treat the retained in-memory revision as unsaved for lifecycle,
+  status, title, and crash recovery without rebaselining ordinary Save.
 
 ### 2.4 Interface and status
 

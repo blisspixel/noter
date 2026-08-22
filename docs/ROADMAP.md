@@ -479,7 +479,17 @@ thread; the UI only captures a revision snapshot and applies epoch-tagged
 completions. A living window holds an exclusive lease on its instance for the
 entire identity lifetime, including across Save, so another Noter process
 cannot Restore or Discard that in-flight copy. Lease acquisition and probe
-errors fail closed, and a crash releases the lease. A live Windows GUI test
+errors fail closed, and a crash releases the lease. Undo and Redo reschedule
+the exact resulting recovery snapshot. Clean in-memory text becomes protected
+unsaved state as soon as external divergence is detected, so native Close and
+destructive commands cannot discard the last retained copy. Startup scans
+are bounded by entry and aggregate-byte budgets, retain metadata and exact open
+handles instead of document content, and use schema-v2 causal predecessor links
+rather than wall time. Save deletes only owned keyed artifacts; Restore and
+Discard act only on revalidated exact handles. A durable restore successor is
+never rolled back because later cleanup failed. Command-line preflight now
+rejects final links, reparse points, directories, FIFOs, and special files
+without a potentially blocking following open. A live Windows GUI test
 proved idle persistence, force-kill, startup Restore, exact recovered editor
 text, and explicit-discard cleanup. Interactive non-Windows GUI recovery and
 navigation remain a beta.1 gate and are not claimed by the alpha.2 prerelease.

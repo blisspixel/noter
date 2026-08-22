@@ -75,7 +75,7 @@ pub fn classify_external_change(
 /// An explicit user response to an external-change prompt.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ConflictDecision {
-    /// Reload the current path through the ordinary destructive-action machine.
+    /// Request a reload while retaining the prompt until the adapter succeeds.
     ReloadDisk,
     /// Keep the in-memory document without authorizing overwrite of the disk version.
     KeepEditing,
@@ -115,7 +115,7 @@ pub enum ConflictEffect {
     Prompt(ExternalChangeKind),
     /// Show the second confirmation before replacing the disk version.
     PromptOverwriteConfirm(ExternalChangeKind),
-    /// Request Reload through the ordinary lifecycle path.
+    /// Request Reload without clearing the retained conflict observation.
     RequestReload,
     /// Request Save As without authorizing overwrite of the conflicting path.
     RequestSaveAs,
@@ -237,7 +237,6 @@ impl ConflictState {
     const fn decide(&mut self, decision: ConflictDecision) -> ConflictEffect {
         match (self.phase, decision) {
             (ConflictPhase::Prompting { .. }, ConflictDecision::ReloadDisk) => {
-                self.phase = ConflictPhase::Idle;
                 ConflictEffect::RequestReload
             }
             (ConflictPhase::Prompting { kind, revision }, ConflictDecision::KeepEditing) => {
@@ -514,10 +513,10 @@ mod tests {
             state.reduce(ConflictCommand::Decide(ConflictDecision::ReloadDisk)),
             ConflictEffect::RequestReload
         );
-        assert!(!state.is_prompting());
+        assert!(state.is_prompting());
         assert_eq!(
             state.reduce(ConflictCommand::Decide(ConflictDecision::ReloadDisk)),
-            ConflictEffect::None
+            ConflictEffect::RequestReload
         );
     }
 

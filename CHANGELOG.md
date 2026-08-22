@@ -54,12 +54,61 @@ release, so current work remains under Unreleased.
   user document path.
 - Add durable private recovery storage that stages owner-restricted siblings,
   installs or replaces instance records atomically, removes displaced stage and
-  backup siblings after success, walks the full records directory, offers at
-  most 32 restores per launch, and reports quarantine relocation failures
-  instead of claiming success.
+  backup siblings after success, bounds startup review by entry and aggregate
+  byte budgets, offers at most 32 restores per launch, and reports quarantine
+  relocation failures instead of claiming success.
 
 ### Fixed
 
+- Keep CJK IME pre-edit text in a transient widget draft in Text and Markdown
+  modes. Composition remains visible but does not enter the document, dirty
+  state, Undo history, or crash recovery until Commit; cancellation restores
+  the authoritative text and selection. An active composition retains its
+  final Commit when another control claims focus in the same frame.
+- Discard deferred editor, Find, and Markdown input whenever New, Open, Reload,
+  or Restore advances the document generation, so queued input cannot replay
+  into replacement text. Recovery-unavailable guidance also preserves a more
+  specific Open or Reload failure already shown to the user.
+- Reschedule crash recovery after Undo and Redo, including dirty-to-dirty
+  history transitions and cleanup when history returns to the saved baseline.
+- Protect a clean in-memory revision immediately when its disk file changes.
+  Native Close and destructive actions now treat it as unsaved, status and the
+  title show Modified, recovery preserves it, and ordinary Save still fails
+  closed against the external revision. Focus-regain inspection runs before
+  same-frame file commands and invalidates any older close authorization.
+- Keep startup recovery memory bounded by retaining metadata and exact open
+  handles rather than document content. Reload and revalidate a selected record
+  under an exclusive instance claim immediately before Restore or Discard, and
+  surface incomplete bounded scans without touching unreviewed records.
+- Add recovery schema v2 causal generations and whole-record integrity while
+  preserving exact schema v1 reads. Coalesce only strict same-instance revision
+  order and proven predecessor links; retain legacy, sibling, identity-conflict,
+  and equal-revision divergent branches as separate offers without trusting wall
+  clocks.
+- Make recovery cleanup ownership-specific. Save removes only canonical and
+  keyed temporary artifacts for its leased instance; Restore and Discard remove
+  only revalidated exact handles and never sweep another live window's document
+  lineage. Once Restore persists its successor, later cleanup failure leaves the
+  successor durable, opens the recovered document, and surfaces a warning that
+  later successful cleanup cannot erase. Successful external Reload also retires
+  the explicitly discarded private copy, while failed Reload preserves it.
+- Bind damaged-record quarantine to the exact opened artifact and refuse
+  relocation if the pathname changed or its instance is live. Filter irrelevant
+  and live artifacts before charging startup candidate budgets so bounded scans
+  cannot deterministically starve a dead canonical record.
+- Reject a startup argument naming a final symlink, Windows reparse point,
+  directory, FIFO, or other special file through the same no-follow regular-file
+  preflight as the loader. Content validation remains deferred to the GUI.
+- Preserve Find and Go To Line focus across keyboard zoom and fullscreen
+  commands. View-menu zoom actions are disabled at their limits, and Find Next
+  or Find Previous with no query opens Find instead of doing nothing.
+- Correct prerelease integrity guidance to distinguish archive and MSI
+  checksum coverage from attestation-only assets, disclose MSI elevation and
+  system PATH behavior, and put backup, signing, platform-evidence, changelog,
+  and correctness-matrix guidance directly in the release notes. Require
+  successful exact-main CI before creating the verified tag, create or safely
+  refresh one private GitHub draft with the exact workflow artifacts, attest
+  that payload, then apply reviewed notes and publish it.
 - Bound Markdown's automatic inline reopening and list, quote, and inline-run
   Enter transforms before they mutate the active draft. Input at the document
   ceiling is rejected or UTF-8-truncated without removing an existing suffix.

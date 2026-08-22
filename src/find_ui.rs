@@ -76,7 +76,7 @@ impl FindBar {
     }
 
     #[cfg(test)]
-    const fn is_open(&self) -> bool {
+    pub(crate) const fn is_open(&self) -> bool {
         self.open
     }
 
@@ -90,6 +90,10 @@ impl FindBar {
                 memory.has_focus(egui::Id::new(FIND_QUERY_ID))
                     || memory.has_focus(egui::Id::new(REPLACEMENT_ID))
             })
+    }
+
+    pub(crate) const fn has_query(&self) -> bool {
+        !self.query.is_empty()
     }
 
     pub(crate) fn show(

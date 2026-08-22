@@ -541,6 +541,10 @@ links, reparse points, directories, and special files before content is read.
 The second pathname handle uses the same primitive, so matching identities are
 evidence about two no-follow opens rather than two independently followed link
 targets.
+Command-line document preflight uses the same no-follow regular-entry policy.
+It rejects links, reparse points, directories, FIFOs, and other special entries
+before any potentially blocking ordinary open, while leaving UTF-8 and content-
+size validation to the GUI loader.
 Read-only files are not made writable implicitly. New Unix files remain
 owner-only at mode 0600. Because mode alone does not suppress macOS inherited
 ACL entries, macOS requests a zero-entry `no_inherit` ACL and mode 0600 in one
@@ -590,9 +594,12 @@ undefined.
 ### 7.1 One destructive-action state machine
 
 `New`, `Open`, `Reload`, and `Quit` produce a `DestructiveIntent`; native Close
-maps to Quit. If the document is dirty, the pure application state emits
-`PromptDirty`. Save success continues the original intent, Discard continues
-after explicit confirmation, and Cancel returns to editing.
+maps to Quit. If document bytes are dirty, or external replacement makes the
+loaded in-memory revision the last retained copy, the pure application state
+emits `PromptDirty`. Save success continues the original intent, Discard
+continues after explicit confirmation, and Cancel returns to editing. External
+retention is tracked separately from content dirty state so it cannot weaken
+the trusted save-conflict baseline.
 
 The current `LifecycleState::reduce` implementation has explicit Idle,
 Prompting, Saving, and Closing phases. Prompting and Saving retain both the
@@ -635,6 +642,8 @@ magic (NOTERREC)
 schema_version
 document_id
 instance_id
+lineage_generation
+predecessor_instance
 revision
 created_at
 updated_at
@@ -642,7 +651,7 @@ original_path_metadata
 bom and encoding tags
 selection (UTF-8 body offsets on character boundaries)
 content_length
-content_checksum (BLAKE3-256)
+whole_record_checksum (BLAKE3-256 in schema v2)
 content_bytes (serialized body including optional UTF-8 BOM)
 ```
 
@@ -671,29 +680,50 @@ Discard. The single FIFO worker conditionally removes stale records before or
 immediately after its own write; stale UI acknowledgements are inert so they
 cannot delete a newer worker result.
 
-Restore first reserves the successor identity and exclusive lease, then writes
-the recovered bytes under that successor, and only then deletes the startup
-record. A crash between those steps can leave two private copies but never zero.
-If identity, lease, write, or old-record cleanup fails, the startup offer stays
-open and the application reports the failure instead of installing a dirty
-document whose only remaining copy is memory.
+Restore claims and revalidates the exact offered artifact, reserves a successor
+identity and exclusive lease, writes the recovered bytes as the next causal
+generation, and only then attempts old-record cleanup. A crash before successor
+persistence leaves the original offer. Once successor persistence succeeds,
+cleanup is one-way best effort: a failure keeps at least the successor, still
+opens the recovered document, and surfaces a warning.
 
-Startup walks the entire records directory. Valid records are offered (at most
-32 per launch); surplus valid records remain for a later session. Corrupt or
-unsupported records are quarantined; quarantine relocation failures are
-reported on the scan entry and leave the damaged file in place rather than
-claiming success. Restored content always opens dirty and never writes the
+Startup enumerates at most 1,024 raw directory entries, examines at most 256
+eligible non-live recovery candidates, and reads at most 128 MiB of encoded
+records. Stale live markers are removed only under an exclusive claim so later
+bounded launches make progress through crash residue. It validates one complete
+record at a time, then retains only metadata and exact open handles. At most 32
+maximal offers, 32 quarantine results, and 16 superseded handles per offer are
+retained. Reaching any bound is visible and leaves unreviewed artifacts
+unchanged. Same-instance strict revision order and schema-v2 direct predecessor
+links are the only coalescing relations. Wall time is display metadata, not
+cross-instance authority. Legacy records, sibling successors, separate roots,
+identity conflicts, and equal-revision divergent records remain separate offers.
+
+Every offered Restore or Discard acquires the dead instance's exclusive lease,
+checks the open handle before and after a bounded read, reopens the pathname
+without following links, and requires the same object and complete validated
+metadata. Save removes only its own canonical record and keyed temporary names.
+Restore and Discard remove only exact scan-produced handles, with the primary
+artifact last, and never delete by document ID. Corrupt or unsupported records
+are quarantined; quarantine relocation failures leave the damaged file in place
+and are reported. Restored content always opens dirty and never writes the
 original user path until Save.
 
 ### 7.3 External changes
 
 `FileObservation` combines platform file identity, length, modified time, and a
 content fingerprint. Focus regain and a bounded focused timer inspect metadata.
-A changed observation triggers a full confirmation before reload or overwrite.
+A changed observation immediately marks the in-memory revision as retained
+unsaved state and schedules private recovery, even when its bytes still match
+the loaded baseline. The mark protects native Close and every destructive
+intent without authorizing overwrite. It remains until successful Save, Save
+As, Reload, overwrite, explicit Discard, or proof that the trusted disk state
+returned. A changed observation triggers a full confirmation before reload or
+overwrite.
 
 The conflict UI initially offers:
 
-- Reload Disk Version, guarded by the dirty decision state machine;
+- Reload Disk Version, an explicit discard of the retained in-memory version;
 - Keep Editing, which does not authorize overwrite;
 - Save As;
 - Overwrite Disk Version only behind an explicit second confirmation showing

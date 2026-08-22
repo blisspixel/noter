@@ -395,6 +395,7 @@ jobs:
     outputs:
       val: ${{ steps.host.outputs.manifest }}
     permissions:
+      "actions": "read"
       "attestations": "write"
       "contents": "write"
       "id-token": "write"
@@ -426,25 +427,38 @@ jobs:
             echo "Main advanced after this release candidate started; refusing stale publication." >&2
             exit 2
           fi
+          ci_runs="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f branch=main -f event=push -f status=completed \
+            -f head_sha="$GITHUB_SHA" -f per_page=100)"
+          successful_ci="$(printf '%s' "$ci_runs" | jq --arg sha "$GITHUB_SHA" \
+            '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .status == "completed" and .conclusion == "success")] | length')"
+          if [ "$successful_ci" -lt 1 ]; then
+            echo "Exact-main CI has not completed successfully; refusing publication." >&2
+            exit 2
+          fi
           set +e
           git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" >/dev/null
           tag_status=$?
           set -e
           if [ "$tag_status" -eq 0 ]; then
             git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-            if [ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$GITHUB_SHA" ]; then
-              echo "The release tag already points to a different commit." >&2
-              exit 2
-            fi
+          elif [ "$tag_status" -eq 2 ]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" >/dev/null
           elif [ "$tag_status" -ne 2 ]; then
             echo "The remote release tag could not be inspected safely." >&2
             exit "$tag_status"
           fi
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          if [ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$GITHUB_SHA" ]; then
+            echo "The release tag does not identify the exact release candidate." >&2
+            exit 2
+          fi
       - id: host
         shell: bash
         run: |
-          dist host ${{ needs.plan.outputs.tag-flag }} --steps=create --steps=upload --steps=release --output-format=json > dist-manifest.json
-          echo "artifacts uploaded and released successfully"
+          dist host ${{ needs.plan.outputs.tag-flag }} --steps=create --steps=upload --output-format=json > dist-manifest.json
+          echo "release manifest prepared successfully"
           cat dist-manifest.json
           echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
@@ -453,7 +467,8 @@ jobs:
           # Overwrite the previous copy
           name: artifacts-dist-manifest
           path: dist-manifest.json
-      # Create a GitHub Release while uploading all files to it
+      # Fetch the exact build artifacts used for the draft upload again for
+      # provenance attestation before the release becomes public.
       - name: "Download GitHub Artifacts"
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
         with:
@@ -464,6 +479,27 @@ jobs:
         run: |
           # Remove the granular manifests
           rm -f artifacts/*-dist-manifest.json
+      - name: Create or refresh GitHub Draft Release
+        env:
+          RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
+        run: |
+          printf '%s\n' "Draft release. Publication remains blocked until artifact attestations complete." > "$RUNNER_TEMP/draft-notes.txt"
+          if ! gh release create "$RELEASE_TAG" --verify-tag --prerelease --draft \
+            --title "Noter ${RELEASE_TAG#v}" --notes-file "$RUNNER_TEMP/draft-notes.txt" \
+            artifacts/*; then
+            release_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+            draft="$(printf '%s' "$release_json" | jq -r '.draft')"
+            prerelease="$(printf '%s' "$release_json" | jq -r '.prerelease')"
+            tag_name="$(printf '%s' "$release_json" | jq -r '.tag_name')"
+            if [ "$draft" != "true" ] || [ "$prerelease" != "true" ] || [ "$tag_name" != "$RELEASE_TAG" ]; then
+              echo "An existing release is not the expected private prerelease draft." >&2
+              exit 2
+            fi
+            while IFS= read -r asset_id; do
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            done < <(printf '%s' "$release_json" | jq -r '.assets[].id')
+            gh release upload "$RELEASE_TAG" artifacts/*
+          fi
       - name: Attest
         uses: actions/attest@c32b4b8b198b65d0bd9d63490e847ff7b53989d4
         with:
@@ -479,7 +515,7 @@ jobs:
             artifacts/*.tar.gz
             artifacts/*.tar.xz
             artifacts/*.msi
-      - name: Create GitHub Release
+      - name: Finalize GitHub Release
         env:
           RELEASE_COMMIT: "${{ github.sha }}"
           RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
@@ -489,17 +525,6 @@ jobs:
             echo "Main advanced before final publication; refusing stale publication." >&2
             exit 2
           fi
-          set +e
-          git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" >/dev/null
-          tag_status=$?
-          set -e
-          if [ "$tag_status" -eq 2 ]; then
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-              -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT" >/dev/null
-          elif [ "$tag_status" -ne 0 ]; then
-            echo "The remote release tag could not be inspected safely." >&2
-            exit "$tag_status"
-          fi
           git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           if [ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$RELEASE_COMMIT" ]; then
             echo "The release tag does not identify the built commit." >&2
@@ -508,11 +533,17 @@ jobs:
 
           {
             printf '%s\n\n' "This prerelease is for evaluation and careful dogfooding."
+            printf '%s\n\n' "Keep backups and do not use this alpha as the only copy of important work."
+            printf '%s\n' "Interactive recovery evidence was completed on Windows. Interactive macOS and Linux GUI checks remain deferred to beta.1."
+            printf '%s\n' "Packaged-installer checks remain deferred to 0.1.0-rc.1."
+            printf 'Changes: https://github.com/blisspixel/noter/blob/%s/CHANGELOG.md\n' "$RELEASE_TAG"
+            printf 'Correctness evidence: https://github.com/blisspixel/noter/blob/%s/docs/ALPHA2_CORRECTNESS_MATRIX.md\n\n' "$RELEASE_TAG"
             printf '%s\n' "Download an asset before executing it. Verify its GitHub build provenance with:"
             printf '%s\n\n' "gh attestation verify PATH_TO_DOWNLOADED_ASSET --repo blisspixel/noter"
-            printf '%s\n' "Compare the asset with the published SHA-256 checksums and review the version-matched installation guide:"
+            printf '%s\n' "Published SHA-256 files cover the source archive, platform archives, and Windows MSI. Installer scripts, the Homebrew formula, SBOMs, and the manifest rely on GitHub attestation rather than checksum sidecars."
+            printf '%s\n' "For the strongest alpha path, manually download an archive and verify both its checksum and attestation. Review the version-matched installation guide:"
             printf 'https://github.com/blisspixel/noter/blob/%s/docs/INSTALLATION.md\n\n' "$RELEASE_TAG"
-            printf '%s\n' "Do not pipe a remote installer directly into a shell. Windows and macOS artifacts are not yet platform-signed unless the release notes explicitly say otherwise."
+            printf '%s\n' "Do not pipe a remote installer directly into a shell. Windows and macOS artifacts are not platform-signed."
           } > "$RUNNER_TEMP/notes.txt"
 
-          gh release create "$RELEASE_TAG" --verify-tag --prerelease --title "Noter ${RELEASE_TAG#v}" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          gh release edit "$RELEASE_TAG" --verify-tag --prerelease --draft=false --title "Noter ${RELEASE_TAG#v}" --notes-file "$RUNNER_TEMP/notes.txt"

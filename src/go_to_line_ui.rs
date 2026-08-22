@@ -43,6 +43,11 @@ impl GoToLineDialog {
         self.open
     }
 
+    #[cfg(test)]
+    pub fn input_for_test(&self) -> &str {
+        &self.input
+    }
+
     pub fn show(&mut self, context: &egui::Context, source: &str) -> Option<GoToLineAction> {
         if !self.open {
             return None;

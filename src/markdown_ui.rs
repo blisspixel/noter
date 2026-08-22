@@ -7,7 +7,9 @@ use noter::core::markdown::recoverable_emphasis_spans;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag};
 
 use crate::bounded_text_input::{
-    BoundedTextBuffer, sanitize_bounded_text_events, truncate_to_utf8_byte_limit,
+    BoundedTextBuffer, ImeCommitFocusRestore, ImeFrameState, focused_ime_frame_state,
+    retain_active_ime_commit_focus, sanitize_bounded_text_events, take_events_after_ime_terminal,
+    truncate_to_utf8_byte_limit,
 };
 use crate::keyboard_nav::{
     KeyboardPlatform, consume_navigation_gestures, editor_event_may_change_focus,
@@ -476,6 +478,13 @@ struct ActiveBlock {
     pending_origin: Option<EditOrigin>,
     request_focus: bool,
     pending_reopen: Option<PendingInlineReopen>,
+    ime_composition: Option<BlockImeComposition>,
+}
+
+#[derive(Debug)]
+struct BlockImeComposition {
+    draft: String,
+    base_selection: CharSelection,
 }
 
 impl ActiveBlock {
@@ -490,6 +499,7 @@ impl ActiveBlock {
             pending_origin: None,
             request_focus: true,
             pending_reopen: None,
+            ime_composition: None,
         }
     }
 
@@ -498,6 +508,7 @@ impl ActiveBlock {
     }
 
     fn apply(&mut self, command: MarkdownCommand) {
+        self.cancel_ime_composition();
         let result = apply_markdown_command(&self.draft, self.selection.ordered_range(), command);
         self.draft = result.text;
         self.selection = self.selection.with_ordered_range(result.selection);
@@ -508,6 +519,7 @@ impl ActiveBlock {
     }
 
     fn apply_block_style(&mut self, style: BlockStyle) {
+        self.cancel_ime_composition();
         let result = apply_block_style(&self.draft, self.selection.ordered_range(), style);
         let changed = result.text != self.draft;
         self.draft = result.text;
@@ -522,6 +534,120 @@ impl ActiveBlock {
 
     fn command_is_active(&self, command: MarkdownCommand) -> bool {
         markdown_command_is_active(&self.draft, self.selection.ordered_range(), command)
+    }
+
+    fn cancel_ime_composition(&mut self) {
+        if let Some(composition) = self.ime_composition.take() {
+            self.selection = composition.base_selection;
+        }
+    }
+
+    fn displayed_draft(&self) -> &str {
+        self.ime_composition
+            .as_ref()
+            .map_or(self.draft.as_str(), |composition| {
+                composition.draft.as_str()
+            })
+    }
+
+    fn prepare_text_edit_state(
+        &mut self,
+        ui: &egui::Ui,
+        editor_id: egui::Id,
+        restore_selection: bool,
+    ) -> bool {
+        let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
+        let restore_focus = self.request_focus;
+        if restore_focus || restore_selection {
+            let anchor = egui::text::CCursor::new(self.selection.anchor);
+            let caret = egui::text::CCursor::new(self.selection.active);
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(anchor, caret)));
+            if restore_focus {
+                ui.memory_mut(|memory| memory.request_focus(editor_id));
+                self.request_focus = false;
+            }
+        }
+        state.clear_undoer();
+        state.store(ui.ctx(), editor_id);
+        restore_focus
+    }
+
+    fn prepare_ime_input(
+        &mut self,
+        ui: &egui::Ui,
+        editor_id: egui::Id,
+        maximum_draft_bytes: usize,
+    ) -> (ImeFrameState, bool) {
+        let composition_was_active = self.ime_composition.is_some();
+        let state_before_sanitizing =
+            focused_ime_frame_state(ui, editor_id, composition_was_active);
+        if self.ime_composition.is_none() && state_before_sanitizing != ImeFrameState::None {
+            self.ime_composition = Some(BlockImeComposition {
+                draft: self.draft.clone(),
+                base_selection: self.selection,
+            });
+        }
+        let input_was_limited = sanitize_bounded_text_events(
+            ui,
+            editor_id,
+            self.displayed_draft(),
+            maximum_draft_bytes,
+        );
+        (
+            focused_ime_frame_state(ui, editor_id, composition_was_active),
+            input_was_limited,
+        )
+    }
+
+    fn editable_draft(&mut self) -> &mut String {
+        self.ime_composition
+            .as_mut()
+            .map_or(&mut self.draft, |composition| &mut composition.draft)
+    }
+
+    fn resolve_ime_input(
+        &mut self,
+        ui: &egui::Ui,
+        ime_state: ImeFrameState,
+        widget_changed: bool,
+        widget_selection: CharSelection,
+        state: &mut egui::text_edit::TextEditState,
+    ) -> bool {
+        match ime_state {
+            ImeFrameState::Composing => false,
+            ImeFrameState::Committed => {
+                if let Some(composition) = self.ime_composition.take() {
+                    let changed = composition.draft != self.draft;
+                    self.draft = composition.draft;
+                    self.selection = widget_selection;
+                    changed
+                } else {
+                    self.selection = widget_selection;
+                    widget_changed
+                }
+            }
+            ImeFrameState::Cancelled => {
+                self.cancel_ime_composition();
+                let anchor = egui::text::CCursor::new(self.selection.anchor);
+                let caret = egui::text::CCursor::new(self.selection.active);
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(anchor, caret)));
+                ui.ctx().request_repaint();
+                false
+            }
+            ImeFrameState::None => {
+                if self.ime_composition.is_some() {
+                    self.cancel_ime_composition();
+                    false
+                } else {
+                    self.selection = widget_selection;
+                    widget_changed
+                }
+            }
+        }
     }
 
     fn apply_line_break_and_reopen_policy(
@@ -651,6 +777,7 @@ impl ActiveBlock {
         let restored_navigation = if gestures.is_empty() {
             false
         } else {
+            self.cancel_ime_composition();
             let mut next = self.selection.to_byte_selection(&self.draft);
             for gesture in gestures {
                 next = gesture.apply(&self.draft, next);
@@ -658,8 +785,16 @@ impl ActiveBlock {
             self.selection = CharSelection::from_byte_selection(&self.draft, next);
             true
         };
-        let (restored_break, input_was_limited) =
-            self.apply_line_break_and_reopen_policy(ui, maximum_draft_bytes);
+        if self.ime_composition.is_some()
+            && ui.input(|input| input.events.iter().any(is_plain_enter_press))
+        {
+            self.cancel_ime_composition();
+        }
+        let (restored_break, input_was_limited) = if self.ime_composition.is_some() {
+            (false, false)
+        } else {
+            self.apply_line_break_and_reopen_policy(ui, maximum_draft_bytes)
+        };
         (restored_navigation || restored_break, input_was_limited)
     }
 
@@ -1212,6 +1347,12 @@ impl MarkdownEditor {
         self.active.is_some()
     }
 
+    pub(crate) fn has_active_ime_composition(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.ime_composition.is_some())
+    }
+
     pub fn source_selection(&self) -> Option<Selection> {
         self.active
             .as_ref()
@@ -1645,10 +1786,12 @@ impl MarkdownEditor {
         }
         let restored_deferred_input = std::mem::take(&mut self.deferred_input_restored);
         let editor_id = self.active.as_ref().map(ActiveBlock::editor_id);
+        let ime_focus_restore = self.capture_ime_commit_focus(ui, editor_id);
         let editor_accepts_input = editor_id.is_some_and(|editor_id| {
             restored_deferred_input || ui.memory(|memory| memory.has_focus(editor_id))
         });
         if editor_accepts_input {
+            self.serialize_next_ime_composition(ui);
             self.serialize_next_custom_input(ui);
         }
         let format_command = editor_accepts_input
@@ -1671,28 +1814,13 @@ impl MarkdownEditor {
         };
         self.input_was_limited |= policy_was_limited;
         let finish_requested = prepare_escape_finish(ui, editor_id);
-        let rows = logical_lines(&active.draft).count().max(1) + 1;
         let input_origin = direct_input_origin(ui);
         let selection = active.selection.ordered_range();
-        let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
-        let restore_focus = active.request_focus;
-        if restore_focus || restore_selection {
-            let anchor = egui::text::CCursor::new(active.selection.anchor);
-            let caret = egui::text::CCursor::new(active.selection.active);
-            state
-                .cursor
-                .set_char_range(Some(egui::text::CCursorRange::two(anchor, caret)));
-            // Navigation keeps an already-focused editor; only activation and
-            // formatting reassert focus (mirrors Text Mode preserve_focus).
-            if restore_focus {
-                ui.memory_mut(|memory| memory.request_focus(editor_id));
-                active.request_focus = false;
-            }
-        }
-        state.clear_undoer();
-        state.store(ui.ctx(), editor_id);
-        self.input_was_limited |=
-            sanitize_bounded_text_events(ui, editor_id, &active.draft, maximum_draft_bytes);
+        let restore_focus = active.prepare_text_edit_state(ui, editor_id, restore_selection);
+        let (ime_state, ime_input_was_limited) =
+            active.prepare_ime_input(ui, editor_id, maximum_draft_bytes);
+        self.input_was_limited |= ime_input_was_limited;
+        let rows = logical_lines(active.displayed_draft()).count().max(1) + 1;
 
         let mut live_projection_limit = None;
         let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
@@ -1704,7 +1832,7 @@ impl MarkdownEditor {
             ui.fonts_mut(|fonts| fonts.layout_job(layout.job))
         };
         let (mut output, buffer_was_limited) = {
-            let mut buffer = BoundedTextBuffer::new(&mut active.draft, maximum_draft_bytes);
+            let mut buffer = BoundedTextBuffer::new(active.editable_draft(), maximum_draft_bytes);
             let editor = egui::TextEdit::multiline(&mut buffer)
                 .id(editor_id)
                 .font(egui::TextStyle::Body)
@@ -1725,14 +1853,22 @@ impl MarkdownEditor {
             output.response.request_focus();
         }
         retain_escape_focus(ui, editor_id);
-        if let Some(cursor_range) = output.cursor_range {
-            active.selection = CharSelection::new(
-                cursor_range.secondary.index.into(),
-                cursor_range.primary.index.into(),
-            );
-        }
+        let widget_selection = output
+            .cursor_range
+            .map_or(active.selection, |cursor_range| {
+                CharSelection::new(
+                    cursor_range.secondary.index.into(),
+                    cursor_range.primary.index.into(),
+                )
+            });
 
-        let changed = output.response.changed();
+        let changed = active.resolve_ime_input(
+            ui,
+            ime_state,
+            output.response.changed(),
+            widget_selection,
+            &mut output.state,
+        );
         if finish_requested {
             ui.input_mut(|input| input.events.retain(|event| !is_plain_escape_press(event)));
         }
@@ -1744,7 +1880,14 @@ impl MarkdownEditor {
         // snapshots so an active block cannot retain an independent history.
         output.state.clear_undoer();
         output.state.store(ui.ctx(), output.response.id);
-        (changed, finish_requested, live_projection_limit)
+        if let Some(restore) = ime_focus_restore {
+            restore.restore(ui, editor_id);
+        }
+        (
+            changed,
+            finish_requested,
+            changed.then_some(live_projection_limit).flatten(),
+        )
     }
 
     pub(crate) fn restore_deferred_input(&mut self, ui: &egui::Ui) -> bool {
@@ -1789,6 +1932,41 @@ impl MarkdownEditor {
         })
     }
 
+    fn defer_editor_input(&mut self, deferred: &mut Vec<egui::Event>, owns_editor: bool) {
+        let previous_was_empty = self.deferred_input_events.is_empty();
+        let previous_owns_editor = self.deferred_input_owns_editor;
+        deferred.append(&mut self.deferred_input_events);
+        std::mem::swap(deferred, &mut self.deferred_input_events);
+        self.deferred_input_owns_editor =
+            owns_editor && (previous_was_empty || previous_owns_editor);
+    }
+
+    fn serialize_next_ime_composition(&mut self, ui: &egui::Ui) {
+        let composition_was_active = self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.ime_composition.is_some());
+        let mut deferred = take_events_after_ime_terminal(ui, true, composition_was_active);
+        if !deferred.is_empty() {
+            self.defer_editor_input(&mut deferred, true);
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn capture_ime_commit_focus(
+        &self,
+        ui: &egui::Ui,
+        editor_id: Option<egui::Id>,
+    ) -> Option<ImeCommitFocusRestore> {
+        let composition_was_active = self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.ime_composition.is_some());
+        editor_id.and_then(|editor_id| {
+            retain_active_ime_commit_focus(ui, editor_id, composition_was_active)
+        })
+    }
+
     fn serialize_next_custom_input(&mut self, ui: &egui::Ui) {
         let mut deferred = Vec::new();
         let mut deferred_owns_editor = false;
@@ -1815,8 +1993,7 @@ impl MarkdownEditor {
             }
         });
         if !deferred.is_empty() {
-            self.deferred_input_events = deferred;
-            self.deferred_input_owns_editor = deferred_owns_editor;
+            self.defer_editor_input(&mut deferred, deferred_owns_editor);
             ui.ctx().request_repaint();
         }
     }
@@ -7273,6 +7450,7 @@ mod tests {
                 pending_origin: Some(EditOrigin::MarkdownFormatting),
                 request_focus: false,
                 pending_reopen: None,
+                ime_composition: None,
             }),
             finished_selection: None,
             rendered_drag: None,

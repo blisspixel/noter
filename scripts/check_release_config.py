@@ -36,7 +36,7 @@ PINNED_RELEASE_TOOL_DIGESTS = {
 }
 PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 REVIEWED_RELEASE_WORKFLOW_SHA256 = (
-    "88acb9efe083ade4f378a230f35128374cf989fb54b72f8e373432e975ff0d67"
+    "2fccc8987f4b747d6db77d61cf4c08665886b6f747bb024c0eaa004dd3e14e1d"
 )
 REVIEWED_WIX_SHA256 = "90d3892cab5d6b450a76a5f1b1596a061306f2bddcac2908c7e59a99a00fa6be"
 REVIEWED_CI_WORKFLOW_SHA256 = (
@@ -213,9 +213,13 @@ def validate_workflow(text: str) -> list[str]:
     immutable_target_script = _literal_run_step(
         host, "Validate immutable release target", errors
     )
-    publication_script = _literal_run_step(host, "Create GitHub Release", errors)
+    publication_script = _literal_run_step(host, "Finalize GitHub Release", errors)
+    draft_script = _literal_run_step(
+        host, "Create or refresh GitHub Draft Release", errors
+    )
     immutable_target_lines = _executable_shell_lines(immutable_target_script)
     publication_lines = _executable_shell_lines(publication_script)
+    draft_lines = _executable_shell_lines(draft_script)
     host_step_headers = [
         line for line in host.splitlines() if line.startswith("      - ")
     ]
@@ -232,7 +236,17 @@ def validate_workflow(text: str) -> list[str]:
     publication_headers = [
         index
         for index, header in enumerate(host_step_headers)
-        if header == "      - name: Create GitHub Release"
+        if header == "      - name: Finalize GitHub Release"
+    ]
+    attestation_headers = [
+        index
+        for index, header in enumerate(host_step_headers)
+        if header == "      - name: Attest"
+    ]
+    draft_headers = [
+        index
+        for index, header in enumerate(host_step_headers)
+        if header == "      - name: Create or refresh GitHub Draft Release"
     ]
     if (
         len(hosting_headers) != 1
@@ -245,6 +259,19 @@ def validate_workflow(text: str) -> list[str]:
         or publication_headers[0] != len(host_step_headers) - 1
     ):
         errors.append("publication step must be the final host step")
+    if (
+        len(hosting_headers) != 1
+        or len(draft_headers) != 1
+        or len(attestation_headers) != 1
+        or len(publication_headers) != 1
+        or not hosting_headers[0]
+        < draft_headers[0]
+        < attestation_headers[0]
+        < publication_headers[0]
+    ):
+        errors.append(
+            "draft upload, attestation, and publication steps must remain ordered"
+        )
     require_text(
         header,
         'permissions:\n  "contents": "read"',
@@ -259,9 +286,12 @@ def validate_workflow(text: str) -> list[str]:
         errors.append("the GitHub token must appear only once in the host job")
     for expected, description in {
         '"attestations": "write"': "host attestation permission",
+        '"actions": "read"': "host workflow-read permission",
         '"contents": "write"': "host release permission",
         '"id-token": "write"': "host OIDC permission",
-        "--steps=create --steps=upload --steps=release": "host publication stages",
+        "--steps=create --steps=upload --output-format=json": (
+            "draft-only host upload stages"
+        ),
         "steps.cargo-dist.outputs.paths": "manifest-driven artifact upload output",
         "artifacts/*.tar.gz": "source-archive attestation subject",
         "wix3141rtm/wix314-binaries.zip": "pinned WiX Toolset archive",
@@ -291,6 +321,11 @@ def validate_workflow(text: str) -> list[str]:
         '[ "$GITHUB_SHA" != "$(git rev-parse origin/main)" ]': (
             "initial exact main-tip publication gate"
         ),
+        '"repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs"': (
+            "exact-main CI run inspection"
+        ),
+        '-f head_sha="$GITHUB_SHA"': "immutable CI revision selection",
+        '.conclusion == "success"': "successful exact-main CI requirement",
         '[ "$RELEASE_COMMIT" != "$(git rev-parse origin/main)" ]': (
             "final exact main-tip publication gate"
         ),
@@ -300,10 +335,14 @@ def validate_workflow(text: str) -> list[str]:
         'gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs"': (
             "atomic release-tag creation"
         ),
-        '-f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"': (
+        '-f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA"': (
             "release-tag commit binding"
         ),
-        "--verify-tag": "verified-tag release creation",
+        "--verify-tag": "verified-tag release finalization",
+        'gh release edit "$RELEASE_TAG"': "cargo-dist release finalization",
+        'gh release create "$RELEASE_TAG"': "verified draft release creation",
+        'gh release upload "$RELEASE_TAG" artifacts/*': ("verified draft retry upload"),
+        "--draft=false": "explicit post-attestation release publication",
         "gh attestation verify PATH_TO_DOWNLOADED_ASSET": (
             "attestation-first release guidance"
         ),
@@ -328,6 +367,7 @@ def validate_workflow(text: str) -> list[str]:
         "cargo-auditable-installer.ps1": (
             "unverified Windows cargo-auditable installer"
         ),
+        "--steps=release": "pre-attestation cargo-dist publication",
     }
     for token, description in forbidden.items():
         if token in text:
@@ -353,6 +393,38 @@ def validate_workflow(text: str) -> list[str]:
         errors.append(
             "initial exact main-tip publication gate must be executable in its host step"
         )
+    if not (
+        any(
+            line.startswith(
+                'ci_runs="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs"'
+            )
+            for line in immutable_target_lines
+        )
+        and '-f head_sha="$GITHUB_SHA" -f per_page=100)"' in immutable_target_lines
+        and any(
+            ".head_sha == $sha" in line
+            and '.head_branch == "main"' in line
+            and '.event == "push"' in line
+            and '.status == "completed"' in line
+            and '.conclusion == "success"' in line
+            for line in immutable_target_lines
+        )
+        and 'if [ "$successful_ci" -lt 1 ]; then' in immutable_target_lines
+    ):
+        errors.append(
+            "exact-main CI success must be enforced before release-tag creation"
+        )
+    if not (
+        any(
+            line.startswith('gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs"')
+            for line in immutable_target_lines
+        )
+        and '-f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" >/dev/null'
+        in immutable_target_lines
+    ):
+        errors.append(
+            "exact release tag must be atomically created in the immutable-target step"
+        )
     if (
         'if [ "$RELEASE_COMMIT" != "$(git rev-parse origin/main)" ]; then'
         not in publication_lines
@@ -368,6 +440,56 @@ def validate_workflow(text: str) -> list[str]:
     ):
         errors.append(
             "release tag binding checks must be executable in their host steps"
+        )
+    draft_creation_lines = [
+        line
+        for line in draft_lines
+        if line.startswith('if ! gh release create "$RELEASE_TAG" ')
+    ]
+    if (
+        len(draft_creation_lines) != 1
+        or "--verify-tag" not in draft_creation_lines[0]
+        or "--prerelease" not in draft_creation_lines[0]
+        or "--draft" not in draft_creation_lines[0]
+        or "artifacts/*; then" not in draft_lines
+    ):
+        errors.append(
+            "draft creation must upload exact artifacts to one verified prerelease draft"
+        )
+    if text.count('gh release create "$RELEASE_TAG"') != 1:
+        errors.append("draft release creation must appear exactly once")
+    if not (
+        'release_json="$(gh api --method GET '
+        '"repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"'
+        in draft_lines
+        and 'if [ "$draft" != "true" ] || [ "$prerelease" != "true" ] || [ "$tag_name" != "$RELEASE_TAG" ]; then'
+        in draft_lines
+        and "done < <(printf '%s' \"$release_json\" | jq -r '.assets[].id')"
+        in draft_lines
+        and any(
+            line.startswith(
+                'gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"'
+            )
+            for line in draft_lines
+        )
+        and 'gh release upload "$RELEASE_TAG" artifacts/*' in draft_lines
+    ):
+        errors.append(
+            "draft retry must verify and replace only the exact private prerelease payload"
+        )
+    final_release_lines = [
+        line
+        for line in publication_lines
+        if line.startswith('gh release edit "$RELEASE_TAG" ')
+    ]
+    if (
+        len(final_release_lines) != 1
+        or "--verify-tag" not in final_release_lines[0]
+        or "--prerelease" not in final_release_lines[0]
+        or "--draft=false" not in final_release_lines[0]
+    ):
+        errors.append(
+            "final publication must edit and publish the attested draft release"
         )
     for digest in PINNED_RELEASE_TOOL_DIGESTS:
         require_text(text, digest, f"pinned release-tool digest {digest[:12]}", errors)

@@ -1,6 +1,6 @@
 # Release Process
 
-**Reviewed:** 2026-08-02
+**Reviewed:** 2026-08-22
 
 **Current status:** Noter publishes explicitly scoped prerelease builds for
 careful dogfood. No supported stable binary release has been published. Running
@@ -14,7 +14,7 @@ revision:
 
 - `.tar.xz` archives for glibc Intel Linux, Intel macOS, and Apple Silicon macOS;
 - a `.zip` archive and protected per-machine MSI package for Intel Windows;
-- checksum-verifying POSIX and PowerShell installers;
+- attested POSIX and PowerShell convenience installers;
 - a Homebrew formula;
 - SHA-256 files and one unified checksum list;
 - a generated third-party dependency inventory and bundled-font license in
@@ -22,6 +22,14 @@ revision:
 - target-specific CycloneDX 1.5 SBOMs for all four release targets; and
 - GitHub artifact attestations for every published archive, installer,
   checksum, manifest, formula, and SBOM.
+
+The generated SHA-256 sidecars and unified checksum list cover the source
+archive, platform archives, and Windows MSI. They do not cover the installer
+scripts, Homebrew formula, SBOMs, or distribution manifest. The generated
+PowerShell installer does not verify its downloaded archive, and the POSIX
+installer can skip archive verification when `sha256sum` is unavailable. The
+strongest alpha installation path is therefore a manually downloaded archive
+whose checksum and GitHub attestation were both verified before extraction.
 
 Attestation establishes GitHub-hosted build provenance. It is not Windows or
 macOS code signing. A release must disclose the signing state plainly and must
@@ -128,11 +136,20 @@ installer from the completed run on clean target systems.
 
 Publication is intentionally separate from ordinary CI. After explicit release
 approval, dispatch the `Release` workflow from the exact candidate commit with
-the matching prerelease `v<VERSION>` input. The workflow refuses publication
-outside `main`, marks the GitHub release as a prerelease, and creates it only
-after all platform and global artifact jobs succeed. Its release notes direct
-users to download an artifact before executing it and verify GitHub attestation,
-checksums, and the exact-tag installation guide.
+the matching prerelease `v<VERSION>` input. After every platform and global
+artifact job succeeds, the workflow refreshes protected `main`, requires the
+dispatch commit to be its exact tip, verifies successful main-push CI for that
+exact commit, and atomically creates or verifies the tag at that commit.
+Cargo-dist prepares the merged hosting manifest. The workflow creates a private
+draft release with the exact downloaded artifacts, then attests the same build
+payload. A safe retry accepts only the same private prerelease draft, removes
+its prior assets, and replaces them from the current exact workflow artifacts.
+The workflow refreshes `main` again, revalidates the tag target, installs the
+reviewed prerelease notes, and only then publishes the draft. No release becomes
+public before exact-head CI, upload, attestation, and the final main-tip and tag
+checks succeed. The notes direct users to download an artifact before executing
+it and verify GitHub attestation, applicable checksums, and the exact-tag
+installation guide.
 
 SBOM generation treats only the three exact legacy slash-separated license
 spellings present in upstream package metadata as named values. Cargo Deny and

@@ -810,7 +810,10 @@ mod imp {
     pub fn unix_open_existing_no_follow(path: &Path) -> io::Result<File> {
         OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
+            // O_NONBLOCK prevents a final-entry swap to a FIFO from hanging
+            // between pathname classification and open. It has no effect on
+            // ordinary regular-file reads after handle validation.
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(path)
     }
 
