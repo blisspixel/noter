@@ -464,7 +464,9 @@ sleeps between frames still wakes to meet the recovery-point objective instead o
 silently extending it to the next unrelated repaint. Durable recovery write and
 `fsync` run on a dedicated `noter-recovery` worker rather than the render
 thread; the UI only captures a revision snapshot and applies epoch-tagged
-completions. Live
+completions. A living window holds an exclusive lease on its instance so
+another Noter process cannot Restore or Discard that in-flight copy; a crash
+releases the lease. Live
 GUI force-kill recovery timing and the remaining interactive matrix rows in
 [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) remain open
 before the `0.1.0-alpha.2` label.

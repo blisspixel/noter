@@ -253,6 +253,7 @@ impl EditCommand {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ViewCommand {
     ToggleWordWrap,
+    ToggleDocumentView,
     ToggleFullscreen,
     ZoomIn,
     ZoomOut,
@@ -302,6 +303,7 @@ impl ViewCommand {
     const fn label(self) -> &'static str {
         match self {
             Self::ToggleWordWrap => "Word Wrap",
+            Self::ToggleDocumentView => "Switch Mode",
             Self::ToggleFullscreen => "Full Screen",
             Self::ZoomIn => "Zoom In",
             Self::ZoomOut => "Zoom Out",
@@ -309,16 +311,19 @@ impl ViewCommand {
         }
     }
 
-    const fn shortcut(self) -> Option<egui::KeyboardShortcut> {
+    const fn shortcut(self) -> egui::KeyboardShortcut {
         match self {
-            Self::ToggleWordWrap => None,
-            Self::ToggleFullscreen => Some(egui::KeyboardShortcut::new(
-                egui::Modifiers::NONE,
-                egui::Key::F11,
-            )),
-            Self::ZoomIn => Some(egui::gui_zoom::kb_shortcuts::ZOOM_IN),
-            Self::ZoomOut => Some(egui::gui_zoom::kb_shortcuts::ZOOM_OUT),
-            Self::ResetZoom => Some(egui::gui_zoom::kb_shortcuts::ZOOM_RESET),
+            Self::ToggleWordWrap => egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::Z),
+            Self::ToggleDocumentView => egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                egui::Key::M,
+            ),
+            Self::ToggleFullscreen => {
+                egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::F11)
+            }
+            Self::ZoomIn => egui::gui_zoom::kb_shortcuts::ZOOM_IN,
+            Self::ZoomOut => egui::gui_zoom::kb_shortcuts::ZOOM_OUT,
+            Self::ResetZoom => egui::gui_zoom::kb_shortcuts::ZOOM_RESET,
         }
     }
 }
@@ -1262,11 +1267,24 @@ impl NoterApp {
         command
     }
 
-    fn collect_view_shortcut(ui: &egui::Ui) -> Option<ViewCommandRequest> {
+    fn collect_view_shortcut(
+        ui: &egui::Ui,
+        document_shortcuts_enabled: bool,
+    ) -> Option<ViewCommandRequest> {
         let mut command = None;
         ui.input_mut(|input| {
-            if let Some(shortcut) = ViewCommand::ToggleFullscreen.shortcut()
-                && input.consume_shortcut(&shortcut)
+            if document_shortcuts_enabled {
+                if input.consume_shortcut(&ViewCommand::ToggleDocumentView.shortcut()) {
+                    command = Some(ViewCommand::ToggleDocumentView);
+                }
+                if command.is_none()
+                    && input.consume_shortcut(&ViewCommand::ToggleWordWrap.shortcut())
+                {
+                    command = Some(ViewCommand::ToggleWordWrap);
+                }
+            }
+            if command.is_none()
+                && input.consume_shortcut(&ViewCommand::ToggleFullscreen.shortcut())
             {
                 command = Some(ViewCommand::ToggleFullscreen);
             }
@@ -1372,6 +1390,14 @@ impl NoterApp {
                 self.text_wrap.toggle();
             }
             ViewCommand::ToggleWordWrap => return,
+            ViewCommand::ToggleDocumentView => {
+                let next = match self.view {
+                    DocumentView::Text => DocumentView::Markdown,
+                    DocumentView::Markdown => DocumentView::Text,
+                };
+                self.request_document_view(next);
+                return;
+            }
             ViewCommand::ToggleFullscreen => {
                 let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
@@ -1952,13 +1978,15 @@ impl NoterApp {
     }
 
     fn show_view_preferences(&self, ui: &mut egui::Ui, command: &mut Option<ViewCommandRequest>) {
-        let wrap = ui.add_enabled(
-            self.view == DocumentView::Text,
-            egui::Button::selectable(
-                self.text_wrap.is_wrapped(),
-                ViewCommand::ToggleWordWrap.label(),
-            ),
+        let mut wrap_button = egui::Button::selectable(
+            self.text_wrap.is_wrapped(),
+            ViewCommand::ToggleWordWrap.label(),
         );
+        wrap_button = wrap_button.shortcut_text(
+            ui.ctx()
+                .format_shortcut(&ViewCommand::ToggleWordWrap.shortcut()),
+        );
+        let wrap = ui.add_enabled(self.view == DocumentView::Text, wrap_button);
         if self.view != DocumentView::Text {
             wrap.clone()
                 .on_disabled_hover_text("Markdown Mode wraps formatted content by design");
@@ -1972,9 +2000,10 @@ impl NoterApp {
         let is_fullscreen = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
         let mut fs_button =
             egui::Button::selectable(is_fullscreen, ViewCommand::ToggleFullscreen.label());
-        if let Some(shortcut) = ViewCommand::ToggleFullscreen.shortcut() {
-            fs_button = fs_button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
-        }
+        fs_button = fs_button.shortcut_text(
+            ui.ctx()
+                .format_shortcut(&ViewCommand::ToggleFullscreen.shortcut()),
+        );
         if ui.add(fs_button).clicked() {
             command.get_or_insert(ViewCommandRequest::restore_document(
                 ViewCommand::ToggleFullscreen,
@@ -1988,9 +2017,7 @@ impl NoterApp {
                 ViewCommand::ResetZoom,
             ] {
                 let mut button = egui::Button::new(candidate.label());
-                if let Some(shortcut) = candidate.shortcut() {
-                    button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
-                }
+                button = button.shortcut_text(ui.ctx().format_shortcut(&candidate.shortcut()));
                 if ui.add(button).clicked() {
                     command.get_or_insert(ViewCommandRequest::restore_document(candidate));
                     ui.close();
@@ -2874,10 +2901,10 @@ impl NoterApp {
     }
 
     fn render_frame(&mut self, ui: &mut egui::Ui) {
-        let mut file_command = Self::collect_shortcut(ui);
-        let mut view_command = Self::collect_view_shortcut(ui);
         let document_shortcuts_enabled =
             !self.find_bar.owns_text_focus(ui.ctx()) && !self.go_to_line.owns_text_focus(ui.ctx());
+        let mut file_command = Self::collect_shortcut(ui);
+        let mut view_command = Self::collect_view_shortcut(ui, document_shortcuts_enabled);
         let go_to_line_shortcut_enabled =
             document_shortcuts_enabled && self.view == DocumentView::Text;
         let mut edit_command = Self::collect_edit_shortcut(
@@ -3874,10 +3901,17 @@ mod tests {
     }
 
     fn collect_view_shortcut_from_input(input: egui::RawInput) -> Option<ViewCommandRequest> {
+        collect_view_shortcut_from_input_with_availability(input, true)
+    }
+
+    fn collect_view_shortcut_from_input_with_availability(
+        input: egui::RawInput,
+        document_shortcuts_enabled: bool,
+    ) -> Option<ViewCommandRequest> {
         let context = egui::Context::default();
         let mut command = None;
         let _ = context.run_ui(input, |ui| {
-            command = NoterApp::collect_view_shortcut(ui);
+            command = NoterApp::collect_view_shortcut(ui, document_shortcuts_enabled);
         });
         command
     }
@@ -4697,6 +4731,68 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn wrap_and_mode_shortcuts_are_document_gated() {
+        let wrap = egui::Modifiers {
+            alt: true,
+            ..egui::Modifiers::NONE
+        };
+        let mode = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            shift: true,
+            ..egui::Modifiers::NONE
+        };
+
+        assert_eq!(
+            collect_view_shortcut_from_input(shortcut_input(wrap, egui::Key::Z)),
+            Some(ViewCommandRequest::restore_document(
+                ViewCommand::ToggleWordWrap
+            ))
+        );
+        assert_eq!(
+            collect_view_shortcut_from_input(shortcut_input(mode, egui::Key::M)),
+            Some(ViewCommandRequest::restore_document(
+                ViewCommand::ToggleDocumentView
+            ))
+        );
+        assert_eq!(
+            collect_view_shortcut_from_input_with_availability(
+                shortcut_input(wrap, egui::Key::Z),
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            collect_view_shortcut_from_input_with_availability(
+                shortcut_input(mode, egui::Key::M),
+                false
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn switching_mode_by_command_does_not_change_bytes() {
+        let source = "# Heading\n\nParagraph";
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            view: DocumentView::Text,
+            ..NoterApp::default()
+        };
+        let ctx = egui::Context::default();
+        app.execute_view_command(
+            ViewCommandRequest::restore_document(ViewCommand::ToggleDocumentView),
+            &ctx,
+        );
+        app.apply_pending_document_view();
+
+        assert_eq!(app.view, DocumentView::Markdown);
+        assert_eq!(String::from(app.document.rope()), source);
+        assert!(!app.document.is_dirty());
     }
 
     #[test]

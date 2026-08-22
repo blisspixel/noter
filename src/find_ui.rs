@@ -68,7 +68,9 @@ impl FindBar {
             self.query.clear();
             self.query.push_str(selected);
             self.invalidate_query();
-            self.replace_scope = ReplaceScope::Selection;
+            if replace_visible {
+                self.replace_scope = ReplaceScope::Selection;
+            }
         }
     }
 
@@ -105,12 +107,23 @@ impl FindBar {
         }
 
         let query_has_focus = ui.memory(|memory| memory.has_focus(egui::Id::new(FIND_QUERY_ID)));
-        let mut action = if query_has_focus {
+        let replacement_has_focus =
+            ui.memory(|memory| memory.has_focus(egui::Id::new(REPLACEMENT_ID)));
+        let replace_on_enter = replacement_has_focus
+            && self
+                .prepared_search(revision, source)
+                .ok()
+                .is_some_and(|search| search.matches_range(source, selection.ordered_range()));
+        let mut action = if query_has_focus || replacement_has_focus {
             ui.input_mut(|input| {
                 if input.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter) {
                     Some(FindBarAction::Previous)
                 } else if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
-                    Some(FindBarAction::Next)
+                    Some(if replace_on_enter {
+                        FindBarAction::Replace
+                    } else {
+                        FindBarAction::Next
+                    })
                 } else {
                     None
                 }
@@ -459,11 +472,12 @@ mod tests {
 
         assert!(bar.is_open());
         assert_eq!(bar.query, "two");
-        assert_eq!(bar.replace_scope(), ReplaceScope::Selection);
+        assert_eq!(bar.replace_scope(), ReplaceScope::Document);
 
-        bar.open(true, "one\ntwo", Selection::new(0, 7));
+        bar.open(true, "one two", Selection::new(4, 7));
         assert!(bar.replace_visible);
         assert_eq!(bar.query, "two");
+        assert_eq!(bar.replace_scope(), ReplaceScope::Selection);
     }
 
     #[test]
@@ -570,6 +584,53 @@ mod tests {
             );
         });
         assert!(!bar.is_open());
+    }
+
+    #[test]
+    fn focused_replace_field_enter_replaces_a_selected_match_otherwise_finds_next() {
+        let source = "one two one";
+        let selected = Selection::new(0, 3);
+        let mut bar = FindBar::default();
+        bar.open(true, source, selected);
+        let context = egui::Context::default();
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(bar.show(ui, Revision::INITIAL, source, selected), None);
+        });
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new(REPLACEMENT_ID)));
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(bar.show(ui, Revision::INITIAL, source, selected), None);
+        });
+
+        let mut enter = egui::RawInput::default();
+        enter.events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = context.run_ui(enter, |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, selected),
+                Some(FindBarAction::Replace)
+            );
+        });
+
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new(REPLACEMENT_ID)));
+        let mut miss = egui::RawInput::default();
+        miss.events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = context.run_ui(miss, |ui| {
+            assert_eq!(
+                bar.show(ui, Revision::INITIAL, source, Selection::caret(4)),
+                Some(FindBarAction::Next)
+            );
+        });
     }
 
     #[test]

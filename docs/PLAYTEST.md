@@ -40,6 +40,9 @@ A later first-contact pass closed these additional defects:
 | Keep Editing re-prompted every inspect after local typing | **Fixed.** The prompt returns only when the disk classification changes. |
 | Recovery offer had no Cancel; Escape did nothing | **Fixed.** Later or Escape hides the offer and keeps the private copy. |
 | Enter in a list or quote dropped the marker | **Fixed.** `- ` and `> ` continue; an empty item exits. |
+| Mode and Wrap were pointer-only | **Fixed.** Ctrl/Cmd+Shift+M switches Mode; Alt+Z toggles wrap in Text Mode. |
+| Replace-field Enter did nothing | **Fixed.** Enter replaces a selected match, otherwise Find Next. |
+| A second window could Discard another window's live recovery | **Fixed.** A living window holds an exclusive lease on its recovery instance. |
 
 The full command-line contract, including every exit status, is in
 [INSTALLATION.md](INSTALLATION.md).

@@ -8,6 +8,7 @@
 //! document path. Snapshot capture stays on the UI thread; durable write and
 //! `fsync` run on the worker so typing is not stalled by disk.
 
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -124,6 +125,7 @@ pub struct CrashRecoverySession {
     persist_outcomes: Option<Receiver<PersistOutcome>>,
     persist_worker: Option<JoinHandle<()>>,
     persist_epoch_gate: Arc<AtomicU64>,
+    live_lease: Option<File>,
 }
 
 impl CrashRecoverySession {
@@ -149,6 +151,7 @@ impl CrashRecoverySession {
             Ok(store) => {
                 session.attach_persist_worker();
                 session.store = Some(store);
+                session.acquire_live_lease();
                 session.ingest_scan();
             }
             Err(_) => {
@@ -209,6 +212,7 @@ impl CrashRecoverySession {
             persist_outcomes: None,
             persist_worker: None,
             persist_epoch_gate: Arc::new(AtomicU64::new(0)),
+            live_lease: None,
         }
     }
 
@@ -380,6 +384,7 @@ impl CrashRecoverySession {
     /// unavailable for the rest of the session so the adapter never persists
     /// with a weak or zero identity that could collide with another session.
     pub fn begin_fresh_identity(&mut self) {
+        let previous_instance = self.instance_id;
         match (random_document_id(), random_instance_id()) {
             (Ok(document_id), Ok(instance_id)) => {
                 self.document_id = document_id;
@@ -387,10 +392,29 @@ impl CrashRecoverySession {
                 self.created_wall = wall_now();
                 self.schedule = RecoveryScheduleState::default();
                 self.persist_failure = false;
+                self.release_live_lease_for(previous_instance);
+                self.acquire_live_lease();
             }
             _ => {
                 self.mark_unavailable_for_identity_failure();
             }
+        }
+    }
+
+    fn acquire_live_lease(&mut self) {
+        self.live_lease = None;
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        if let Ok(file) = store.try_hold_live_lease(self.instance_id) {
+            self.live_lease = Some(file);
+        }
+    }
+
+    fn release_live_lease_for(&mut self, instance_id: RecoveryInstanceId) {
+        self.live_lease = None;
+        if let Some(store) = self.store.as_ref() {
+            let _ = fs::remove_file(store.live_path(instance_id));
         }
     }
 
@@ -660,6 +684,8 @@ impl Drop for CrashRecoverySession {
         if let Some(handle) = self.persist_worker.take() {
             let _ = handle.join();
         }
+        let instance_id = self.instance_id;
+        self.release_live_lease_for(instance_id);
     }
 }
 
@@ -780,6 +806,19 @@ mod tests {
     use noter::core::text_format::{Bom, Encoding};
     use tempfile::tempdir;
 
+    fn recovery_record_count(store: &RecoveryStore) -> usize {
+        std::fs::read_dir(store.records_dir())
+            .expect("records dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "rec")
+            })
+            .count()
+    }
+
     fn sample_snapshot(instance: u8, content: &[u8]) -> RecoverySnapshot {
         RecoverySnapshot::try_new(RecoverySnapshotParts {
             document_id: RecoveryDocumentId::new([1; 16]),
@@ -899,6 +938,30 @@ mod tests {
     }
 
     #[test]
+    fn a_living_window_does_not_offer_another_windows_recovery_record() {
+        let dir = tempdir().expect("tempdir");
+        let mut owner = CrashRecoverySession::open_at(dir.path());
+        let mut document = Document::new();
+        document.replace_text("owned draft").expect("edit");
+        owner.on_edited(&document, Selection::caret(0));
+        owner.session_started = Instant::now()
+            .checked_sub(Duration::from_secs(3))
+            .expect("clock");
+        owner.on_tick(&document, Selection::caret(0));
+        owner.wait_for_persist(&document, Selection::caret(0));
+
+        let other = CrashRecoverySession::open_at(dir.path());
+        assert!(other.active_offer().is_none());
+
+        drop(owner);
+        let after = CrashRecoverySession::open_at(dir.path());
+        let offer = after
+            .active_offer()
+            .expect("dead window should offer restore");
+        assert_eq!(offer.record().content(), b"owned draft");
+    }
+
+    #[test]
     fn dirty_edit_persists_after_idle_debounce() {
         let dir = tempdir().expect("tempdir");
         let mut session = CrashRecoverySession::open_at(dir.path());
@@ -913,8 +976,11 @@ mod tests {
         session.wait_for_persist(&document, Selection::caret(0));
         assert!(!session.has_persist_failure());
         let store = RecoveryStore::open(dir.path()).expect("store");
-        let entries = store.scan_startup().expect("scan");
-        assert_eq!(entries.len(), 1);
+        assert_eq!(recovery_record_count(&store), 1);
+        assert!(
+            store.scan_startup().expect("scan").is_empty(),
+            "a living window must not offer its own in-flight recovery record"
+        );
     }
 
     #[test]
@@ -946,12 +1012,10 @@ mod tests {
         session.on_tick(&second, Selection::caret(0));
         session.wait_for_persist(&second, Selection::caret(0));
 
-        let entries = RecoveryStore::open(dir.path())
-            .expect("store")
-            .scan_startup()
-            .expect("scan");
-        // Prior instance remains on disk until save/discard; new instance is distinct.
-        assert_eq!(entries.len(), 2);
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        assert_eq!(recovery_record_count(&store), 2);
+        let entries = store.scan_startup().expect("scan");
+        // The abandoned first instance is offerable; the living second is not.
         let contents: Vec<_> = entries
             .iter()
             .filter_map(|entry| match entry.disposition() {
@@ -959,8 +1023,7 @@ mod tests {
                 RecoveryStartupDisposition::Quarantine(_) => None,
             })
             .collect();
-        assert!(contents.iter().any(|c| c == b"first session"));
-        assert!(contents.iter().any(|c| c == b"second session"));
+        assert_eq!(contents, vec![b"first session".to_vec()]);
     }
 
     #[test]
@@ -983,14 +1046,8 @@ mod tests {
             .expect("clock");
         session.on_tick(&document, Selection::caret(0));
         session.wait_for_persist(&document, Selection::caret(0));
-        assert_eq!(
-            RecoveryStore::open(dir.path())
-                .expect("store")
-                .scan_startup()
-                .expect("scan")
-                .len(),
-            1
-        );
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        assert_eq!(recovery_record_count(&store), 1);
         session.on_saved_clean(document.revision());
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {

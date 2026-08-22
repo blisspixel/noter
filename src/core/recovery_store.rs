@@ -6,7 +6,7 @@
 //! quarantine directory instead of being deleted silently. Quarantine failures
 //! are reported on the scan entry rather than swallowed.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -116,6 +116,48 @@ impl RecoveryStore {
             .join(format!("{}.rec", hex16(&instance_id.as_bytes())))
     }
 
+    /// Returns the live-lease sibling that marks an instance as still running.
+    pub fn live_path(&self, instance_id: RecoveryInstanceId) -> PathBuf {
+        self.records_dir()
+            .join(format!("{}.live", hex16(&instance_id.as_bytes())))
+    }
+
+    /// Holds an exclusive lock that another Noter window can probe without
+    /// deleting this instance's recovery record.
+    ///
+    /// The returned file must stay open for the session. Dropping it releases
+    /// the lock so a later launch can offer restore after a crash.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the live file cannot be created or locked.
+    pub fn try_hold_live_lease(&self, instance_id: RecoveryInstanceId) -> io::Result<File> {
+        let path = self.live_path(instance_id);
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)?;
+        file.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                "recovery live lease is held by another Noter window",
+            ),
+            TryLockError::Error(error) => error,
+        })?;
+        Ok(file)
+    }
+
+    /// Returns whether another living Noter window still holds this instance.
+    pub fn instance_is_live(&self, instance_id: RecoveryInstanceId) -> bool {
+        let path = self.live_path(instance_id);
+        let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else {
+            return false;
+        };
+        matches!(file.try_lock(), Err(TryLockError::WouldBlock))
+    }
+
     /// Persists one recovery snapshot under its instance identity.
     ///
     /// # Errors
@@ -137,11 +179,13 @@ impl RecoveryStore {
     /// Returns an I/O error when an existing record cannot be removed.
     pub fn delete_instance(&self, instance_id: RecoveryInstanceId) -> io::Result<()> {
         let path = self.record_path(instance_id);
-        match fs::remove_file(&path) {
+        let record_result = match fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
-        }
+        };
+        let _ = fs::remove_file(self.live_path(instance_id));
+        record_result
     }
 
     /// Scans active recovery records and validates each complete file.
@@ -169,12 +213,23 @@ impl RecoveryStore {
             if !path.is_file() {
                 continue;
             }
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "live")
+            {
+                continue;
+            }
             let disposition = match classify_recovery_file(&path) {
                 Ok(disposition) => disposition,
                 Err(reason) => RecoveryStartupDisposition::Quarantine(reason),
             };
 
             match &disposition {
+                RecoveryStartupDisposition::Offer(record)
+                    if self.instance_is_live(record.instance_id()) =>
+                {
+                    // Another living window owns this record. Leave it in place.
+                }
                 RecoveryStartupDisposition::Offer(_) => {
                     if offer_count >= MAX_STARTUP_RECOVERY_OFFERS {
                         // Leave surplus valid records for a later launch.
@@ -459,6 +514,32 @@ mod tests {
         store.delete_instance(snapshot.instance_id())?;
         assert!(store.scan_startup()?.is_empty());
         store.delete_instance(snapshot.instance_id())?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_held_live_lease_hides_the_instance_from_startup_scan() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let snapshot = sample_snapshot(9, b"still running");
+        store.persist(&snapshot)?;
+        let lease = store.try_hold_live_lease(snapshot.instance_id())?;
+
+        assert!(store.instance_is_live(snapshot.instance_id()));
+        assert!(store.scan_startup()?.is_empty());
+
+        drop(lease);
+        assert!(!store.instance_is_live(snapshot.instance_id()));
+        let entries = store.scan_startup()?;
+        assert_eq!(entries.len(), 1);
+        match entries[0].disposition() {
+            RecoveryStartupDisposition::Offer(record) => {
+                assert_eq!(record.content(), b"still running");
+            }
+            RecoveryStartupDisposition::Quarantine(reason) => {
+                panic!("expected offer after the lease dropped, quarantined: {reason:?}")
+            }
+        }
         Ok(())
     }
 

@@ -77,6 +77,15 @@ release, so current work remains under Unreleased.
   with the next offer.
 - Enter in a Markdown list item or quote continues the marker; Enter on an empty
   item exits to a paragraph.
+- Alt+Z toggles Word Wrap in Text Mode. Ctrl+Shift+M (Command+Shift+M on macOS)
+  switches Text and Markdown Mode. Both are ignored while Find or Go To Line
+  owns the caret.
+- Enter in the Replace field replaces a selected match, otherwise finds the next
+  match. Opening Find with a selection no longer forces Replace All to Selection
+  scope.
+- A living Noter window holds an exclusive recovery lease so another window
+  cannot Restore or Discard its in-flight private copy. A crash releases the
+  lease so the next launch can offer restore.
 
 - Update `webbrowser` to 1.2.4 for RUSTSEC-2026-0257, where Unix `BROWSER`
   handling allowed browser argument injection. The dependency reaches Noter
