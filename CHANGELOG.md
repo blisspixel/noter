@@ -230,6 +230,11 @@ that candidate is frozen for publication.
   editor still owns the sequence. Pointer, touch, Tab, accessibility-focus, and
   window-focus changes release later input instead of routing it back into a
   control that lost focus.
+- Give Go To Line exclusive ownership of every input event through Enter,
+  Escape, button or window pointer release, touch completion, or accessibility
+  Click. Only the ordered document-input suffix can resume after a successful
+  navigation or dismissal, so line-field input cannot leak into the document
+  and later text, paste, IME, or key input cannot be lost.
 - Isolate destructive confirmation and recovery dialogs from editor input.
   Input that opened a blocking prompt is discarded behind it, and deferred
   editor input is held until an already-open prompt is resolved. Input after

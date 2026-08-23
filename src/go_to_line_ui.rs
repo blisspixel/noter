@@ -4,6 +4,7 @@ use noter::core::navigation::line_start_offset;
 use crate::bounded_text_input::{
     BoundedTextBuffer, sanitize_bounded_text_events, truncate_to_utf8_byte_limit,
 };
+use crate::keyboard_nav::modal_event_may_complete_action;
 
 const LINE_INPUT_ID: &str = "noter-go-to-line-input";
 const MAX_LINE_NUMBER_BYTES: usize = 20;
@@ -56,9 +57,11 @@ impl GoToLineDialog {
         }
         self.restore_deferred_input(context);
         if self.take_ordered_escape(context) {
+            self.capture_remaining_input(context);
             self.open = false;
             return Some(GoToLineAction::Close);
         }
+        self.defer_completion_suffix(context);
 
         let mut window_open = self.open;
         let mut close_clicked = false;
@@ -116,6 +119,8 @@ impl GoToLineDialog {
                 });
             });
 
+        context.input_mut(|input| input.events.clear());
+
         if close_clicked || !window_open {
             self.open = false;
             return Some(GoToLineAction::Close);
@@ -148,6 +153,39 @@ impl GoToLineDialog {
         });
     }
 
+    pub fn take_deferred_input_events(&mut self) -> Vec<egui::Event> {
+        std::mem::take(&mut self.deferred_input_events)
+    }
+
+    fn capture_remaining_input(&mut self, context: &egui::Context) {
+        let mut remaining = context.input_mut(|input| std::mem::take(&mut input.events));
+        remaining.append(&mut self.deferred_input_events);
+        self.deferred_input_events = remaining;
+    }
+
+    fn defer_completion_suffix(&mut self, context: &egui::Context) {
+        let mut suffix = context.input_mut(|input| {
+            let Some(position) = input
+                .events
+                .iter()
+                .position(modal_event_may_complete_action)
+            else {
+                return Vec::new();
+            };
+            if position + 1 == input.events.len() {
+                Vec::new()
+            } else {
+                input.events.split_off(position + 1)
+            }
+        });
+        if suffix.is_empty() {
+            return;
+        }
+        suffix.append(&mut self.deferred_input_events);
+        self.deferred_input_events = suffix;
+        context.request_repaint();
+    }
+
     fn take_ordered_escape(&mut self, context: &egui::Context) -> bool {
         let mut deferred = Vec::new();
         let close = context.input_mut(|input| {
@@ -175,6 +213,7 @@ impl GoToLineDialog {
             true
         });
         if !deferred.is_empty() {
+            deferred.append(&mut self.deferred_input_events);
             self.deferred_input_events = deferred;
             context.request_repaint();
         }

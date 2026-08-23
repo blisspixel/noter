@@ -289,6 +289,25 @@ pub const fn editor_event_may_change_focus(event: &egui::Event) -> bool {
     )
 }
 
+pub const fn modal_event_may_complete_action(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key {
+            key: egui::Key::Escape | egui::Key::Enter | egui::Key::Space,
+            pressed: true,
+            ..
+        } | egui::Event::PointerButton { pressed: false, .. }
+            | egui::Event::Touch {
+                phase: egui::TouchPhase::End | egui::TouchPhase::Cancel,
+                ..
+            }
+            | egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Click,
+                ..
+            })
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,6 +421,40 @@ mod tests {
                 [egui::Event::Text("x".to_owned())]
             );
         });
+    }
+
+    #[test]
+    fn modal_completion_candidates_cover_keyboard_pointer_and_accessibility() {
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        for event in [key(Key::Escape), key(Key::Enter), key(Key::Space)] {
+            assert!(modal_event_may_complete_action(&event));
+        }
+
+        assert!(modal_event_may_complete_action(
+            &egui::Event::PointerButton {
+                pos: egui::Pos2::ZERO,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }
+        ));
+        assert!(modal_event_may_complete_action(
+            &egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Click,
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: egui::accesskit::NodeId(1),
+                data: None,
+            })
+        ));
+        assert!(!modal_event_may_complete_action(&egui::Event::Text(
+            "still owned by the modal".to_owned()
+        )));
     }
 
     #[test]

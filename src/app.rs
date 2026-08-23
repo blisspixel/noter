@@ -42,7 +42,7 @@ use crate::go_to_line_ui::{GoToLineAction, GoToLineDialog};
 use crate::idle_screen::IdleScreen;
 use crate::keyboard_nav::{
     KeyboardPlatform, consume_navigation_gestures, editor_event_orders_input,
-    resolve_navigation_gesture,
+    modal_event_may_complete_action, resolve_navigation_gesture,
 };
 use crate::markdown_ui::{MarkdownEditor, MarkdownProjectionLimit, markdown_projection_limit};
 use crate::theme::{self, AppTheme, THEME_STORAGE_KEY};
@@ -3087,17 +3087,22 @@ impl NoterApp {
         let Some(action) = self.go_to_line.show(context, &self.text) else {
             return;
         };
+        let deferred = self
+            .go_to_line
+            .take_deferred_input_events()
+            .into_iter()
+            .filter(document_input_event_survives_modal_transition)
+            .collect::<Vec<_>>();
+        if !deferred.is_empty() {
+            self.defer_input_events(deferred);
+        }
         match action {
             GoToLineAction::Navigate(offset) => {
                 self.selection = Selection::caret(offset);
-                self.pending_selection_restore = Some(self.selection);
-                self.preserve_focus_on_selection_restore = false;
             }
-            GoToLineAction::Close => {
-                self.pending_selection_restore = Some(self.selection);
-                self.preserve_focus_on_selection_restore = false;
-            }
+            GoToLineAction::Close => {}
         }
+        self.restore_document_focus(context);
     }
 
     fn show_editor(&mut self, ui: &mut egui::Ui) {
@@ -3769,9 +3774,7 @@ impl NoterApp {
             std::mem::swap(&mut self.deferred_blocking_modal_events, &mut events);
         }
         if !modal_opened_during_inspection {
-            if let Some(position) = events
-                .iter()
-                .position(blocking_modal_event_may_complete_action)
+            if let Some(position) = events.iter().position(modal_event_may_complete_action)
                 && position + 1 < events.len()
             {
                 self.deferred_blocking_modal_events = events.split_off(position + 1);
@@ -4288,25 +4291,6 @@ const fn document_input_event_survives_modal_transition(event: &egui::Event) -> 
             | egui::Event::Text(_)
             | egui::Event::Key { pressed: true, .. }
             | egui::Event::Ime(_)
-    )
-}
-
-const fn blocking_modal_event_may_complete_action(event: &egui::Event) -> bool {
-    matches!(
-        event,
-        egui::Event::Key {
-            key: egui::Key::Escape | egui::Key::Enter | egui::Key::Space,
-            pressed: true,
-            ..
-        } | egui::Event::PointerButton { pressed: false, .. }
-            | egui::Event::Touch {
-                phase: egui::TouchPhase::End | egui::TouchPhase::Cancel,
-                ..
-            }
-            | egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
-                action: egui::accesskit::Action::Click,
-                ..
-            })
     )
 }
 
@@ -6453,6 +6437,12 @@ mod tests {
             });
 
             assert!(!app.go_to_line.is_open(), "{label}");
+            assert_eq!(app.text, source, "{label}");
+            assert!(!app.deferred_input_events.is_empty(), "{label}");
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.2), |ui| {
+                app.render_frame(ui);
+            });
+
             assert_eq!(app.text, expected, "{label}");
             assert_eq!(String::from(app.document.rope()), expected, "{label}");
             assert!(app.document.is_dirty(), "{label}");
@@ -6461,6 +6451,127 @@ mod tests {
                 "{label}"
             );
         }
+    }
+
+    #[test]
+    fn go_to_line_enter_owns_its_prefix_and_defers_document_suffix() {
+        let cases = [
+            ("text", egui::Event::Text("x".to_owned()), "one\nxtwo"),
+            ("paste", egui::Event::Paste("P".to_owned()), "one\nPtwo"),
+            (
+                "IME commit",
+                egui::Event::Ime(egui::ImeEvent::Commit("漢".to_owned())),
+                "one\n漢two",
+            ),
+            (
+                "pressed key",
+                key_press(egui::Modifiers::NONE, egui::Key::Backspace),
+                "onetwo",
+            ),
+        ];
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+
+        for (label, event, expected) in cases {
+            let source = "one\ntwo";
+            let mut app = NoterApp {
+                text: source.to_owned(),
+                document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+                selection: Selection::caret(0),
+                pending_selection_restore: Some(Selection::caret(0)),
+                ..NoterApp::default()
+            };
+            let context = egui::Context::default();
+            theme::configure_styles(&context);
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+                app.render_frame(ui);
+            });
+            app.go_to_line.open(2);
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.05), |ui| {
+                app.render_frame(ui);
+            });
+
+            let mut navigate_then_edit = ui_input(1_200.0, 760.0, 0.1);
+            navigate_then_edit.events = vec![
+                key_press(command, egui::Key::A),
+                egui::Event::Text("2".to_owned()),
+                key_press(egui::Modifiers::NONE, egui::Key::Enter),
+                event,
+            ];
+            let _ = context.run_ui(navigate_then_edit, |ui| app.render_frame(ui));
+
+            assert!(!app.go_to_line.is_open(), "{label}");
+            assert_eq!(app.selection, Selection::caret(4), "{label}");
+            assert_eq!(app.text, source, "{label}");
+            assert!(!app.document.is_dirty(), "{label}");
+            assert!(!app.deferred_input_events.is_empty(), "{label}");
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.2), |ui| {
+                app.render_frame(ui);
+            });
+
+            assert_eq!(app.text, expected, "{label}");
+            assert_eq!(String::from(app.document.rope()), expected, "{label}");
+            assert!(app.document.is_dirty(), "{label}");
+            assert!(app.deferred_input_events.is_empty(), "{label}");
+        }
+    }
+
+    #[test]
+    fn go_to_line_accessibility_cancel_does_not_leak_its_prefix() {
+        let source = "dirty";
+        let selection = Selection::caret(source.len());
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection,
+            pending_selection_restore: Some(selection),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::configure_styles(&context);
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+            app.render_frame(ui);
+        });
+        app.go_to_line.open(1);
+        let dialog = context.run_ui(ui_input(1_200.0, 760.0, 0.05), |ui| {
+            app.render_frame(ui);
+        });
+        let cancel = accesskit_node_id(&dialog, "Cancel");
+        let mut cancel_then_edit = ui_input(1_200.0, 760.0, 0.1);
+        cancel_then_edit.events = vec![
+            egui::Event::Text("9".to_owned()),
+            egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Focus,
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: cancel,
+                data: None,
+            }),
+            egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Click,
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: cancel,
+                data: None,
+            }),
+            egui::Event::Text("x".to_owned()),
+        ];
+        let _ = context.run_ui(cancel_then_edit, |ui| app.render_frame(ui));
+
+        assert!(!app.go_to_line.is_open());
+        assert_eq!(app.text, source);
+        assert!(!app.document.is_dirty());
+        assert!(!app.deferred_input_events.is_empty());
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.2), |ui| {
+            app.render_frame(ui);
+        });
+
+        assert_eq!(app.text, "dirtyx");
+        assert_eq!(String::from(app.document.rope()), "dirtyx");
+        assert!(app.document.is_dirty());
+        assert!(app.deferred_input_events.is_empty());
     }
 
     #[test]
