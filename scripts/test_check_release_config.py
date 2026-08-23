@@ -7,6 +7,7 @@ import unittest
 from check_release_config import (
     REPOSITORY_ROOT,
     read_regular_file,
+    validate_ci_mutation_topology,
     validate_license_inventory,
     validate_manifest,
     validate_repository,
@@ -189,6 +190,47 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
 
         self.assertIn("missing bounded macOS mutation codegen units", errors)
+
+    def test_mutation_topology_requires_complete_partitions_and_a_strict_gate(
+        self,
+    ) -> None:
+        self.assertEqual(validate_ci_mutation_topology(self.ci_workflow), [])
+        mutations = {
+            "mixed denominator": (
+                self.ci_workflow.replace(
+                    "            shard: 5/6", "            shard: 5/5"
+                ),
+                "CI mutation partitions are incomplete, reordered, or inconsistent",
+            ),
+            "missing shard application": (
+                self.ci_workflow.replace(
+                    "          --shard ${{ matrix.shard }}\n",
+                    "",
+                    1,
+                ),
+                "CI mutation workers do not apply both declared shard partitions",
+            ),
+            "worker bypass": (
+                self.ci_workflow.replace(
+                    "    timeout-minutes: 90\n",
+                    "    continue-on-error: true\n    timeout-minutes: 90\n",
+                    1,
+                ),
+                "CI mutation workers must fail closed",
+            ),
+            "skipped failure gate": (
+                self.ci_workflow.replace("    if: ${{ always() }}\n", "", 1),
+                "missing always-evaluated mutation gate",
+            ),
+            "missing artifact failure": (
+                self.ci_workflow.replace("          if-no-files-found: error\n", "", 1),
+                "missing required mutation artifacts",
+            ),
+        }
+        for description, (changed, expected_error) in mutations.items():
+            with self.subTest(description):
+                self.assertNotEqual(changed, self.ci_workflow)
+                self.assertIn(expected_error, validate_ci_mutation_topology(changed))
 
     def test_rejects_a_floating_release_tool(self) -> None:
         changed = self.workflow.replace(

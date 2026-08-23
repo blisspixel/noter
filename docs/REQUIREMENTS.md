@@ -179,7 +179,11 @@ Feature presence alone is not verification.
   deleted. A living window retains independent locked ownership proofs for its
   instance after Save and through later edits; loss or rebinding of one proof
   cannot expose that window's record. Startup ownership uncertainty fails
-  closed without offering Restore or Discard for the affected record. Restore
+  closed without offering Restore or Discard for the affected record. A
+  canonical or keyed recovery pathname's instance and the encoded header
+  instance must agree. Once neither identity is live and the artifact is
+  eligible for startup review, disagreement is surfaced and left untouched
+  because no single instance claim can authorize relocation or deletion. Restore
   establishes a leased durable successor copy before deleting the offered
   record; transfer failure
   keeps the offered record and does not replace the current document. If an

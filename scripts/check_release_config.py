@@ -40,7 +40,7 @@ REVIEWED_RELEASE_WORKFLOW_SHA256 = (
 )
 REVIEWED_WIX_SHA256 = "90d3892cab5d6b450a76a5f1b1596a061306f2bddcac2908c7e59a99a00fa6be"
 REVIEWED_CI_WORKFLOW_SHA256 = (
-    "a780e39abf437619c0eec44b27d9269712e1191504df7c1a8b0c17fdebb384bc"
+    "5c626c7a7491443ebccf3f53214126690107699e80ca165ce0810833fa81aeb0"
 )
 REVIEWED_CI_TEST_JOB_SHA256 = (
     "7abb1436d4c1bbcd14c106d5bf60812866df7265966156226d7353561f2ad785"
@@ -671,6 +671,7 @@ def validate_license_inventory(
     """Validate the checked-in third-party license generation contract."""
 
     errors: list[str] = []
+    errors.extend(validate_ci_mutation_topology(ci_workflow))
     if sha256(ci_workflow.encode("utf-8")).hexdigest() != REVIEWED_CI_WORKFLOW_SHA256:
         errors.append("CI workflow differs from its reviewed source")
     test_job_marker = ci_workflow.find("\n  test:\n")
@@ -795,6 +796,75 @@ def validate_license_inventory(
             or set(configured_targets) != APPROVED_RELEASE_TARGETS
         ):
             errors.append("license inventory targets differ from the release set")
+    return errors
+
+
+def validate_ci_mutation_topology(ci_workflow: str) -> list[str]:
+    """Validate complete sharding behind one fail-closed mutation gate."""
+
+    errors: list[str] = []
+    mutation_marker = ci_workflow.find("\n  mutation:\n")
+    gate_marker = ci_workflow.find("\n  mutation-gate:\n")
+    docs_marker = ci_workflow.find("\n  docs:\n")
+    if (
+        mutation_marker < 0
+        or gate_marker <= mutation_marker
+        or docs_marker <= gate_marker
+    ):
+        return ["CI is missing its ordered mutation workers, gate, or docs boundary"]
+
+    workers = ci_workflow[mutation_marker:gate_marker]
+    gate = ci_workflow[gate_marker:docs_marker]
+    matrix_rows = re.findall(
+        r"^          - os: ([^\n]+)\n"
+        r"            scope: ([^\n]+)"
+        r"(?:\n            shard: ([^\n]+))?",
+        workers,
+        flags=re.MULTILINE,
+    )
+    expected_rows = [
+        ("ubuntu-latest", "linux-0-of-3", "0/3"),
+        ("ubuntu-latest", "linux-1-of-3", "1/3"),
+        ("ubuntu-latest", "linux-2-of-3", "2/3"),
+        ("windows-latest", "windows-0-of-6", "0/6"),
+        ("windows-latest", "windows-1-of-6", "1/6"),
+        ("windows-latest", "windows-2-of-6", "2/6"),
+        ("windows-latest", "windows-3-of-6", "3/6"),
+        ("windows-latest", "windows-4-of-6", "4/6"),
+        ("windows-latest", "windows-5-of-6", "5/6"),
+        ("macos-latest", "macos", ""),
+    ]
+    if matrix_rows != expected_rows:
+        errors.append(
+            "CI mutation partitions are incomplete, reordered, or inconsistent"
+        )
+    if workers.count("--shard ${{ matrix.shard }}") != 2:
+        errors.append("CI mutation workers do not apply both declared shard partitions")
+    if "continue-on-error:" in workers:
+        errors.append("CI mutation workers must fail closed")
+    for expected, description in [
+        ("    name: mutation-${{ matrix.scope }}", "stable mutation worker names"),
+        ("    timeout-minutes: 90", "bounded mutation worker time"),
+        ("          if-no-files-found: error", "required mutation artifacts"),
+    ]:
+        require_text(workers, expected, description, errors)
+
+    for expected, description in [
+        ("    name: mutation-gate", "stable mutation gate name"),
+        ("    needs: mutation", "mutation gate dependency"),
+        ("    if: ${{ always() }}", "always-evaluated mutation gate"),
+        (
+            "MUTATION_MATRIX_RESULT: ${{ needs.mutation.result }}",
+            "exact mutation matrix result",
+        ),
+        (
+            'if [ "$MUTATION_MATRIX_RESULT" != success ]; then',
+            "fail-closed mutation matrix result check",
+        ),
+    ]:
+        require_text(gate, expected, description, errors)
+    if "continue-on-error:" in gate:
+        errors.append("CI mutation gate must fail closed")
     return errors
 
 

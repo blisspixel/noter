@@ -706,6 +706,14 @@ authority. Legacy records never suppress schema-v2 records by mutable header
 fields. Legacy records, sibling successors, separate roots, identity conflicts,
 and equal-revision divergent records remain separate offers.
 
+The instance encoded in a canonical or keyed recovery pathname must agree with
+the minimally readable header identity before validation can produce an offer
+or quarantine can acquire authority. While either named instance is live,
+startup leaves the artifact unreported and untouched. Once both identities are
+eligible for startup review, disagreement remains visible and still leaves the
+artifact untouched because choosing either identity would let one instance
+authorize movement of another instance's bytes.
+
 Every offered Restore or Discard acquires the dead instance's exclusive lease,
 checks the open handle before and after a bounded read, reopens the pathname
 without following links, and requires the same object and complete validated

@@ -126,22 +126,45 @@ jobs:
           path: lcov.info
 
   mutation:
+    name: mutation-${{ matrix.scope }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Three Linux shards retain the complete deterministic candidate
+          # partition with margin beneath the 90-minute fail-closed ceiling.
           - os: ubuntu-latest
-            scope: linux-common
-          # Both Windows shards are required. cargo-mutants partitions the
-          # filtered candidate list deterministically after generation.
+            scope: linux-0-of-3
+            shard: 0/3
+          - os: ubuntu-latest
+            scope: linux-1-of-3
+            shard: 1/3
+          - os: ubuntu-latest
+            scope: linux-2-of-3
+            shard: 2/3
+          # Six Windows shards retain the complete deterministic candidate
+          # partition with enough margin beneath the 90-minute fail-closed
+          # ceiling. One aggregate check remains stable if the partition grows.
           - os: windows-latest
-            scope: windows-shard-0
-            shard: 0/2
+            scope: windows-0-of-6
+            shard: 0/6
           - os: windows-latest
-            scope: windows-shard-1
-            shard: 1/2
+            scope: windows-1-of-6
+            shard: 1/6
+          - os: windows-latest
+            scope: windows-2-of-6
+            shard: 2/6
+          - os: windows-latest
+            scope: windows-3-of-6
+            shard: 3/6
+          - os: windows-latest
+            scope: windows-4-of-6
+            shard: 4/6
+          - os: windows-latest
+            scope: windows-5-of-6
+            shard: 5/6
           - os: macos-latest
-            scope: macos-platform
+            scope: macos
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -165,6 +188,7 @@ jobs:
           CARGO_INCREMENTAL: 1
         run: >
           cargo mutants -vV --in-place --colors never --workspace
+          --shard ${{ matrix.shard }}
           --exclude-re
           '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|TemporaryFile::discard|TemporaryFile::preserve_artifact|Drop for TemporaryFile|closed_temporary_matches_intended|remove_verified_backup|[Ww]indows|[Mm]acos)'
       - name: Run Windows trust-kernel mutation tests
@@ -221,6 +245,23 @@ jobs:
         with:
           name: mutation-results-${{ matrix.scope }}
           path: mutants.out
+          if-no-files-found: error
+
+  mutation-gate:
+    name: mutation-gate
+    needs: mutation
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every mutation partition to pass
+        env:
+          MUTATION_MATRIX_RESULT: ${{ needs.mutation.result }}
+        run: |
+          if [ "$MUTATION_MATRIX_RESULT" != success ]; then
+            echo "Mutation matrix result: $MUTATION_MATRIX_RESULT" >&2
+            exit 1
+          fi
 
   docs:
     runs-on: ubuntu-latest

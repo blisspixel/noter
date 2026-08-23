@@ -1716,4 +1716,29 @@ mod tests {
         assert!(!session.quarantine_notices().is_empty());
         assert!(session.active_offer().is_none());
     }
+
+    #[test]
+    fn identity_mismatch_notice_is_exact_and_does_not_offer_the_record() {
+        let dir = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        let snapshot = sample_snapshot(45, b"identity mismatch");
+        let path = store.record_path(RecoveryInstanceId::new([46; 16]));
+        std::fs::write(path, snapshot.encode()).expect("write mismatched record");
+
+        let session = CrashRecoverySession::open_at(dir.path());
+
+        assert_eq!(
+            session.quarantine_notices(),
+            &[
+                "The recovery pathname and encoded instance identities do not agree. Noter retained the file because neither named instance can authorize movement."
+            ]
+        );
+        assert!(session.active_offer().is_none());
+        assert!(
+            std::fs::read_dir(store.quarantine_dir())
+                .expect("quarantine dir")
+                .next()
+                .is_none()
+        );
+    }
 }

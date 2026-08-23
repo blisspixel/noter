@@ -171,13 +171,17 @@ pub struct RecoveryStartupScan {
     quarantine_results_omitted: usize,
 }
 
-const FILE_LIMIT_REACHED: u8 = 1 << 0;
-const BYTE_LIMIT_REACHED: u8 = 1 << 1;
-const OFFERS_OMITTED: u8 = 1 << 2;
-const SUPERSEDED_HANDLES_OMITTED: u8 = 1 << 3;
-const DIRECTORY_LIMIT_REACHED: u8 = 1 << 4;
+const FILE_LIMIT_REACHED: u8 = 0b0_0001;
+const BYTE_LIMIT_REACHED: u8 = 0b0_0010;
+const OFFERS_OMITTED: u8 = 0b0_0100;
+const SUPERSEDED_HANDLES_OMITTED: u8 = 0b0_1000;
+const DIRECTORY_LIMIT_REACHED: u8 = 0b1_0000;
 
 impl RecoveryStartupScan {
+    const fn note_omission(&mut self, flag: u8) {
+        self.omission_flags |= flag;
+    }
+
     /// Returns bounded metadata offers and quarantine results.
     pub fn entries(&self) -> &[RecoveryScanEntry] {
         &self.entries
@@ -356,13 +360,13 @@ impl RecoveryStore {
         })();
         match attempt {
             Ok(lease) => Ok(lease),
-            Err(error)
-                if error.kind() != io::ErrorKind::ResourceBusy
-                    && self.instance_is_live(instance_id).unwrap_or(false) =>
-            {
-                Err(live_lease_busy_error())
-            }
-            Err(error) => Err(error),
+            Err(error) => match error.kind() {
+                io::ErrorKind::ResourceBusy => Err(error),
+                _ => Err(classify_nonbusy_lease_error(
+                    error,
+                    self.instance_is_live(instance_id).unwrap_or(false),
+                )),
+            },
         }
     }
 
@@ -416,10 +420,10 @@ impl RecoveryStore {
         let records = self.records_dir();
         let dir = match fs::read_dir(&records) {
             Ok(dir) => dir,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return first_error.map_or(Ok(()), Err);
-            }
-            Err(error) => return Err(first_error.unwrap_or(error)),
+            Err(error) => match error.kind() {
+                io::ErrorKind::NotFound => return first_error.map_or(Ok(()), Err),
+                _ => return Err(first_error.unwrap_or(error)),
+            },
         };
         for (index, next) in dir.enumerate() {
             if index == MAX_OWNED_RECOVERY_CLEANUP_FILES {
@@ -569,12 +573,14 @@ impl RecoveryStore {
         let records = self.records_dir();
         let dir = match fs::read_dir(&records) {
             Ok(dir) => dir,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(scan),
-            Err(error) => return Err(error),
+            Err(error) => match error.kind() {
+                io::ErrorKind::NotFound => return Ok(scan),
+                _ => return Err(error),
+            },
         };
         for (raw_index, next) in dir.enumerate() {
             if raw_index == MAX_STARTUP_RECOVERY_DIRECTORY_ENTRIES {
-                scan.omission_flags |= DIRECTORY_LIMIT_REACHED;
+                scan.note_omission(DIRECTORY_LIMIT_REACHED);
                 break;
             }
             let path = next?.path();
@@ -594,7 +600,7 @@ impl RecoveryStore {
                 continue;
             }
             if paths.len() == MAX_STARTUP_RECOVERY_FILES {
-                scan.omission_flags |= FILE_LIMIT_REACHED;
+                scan.note_omission(FILE_LIMIT_REACHED);
                 break;
             }
             paths.push(path);
@@ -641,9 +647,21 @@ impl RecoveryStore {
             if belongs_to_live_instance {
                 continue;
             }
+            let Ok(instance_hint) = reconcile_recovery_instance_ids(path_instance, header_instance)
+            else {
+                retain_quarantine_result(
+                    &mut scan,
+                    retained_quarantine_entry(
+                        path,
+                        RecoveryQuarantineReason::InstanceMismatch,
+                        "Noter retained the file because neither named instance can authorize movement.",
+                    ),
+                );
+                continue;
+            };
             let Some(next_bytes) = advance_scan_byte_budget(scanned_bytes, opened.encoded_len)
             else {
-                scan.omission_flags |= BYTE_LIMIT_REACHED;
+                scan.note_omission(BYTE_LIMIT_REACHED);
                 break;
             };
             scanned_bytes = next_bytes;
@@ -688,21 +706,6 @@ impl RecoveryStore {
                     );
                 }
                 Err(reason) => {
-                    let instance_hint = match (path_instance, header_instance) {
-                        (Some(path_id), Some(header_id)) if path_id != header_id => {
-                            retain_quarantine_result(
-                                &mut scan,
-                                retained_quarantine_entry(
-                                    path,
-                                    reason,
-                                    "Noter retained this damaged recovery file because its pathname and encoded instance identities disagree.",
-                                ),
-                            );
-                            continue;
-                        }
-                        (Some(instance_id), _) | (_, Some(instance_id)) => Some(instance_id),
-                        (None, None) => None,
-                    };
                     retain_quarantine_result(
                         &mut scan,
                         self.quarantine_opened_scan_entry(
@@ -718,7 +721,7 @@ impl RecoveryStore {
         }
         offers.sort_by(|left, right| offer_sort_key(left).cmp(&offer_sort_key(right)));
         if offers.iter().any(RecoveryOffer::superseded_omitted) {
-            scan.omission_flags |= SUPERSEDED_HANDLES_OMITTED;
+            scan.note_omission(SUPERSEDED_HANDLES_OMITTED);
         }
         scan.entries.extend(offers.into_iter().map(|offer| {
             let path = offer.primary.path.clone();
@@ -745,16 +748,13 @@ impl RecoveryStore {
             .map_err(|reason| io::Error::new(io::ErrorKind::InvalidData, reason.description()))?;
         let path_instance = recovery_artifact_instance(path);
         let header_instance = peek_recovery_instance(&opened.file, opened.encoded_len)?;
-        let instance_hint = match (path_instance, header_instance) {
-            (Some(path_id), Some(header_id)) if path_id != header_id => {
-                return Err(io::Error::new(
+        let instance_hint = reconcile_recovery_instance_ids(path_instance, header_instance)
+            .map_err(|()| {
+                io::Error::new(
                     io::ErrorKind::InvalidData,
                     "recovery pathname and encoded instance identities disagree",
-                ));
-            }
-            (Some(instance_id), _) | (_, Some(instance_id)) => Some(instance_id),
-            (None, None) => None,
-        };
+                )
+            })?;
         let bytes = read_bound_open_file(&opened.file, opened.facts, opened.encoded_len)?;
         let claim = instance_hint
             .map(|instance_id| self.claim_instance(instance_id))
@@ -882,8 +882,12 @@ fn create_quarantine_copy(store: &RecoveryStore, bytes: &[u8]) -> io::Result<(Pa
             .join(format!("noter-quarantine-{}.rec", hex16(&random)));
         let mut file = match noter_platform::create_private_new_file(&destination) {
             Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
+            Err(error) => {
+                if is_quarantine_name_collision(error.kind()) {
+                    continue;
+                }
+                return Err(error);
+            }
         };
         let write_result = (|| {
             file.write_all(bytes)?;
@@ -906,18 +910,15 @@ fn create_quarantine_copy(store: &RecoveryStore, bytes: &[u8]) -> io::Result<(Pa
 
 fn verify_exact_bytes(file: &mut File, expected: &[u8]) -> io::Result<()> {
     file.seek(SeekFrom::Start(0))?;
-    let mut offset = 0_usize;
     let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
-    while offset < expected.len() {
-        let chunk_len = buffer.len().min(expected.len().saturating_sub(offset));
-        file.read_exact(&mut buffer[..chunk_len])?;
-        if buffer[..chunk_len] != expected[offset..offset.saturating_add(chunk_len)] {
+    for expected_chunk in expected.chunks(buffer.len()) {
+        file.read_exact(&mut buffer[..expected_chunk.len()])?;
+        if buffer[..expected_chunk.len()] != *expected_chunk {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "quarantined recovery bytes did not verify",
             ));
         }
-        offset = offset.saturating_add(chunk_len);
     }
     let mut trailing = [0_u8; 1];
     if file.read(&mut trailing)? != 0 {
@@ -932,9 +933,10 @@ fn verify_exact_bytes(file: &mut File, expected: &[u8]) -> io::Result<()> {
 fn delete_bound_candidate(path: &Path, opened: &OpenedRecoveryCandidate) -> io::Result<()> {
     revalidate_path_identity(path, opened.facts, opened.encoded_len)?;
     let cleanup_file = noter_platform::open_for_cleanup(path)?;
-    if noter_platform::file_facts(&cleanup_file)? != opened.facts
-        || cleanup_file.metadata()?.len() != opened.encoded_len
-    {
+    if !file_binding_matches(
+        noter_platform::file_facts(&cleanup_file)? == opened.facts,
+        cleanup_file.metadata()?.len() == opened.encoded_len,
+    ) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery pathname changed before quarantine cleanup",
@@ -942,23 +944,31 @@ fn delete_bound_candidate(path: &Path, opened: &OpenedRecoveryCandidate) -> io::
     }
     match noter_platform::delete_open_file(&cleanup_file) {
         Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
-            revalidate_path_identity(path, opened.facts, opened.encoded_len)?;
-            drop(cleanup_file);
-            fs::remove_file(path)?;
-            let after = noter_platform::file_facts(&opened.file)?;
-            if after.identity() != opened.facts.identity()
-                || after.link_count() >= opened.facts.link_count()
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "quarantine cleanup did not unlink the bound recovery object",
-                ));
+        Err(error) => {
+            if requires_path_delete_fallback(error.kind()) {
+                delete_bound_candidate_unix_fallback(path, opened, cleanup_file)
+            } else {
+                Err(error)
             }
-            Ok(())
         }
-        Err(error) => Err(error),
     }
+}
+
+fn delete_bound_candidate_unix_fallback(
+    path: &Path,
+    opened: &OpenedRecoveryCandidate,
+    cleanup_file: File,
+) -> io::Result<()> {
+    revalidate_path_identity(path, opened.facts, opened.encoded_len)?;
+    drop(cleanup_file);
+    fs::remove_file(path)?;
+    if noter_platform::file_facts(&opened.file)?.link_count() >= opened.facts.link_count() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "quarantine cleanup did not unlink the bound recovery object",
+        ));
+    }
+    Ok(())
 }
 
 fn live_instance_from_path(path: &Path) -> Option<RecoveryInstanceId> {
@@ -967,6 +977,23 @@ fn live_instance_from_path(path: &Path) -> Option<RecoveryInstanceId> {
         .strip_suffix(".live")
         .or_else(|| name.strip_suffix(".guard"))?;
     decode_hex16(instance).map(RecoveryInstanceId::new)
+}
+
+fn reconcile_recovery_instance_ids(
+    path_instance: Option<RecoveryInstanceId>,
+    header_instance: Option<RecoveryInstanceId>,
+) -> Result<Option<RecoveryInstanceId>, ()> {
+    match (path_instance, header_instance) {
+        (Some(path_id), Some(header_id)) => {
+            if path_id == header_id {
+                Ok(Some(path_id))
+            } else {
+                Err(())
+            }
+        }
+        (Some(instance_id), None) | (None, Some(instance_id)) => Ok(Some(instance_id)),
+        (None, None) => Ok(None),
+    }
 }
 
 fn recovery_artifact_instance(path: &Path) -> Option<RecoveryInstanceId> {
@@ -1022,17 +1049,12 @@ fn consider_offer(
         return;
     }
 
-    let mut index = 0;
-    while index < offers.len() {
-        let current = &offers[index].primary.metadata;
-        if authenticated_same_instance_document(&candidate.primary.metadata, current)
-            && candidate.primary.metadata.revision() > current.revision()
-        {
-            let older = offers.remove(index);
-            absorb_superseded(&mut candidate, older);
-        } else {
-            index += 1;
-        }
+    while let Some(index) = offers.iter().position(|offer| {
+        authenticated_same_instance_document(&candidate.primary.metadata, &offer.primary.metadata)
+            && candidate.primary.metadata.revision() > offer.primary.metadata.revision()
+    }) {
+        let older = offers.remove(index);
+        absorb_superseded(&mut candidate, older);
     }
     if let Some(index) = offers.iter().position(|offer| {
         authenticated_same_instance_document(&candidate.primary.metadata, &offer.primary.metadata)
@@ -1042,14 +1064,12 @@ fn consider_offer(
         return;
     }
 
-    let mut index = 0;
-    while index < offers.len() {
-        if directly_supersedes(&candidate.primary.metadata, &offers[index].primary.metadata) {
-            let older = offers.remove(index);
-            absorb_superseded(&mut candidate, older);
-        } else {
-            index += 1;
-        }
+    while let Some(index) = offers
+        .iter()
+        .position(|offer| directly_supersedes(&candidate.primary.metadata, &offer.primary.metadata))
+    {
+        let older = offers.remove(index);
+        absorb_superseded(&mut candidate, older);
     }
     if let Some(index) = offers
         .iter()
@@ -1122,7 +1142,7 @@ fn offer_sort_key(offer: &RecoveryOffer) -> ([u8; 16], [u8; 16], &Path) {
 fn validate_and_lock_live_file(file: File) -> io::Result<(File, noter_platform::FileFacts)> {
     let metadata = file.metadata()?;
     let facts = noter_platform::file_facts(&file)?;
-    if !metadata.is_file() || facts.link_count() != 1 {
+    if !valid_live_file_shape(metadata.is_file(), facts.link_count()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery live lease is not a private regular file",
@@ -1138,10 +1158,10 @@ fn validate_and_lock_live_file(file: File) -> io::Result<(File, noter_platform::
 fn acquire_live_file(path: &Path) -> io::Result<LockedLiveFile> {
     let file = match noter_platform::create_private_new_file(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            noter_platform::open_for_cleanup(path)?
-        }
-        Err(error) => return Err(error),
+        Err(error) => match error.kind() {
+            io::ErrorKind::AlreadyExists => noter_platform::open_for_cleanup(path)?,
+            _ => return Err(error),
+        },
     };
     let (file, facts) = validate_and_lock_live_file(file)?;
     Ok(LockedLiveFile { file, facts })
@@ -1150,12 +1170,14 @@ fn acquire_live_file(path: &Path) -> io::Result<LockedLiveFile> {
 fn probe_live_path(path: &Path) -> io::Result<Option<bool>> {
     let file = match noter_platform::open_existing_no_follow(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
+        Err(error) => match error.kind() {
+            io::ErrorKind::NotFound => return Ok(None),
+            _ => return Err(error),
+        },
     };
     let metadata = file.metadata()?;
     let facts = noter_platform::file_facts(&file)?;
-    if !metadata.is_file() || facts.link_count() != 1 {
+    if !valid_live_file_shape(metadata.is_file(), facts.link_count()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery live lease is not a private regular file",
@@ -1168,11 +1190,31 @@ fn probe_live_path(path: &Path) -> io::Result<Option<bool>> {
     }
 }
 
+const fn valid_live_file_shape(is_file: bool, link_count: u64) -> bool {
+    is_file && link_count == 1
+}
+
 fn live_lease_busy_error() -> io::Error {
     io::Error::new(
         io::ErrorKind::ResourceBusy,
         "recovery live lease is held by another Noter window",
     )
+}
+
+fn classify_nonbusy_lease_error(error: io::Error, observed_live: bool) -> io::Error {
+    if observed_live {
+        live_lease_busy_error()
+    } else {
+        error
+    }
+}
+
+const fn is_quarantine_name_collision(kind: io::ErrorKind) -> bool {
+    matches!(kind, io::ErrorKind::AlreadyExists)
+}
+
+const fn requires_path_delete_fallback(kind: io::ErrorKind) -> bool {
+    matches!(kind, io::ErrorKind::Unsupported)
 }
 
 fn remove_file_if_present(path: &Path) -> io::Result<()> {
@@ -1214,7 +1256,7 @@ fn open_recovery_candidate(
     if !metadata.is_file() {
         return Err(RecoveryQuarantineReason::Truncated);
     }
-    if metadata.len() > MAX_RECOVERY_FILE_BYTES {
+    if exceeds_recovery_file_bound(metadata.len()) {
         return Err(RecoveryQuarantineReason::ContentTooLarge);
     }
     let facts =
@@ -1234,8 +1276,10 @@ fn read_bound_open_file(
     expected_facts: noter_platform::FileFacts,
     expected_len: u64,
 ) -> io::Result<Vec<u8>> {
-    if noter_platform::file_facts(file)? != expected_facts || file.metadata()?.len() != expected_len
-    {
+    if !file_binding_matches(
+        noter_platform::file_facts(file)? == expected_facts,
+        file.metadata()?.len() == expected_len,
+    ) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery artifact changed before validation",
@@ -1251,16 +1295,17 @@ fn read_bound_open_file(
     reader
         .take(MAX_RECOVERY_FILE_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_RECOVERY_FILE_BYTES {
+    if exceeds_recovery_file_bound(u64::try_from(bytes.len()).unwrap_or(u64::MAX)) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery artifact exceeded the read bound",
         ));
     }
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != expected_len
-        || noter_platform::file_facts(file)? != expected_facts
-        || file.metadata()?.len() != expected_len
-    {
+    if !complete_bound_read_matches(
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX) == expected_len,
+        noter_platform::file_facts(file)? == expected_facts,
+        file.metadata()?.len() == expected_len,
+    ) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery artifact changed during validation",
@@ -1275,15 +1320,32 @@ fn revalidate_path_identity(
     expected_len: u64,
 ) -> io::Result<()> {
     let path_file = noter_platform::open_existing_no_follow(path)?;
-    if noter_platform::file_facts(&path_file)? != expected_facts
-        || path_file.metadata()?.len() != expected_len
-    {
+    if !file_binding_matches(
+        noter_platform::file_facts(&path_file)? == expected_facts,
+        path_file.metadata()?.len() == expected_len,
+    ) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery pathname no longer identifies the validated artifact",
         ));
     }
     Ok(())
+}
+
+const fn exceeds_recovery_file_bound(encoded_len: u64) -> bool {
+    encoded_len > MAX_RECOVERY_FILE_BYTES
+}
+
+const fn file_binding_matches(facts_match: bool, length_matches: bool) -> bool {
+    facts_match && length_matches
+}
+
+const fn complete_bound_read_matches(
+    bytes_read_match: bool,
+    facts_match: bool,
+    length_matches: bool,
+) -> bool {
+    bytes_read_match && facts_match && length_matches
 }
 
 fn require_matching_claim(
@@ -1319,9 +1381,10 @@ fn load_bound_record(handle: &RecoveryRecordHandle) -> io::Result<ValidatedRecov
 
 fn delete_bound_record(handle: RecoveryRecordHandle) -> io::Result<()> {
     let cleanup_file = noter_platform::open_for_cleanup(&handle.path)?;
-    if noter_platform::file_facts(&cleanup_file)? != handle.facts
-        || cleanup_file.metadata()?.len() != handle.encoded_len
-    {
+    if !file_binding_matches(
+        noter_platform::file_facts(&cleanup_file)? == handle.facts,
+        cleanup_file.metadata()?.len() == handle.encoded_len,
+    ) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery pathname changed before exact cleanup",
@@ -1333,23 +1396,30 @@ fn delete_bound_record(handle: RecoveryRecordHandle) -> io::Result<()> {
             drop(handle);
             Ok(())
         }
-        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
-            revalidate_path_identity(&handle.path, handle.facts, handle.encoded_len)?;
-            drop(cleanup_file);
-            fs::remove_file(&handle.path)?;
-            let after = noter_platform::file_facts(&handle.file)?;
-            if after.identity() != handle.facts.identity()
-                || after.link_count() >= handle.facts.link_count()
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "recovery pathname cleanup did not unlink the validated object",
-                ));
+        Err(error) => {
+            if requires_path_delete_fallback(error.kind()) {
+                delete_bound_record_unix_fallback(&handle, cleanup_file)
+            } else {
+                Err(error)
             }
-            Ok(())
         }
-        Err(error) => Err(error),
     }
+}
+
+fn delete_bound_record_unix_fallback(
+    handle: &RecoveryRecordHandle,
+    cleanup_file: File,
+) -> io::Result<()> {
+    revalidate_path_identity(&handle.path, handle.facts, handle.encoded_len)?;
+    drop(cleanup_file);
+    fs::remove_file(&handle.path)?;
+    if noter_platform::file_facts(&handle.file)?.link_count() >= handle.facts.link_count() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery pathname cleanup did not unlink the validated object",
+        ));
+    }
+    Ok(())
 }
 
 fn delete_claimed_live_path(
@@ -1365,30 +1435,43 @@ fn delete_claimed_live_path(
     }
     match noter_platform::delete_open_file(lease) {
         Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
-            let path_file = match noter_platform::open_existing_no_follow(path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => return Err(error),
-            };
-            if noter_platform::file_facts(&path_file)? != expected_facts {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "recovery live pathname changed before claim cleanup",
-                ));
+        Err(error) => {
+            if requires_path_delete_fallback(error.kind()) {
+                delete_claimed_live_path_unix_fallback(path, lease, expected_facts)
+            } else {
+                Err(error)
             }
-            drop(path_file);
-            fs::remove_file(path)?;
-            if noter_platform::file_facts(lease)?.link_count() >= expected_facts.link_count() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "recovery live claim cleanup did not unlink the claimed object",
-                ));
-            }
-            Ok(())
         }
-        Err(error) => Err(error),
     }
+}
+
+fn delete_claimed_live_path_unix_fallback(
+    path: &Path,
+    lease: &File,
+    expected_facts: noter_platform::FileFacts,
+) -> io::Result<()> {
+    let path_file = match noter_platform::open_existing_no_follow(path) {
+        Ok(file) => file,
+        Err(error) => match error.kind() {
+            io::ErrorKind::NotFound => return Ok(()),
+            _ => return Err(error),
+        },
+    };
+    if noter_platform::file_facts(&path_file)? != expected_facts {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery live pathname changed before claim cleanup",
+        ));
+    }
+    drop(path_file);
+    fs::remove_file(path)?;
+    if noter_platform::file_facts(lease)?.link_count() >= expected_facts.link_count() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery live claim cleanup did not unlink the claimed object",
+        ));
+    }
+    Ok(())
 }
 
 fn delete_locked_live_path(path: &Path, locked: &LockedLiveFile) -> io::Result<()> {
@@ -1642,6 +1725,195 @@ mod tests {
     }
 
     #[test]
+    fn omission_flags_have_independent_exact_semantics() {
+        let empty = RecoveryStartupScan::default();
+        assert!(!empty.limit_reached());
+        assert!(!empty.directory_limit_reached());
+        assert!(!empty.byte_limit_reached());
+        assert!(!empty.offers_omitted());
+        assert!(!empty.superseded_handles_omitted());
+        assert!(!empty.has_omissions());
+
+        let cases = [
+            (FILE_LIMIT_REACHED, [true, false, false, false, false]),
+            (DIRECTORY_LIMIT_REACHED, [false, true, false, false, false]),
+            (BYTE_LIMIT_REACHED, [false, false, true, false, false]),
+            (OFFERS_OMITTED, [false, false, false, true, false]),
+            (
+                SUPERSEDED_HANDLES_OMITTED,
+                [false, false, false, false, true],
+            ),
+        ];
+        for (flag, expected) in cases {
+            let mut scan = RecoveryStartupScan::default();
+            scan.note_omission(flag);
+            assert_eq!(
+                [
+                    scan.limit_reached(),
+                    scan.directory_limit_reached(),
+                    scan.byte_limit_reached(),
+                    scan.offers_omitted(),
+                    scan.superseded_handles_omitted(),
+                ],
+                expected
+            );
+            assert!(scan.has_omissions());
+        }
+
+        let quarantine_only = RecoveryStartupScan {
+            quarantine_results_omitted: 1,
+            ..RecoveryStartupScan::default()
+        };
+        assert!(quarantine_only.has_omissions());
+    }
+
+    #[test]
+    fn recovery_store_decision_predicates_cover_each_independent_input() {
+        assert!(valid_live_file_shape(true, 1));
+        assert!(!valid_live_file_shape(false, 1));
+        assert!(!valid_live_file_shape(true, 2));
+
+        assert!(file_binding_matches(true, true));
+        assert!(!file_binding_matches(false, true));
+        assert!(!file_binding_matches(true, false));
+
+        assert!(complete_bound_read_matches(true, true, true));
+        assert!(!complete_bound_read_matches(false, true, true));
+        assert!(!complete_bound_read_matches(true, false, true));
+        assert!(!complete_bound_read_matches(true, true, false));
+
+        assert!(!exceeds_recovery_file_bound(MAX_RECOVERY_FILE_BYTES));
+        assert!(exceeds_recovery_file_bound(MAX_RECOVERY_FILE_BYTES + 1));
+
+        let original = classify_nonbusy_lease_error(
+            io::Error::new(io::ErrorKind::PermissionDenied, "original lease error"),
+            false,
+        );
+        assert_eq!(original.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(original.to_string(), "original lease error");
+        let reclassified = classify_nonbusy_lease_error(
+            io::Error::new(io::ErrorKind::PermissionDenied, "original lease error"),
+            true,
+        );
+        assert_eq!(reclassified.kind(), io::ErrorKind::ResourceBusy);
+        assert_eq!(
+            reclassified.to_string(),
+            "recovery live lease is held by another Noter window"
+        );
+
+        assert!(is_quarantine_name_collision(io::ErrorKind::AlreadyExists));
+        assert!(!is_quarantine_name_collision(
+            io::ErrorKind::PermissionDenied
+        ));
+        assert!(!is_quarantine_name_collision(io::ErrorKind::NotADirectory));
+
+        assert!(requires_path_delete_fallback(io::ErrorKind::Unsupported));
+        assert!(!requires_path_delete_fallback(
+            io::ErrorKind::PermissionDenied
+        ));
+        assert!(!requires_path_delete_fallback(io::ErrorKind::ResourceBusy));
+    }
+
+    #[test]
+    fn recovery_instance_sources_reconcile_only_when_they_agree() {
+        let first = RecoveryInstanceId::new([1; 16]);
+        let second = RecoveryInstanceId::new([2; 16]);
+        assert_eq!(
+            reconcile_recovery_instance_ids(Some(first), Some(first)),
+            Ok(Some(first))
+        );
+        assert_eq!(
+            reconcile_recovery_instance_ids(Some(first), None),
+            Ok(Some(first))
+        );
+        assert_eq!(
+            reconcile_recovery_instance_ids(None, Some(first)),
+            Ok(Some(first))
+        );
+        assert_eq!(reconcile_recovery_instance_ids(None, None), Ok(None));
+        assert_eq!(
+            reconcile_recovery_instance_ids(Some(first), Some(second)),
+            Err(())
+        );
+    }
+
+    #[test]
+    fn recovery_artifact_names_and_minimal_headers_are_exact() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let snapshot = sample_snapshot(22, b"header");
+        let instance_id = snapshot.instance_id();
+        assert_eq!(
+            recovery_artifact_instance(&store.record_path(instance_id)),
+            Some(instance_id)
+        );
+        let stage = exclusive_stage_path(
+            &store.records_dir(),
+            instance_id,
+            TemporaryArtifactKind::Stage,
+        )?;
+        let backup = exclusive_stage_path(
+            &store.records_dir(),
+            instance_id,
+            TemporaryArtifactKind::Backup,
+        )?;
+        assert_eq!(recovery_artifact_instance(&stage), Some(instance_id));
+        assert_eq!(recovery_artifact_instance(&backup), Some(instance_id));
+        assert_eq!(
+            recovery_artifact_instance(&store.records_dir().join("not-a-record.txt")),
+            None
+        );
+
+        let path = store.records_dir().join("minimal-header.bin");
+        let mut header = snapshot.encode();
+        header.truncate(44);
+        fs::write(&path, &header)?;
+        let file = File::open(&path)?;
+        assert_eq!(peek_recovery_instance(&file, 43)?, None);
+        assert_eq!(peek_recovery_instance(&file, 44)?, Some(instance_id));
+
+        let mut legacy = header.clone();
+        legacy[8..12].copy_from_slice(&1_u32.to_le_bytes());
+        fs::write(&path, &legacy)?;
+        let file = File::open(&path)?;
+        assert_eq!(peek_recovery_instance(&file, 44)?, Some(instance_id));
+
+        let mut bad_magic = header.clone();
+        bad_magic[0] ^= 1;
+        fs::write(&path, bad_magic)?;
+        let file = File::open(&path)?;
+        assert_eq!(peek_recovery_instance(&file, 44)?, None);
+
+        let mut unknown_schema = header;
+        unknown_schema[8..12].copy_from_slice(&99_u32.to_le_bytes());
+        fs::write(&path, unknown_schema)?;
+        let file = File::open(&path)?;
+        assert_eq!(peek_recovery_instance(&file, 44)?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn quarantine_copy_verification_rejects_mismatch_and_trailing_bytes() -> io::Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("quarantine-copy.bin");
+        fs::write(&path, b"exact bytes")?;
+
+        let mut file = File::open(&path)?;
+        verify_exact_bytes(&mut file, b"exact bytes")?;
+
+        let mut file = File::open(&path)?;
+        let mismatch = verify_exact_bytes(&mut file, b"exact bytez")
+            .expect_err("a byte mismatch must fail verification");
+        assert_eq!(mismatch.kind(), io::ErrorKind::InvalidData);
+
+        let mut file = File::open(&path)?;
+        let trailing = verify_exact_bytes(&mut file, b"exact")
+            .expect_err("trailing bytes must fail verification");
+        assert_eq!(trailing.kind(), io::ErrorKind::InvalidData);
+        Ok(())
+    }
+
+    #[test]
     fn persist_scan_and_delete_round_trip() -> io::Result<()> {
         let dir = tempdir()?;
         let store = RecoveryStore::open(dir.path())?;
@@ -1650,6 +1922,7 @@ mod tests {
 
         let entries = store.scan_startup()?;
         assert_eq!(entries.len(), 1);
+        assert!(!offer(&entries[0]).superseded_omitted());
         let record = load_offer(&store, &entries[0])?;
         assert_eq!(record.content(), b"recovered text");
         assert_eq!(record.instance_id(), snapshot.instance_id());
@@ -1942,6 +2215,69 @@ mod tests {
     }
 
     #[test]
+    fn pathname_and_header_instance_mismatch_is_retained_without_offer() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let encoded = sample_snapshot(45, b"identity mismatch").encode();
+        let mismatched_path = store.record_path(RecoveryInstanceId::new([46; 16]));
+        fs::write(&mismatched_path, &encoded)?;
+
+        let scan = store.scan_startup()?;
+
+        assert_eq!(scan.len(), 1);
+        assert!(matches!(
+            scan[0].disposition(),
+            RecoveryScanDisposition::Quarantine(RecoveryQuarantineReason::InstanceMismatch)
+        ));
+        assert!(scan[0].remains_in_records());
+        assert!(scan[0].quarantine_error().is_some());
+        assert_eq!(fs::read(&mismatched_path)?, encoded);
+        assert!(fs::read_dir(store.quarantine_dir())?.next().is_none());
+
+        let error = store
+            .quarantine_file(&mismatched_path)
+            .expect_err("public quarantine must reject disagreeing identities");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(&mismatched_path)?, encoded);
+        assert!(fs::read_dir(store.quarantine_dir())?.next().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn live_identity_defers_mismatch_notice_without_moving_the_artifact() -> io::Result<()> {
+        for live_path_identity in [true, false] {
+            let dir = tempdir()?;
+            let store = RecoveryStore::open(dir.path())?;
+            let path_instance = indexed_instance(47);
+            let snapshot = sample_snapshot(48, b"deferred identity mismatch");
+            let mismatched_path = store.record_path(path_instance);
+            let encoded = snapshot.encode();
+            fs::write(&mismatched_path, &encoded)?;
+            let live_instance = if live_path_identity {
+                path_instance
+            } else {
+                snapshot.instance_id()
+            };
+            let lease = store.try_hold_live_lease(live_instance)?;
+
+            assert!(store.scan_startup()?.is_empty());
+            assert_eq!(fs::read(&mismatched_path)?, encoded);
+            assert!(fs::read_dir(store.quarantine_dir())?.next().is_none());
+
+            store.release_live_lease(lease)?;
+            let scan = store.scan_startup()?;
+            assert_eq!(scan.len(), 1);
+            assert!(matches!(
+                scan[0].disposition(),
+                RecoveryScanDisposition::Quarantine(RecoveryQuarantineReason::InstanceMismatch)
+            ));
+            assert_eq!(fs::read(&mismatched_path)?, encoded);
+            assert!(fs::read_dir(store.quarantine_dir())?.next().is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn startup_never_quarantines_a_live_instances_damaged_record() -> io::Result<()> {
         let dir = tempdir()?;
         let store = RecoveryStore::open(dir.path())?;
@@ -2067,6 +2403,29 @@ mod tests {
     }
 
     #[test]
+    fn hard_linked_live_markers_fail_closed() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let instance_id = indexed_instance(26);
+        let live_path = store.live_path(instance_id);
+        fs::write(&live_path, b"")?;
+        let alias = store.root().join("live-marker-alias");
+        fs::hard_link(&live_path, &alias)?;
+
+        let acquire = store
+            .try_hold_live_lease(instance_id)
+            .expect_err("a multiply linked live marker is not private");
+        assert_eq!(acquire.kind(), io::ErrorKind::InvalidData);
+        let probe = store
+            .instance_is_live(instance_id)
+            .expect_err("a multiply linked live marker is indeterminate");
+        assert_eq!(probe.kind(), io::ErrorKind::InvalidData);
+        assert!(live_path.exists());
+        assert!(alias.exists());
+        Ok(())
+    }
+
+    #[test]
     fn releasing_a_live_lease_removes_both_fact_bound_paths() -> io::Result<()> {
         let dir = tempdir()?;
         let store = RecoveryStore::open(dir.path())?;
@@ -2079,6 +2438,81 @@ mod tests {
 
         assert!(!store.live_path(instance_id).exists());
         assert!(!store.live_guard_path(instance_id).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn stale_marker_cleanup_claims_and_removes_both_paths() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let instance_id = indexed_instance(21);
+        fs::write(store.live_path(instance_id), b"")?;
+        fs::write(store.live_guard_path(instance_id), b"")?;
+
+        store.cleanup_stale_live_marker(instance_id);
+
+        assert!(!store.live_path(instance_id).exists());
+        assert!(!store.live_guard_path(instance_id).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn releasing_an_offered_claim_removes_its_exclusive_lease() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let snapshot = sample_snapshot(23, b"claim release");
+        store.persist(&snapshot)?;
+        let scan = store.scan_startup()?;
+        let handle = offer(&scan[0]).primary();
+        let claim = store.claim_offered_record(handle)?;
+        assert!(store.live_path(snapshot.instance_id()).exists());
+        assert!(store.live_guard_path(snapshot.instance_id()).exists());
+
+        store.release_claim(claim)?;
+
+        assert!(!store.live_path(snapshot.instance_id()).exists());
+        assert!(!store.live_guard_path(snapshot.instance_id()).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn claimed_load_rejects_a_different_instance_handle() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let first = sample_snapshot(24, b"first claim");
+        let second = sample_snapshot(25, b"second claim");
+        store.persist(&first)?;
+        store.persist(&second)?;
+        let scan = store.scan_startup()?;
+        let first_handle = scan
+            .iter()
+            .find_map(|entry| match entry.disposition() {
+                RecoveryScanDisposition::Offer(candidate)
+                    if candidate.metadata().instance_id() == first.instance_id() =>
+                {
+                    Some(candidate.primary())
+                }
+                _ => None,
+            })
+            .expect("first handle");
+        let second_handle = scan
+            .iter()
+            .find_map(|entry| match entry.disposition() {
+                RecoveryScanDisposition::Offer(candidate)
+                    if candidate.metadata().instance_id() == second.instance_id() =>
+                {
+                    Some(candidate.primary())
+                }
+                _ => None,
+            })
+            .expect("second handle");
+        let claim = store.claim_offered_record(second_handle)?;
+
+        let error = store
+            .load_claimed_record(first_handle, &claim)
+            .expect_err("a claim must be bound to one recovery instance");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        store.release_claim(claim)?;
         Ok(())
     }
 
@@ -2107,7 +2541,10 @@ mod tests {
                 .all(|entry| !matches!(entry.disposition(), RecoveryScanDisposition::Offer(_)))
         );
 
-        let _ = store.release_live_lease(lease);
+        let release_error = store
+            .release_live_lease(lease)
+            .expect_err("a rebound lease pathname must fail exact release");
+        assert_eq!(release_error.kind(), io::ErrorKind::InvalidData);
         assert!(!store.live_guard_path(snapshot.instance_id()).exists());
         remove_file_if_present(&displaced)?;
         Ok(())
@@ -2445,6 +2882,23 @@ mod tests {
             entries.is_empty(),
             "a missing records directory is an empty startup scan, not an error"
         );
+        store.delete_owned_artifacts(indexed_instance(27))?;
+        Ok(())
+    }
+
+    #[test]
+    fn owned_cleanup_rejects_a_non_directory_records_path() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let records = store.records_dir();
+        fs::remove_dir_all(&records)?;
+        fs::write(&records, b"not a directory")?;
+
+        let error = store
+            .delete_owned_artifacts(indexed_instance(28))
+            .expect_err("a non-directory records path is not missing");
+        assert_ne!(error.kind(), io::ErrorKind::NotFound);
+        assert!(records.is_file());
         Ok(())
     }
 

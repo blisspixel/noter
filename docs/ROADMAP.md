@@ -207,6 +207,18 @@ timeout. The infrastructure validator reports no recognized tool, compiler,
 linker, process, or storage failure hidden as unviable. These scopes overlap and
 are not claimed as a newly deduplicated cross-platform union.
 
+The alpha.2 recovery expansion now enumerates 1,650 Linux-filtered, 1,606
+Windows-filtered, and 47 macOS-specific candidates. Failed exact-head run
+[32612492063](https://github.com/blisspixel/noter/actions/runs/32612492063)
+is retained as negative evidence: the former single Linux job and two Windows
+jobs exceeded 90 minutes, and their partial reports exposed genuine recovery
+proof gaps. The repair removes mutable-progress timeout shapes, adds exact
+parser, identity, lease, quarantine, and omission assertions, and partitions
+Linux three ways and Windows six ways behind one fail-closed `mutation-gate`.
+The configured source and filter scope is not narrowed; structural repairs
+remove mutation sites rather than excluding them. A complete exact-head hosted
+pass remains required before alpha.2 can be tagged.
+
 The schema-v2 reproducible benchmark harness is implemented at commit
 `580f164`. A 30-sample Windows reference from that clean detached commit records
 all raw latency and peak-working-set samples, the exact deterministic corpus,

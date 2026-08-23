@@ -51,19 +51,19 @@ Commands and results at the implementation commit:
 
 | Gate | Result |
 | --- | --- |
-| `cargo test --locked --workspace --all-targets --all-features` | 705 passed, 0 failed |
-| Python unittest discovery | 164 passed, 1 environment skip |
-| Whole-workspace line coverage | 93.50 percent |
-| Trust-kernel line coverage | 93.49 percent |
+| `cargo test --locked --workspace --all-targets --all-features` | 719 passed, 0 failed |
+| Python unittest discovery | 165 passed, 1 environment skip |
+| Whole-workspace line coverage | 93.66 percent |
+| Trust-kernel line coverage | 93.91 percent |
 | Formatting and strict Clippy | Pass |
 | Rustdoc with warnings denied | Pass |
 | RustSec audit | Pass, no advisory warnings |
 | Dependency license and source policy | Pass |
 | Documentation links and release configuration | Pass |
-| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source and visually reviewed; approved input digest `9a9bffb0e1f9e1878d3ed4c6629e154d8c7bb4bb77ec3d7eea5cb5a72972f855` |
+| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source and visually reviewed; approved input digest `48860a00148842412d115b1aeacc88c8b6aa653860f6dd2a7741b5eea747320a` |
 | `dist plan --tag v0.1.0-alpha.2` | Pass, expected archive, installer, checksum, SBOM, and attestation inventory |
 
-The 705 Rust tests comprise 268 library unit tests, 396 binary unit tests, 15
+The 719 Rust tests comprise 281 library unit tests, 397 binary unit tests, 15
 integration and property tests, and 26 native-platform unit tests.
 
 ## Alpha.2 critical rows
@@ -100,8 +100,8 @@ for the later full release-candidate matrix.
 | REC-05 restore opens dirty without writing original | Pass | Restore revalidates the exact claimed artifact, requires successor backup cleanup and parent durability, and treats later predecessor cleanup failure as non-fatal |
 | REC-06 Save and Discard delete only owned records | Pass | FIFO persist fencing, keyed owned cleanup, dual fact-bound lease deletion, exact-handle deletion, path-replacement refusal, live-instance refusal, and distinct-branch regressions |
 | REC-07 Cancel preserves recovery | Pass | Recovery-offer Cancel is inert and stale UI outcomes cannot delete newer records |
-| REC-08 invalid records quarantine visibly | Pass | Corrupt, truncated, wrong-version, lineage, whole-record checksum, bounded-read, and quarantine-result campaigns |
-| REC-09 distinct instances | Pass | Two independent locked paths survive one pathname rebind; lease failures fail closed and instances cannot claim one another's records |
+| REC-08 invalid records quarantine visibly | Pass | Corrupt, truncated, wrong-version, lineage, whole-record checksum, bounded-read, exact quarantine-copy, and quarantine-result campaigns |
+| REC-09 distinct instances | Pass | Two independent locked paths survive one pathname rebind; lease failures fail closed, instances cannot claim one another's records, and a pathname/header identity disagreement remains untouched without an offer |
 | REC-10 persistence and cleanup failure visible | Pass | Identity, lease, persist, and authorized-deletion failures retain the offer or surface a durable warning |
 | REC-11 Undo and Redo recovery freshness | Pass | Persist C, Undo to dirty B, restart, and verify B bytes plus directional selection |
 | REC-12 startup resource bounds | Pass | 1,024 raw-entry, 256 eligible-candidate, 128 MiB aggregate-read, 32-offer, 32-quarantine-result, and 16-superseded-handle bounds are surfaced; exact stale-live cleanup guarantees progress across bounded launches |

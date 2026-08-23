@@ -2,7 +2,7 @@
 
 **Executed:** 2026-07-26
 
-**Latest hosted continuation:** 2026-08-01
+**Latest hosted continuation:** 2026-08-22
 
 **Scope:** `src/core/*.rs` and `crates/noter-platform/src/*.rs`, the document,
 durable I/O, and native adapter trust kernel
@@ -31,19 +31,15 @@ cargo +1.97.1 mutants -vV --in-place --colors never --workspace -p noter-platfor
 The CI commands are intentionally different:
 
 ```text
-Linux common scope:
+Linux common scope, run once for each partition `0/3`, `1/3`, and `2/3`:
 cargo mutants -vV --in-place --colors never --workspace \
+  --shard PARTITION \
   --exclude-re '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|TemporaryFile::discard|TemporaryFile::preserve_artifact|Drop for TemporaryFile|closed_temporary_matches_intended|remove_verified_backup|[Ww]indows|[Mm]acos)'
 
-Windows-applicable scope, invoked as two required shards:
+Windows-applicable scope, run once for each partition `0/6` through `5/6`:
 cargo mutants -vV --in-place --colors never --workspace \
   --minimum-test-timeout 60 \
-  --shard 0/2 \
-  --exclude-re '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|[Mm]acos)'
-
-cargo mutants -vV --in-place --colors never --workspace \
-  --minimum-test-timeout 60 \
-  --shard 1/2 \
+  --shard PARTITION \
   --exclude-re '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|[Mm]acos)'
 
 macOS native-adapter scope:
@@ -62,7 +58,9 @@ names.
 The [cargo-mutants CI guidance](https://mutants.rs/ci.html) recommends
 `--in-place` for a disposable CI checkout. The tool documents that
 [`--in-place` cannot be combined with `--jobs`](https://mutants.rs/in-place.html),
-so each CI gate runs serially and uploads `mutants.out` even on failure. At the
+so each CI worker runs serially and uploads `mutants.out` even on failure. Every
+partition must succeed before the stable fail-closed `mutation-gate` succeeds;
+a canceled, failed, or skipped matrix cannot satisfy branch protection. At the
 reconciled `97371d8` baseline, the Linux job covered 617 candidates, the
 Windows job covered 557, and the macOS adapter job covered 49 macOS-specific
 candidates. The scopes overlapped where the common runner assignments required
@@ -436,3 +434,43 @@ inventory, workspace test scope, and incremental rebuilds while setting
 test-profile codegen units to 16 for the macOS mutation step. At the repair
 point, a fresh exact-head campaign remained required; rerunning the unchanged
 failed configuration was not accepted as evidence.
+
+## 2026-08-22 alpha.2 recovery expansion
+
+Exact-head pull-request run
+[32612492063](https://github.com/blisspixel/noter/actions/runs/32612492063)
+is retained as negative semantic and runtime evidence. The Linux scope listed
+1,686 candidates and completed 1,382 before the 90-minute job ceiling, reporting
+1,002 caught, 307 compiler-unviable, 70 missed, and 3 timed out. The two Windows
+partitions listed the complete 1,650-candidate Windows scope but completed only
+402 and 365 outcomes; the latter exposed 54 missed candidates and one timeout.
+The 47-candidate macOS scope passed with 41 caught and 6 genuine compiler
+rejections. Partial infrastructure validation did not convert any canceled
+worker into success, and branch protection rejected the run.
+
+The survivors identified missing independent assertions for legacy header
+length, causal lineage, bounded-scan omission reporting, exact record and lease
+identity, quarantine-copy verification, stale lease cleanup, and claim matching.
+One pathname/header issue was also a product defect: startup could offer a valid
+record stored under a different canonical instance name. The repair now retains
+and reports that disagreement without offering or relocating the artifact.
+Repeated error-kind decisions are centralized behind truth-tested classifiers.
+
+Three timed-out mutation shapes used mutable loop progress. Exact-byte
+verification now traverses immutable chunks, and offer coalescing repeatedly
+removes a located candidate without index arithmetic. A 158-candidate focused
+Windows-applicable repair campaign classified 139 caught, 15 compiler-unviable,
+and 4 initially missed error-kind arms. After extracting those final collision
+and platform-fallback decisions, a 16-candidate focused continuation classified
+14 caught and 2 compiler-unviable with no miss or timeout.
+
+These focused runs were ephemeral local diagnostics. Their output directories
+were not checked into the repository, so the counts guide this repair but do
+not constitute immutable campaign evidence.
+
+The repaired source enumerates 1,650 Linux-filtered, 1,606 Windows-filtered, and
+47 macOS-specific candidates. CI retains the same filters and complete candidate
+scope while running three deterministic Linux partitions, six deterministic
+Windows partitions, and the macOS scope. One always-evaluated `mutation-gate`
+requires the complete matrix. These focused local results are repair evidence,
+not a substitute for the still-required complete exact-head hosted campaign.

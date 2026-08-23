@@ -1,7 +1,8 @@
 # Changelog
 
 All notable project changes are recorded here. Noter has not published a stable
-release, so current work remains under Unreleased.
+release. Prerelease changes move from Unreleased to a dated version only when
+that candidate is frozen for publication.
 
 ## Unreleased
 
@@ -60,6 +61,15 @@ release, so current work remains under Unreleased.
 
 ### Fixed
 
+- Retain a recovery artifact whose canonical or keyed pathname names a different
+  instance than its encoded header. Once neither identity is live, startup
+  reports the exact mismatch without offering or moving the record, and public
+  quarantine refuses to move it without a single unambiguous dead-instance
+  claim.
+- Replace mutation-sensitive recovery verification and coalescing index loops
+  with structurally finite traversal. Partition the expanded Linux and Windows
+  mutation scopes behind one fail-closed aggregate check so every candidate
+  remains required without exceeding the per-job execution ceiling.
 - Fence recovery persistence before Save deletes a clean record or Discard,
   Restore, New, or Open retires an instance. Delete both independently locked
   lease paths by verified file identity before releasing either lock, so a

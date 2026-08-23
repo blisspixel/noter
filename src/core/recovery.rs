@@ -171,6 +171,8 @@ pub enum RecoveryQuarantineReason {
     InvalidFormatTags,
     /// Causal lineage metadata is malformed or self-referential.
     InvalidLineage,
+    /// The pathname and encoded header name different recovery instances.
+    InstanceMismatch,
 }
 
 impl RecoveryQuarantineReason {
@@ -189,6 +191,9 @@ impl RecoveryQuarantineReason {
             }
             Self::InvalidFormatTags => "The recovery record encoding metadata is not recognized.",
             Self::InvalidLineage => "The recovery record lineage metadata is not valid.",
+            Self::InstanceMismatch => {
+                "The recovery pathname and encoded instance identities do not agree."
+            }
         }
     }
 }
@@ -1409,6 +1414,49 @@ mod tests {
     }
 
     #[test]
+    fn recovery_header_boundaries_and_lineage_rules_are_independently_observable() {
+        let root = sample_snapshot(b"root", Selection::caret(0));
+        let legacy = encode_v1(&root);
+        assert!(parse_recovery_header(&legacy[..V1_FIXED_HEADER_LEN]).is_ok());
+        assert!(matches!(
+            parse_recovery_header(&legacy[..V1_FIXED_HEADER_LEN - 1]),
+            Err(RecoveryQuarantineReason::Truncated)
+        ));
+
+        let mut nonzero_absent_predecessor = root.encode();
+        nonzero_absent_predecessor[53] = 1;
+        assert!(matches!(
+            parse_recovery_header(&nonzero_absent_predecessor),
+            Err(RecoveryQuarantineReason::InvalidLineage)
+        ));
+
+        let predecessor = RecoveryInstanceId::new([7; 16]);
+        let successor = RecoverySnapshot::try_new_with_lineage(
+            RecoverySnapshotParts {
+                document_id: root.document_id(),
+                instance_id: root.instance_id(),
+                revision: Revision::new(4),
+                created_at: RecoveryWallTime::from_unix_millis(1),
+                updated_at: RecoveryWallTime::from_unix_millis(2),
+                original_path: Vec::new(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::caret(0),
+                content: b"successor".to_vec(),
+            },
+            RecoveryLineageGeneration::new(1),
+            Some(predecessor),
+        )
+        .expect("valid successor fixture");
+        let mut self_predecessor = successor.encode();
+        self_predecessor[53..69].copy_from_slice(&successor.instance_id().as_bytes());
+        assert!(matches!(
+            parse_recovery_header(&self_predecessor),
+            Err(RecoveryQuarantineReason::InvalidLineage)
+        ));
+    }
+
+    #[test]
     fn schema_v1_remains_readable_with_its_content_only_checksum() {
         let snapshot = sample_snapshot(b"legacy recovery", Selection::caret(6));
         let encoded = encode_v1(&snapshot);
@@ -2435,6 +2483,7 @@ mod tests {
             RecoveryQuarantineReason::InvalidSelection,
             RecoveryQuarantineReason::InvalidFormatTags,
             RecoveryQuarantineReason::InvalidLineage,
+            RecoveryQuarantineReason::InstanceMismatch,
         ] {
             assert!(!reason.description().is_empty());
         }
