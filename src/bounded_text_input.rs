@@ -54,8 +54,8 @@ pub fn retain_active_ime_commit_focus(
 }
 
 /// Removes an active composition's final Commit until the document editor is
-/// rendered. Every other event is returned for the caller to defer so controls
-/// rendered earlier cannot consume or overtake the terminal composition event.
+/// rendered. Events before the Commit remain in place; only later events are
+/// returned for the caller to defer so event order is preserved.
 pub fn isolate_active_ime_commit(
     ui: &egui::Ui,
     composition_was_active: bool,
@@ -67,8 +67,11 @@ pub fn isolate_active_ime_commit(
         let position = input.events.iter().position(|event| {
             matches!(event, egui::Event::Ime(egui::ImeEvent::Commit(text)) if !text.is_empty() && text != "\n" && text != "\r")
         })?;
-        let commit = input.events.remove(position);
-        let deferred = std::mem::take(&mut input.events);
+        let deferred = input.events.split_off(position + 1);
+        let commit = input
+            .events
+            .pop()
+            .expect("the located IME commit must still be present");
         Some((commit, deferred))
     })
 }
@@ -499,6 +502,28 @@ mod tests {
 
         assert_eq!(retained, [commit]);
         assert_eq!(deferred, [preedit, text]);
+    }
+
+    #[test]
+    fn isolated_ime_commit_keeps_prefix_and_defers_only_suffix() {
+        let context = egui::Context::default();
+        let before = egui::Event::Text("before".to_owned());
+        let commit = egui::Event::Ime(egui::ImeEvent::Commit("committed".to_owned()));
+        let after = egui::Event::Text("after".to_owned());
+        let mut input = egui::RawInput::default();
+        input
+            .events
+            .extend([before.clone(), commit.clone(), after.clone()]);
+        let mut isolated = None;
+        let mut retained = Vec::new();
+
+        let _ = context.run_ui(input, |ui| {
+            isolated = isolate_active_ime_commit(ui, true);
+            retained = ui.input(|input| input.events.clone());
+        });
+
+        assert_eq!(retained, [before]);
+        assert_eq!(isolated, Some((commit, vec![after])));
     }
 
     fn key(key: egui::Key) -> egui::Event {

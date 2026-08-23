@@ -176,23 +176,29 @@ Feature presence alone is not verification.
   writes the original file until the user invokes Save.
 - **FR-067 Recovery cleanup:** Remove a record only after a successful save or
   explicit discard. Corrupt records are quarantined and explained, not silently
-  deleted. A living window retains its instance lease after Save and through
-  later edits. Startup ownership uncertainty fails closed without offering
-  Restore or Discard for the affected record. Restore establishes a leased
-  durable successor copy before deleting the offered record; transfer failure
+  deleted. A living window retains independent locked ownership proofs for its
+  instance after Save and through later edits; loss or rebinding of one proof
+  cannot expose that window's record. Startup ownership uncertainty fails
+  closed without offering Restore or Discard for the affected record. Restore
+  establishes a leased durable successor copy before deleting the offered
+  record; transfer failure
   keeps the offered record and does not replace the current document. If an
   Open or Reload continued by Discard does not replace the dirty document,
   recovery is immediately scheduled again for the document that remains.
-  Same-instance artifacts are ordered only by strict revision, and separate
-  instances are ordered only by a schema-v2 predecessor link with exactly the
-  next generation. Incomparable branches remain separate offers. Restore and
-  Discard reload and revalidate an exact open artifact under an exclusive dead-
-  instance claim before acting. Save removes only the current leased instance's
-  canonical and keyed temporary artifacts. Restore and Discard remove only
+  Same-instance schema-v2 artifacts are ordered only by strict revision, and
+  separate instances are ordered only by a schema-v2 predecessor link with
+  exactly the next generation. Legacy and current schemas never suppress one
+  another by mutable legacy metadata. Incomparable branches remain separate
+  offers. Restore and Discard reload and revalidate an exact open artifact under
+  an exclusive dead-instance claim before acting. Save removes only the current
+  leased instance's canonical and keyed temporary artifacts. Restore and
+  Discard remove only
   exact validated offer handles, never every record sharing a document ID.
   Cleanup failure keeps a startup Discard record available when it remains on
   disk, or surfaces a persistent warning. After a successor is durably
-  persisted, cleanup failure never rolls back or deletes that successor.
+  persisted and its parent-directory durability succeeds, cleanup failure never
+  rolls back or deletes that successor. Record deletion or identity retirement
+  waits for every earlier FIFO persistence request to quiesce.
 - **FR-068 Recovery failure:** A persistence failure is visible and does not
   suppress the classic dirty prompt.
 - **FR-069 External change:** Detect changed, replaced, deleted, or recreated
@@ -201,6 +207,10 @@ Feature presence alone is not verification.
   As, Reload, overwrite, explicit Discard, or proof that the trusted disk state
   returned, treat the retained in-memory revision as unsaved for lifecycle,
   status, title, and crash recovery without rebaselining ordinary Save.
+  Keep Editing acknowledges only the exact successful disk observation shown
+  to the user. A later observation, including an uninspectable state, prompts
+  again. Document input already received in the frame that opens the prompt is
+  deferred until the decision rather than silently discarded.
 
 ### 2.4 Interface and status
 

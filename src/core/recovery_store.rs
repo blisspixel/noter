@@ -227,9 +227,31 @@ impl RecoveryStartupScan {
 /// Exclusive instance lease proving that one offered recovery instance is dead.
 #[derive(Debug)]
 pub struct RecoveryInstanceClaim {
-    instance_id: RecoveryInstanceId,
-    lease: File,
+    lease: RecoveryLiveLease,
+}
+
+#[derive(Debug)]
+struct LockedLiveFile {
+    file: File,
     facts: noter_platform::FileFacts,
+}
+
+/// Process-lifetime lease for one recovery instance.
+///
+/// Two independently locked paths keep one pathname rebind from hiding a live
+/// owner. Both objects remain locked until facts-bound release completes.
+#[derive(Debug)]
+pub struct RecoveryLiveLease {
+    instance_id: RecoveryInstanceId,
+    primary: LockedLiveFile,
+    guard: LockedLiveFile,
+}
+
+impl RecoveryLiveLease {
+    /// Returns the logical recovery instance protected by this lease.
+    pub const fn instance_id(&self) -> RecoveryInstanceId {
+        self.instance_id
+    }
 }
 
 impl std::ops::Deref for RecoveryStartupScan {
@@ -296,6 +318,12 @@ impl RecoveryStore {
             .join(format!("{}.live", hex16(&instance_id.as_bytes())))
     }
 
+    /// Returns the independent live-lease guard for one editor instance.
+    pub fn live_guard_path(&self, instance_id: RecoveryInstanceId) -> PathBuf {
+        self.records_dir()
+            .join(format!("{}.guard", hex16(&instance_id.as_bytes())))
+    }
+
     /// Holds an exclusive lock that another Noter window can probe without
     /// deleting this instance's recovery record.
     ///
@@ -305,16 +333,37 @@ impl RecoveryStore {
     /// # Errors
     ///
     /// Returns an I/O error when the live file cannot be created or locked.
-    pub fn try_hold_live_lease(&self, instance_id: RecoveryInstanceId) -> io::Result<File> {
-        let path = self.live_path(instance_id);
-        let file = match noter_platform::create_private_new_file(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                noter_platform::open_existing_no_follow(&path)?
+    pub fn try_hold_live_lease(
+        &self,
+        instance_id: RecoveryInstanceId,
+    ) -> io::Result<RecoveryLiveLease> {
+        let attempt = (|| {
+            let primary_path = self.live_path(instance_id);
+            let primary = acquire_live_file(&primary_path)?;
+            let guard_path = self.live_guard_path(instance_id);
+            let guard = match acquire_live_file(&guard_path) {
+                Ok(guard) => guard,
+                Err(error) => {
+                    let _ = delete_locked_live_path(&primary_path, &primary);
+                    return Err(error);
+                }
+            };
+            Ok(RecoveryLiveLease {
+                instance_id,
+                primary,
+                guard,
+            })
+        })();
+        match attempt {
+            Ok(lease) => Ok(lease),
+            Err(error)
+                if error.kind() != io::ErrorKind::ResourceBusy
+                    && self.instance_is_live(instance_id).unwrap_or(false) =>
+            {
+                Err(live_lease_busy_error())
             }
-            Err(error) => return Err(error),
-        };
-        validate_and_lock_live_file(file).map(|(file, _)| file)
+            Err(error) => Err(error),
+        }
     }
 
     /// Returns whether another living Noter window still holds this instance.
@@ -325,25 +374,9 @@ impl RecoveryStore {
     /// fail closed rather than expose a potentially live record for restore or
     /// discard.
     pub fn instance_is_live(&self, instance_id: RecoveryInstanceId) -> io::Result<bool> {
-        let path = self.live_path(instance_id);
-        let file = match noter_platform::open_existing_no_follow(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(error),
-        };
-        let metadata = file.metadata()?;
-        let facts = noter_platform::file_facts(&file)?;
-        if !metadata.is_file() || facts.link_count() != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "recovery live lease is not a private regular file",
-            ));
-        }
-        match file.try_lock() {
-            Ok(()) => Ok(false),
-            Err(TryLockError::WouldBlock) => Ok(true),
-            Err(TryLockError::Error(error)) => Err(error),
-        }
+        let primary = probe_live_path(&self.live_path(instance_id))?;
+        let guard = probe_live_path(&self.live_guard_path(instance_id))?;
+        Ok(primary == Some(true) || guard == Some(true))
     }
 
     /// Persists one recovery snapshot under its instance identity.
@@ -450,32 +483,8 @@ impl RecoveryStore {
     }
 
     fn claim_instance(&self, instance_id: RecoveryInstanceId) -> io::Result<RecoveryInstanceClaim> {
-        let path = self.live_path(instance_id);
-        let attempt = (|| {
-            let file = match noter_platform::create_private_new_file(&path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    noter_platform::open_for_cleanup(&path)?
-                }
-                Err(error) => return Err(error),
-            };
-            let (lease, facts) = validate_and_lock_live_file(file)?;
-            Ok(RecoveryInstanceClaim {
-                instance_id,
-                lease,
-                facts,
-            })
-        })();
-        match attempt {
-            Ok(claim) => Ok(claim),
-            Err(error)
-                if error.kind() != io::ErrorKind::ResourceBusy
-                    && self.instance_is_live(instance_id).unwrap_or(false) =>
-            {
-                Err(live_lease_busy_error())
-            }
-            Err(error) => Err(error),
-        }
+        self.try_hold_live_lease(instance_id)
+            .map(|lease| RecoveryInstanceClaim { lease })
     }
 
     /// Reloads an exact handle while its instance claim remains held.
@@ -499,10 +508,21 @@ impl RecoveryStore {
     ///
     /// Returns an I/O error when the stale lease path cannot be removed.
     pub fn release_claim(&self, claim: RecoveryInstanceClaim) -> io::Result<()> {
-        let path = self.live_path(claim.instance_id);
-        let result = delete_claimed_live_path(&path, &claim.lease, claim.facts);
-        drop(claim);
-        result
+        self.release_live_lease(claim.lease)
+    }
+
+    /// Releases a process-lifetime lease by deleting both exact locked paths
+    /// before either lock is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when either path no longer identifies its locked
+    /// lease object or facts-bound deletion fails.
+    pub fn release_live_lease(&self, lease: RecoveryLiveLease) -> io::Result<()> {
+        let primary = delete_locked_live_path(&self.live_path(lease.instance_id), &lease.primary);
+        let guard = delete_locked_live_path(&self.live_guard_path(lease.instance_id), &lease.guard);
+        drop(lease);
+        primary.and(guard)
     }
 
     /// Revalidates and removes one exact startup artifact only while its
@@ -943,7 +963,9 @@ fn delete_bound_candidate(path: &Path, opened: &OpenedRecoveryCandidate) -> io::
 
 fn live_instance_from_path(path: &Path) -> Option<RecoveryInstanceId> {
     let name = path.file_name()?.to_str()?;
-    let instance = name.strip_suffix(".live")?;
+    let instance = name
+        .strip_suffix(".live")
+        .or_else(|| name.strip_suffix(".guard"))?;
     decode_hex16(instance).map(RecoveryInstanceId::new)
 }
 
@@ -1003,7 +1025,7 @@ fn consider_offer(
     let mut index = 0;
     while index < offers.len() {
         let current = &offers[index].primary.metadata;
-        if same_instance_document(&candidate.primary.metadata, current)
+        if authenticated_same_instance_document(&candidate.primary.metadata, current)
             && candidate.primary.metadata.revision() > current.revision()
         {
             let older = offers.remove(index);
@@ -1013,7 +1035,7 @@ fn consider_offer(
         }
     }
     if let Some(index) = offers.iter().position(|offer| {
-        same_instance_document(&candidate.primary.metadata, &offer.primary.metadata)
+        authenticated_same_instance_document(&candidate.primary.metadata, &offer.primary.metadata)
             && offer.primary.metadata.revision() > candidate.primary.metadata.revision()
     }) {
         absorb_superseded(&mut offers[index], candidate);
@@ -1048,6 +1070,15 @@ fn same_instance_document(
     right: &ValidatedRecoveryMetadata,
 ) -> bool {
     left.instance_id() == right.instance_id() && left.document_id() == right.document_id()
+}
+
+fn authenticated_same_instance_document(
+    left: &ValidatedRecoveryMetadata,
+    right: &ValidatedRecoveryMetadata,
+) -> bool {
+    left.schema_version() == RECOVERY_SCHEMA_VERSION
+        && right.schema_version() == RECOVERY_SCHEMA_VERSION
+        && same_instance_document(left, right)
 }
 
 fn push_superseded(offer: &mut RecoveryOffer, handle: RecoveryRecordHandle) {
@@ -1102,6 +1133,39 @@ fn validate_and_lock_live_file(file: File) -> io::Result<(File, noter_platform::
         TryLockError::Error(error) => error,
     })?;
     Ok((file, facts))
+}
+
+fn acquire_live_file(path: &Path) -> io::Result<LockedLiveFile> {
+    let file = match noter_platform::create_private_new_file(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            noter_platform::open_for_cleanup(path)?
+        }
+        Err(error) => return Err(error),
+    };
+    let (file, facts) = validate_and_lock_live_file(file)?;
+    Ok(LockedLiveFile { file, facts })
+}
+
+fn probe_live_path(path: &Path) -> io::Result<Option<bool>> {
+    let file = match noter_platform::open_existing_no_follow(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let metadata = file.metadata()?;
+    let facts = noter_platform::file_facts(&file)?;
+    if !metadata.is_file() || facts.link_count() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery live lease is not a private regular file",
+        ));
+    }
+    match file.try_lock() {
+        Ok(()) => Ok(Some(false)),
+        Err(TryLockError::WouldBlock) => Ok(Some(true)),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
 }
 
 fn live_lease_busy_error() -> io::Error {
@@ -1226,7 +1290,7 @@ fn require_matching_claim(
     handle: &RecoveryRecordHandle,
     claim: &RecoveryInstanceClaim,
 ) -> io::Result<()> {
-    if claim.instance_id != handle.metadata.instance_id() {
+    if claim.lease.instance_id != handle.metadata.instance_id() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "recovery instance claim does not match the artifact",
@@ -1327,6 +1391,10 @@ fn delete_claimed_live_path(
     }
 }
 
+fn delete_locked_live_path(path: &Path, locked: &LockedLiveFile) -> io::Result<()> {
+    delete_claimed_live_path(path, &locked.file, locked.facts)
+}
+
 #[derive(Clone, Copy)]
 enum TemporaryArtifactKind {
     Stage,
@@ -1354,18 +1422,17 @@ fn write_atomic_private(
     let backup = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Backup)?;
     let write_result = commit_staged_record(&stage, destination, &backup, bytes);
 
-    if write_result.is_err() {
+    if let Err(error) = write_result {
         let _ = fs::remove_file(&stage);
         // A failed replace may leave a backup sibling; remove only empty or
         // newly created backup names that are not the committed destination.
         let _ = fs::remove_file(&backup);
-    } else {
-        // Successful replace on Windows keeps the previous destination in the
-        // backup path. That is superseded recovery content and must not linger.
-        let _ = fs::remove_file(&backup);
-        let _ = noter_platform::sync_parent(destination);
+        return Err(error);
     }
-    write_result
+    // Successful replace on Windows keeps the previous destination in the
+    // backup path. That is superseded recovery content and must not linger.
+    remove_file_if_present(&backup)?;
+    noter_platform::sync_parent(destination).map(|_| ())
 }
 
 fn commit_staged_record(
@@ -1610,7 +1677,12 @@ mod tests {
         assert_eq!(load_offer(&store, &entries[0])?.content(), b"updated");
 
         store.delete_owned_artifacts(snapshot.instance_id())?;
-        assert!(store.scan_startup()?.is_empty());
+        assert!(
+            store
+                .scan_startup()?
+                .iter()
+                .all(|entry| !matches!(entry.disposition(), RecoveryScanDisposition::Offer(_)))
+        );
         store.delete_owned_artifacts(snapshot.instance_id())?;
         Ok(())
     }
@@ -1791,6 +1863,38 @@ mod tests {
     }
 
     #[test]
+    fn legacy_metadata_cannot_suppress_a_current_recovery_record() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let genuine = snapshot_with_document(15, 15, 5, 5, b"genuine newest bytes");
+        store.persist(&genuine)?;
+        let legacy = snapshot_with_document(15, 15, 6, 6, b"legacy alternate bytes");
+        fs::write(
+            store.records_dir().join("legacy-alternate.rec"),
+            encode_v1(&legacy),
+        )?;
+
+        let scan = store.scan_startup()?;
+        let offers = scan
+            .iter()
+            .filter_map(|entry| match entry.disposition() {
+                RecoveryScanDisposition::Offer(offer) => Some(offer),
+                RecoveryScanDisposition::Quarantine(_) => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(offers.len(), 2);
+        assert!(offers.iter().all(|offer| offer.superseded().is_empty()));
+        let mut schemas = offers
+            .iter()
+            .map(|offer| offer.metadata().schema_version())
+            .collect::<Vec<_>>();
+        schemas.sort_unstable();
+        assert_eq!(schemas, [1, RECOVERY_SCHEMA_VERSION]);
+        Ok(())
+    }
+
+    #[test]
     fn exact_handle_rejects_path_replacement_for_load_and_delete() -> io::Result<()> {
         let dir = tempdir()?;
         let store = RecoveryStore::open(dir.path())?;
@@ -1959,6 +2063,54 @@ mod tests {
         let entries = store.scan_startup()?;
         assert_eq!(entries.len(), 1);
         assert_eq!(load_offer(&store, &entries[0])?.content(), b"still running");
+        Ok(())
+    }
+
+    #[test]
+    fn releasing_a_live_lease_removes_both_fact_bound_paths() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let instance_id = indexed_instance(20);
+        let lease = store.try_hold_live_lease(instance_id)?;
+
+        assert!(store.live_path(instance_id).exists());
+        assert!(store.live_guard_path(instance_id).exists());
+        store.release_live_lease(lease)?;
+
+        assert!(!store.live_path(instance_id).exists());
+        assert!(!store.live_guard_path(instance_id).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn one_rebound_live_path_cannot_hide_the_independent_guard() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let snapshot = sample_snapshot(19, b"active guarded recovery");
+        store.persist(&snapshot)?;
+        let lease = store.try_hold_live_lease(snapshot.instance_id())?;
+        let displaced = store.records_dir().join("displaced-live-object");
+        fs::rename(store.live_path(snapshot.instance_id()), &displaced)?;
+
+        assert!(store.instance_is_live(snapshot.instance_id())?);
+        assert_eq!(
+            store
+                .try_hold_live_lease(snapshot.instance_id())
+                .expect_err("the locked guard must prevent a competing lease")
+                .kind(),
+            io::ErrorKind::ResourceBusy
+        );
+        assert!(
+            store
+                .scan_startup()?
+                .iter()
+                .all(|entry| !matches!(entry.disposition(), RecoveryScanDisposition::Offer(_)))
+        );
+
+        let _ = store.release_live_lease(lease);
+        assert!(!store.live_guard_path(snapshot.instance_id()).exists());
+        assert!(displaced.exists());
+        remove_file_if_present(&displaced)?;
         Ok(())
     }
 

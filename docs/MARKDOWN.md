@@ -69,7 +69,8 @@ authoritative. Changing modes never rewrites a file.
   a supported inline link preserves its complete source label, including code
   spans. Bold, Italic, and Link use
   Ctrl+B, Ctrl+I, and Ctrl+K on Windows and Linux and the corresponding Command
-  shortcuts on macOS while the Markdown editor owns focus. Toolbar buttons
+  shortcuts on macOS while the Markdown editor owns focus. Keyboard auto-repeat
+  does not repeatedly toggle formatting. Toolbar buttons
   expose their active state to assistive technology. The bar is permanent and
   non-modal: there is no Done state, and Escape returns a focused active range
   to rendered form after its pending source edit is synchronized. Same-frame
@@ -139,7 +140,10 @@ complete.
   without writing empty markers.
 - Enter in a `- ` list item or `> ` quote continues the same marker (and indent)
   on the next line. Enter on an empty list or quote item removes that marker and
-  leaves a paragraph. Native line endings are preserved.
+  leaves a paragraph. Fenced and indented code remain literal: list-like and
+  emphasis-like text inside code does not trigger these Enter transforms.
+  Native line endings are preserved. Cancelling an unfinished IME pre-edit with
+  Enter restores the canonical source selection before applying the line break.
 - GFM and CommonMark conformance, malformed-input behavior, IME, screen-reader,
   high-DPI, and large-file requirements still require release evidence.
 - The synchronous prototype accepts at most 1 MiB of source, 8,192 logical

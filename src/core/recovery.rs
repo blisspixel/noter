@@ -183,7 +183,7 @@ impl RecoveryQuarantineReason {
             Self::PathTooLarge => "The recovery record path metadata exceeds the supported limit.",
             Self::ContentTooLarge => "The recovery record content exceeds the document size limit.",
             Self::InvalidUtf8 => "The recovery record content is not valid UTF-8.",
-            Self::ChecksumMismatch => "The recovery record failed its content integrity check.",
+            Self::ChecksumMismatch => "The recovery record failed its integrity check.",
             Self::InvalidSelection => {
                 "The recovery record selection is outside the recovered text."
             }
@@ -1744,7 +1744,7 @@ mod tests {
         );
         assert_eq!(
             RecoveryQuarantineReason::ChecksumMismatch.description(),
-            "The recovery record failed its content integrity check."
+            "The recovery record failed its integrity check."
         );
     }
 

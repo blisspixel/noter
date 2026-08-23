@@ -126,7 +126,11 @@ platform keyboard policy that routes word / Home-End / document gestures
 through that pure path in Text Mode and the Markdown active block. Recovery
 record cleanup now preserves the process-lifetime live lease, ownership errors
 fail closed, identity changes keep worker epochs monotonic, and stale UI
-completions cannot delete newer records. Markdown automatic Enter and inline
+completions cannot delete newer records. Each identity now has two independent
+fact-bound lease paths, cleanup and identity rotation wait behind a FIFO worker
+fence, and schema v1 metadata cannot suppress authenticated schema v2 state.
+External Keep Editing is bound to one exact successful observation rather than
+a broad conflict class. Markdown automatic Enter and inline
 reopening are preflighted against the active source budget so an oversized
 operation cannot remove an existing suffix. The alpha.2 correctness record in
 [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) includes the live

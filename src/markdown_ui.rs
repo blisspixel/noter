@@ -4,7 +4,7 @@ use eframe::egui;
 use noter::core::edit::{EditOrigin, Selection};
 use noter::core::line_endings::logical_lines;
 use noter::core::markdown::recoverable_emphasis_spans;
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag};
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::bounded_text_input::{
     BoundedTextBuffer, ImeCommitFocusRestore, ImeFrameState, focused_ime_frame_state,
@@ -785,17 +785,21 @@ impl ActiveBlock {
             self.selection = CharSelection::from_byte_selection(&self.draft, next);
             true
         };
-        if self.ime_composition.is_some()
+        let restored_ime_cancel = self.ime_composition.is_some()
             && ui.input(|input| input.events.iter().any(is_plain_enter_press))
-        {
-            self.cancel_ime_composition();
-        }
+            && {
+                self.cancel_ime_composition();
+                true
+            };
         let (restored_break, input_was_limited) = if self.ime_composition.is_some() {
             (false, false)
         } else {
             self.apply_line_break_and_reopen_policy(ui, maximum_draft_bytes)
         };
-        (restored_navigation || restored_break, input_was_limited)
+        (
+            restored_navigation || restored_ime_cancel || restored_break,
+            input_was_limited,
+        )
     }
 
     fn block_style(&self) -> BlockStyleState {
@@ -2279,6 +2283,7 @@ fn format_command_for_event(event: &egui::Event) -> Option<MarkdownCommand> {
     let egui::Event::Key {
         key,
         pressed: true,
+        repeat: false,
         modifiers,
         ..
     } = event
@@ -3589,6 +3594,9 @@ fn close_inline_run_for_line_break(source: &str, caret_chars: usize) -> Option<C
     if !source.is_char_boundary(caret_bytes) {
         return None;
     }
+    if byte_is_in_code_block(source, caret_bytes) {
+        return None;
+    }
 
     if let Some(marker) = empty_marker_pair_at_caret(source, caret_bytes) {
         let width = marker.len();
@@ -3708,6 +3716,9 @@ fn parse_list_or_quote_prefix(content: &str) -> Option<LinePrefix> {
 
 fn continue_or_exit_line_prefix(source: &str, caret_chars: usize) -> Option<(String, usize)> {
     let caret_bytes = char_index_to_byte(source, caret_chars);
+    if byte_is_in_code_block(source, caret_bytes) {
+        return None;
+    }
     let mut offset = 0;
     for line in logical_lines(source) {
         let content = line.content();
@@ -3751,6 +3762,23 @@ fn continue_or_exit_line_prefix(source: &str, caret_chars: usize) -> Option<(Str
         }
     }
     None
+}
+
+fn byte_is_in_code_block(source: &str, byte: usize) -> bool {
+    let mut code_start = None;
+    for (event, range) in Parser::new_ext(source, markdown_parser_options()).into_offset_iter() {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => code_start = Some(range.start),
+            Event::End(TagEnd::CodeBlock) => {
+                if code_start.is_some_and(|start| byte >= start && byte <= range.end) {
+                    return true;
+                }
+                code_start = None;
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn set_heading_style(source: &str, selection: Range<usize>, level: Option<usize>) -> CommandResult {
@@ -4784,6 +4812,16 @@ mod tests {
     }
 
     #[test]
+    fn enter_policies_leave_fenced_and_indented_code_literal() {
+        let fenced_markers = "```text\n****\n```";
+        assert_eq!(close_inline_run_for_line_break(fenced_markers, 10), None);
+        let fenced_list = "```text\n- literal\n```";
+        assert_eq!(continue_or_exit_line_prefix(fenced_list, 17), None);
+        let indented = "    - literal\n";
+        assert_eq!(continue_or_exit_line_prefix(indented, 13), None);
+    }
+
+    #[test]
     fn next_character_reopens_the_closed_inline_run() {
         let (text, caret) =
             reopen_inline_run_around_text("**hello**\n", 10, "**", "b").expect("reopen");
@@ -4867,6 +4905,38 @@ mod tests {
             deferred_input_restored: false,
         };
         (editor, editor_id)
+    }
+
+    #[test]
+    fn plain_enter_after_unterminated_preedit_restores_the_canonical_cursor() {
+        let context = egui::Context::default();
+        let (mut editor, editor_id) = editor_with_active("abcXYZ", 3);
+        let mut source = "abcXYZ".to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        let mut preedit = egui::RawInput::default();
+        preedit
+            .events
+            .push(egui::Event::Ime(egui::ImeEvent::Preedit {
+                text: "q".to_owned(),
+                active_range_chars: Some(0..1),
+            }));
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, preedit);
+        assert_eq!(source, "abcXYZ");
+        assert!(editor.has_active_ime_composition());
+
+        let mut enter = egui::RawInput::default();
+        enter.events.push(enter_key());
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, enter);
+
+        assert_eq!(source, "abc\nXYZ");
+        assert_eq!(editor.source_selection(), Some(Selection::caret(4)));
     }
 
     #[test]
@@ -5217,7 +5287,7 @@ mod tests {
             &mut source,
             egui::RawInput::default(),
         );
-        assert_eq!(source, "ab");
+        assert_eq!(source, "**ab**");
         assert!(editor.deferred_input_events.is_empty());
     }
 
@@ -5906,12 +5976,9 @@ mod tests {
         });
         let _ = context.run_ui(repeated, |ui| {
             ui.set_width(800.0);
-            assert_eq!(
-                editor.show(ui, &mut source),
-                MarkdownShowOutcome::Changed(EditOrigin::MarkdownFormatting)
-            );
+            assert_eq!(editor.show(ui, &mut source), MarkdownShowOutcome::Unchanged);
         });
-        assert_eq!(source, "text");
+        assert_eq!(source, "**text**");
 
         let mut released = egui::RawInput::default();
         released.events.push(egui::Event::Key {
@@ -5941,7 +6008,7 @@ mod tests {
                 MarkdownShowOutcome::Changed(EditOrigin::MarkdownFormatting)
             );
         });
-        assert_eq!(source, "**text**");
+        assert_eq!(source, "text");
     }
 
     #[test]

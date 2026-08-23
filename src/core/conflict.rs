@@ -99,6 +99,16 @@ pub enum ConflictCommand {
         /// Exact content revision against which the observation was made.
         revision: Revision,
     },
+    /// Report a classified observation together with the exact captured state.
+    /// Keep Editing is then bound to that evidence rather than a coarse class.
+    ObservedExact {
+        /// Pure classification of the captured destination state.
+        kind: ExternalChangeKind,
+        /// Exact state or inspection failure behind the classification.
+        evidence: Result<TargetState, ()>,
+        /// Exact content revision against which the observation was made.
+        revision: Revision,
+    },
     /// Resolve the currently visible external-change decision.
     Decide(ConflictDecision),
     /// Clear retained conflict state after path replacement, reload, or a new
@@ -129,14 +139,17 @@ enum ConflictPhase {
     Idle,
     Prompting {
         kind: ExternalChangeKind,
+        evidence: Option<Result<TargetState, ()>>,
         revision: Revision,
     },
     ConfirmOverwrite {
         kind: ExternalChangeKind,
+        evidence: Option<Result<TargetState, ()>>,
         revision: Revision,
     },
     KeptEditing {
         kind: ExternalChangeKind,
+        evidence: Option<Result<TargetState, ()>>,
         revision: Revision,
     },
 }
@@ -188,7 +201,12 @@ impl ConflictState {
     /// Applies one command and returns its adapter effect.
     pub fn reduce(&mut self, command: ConflictCommand) -> ConflictEffect {
         match command {
-            ConflictCommand::Observed { kind, revision } => self.observed(kind, revision),
+            ConflictCommand::Observed { kind, revision } => self.observed(kind, None, revision),
+            ConflictCommand::ObservedExact {
+                kind,
+                evidence,
+                revision,
+            } => self.observed(kind, Some(evidence), revision),
             ConflictCommand::Decide(decision) => self.decide(decision),
             ConflictCommand::Reset => {
                 self.phase = ConflictPhase::Idle;
@@ -197,7 +215,12 @@ impl ConflictState {
         }
     }
 
-    fn observed(&mut self, kind: ExternalChangeKind, revision: Revision) -> ConflictEffect {
+    fn observed(
+        &mut self,
+        kind: ExternalChangeKind,
+        evidence: Option<Result<TargetState, ()>>,
+        revision: Revision,
+    ) -> ConflictEffect {
         if !kind.requires_prompt() {
             if matches!(
                 self.phase,
@@ -213,22 +236,39 @@ impl ConflictState {
         match self.phase {
             ConflictPhase::Prompting {
                 kind: current,
+                evidence: current_evidence,
                 revision: current_revision,
             }
             | ConflictPhase::ConfirmOverwrite {
                 kind: current,
+                evidence: current_evidence,
                 revision: current_revision,
-            } if current == kind && current_revision == revision => ConflictEffect::None,
+            } if current == kind
+                && current_evidence == evidence
+                && current_revision == revision =>
+            {
+                ConflictEffect::None
+            }
             // Keep Editing is a decision about the disk version. Local typing
             // must not reopen the prompt; a different disk classification must.
-            ConflictPhase::KeptEditing { kind: current, .. } if current == kind => {
+            ConflictPhase::KeptEditing {
+                kind: current,
+                evidence: current_evidence,
+                ..
+            } if current == kind
+                && evidence.is_none_or(|next| next.is_ok() && current_evidence == Some(next)) =>
+            {
                 ConflictEffect::None
             }
             ConflictPhase::Idle
             | ConflictPhase::Prompting { .. }
             | ConflictPhase::ConfirmOverwrite { .. }
             | ConflictPhase::KeptEditing { .. } => {
-                self.phase = ConflictPhase::Prompting { kind, revision };
+                self.phase = ConflictPhase::Prompting {
+                    kind,
+                    evidence,
+                    revision,
+                };
                 ConflictEffect::Prompt(kind)
             }
         }
@@ -239,15 +279,37 @@ impl ConflictState {
             (ConflictPhase::Prompting { .. }, ConflictDecision::ReloadDisk) => {
                 ConflictEffect::RequestReload
             }
-            (ConflictPhase::Prompting { kind, revision }, ConflictDecision::KeepEditing) => {
-                self.phase = ConflictPhase::KeptEditing { kind, revision };
+            (
+                ConflictPhase::Prompting {
+                    kind,
+                    evidence,
+                    revision,
+                },
+                ConflictDecision::KeepEditing,
+            ) => {
+                self.phase = ConflictPhase::KeptEditing {
+                    kind,
+                    evidence,
+                    revision,
+                };
                 ConflictEffect::None
             }
             (ConflictPhase::Prompting { .. }, ConflictDecision::SaveAs) => {
                 ConflictEffect::RequestSaveAs
             }
-            (ConflictPhase::Prompting { kind, revision }, ConflictDecision::RequestOverwrite) => {
-                self.phase = ConflictPhase::ConfirmOverwrite { kind, revision };
+            (
+                ConflictPhase::Prompting {
+                    kind,
+                    evidence,
+                    revision,
+                },
+                ConflictDecision::RequestOverwrite,
+            ) => {
+                self.phase = ConflictPhase::ConfirmOverwrite {
+                    kind,
+                    evidence,
+                    revision,
+                };
                 ConflictEffect::PromptOverwriteConfirm(kind)
             }
             (ConflictPhase::ConfirmOverwrite { .. }, ConflictDecision::ConfirmOverwrite) => {
@@ -255,10 +317,18 @@ impl ConflictState {
                 ConflictEffect::AuthorizeOverwrite
             }
             (
-                ConflictPhase::ConfirmOverwrite { kind, revision },
+                ConflictPhase::ConfirmOverwrite {
+                    kind,
+                    evidence,
+                    revision,
+                },
                 ConflictDecision::CancelOverwrite,
             ) => {
-                self.phase = ConflictPhase::Prompting { kind, revision };
+                self.phase = ConflictPhase::Prompting {
+                    kind,
+                    evidence,
+                    revision,
+                };
                 ConflictEffect::Prompt(kind)
             }
             // Stale or out-of-phase decisions never authorize destructive work.
@@ -601,6 +671,59 @@ mod tests {
                 revision,
             }),
             ConflictEffect::Prompt(ExternalChangeKind::Deleted)
+        );
+    }
+
+    #[test]
+    fn keep_editing_is_bound_to_the_exact_regular_file_observation() {
+        let first = TargetState::Regular(observation(31));
+        let second = TargetState::Regular(observation(32));
+        let mut state = ConflictState::default();
+
+        assert_eq!(
+            state.reduce(ConflictCommand::ObservedExact {
+                kind: ExternalChangeKind::ContentOrIdentityChanged,
+                evidence: Ok(first),
+                revision: Revision::new(7),
+            }),
+            ConflictEffect::Prompt(ExternalChangeKind::ContentOrIdentityChanged)
+        );
+        let _ = state.reduce(ConflictCommand::Decide(ConflictDecision::KeepEditing));
+        assert_eq!(
+            state.reduce(ConflictCommand::ObservedExact {
+                kind: ExternalChangeKind::ContentOrIdentityChanged,
+                evidence: Ok(first),
+                revision: Revision::new(8),
+            }),
+            ConflictEffect::None
+        );
+        assert_eq!(
+            state.reduce(ConflictCommand::ObservedExact {
+                kind: ExternalChangeKind::ContentOrIdentityChanged,
+                evidence: Ok(second),
+                revision: Revision::new(8),
+            }),
+            ConflictEffect::Prompt(ExternalChangeKind::ContentOrIdentityChanged)
+        );
+    }
+
+    #[test]
+    fn keep_editing_never_suppresses_a_later_uninspectable_state() {
+        let mut state = ConflictState::default();
+        let observe_error = || ConflictCommand::ObservedExact {
+            kind: ExternalChangeKind::Unreadable,
+            evidence: Err(()),
+            revision: Revision::new(7),
+        };
+
+        assert_eq!(
+            state.reduce(observe_error()),
+            ConflictEffect::Prompt(ExternalChangeKind::Unreadable)
+        );
+        let _ = state.reduce(ConflictCommand::Decide(ConflictDecision::KeepEditing));
+        assert_eq!(
+            state.reduce(observe_error()),
+            ConflictEffect::Prompt(ExternalChangeKind::Unreadable)
         );
     }
 }

@@ -60,6 +60,21 @@ release, so current work remains under Unreleased.
 
 ### Fixed
 
+- Fence recovery persistence before Save deletes a clean record or Discard,
+  Restore, New, or Open retires an instance. Delete both independently locked
+  lease paths by verified file identity before releasing either lock, so a
+  rebound pathname cannot expose or erase a living window's recovery record.
+- Treat ignored recovery backup cleanup or parent-directory sync as a failed
+  successor transfer, so Restore retains its predecessor until the new record
+  is durably established. Schema v1 metadata can no longer suppress a genuine
+  schema v2 record with forged revision fields.
+- Bind Keep Editing to the exact successfully inspected disk state. A later
+  revision with the same broad conflict category prompts again, and an
+  uninspectable state is never permanently acknowledged. Text, paste, and IME
+  input from the frame that opens the prompt resumes after the decision.
+- Preserve canonical Markdown selection when Enter cancels an unfinished IME
+  pre-edit, leave list markers and emphasis-like text inside code blocks
+  literal, and ignore keyboard auto-repeat for formatting toggles.
 - Keep CJK IME pre-edit text in a transient widget draft in Text and Markdown
   modes. Composition remains visible but does not enter the document, dirty
   state, Undo history, or crash recovery until Commit; cancellation restores

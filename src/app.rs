@@ -1269,10 +1269,11 @@ impl NoterApp {
         if window_focused {
             ctx.request_repaint_after(Duration::from_secs_f64(EXTERNAL_INSPECT_INTERVAL_SECS));
         }
-        let observed = Some(inspect_target(&path, SaveStage::InspectInitial).map_err(|_| ()));
-        let kind = classify_external_change(Some(expected), observed);
-        let _ = self.conflict.reduce(ConflictCommand::Observed {
+        let observed = inspect_target(&path, SaveStage::InspectInitial).map_err(|_| ());
+        let kind = classify_external_change(Some(expected), Some(observed));
+        let _ = self.conflict.reduce(ConflictCommand::ObservedExact {
             kind,
+            evidence: observed,
             revision: self.document.revision(),
         });
         if kind.requires_prompt() {
@@ -3338,10 +3339,13 @@ impl NoterApp {
     fn render_frame(&mut self, ui: &mut egui::Ui) {
         // Inspect before dispatching commands so a focus-regain observation can
         // protect the retained in-memory revision in this same input frame.
+        let blocking_modal_before_inspection = self.blocking_modal_open();
         self.maybe_inspect_external_change(ui.ctx());
         let blocking_modal_at_start = self.blocking_modal_open();
+        let modal_opened_during_inspection =
+            !blocking_modal_before_inspection && blocking_modal_at_start;
         let mut blocking_modal_input = if blocking_modal_at_start {
-            ui.input_mut(|input| std::mem::take(&mut input.events))
+            self.take_blocking_modal_input(ui, modal_opened_during_inspection)
         } else {
             self.restore_deferred_input(ui);
             self.find_bar.restore_deferred_input(ui);
@@ -3437,6 +3441,25 @@ impl NoterApp {
         } else if self.conflict.is_prompting() {
             self.show_external_change_confirmation(ui.ctx());
         }
+    }
+
+    fn take_blocking_modal_input(
+        &mut self,
+        ui: &egui::Ui,
+        modal_opened_during_inspection: bool,
+    ) -> Vec<egui::Event> {
+        let events = ui.input_mut(|input| std::mem::take(&mut input.events));
+        if !modal_opened_during_inspection {
+            return events;
+        }
+        let (deferred, modal): (Vec<_>, Vec<_>) = events
+            .into_iter()
+            .partition(document_input_event_survives_modal_transition);
+        if !deferred.is_empty() {
+            self.defer_input_events(deferred);
+            ui.ctx().request_repaint();
+        }
+        modal
     }
 
     fn surface_crash_recovery_failures(&mut self) {
@@ -3900,6 +3923,17 @@ fn recovery_path_clipboard_text(path: &Path) -> String {
             path.as_os_str().as_encoded_bytes(),
         )
     }
+}
+
+const fn document_input_event_survives_modal_transition(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Cut
+            | egui::Event::Paste(_)
+            | egui::Event::Text(_)
+            | egui::Event::Key { pressed: true, .. }
+            | egui::Event::Ime(_)
+    )
 }
 
 #[cfg(not(windows))]
@@ -9048,6 +9082,63 @@ mod tests {
         assert!(app.external_memory_at_risk);
         assert!(app.conflict.is_prompting());
         assert!(app.lifecycle.pending_intent().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn newly_opened_external_change_modal_defers_same_frame_document_input()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cases = [
+            ("text", egui::Event::Text("T".to_owned()), "originalT"),
+            ("paste", egui::Event::Paste("P".to_owned()), "originalP"),
+            (
+                "IME commit",
+                egui::Event::Ime(egui::ImeEvent::Commit("漢".to_owned())),
+                "original漢",
+            ),
+        ];
+
+        for (label, event, expected) in cases {
+            let directory = tempdir()?;
+            let path = directory.path().join(format!("{label}.txt"));
+            fs::write(&path, b"original")?;
+            let document = Document::from_path(&path)?;
+            let selection = Selection::caret("original".len());
+            let mut app = NoterApp {
+                text: String::from(document.rope()),
+                document,
+                selection,
+                pending_selection_restore: Some(selection),
+                crash_recovery: CrashRecoverySession::open_at(directory.path().join("recovery")),
+                ..NoterApp::default()
+            };
+            let context = egui::Context::default();
+            theme::configure_styles(&context);
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+                app.render_frame(ui);
+            });
+            fs::write(&path, b"external revision")?;
+            let mut input = ui_input(1_200.0, 760.0, 0.1);
+            input.events = vec![egui::Event::WindowFocused(true), event];
+
+            let _ = context.run_ui(input, |ui| app.render_frame(ui));
+
+            assert!(app.conflict.is_prompting(), "{label}");
+            assert_eq!(app.text, "original", "{label}");
+            assert!(!app.deferred_input_events.is_empty(), "{label}");
+            let effect = app
+                .conflict
+                .reduce(ConflictCommand::Decide(ConflictDecision::KeepEditing));
+            app.apply_conflict_effect(effect, &context);
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.2), |ui| {
+                app.render_frame(ui);
+            });
+
+            assert_eq!(app.text, expected, "{label}");
+            assert_eq!(String::from(app.document.rope()), expected, "{label}");
+            assert!(app.document.is_dirty(), "{label}");
+            assert!(app.deferred_input_events.is_empty(), "{label}");
+        }
         Ok(())
     }
 

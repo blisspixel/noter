@@ -8,11 +8,12 @@
 //! document path. Snapshot capture stays on the UI thread; durable write and
 //! `fsync` run on the worker so typing is not stalled by disk.
 
-use std::fs::{self, File};
+#[cfg(test)]
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -26,8 +27,8 @@ use noter::core::recovery::{
     ValidatedRecoveryMetadata,
 };
 use noter::core::recovery_store::{
-    RecoveryInstanceClaim, RecoveryOffer, RecoveryScanDisposition, RecoveryStartupScan,
-    RecoveryStore,
+    RecoveryInstanceClaim, RecoveryLiveLease, RecoveryOffer, RecoveryScanDisposition,
+    RecoveryStartupScan, RecoveryStore,
 };
 use noter::core::revision::Revision;
 
@@ -64,6 +65,11 @@ struct PersistJob {
     epoch: u64,
 }
 
+enum PersistCommand {
+    Persist(PersistJob),
+    Fence(Sender<()>),
+}
+
 struct PersistOutcome {
     revision: Revision,
     epoch: u64,
@@ -75,7 +81,7 @@ struct PreparedRecoveryIdentity {
     document_id: RecoveryDocumentId,
     instance_id: RecoveryInstanceId,
     created_wall: RecoveryWallTime,
-    live_lease: File,
+    live_lease: RecoveryLiveLease,
 }
 
 /// Resolves the per-user state directory used for preferences and recovery.
@@ -149,11 +155,11 @@ pub struct CrashRecoverySession {
     persist_failure: bool,
     cleanup_failure: bool,
     unavailable: bool,
-    persist_jobs: Option<Sender<PersistJob>>,
+    persist_jobs: Option<Sender<PersistCommand>>,
     persist_outcomes: Option<Receiver<PersistOutcome>>,
     persist_worker: Option<JoinHandle<()>>,
     persist_epoch_gate: Arc<AtomicU64>,
-    live_lease: Option<File>,
+    live_lease: Option<RecoveryLiveLease>,
 }
 
 impl CrashRecoverySession {
@@ -192,7 +198,7 @@ impl CrashRecoverySession {
     }
 
     fn attach_persist_worker(&mut self) {
-        let (job_tx, job_rx) = mpsc::channel::<PersistJob>();
+        let (job_tx, job_rx) = mpsc::channel::<PersistCommand>();
         let (outcome_tx, outcome_rx) = mpsc::channel::<PersistOutcome>();
         let epoch_gate = Arc::clone(&self.persist_epoch_gate);
         if let Ok(handle) = thread::Builder::new()
@@ -544,30 +550,27 @@ impl CrashRecoverySession {
         lineage_generation: RecoveryLineageGeneration,
         predecessor_instance: Option<RecoveryInstanceId>,
     ) {
-        let previous_instance = self.instance_id;
+        self.schedule.reset_for_new_identity();
+        self.persist_epoch_gate
+            .store(self.schedule.epoch(), Ordering::Release);
+        let worker_fenced = self.fence_persist_worker();
         let previous_lease = self.live_lease.take();
         self.document_id = prepared.document_id;
         self.instance_id = prepared.instance_id;
         self.created_wall = prepared.created_wall;
         self.lineage_generation = lineage_generation;
         self.predecessor_instance = predecessor_instance;
-        self.schedule.reset_for_new_identity();
-        self.persist_epoch_gate
-            .store(self.schedule.epoch(), Ordering::Release);
-        self.persist_failure = false;
+        self.persist_failure = !worker_fenced;
         self.unavailable = false;
         self.live_lease = Some(prepared.live_lease);
-        drop(previous_lease);
-        if let Some(store) = self.store.as_ref() {
-            let _ = fs::remove_file(store.live_path(previous_instance));
+        if let (Some(store), Some(previous_lease)) = (self.store.as_ref(), previous_lease) {
+            self.cleanup_failure |= store.release_live_lease(previous_lease).is_err();
         }
     }
 
-    fn release_prepared_identity(&self, prepared: PreparedRecoveryIdentity) {
-        let instance_id = prepared.instance_id;
-        drop(prepared.live_lease);
+    fn release_prepared_identity(&mut self, prepared: PreparedRecoveryIdentity) {
         if let Some(store) = self.store.as_ref() {
-            let _ = fs::remove_file(store.live_path(instance_id));
+            self.cleanup_failure |= store.release_live_lease(prepared.live_lease).is_err();
         }
     }
 
@@ -585,9 +588,12 @@ impl CrashRecoverySession {
     }
 
     fn release_live_lease_for(&mut self, instance_id: RecoveryInstanceId) {
-        self.live_lease = None;
+        let Some(lease) = self.live_lease.take() else {
+            return;
+        };
+        debug_assert_eq!(lease.instance_id(), instance_id);
         if let Some(store) = self.store.as_ref() {
-            let _ = fs::remove_file(store.live_path(instance_id));
+            self.cleanup_failure |= store.release_live_lease(lease).is_err();
         }
     }
 
@@ -664,8 +670,9 @@ impl CrashRecoverySession {
             .reduce(RecoveryScheduleCommand::BecameClean { revision });
         self.persist_epoch_gate
             .store(self.schedule.epoch(), Ordering::Release);
+        let worker_fenced = self.fence_persist_worker();
         self.apply_schedule_effect(effect, None);
-        self.persist_failure = false;
+        self.persist_failure = !worker_fenced;
     }
 
     /// Records an explicit Discard and deletes the owned recovery record.
@@ -677,8 +684,9 @@ impl CrashRecoverySession {
         let effect = self.schedule.reduce(RecoveryScheduleCommand::Discarded);
         self.persist_epoch_gate
             .store(self.schedule.epoch(), Ordering::Release);
+        let worker_fenced = self.fence_persist_worker();
         self.apply_schedule_effect(effect, None);
-        self.persist_failure = false;
+        self.persist_failure = !worker_fenced;
         self.begin_fresh_identity();
     }
 
@@ -759,10 +767,13 @@ impl CrashRecoverySession {
             epoch,
         };
         if let Some(jobs) = self.persist_jobs.as_ref() {
-            match jobs.send(job) {
+            match jobs.send(PersistCommand::Persist(job)) {
                 Ok(()) => return,
                 Err(error) => {
-                    self.persist_snapshot_inline(&error.0.snapshot, revision, epoch);
+                    let PersistCommand::Persist(job) = error.0 else {
+                        unreachable!("persist send returns the submitted command")
+                    };
+                    self.persist_snapshot_inline(&job.snapshot, revision, epoch);
                     return;
                 }
             }
@@ -798,16 +809,52 @@ impl CrashRecoverySession {
     }
 
     fn poll_persist_outcomes(&mut self) {
-        let batch = {
+        let (batch, disconnected) = {
             let Some(outcomes) = self.persist_outcomes.as_mut() else {
                 return;
             };
             let mut batch = Vec::new();
-            while let Ok(outcome) = outcomes.try_recv() {
-                batch.push(outcome);
-            }
-            batch
+            let disconnected = loop {
+                match outcomes.try_recv() {
+                    Ok(outcome) => batch.push(outcome),
+                    Err(TryRecvError::Empty) => break false,
+                    Err(TryRecvError::Disconnected) => break true,
+                }
+            };
+            (batch, disconnected)
         };
+        for outcome in batch {
+            self.apply_persist_outcome(&outcome);
+        }
+        if disconnected {
+            self.quiesce_failed_worker();
+            self.persist_failure = true;
+        }
+    }
+
+    fn fence_persist_worker(&mut self) -> bool {
+        let Some(jobs) = self.persist_jobs.as_ref() else {
+            return true;
+        };
+        let (acknowledge, acknowledged) = mpsc::channel();
+        if jobs.send(PersistCommand::Fence(acknowledge)).is_ok() && acknowledged.recv().is_ok() {
+            self.poll_persist_outcomes();
+            return true;
+        }
+        self.quiesce_failed_worker();
+        false
+    }
+
+    fn quiesce_failed_worker(&mut self) {
+        self.persist_jobs.take();
+        if let Some(handle) = self.persist_worker.take() {
+            let _ = handle.join();
+        }
+        let batch = self
+            .persist_outcomes
+            .take()
+            .map(|outcomes| outcomes.try_iter().collect::<Vec<_>>())
+            .unwrap_or_default();
         for outcome in batch {
             self.apply_persist_outcome(&outcome);
         }
@@ -907,11 +954,18 @@ fn cleanup_offer_artifacts(
 // only borrows them; they must not stay on the UI thread.
 #[allow(clippy::needless_pass_by_value)]
 fn persist_worker_loop(
-    jobs: Receiver<PersistJob>,
+    jobs: Receiver<PersistCommand>,
     outcomes: Sender<PersistOutcome>,
     epoch_gate: Arc<AtomicU64>,
 ) {
-    while let Ok(job) = jobs.recv() {
+    while let Ok(command) = jobs.recv() {
+        let job = match command {
+            PersistCommand::Persist(job) => job,
+            PersistCommand::Fence(acknowledge) => {
+                let _ = acknowledge.send(());
+                continue;
+            }
+        };
         let instance_id = job.snapshot.instance_id();
         let current_epoch = epoch_gate.load(Ordering::Acquire);
         if job.epoch != current_epoch {
@@ -999,14 +1053,19 @@ fn random_id_bytes() -> Result<[u8; 16], ()> {
 }
 
 fn truncate_for_ui(text: &str, max_bytes: usize) -> String {
+    const ELLIPSIS: &str = "...";
+
     if text.len() <= max_bytes {
         return text.to_owned();
     }
-    let mut end = max_bytes.saturating_sub(1);
+    if max_bytes <= ELLIPSIS.len() {
+        return ELLIPSIS[..max_bytes].to_owned();
+    }
+    let mut end = max_bytes - ELLIPSIS.len();
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}…", &text[..end])
+    format!("{}{ELLIPSIS}", &text[..end])
 }
 
 #[cfg(test)]
@@ -1019,6 +1078,16 @@ mod tests {
     use noter::core::revision::Revision;
     use noter::core::text_format::{Bom, Encoding};
     use tempfile::tempdir;
+
+    #[test]
+    fn ui_truncation_never_exceeds_its_utf8_byte_limit() {
+        for limit in 0..12 {
+            let truncated = truncate_for_ui("éééééé", limit);
+            assert!(truncated.len() <= limit);
+            assert!(truncated.is_char_boundary(truncated.len()));
+        }
+        assert_eq!(truncate_for_ui("abcdefgh", 6), "abc...");
+    }
 
     fn recovery_record_count(store: &RecoveryStore) -> usize {
         std::fs::read_dir(store.records_dir())
@@ -1368,20 +1437,20 @@ mod tests {
             persist_worker_loop(jobs_rx, outcomes_tx, worker_gate);
         });
         jobs_tx
-            .send(PersistJob {
+            .send(PersistCommand::Persist(PersistJob {
                 store: store.clone(),
                 snapshot: snapshot_for(instance_id, stale_revision, b"stale"),
                 revision: stale_revision,
                 epoch: current_epoch - 1,
-            })
+            }))
             .expect("stale job");
         jobs_tx
-            .send(PersistJob {
+            .send(PersistCommand::Persist(PersistJob {
                 store: store.clone(),
                 snapshot: snapshot_for(instance_id, current_revision, b"newer recovery"),
                 revision: current_revision,
                 epoch: current_epoch,
-            })
+            }))
             .expect("current job");
         drop(jobs_tx);
         worker.join().expect("worker");
@@ -1398,6 +1467,34 @@ mod tests {
             panic!("current record must remain valid");
         };
         assert_eq!(record.content(), b"newer recovery");
+    }
+
+    #[test]
+    fn discard_fences_queued_persist_before_releasing_the_old_identity() {
+        let dir = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        let mut session = CrashRecoverySession::open_at(dir.path());
+        let old_instance = session.instance_id;
+        let revision = Revision::new(1);
+        let epoch = session.schedule.epoch();
+        session
+            .persist_jobs
+            .as_ref()
+            .expect("worker")
+            .send(PersistCommand::Persist(PersistJob {
+                store: store.clone(),
+                snapshot: snapshot_for(old_instance, revision, b"discarded private bytes"),
+                revision,
+                epoch,
+            }))
+            .expect("queue persist before discard");
+
+        session.on_discarded();
+
+        assert_ne!(session.instance_id, old_instance);
+        assert!(!store.record_path(old_instance).exists());
+        assert!(!store.instance_is_live(old_instance).expect("old liveness"));
+        assert!(store.scan_startup().expect("scan").is_empty());
     }
 
     #[test]

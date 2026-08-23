@@ -655,11 +655,13 @@ whole_record_checksum (BLAKE3-256 in schema v2)
 content_bytes (serialized body including optional UTF-8 BOM)
 ```
 
-Records stage through exclusive private creation, file sync, and atomic
-install or replace. Unix exchange leaves the previous destination on the stage
-path; that displaced file is removed after a successful replace so recovery
-siblings do not accumulate silently. Windows replacement backups of superseded
-recovery content are removed after success.
+Records stage through exclusive private creation, file sync, atomic install or
+replace, backup cleanup, and a containing-directory sync. Unix exchange leaves
+the previous destination on the stage path; that displaced file is removed
+after a successful replace so recovery siblings do not accumulate silently.
+Windows replacement backups of superseded recovery content are removed after
+success. Cleanup or parent-sync failure is a failed transfer and keeps any
+predecessor record available.
 
 The pure scheduler uses a 2-second idle debounce and a 15-second maximum
 interval while dirty. Persist requests carry a session epoch. Save success and
@@ -669,16 +671,19 @@ schedules an immediate persist rather than disabling the recovery-point
 objective. A recovery write failure is a visible warning and never permits
 silent close.
 
-Each process holds an exclusive sibling lease for the complete lifetime of its
-current recovery instance. Save removes only the content record, not that
-lease, so later unsaved edits under the same identity remain hidden from other
-living windows. New, Open, Restore, and Discard advance the scheduler epoch,
-publish it to the worker gate, release the prior lease, and acquire the new
-lease. Lease acquisition or ownership-probe errors make recovery unavailable
-for that session or startup scan. Unknown ownership never exposes Restore or
-Discard. The single FIFO worker conditionally removes stale records before or
-immediately after its own write; stale UI acknowledgements are inert so they
-cannot delete a newer worker result.
+Each process holds two independently named and locked sibling objects for the
+complete lifetime of its current recovery instance. Save removes only the
+content record, not those leases, so later unsaved edits under the same identity
+remain hidden from other living windows. A single pathname rebind cannot hide a
+live owner because either locked object proves liveness. Release deletes both
+exact locked objects by file identity before dropping either lock. New, Open,
+Restore, and Discard advance the scheduler epoch and publish it to the worker
+gate before releasing the prior lease. Save and every identity transition then
+send a FIFO fence and wait until every earlier persistence request has
+quiesced before deleting a record or releasing ownership. Lease acquisition or
+ownership-probe errors make recovery unavailable for that session or startup
+scan. Unknown ownership never exposes Restore or Discard. Stale UI
+acknowledgements are inert so they cannot delete a newer worker result.
 
 Restore claims and revalidates the exact offered artifact, reserves a successor
 identity and exclusive lease, writes the recovered bytes as the next causal
@@ -694,10 +699,12 @@ bounded launches make progress through crash residue. It validates one complete
 record at a time, then retains only metadata and exact open handles. At most 32
 maximal offers, 32 quarantine results, and 16 superseded handles per offer are
 retained. Reaching any bound is visible and leaves unreviewed artifacts
-unchanged. Same-instance strict revision order and schema-v2 direct predecessor
-links are the only coalescing relations. Wall time is display metadata, not
-cross-instance authority. Legacy records, sibling successors, separate roots,
-identity conflicts, and equal-revision divergent records remain separate offers.
+unchanged. Strict revision order between two whole-record-authenticated
+schema-v2 records and schema-v2 direct predecessor links are the only
+coalescing relations. Wall time is display metadata, not cross-instance
+authority. Legacy records never suppress schema-v2 records by mutable header
+fields. Legacy records, sibling successors, separate roots, identity conflicts,
+and equal-revision divergent records remain separate offers.
 
 Every offered Restore or Discard acquires the dead instance's exclusive lease,
 checks the open handle before and after a bounded read, reopens the pathname
@@ -720,6 +727,13 @@ intent without authorizing overwrite. It remains until successful Save, Save
 As, Reload, overwrite, explicit Discard, or proof that the trusted disk state
 returned. A changed observation triggers a full confirmation before reload or
 overwrite.
+
+Keep Editing retains the exact successful `TargetState` behind that prompt. It
+suppresses only the same observed state; a later disk version or uninspectable
+result prompts again even when its broad conflict classification is unchanged.
+If focus-regain inspection opens the modal in an input frame, document Text,
+Paste, pressed-Key, and IME events from that frame are deferred and replayed in
+order only after the prompt is resolved.
 
 The conflict UI initially offers:
 
