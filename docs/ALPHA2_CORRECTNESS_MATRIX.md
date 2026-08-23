@@ -2,7 +2,7 @@
 
 **Recorded:** 2026-08-22
 
-**Implementation commit:** `a3b472c06df4be99e9960d9328374657a28c40f2`
+**Implementation commit:** `c9a7dc95a532c30171b4025f43c83187b17a4c53`
 
 **Exact-head CI:** Required on the final evidence commit before the tag is
 created. GitHub branch protection and the Release workflow are the authoritative
@@ -35,7 +35,7 @@ Rows use:
 
 | Field | Value |
 | --- | --- |
-| Noter implementation commit | `a3b472c06df4be99e9960d9328374657a28c40f2` |
+| Noter implementation commit | `c9a7dc95a532c30171b4025f43c83187b17a4c53` |
 | Tree | Feature implementation frozen at the named commit; this evidence document is its descendant |
 | Build profiles | Locked workspace tests and release all-features Windows GUI |
 | Tester | Automated maintainer session with live native UI inspection on the development host |
@@ -51,19 +51,19 @@ Commands and results at the implementation commit:
 
 | Gate | Result |
 | --- | --- |
-| `cargo test --locked --workspace --all-targets --all-features` | 719 passed, 0 failed |
+| `cargo test --locked --workspace --all-targets --all-features` | 720 passed, 0 failed |
 | Python unittest discovery | 165 passed, 1 environment skip |
-| Whole-workspace line coverage | 93.66 percent |
-| Trust-kernel line coverage | 93.91 percent |
+| Whole-workspace line coverage | 93.62 percent |
+| Trust-kernel line coverage | 93.81 percent |
 | Formatting and strict Clippy | Pass |
 | Rustdoc with warnings denied | Pass |
 | RustSec audit | Pass, no advisory warnings |
 | Dependency license and source policy | Pass |
 | Documentation links and release configuration | Pass |
-| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source and visually reviewed; approved input digest `48860a00148842412d115b1aeacc88c8b6aa653860f6dd2a7741b5eea747320a` |
+| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source; all five outputs remained byte-identical to the visually reviewed set; approved input digest `17e5fc6d7f755cd9bd5eefee81b11f2023d75a80a84616e0750ecdc072e1e22c` |
 | `dist plan --tag v0.1.0-alpha.2` | Pass, expected archive, installer, checksum, SBOM, and attestation inventory |
 
-The 719 Rust tests comprise 281 library unit tests, 397 binary unit tests, 15
+The 720 Rust tests comprise 281 library unit tests, 398 binary unit tests, 15
 integration and property tests, and 26 native-platform unit tests.
 
 ## Alpha.2 critical rows
@@ -162,7 +162,7 @@ It contains no remaining recovery payload.
 | SEC-01 no unexpected network | Pass | No background network path; update status only links on explicit user action |
 | SEC-03 recovery permissions | Partial | Owner-restricted recovery siblings and Windows private-file tests pass; native Unix permissions remain hosted-test evidence |
 | SEC-05 Markdown remote content | Pass | Restricted native model performs no remote fetch |
-| Changed-code security review | Pass | Scan `6d00a423-9f78-4a9e-b0d1-3aeaae438369` reproduced three medium and three low recovery/input findings plus one self-only IME product defect. The final immutable full-range scan `15828ff9-557f-47ab-9906-03aaac622aca` re-reviewed all 22 changed surfaces at `d9f42c1` with complete coverage and zero reportable findings. |
+| Changed-code security review | Pass | Scan `6d00a423-9f78-4a9e-b0d1-3aeaae438369` reproduced three medium and three low recovery/input findings plus one self-only IME product defect. The final immutable full-range scan `8abe98b6-bdb7-43cf-9153-22efe1e46dfa` re-reviewed all 22 changed surfaces at `c9a7dc9` with complete coverage and zero reportable findings. |
 
 ### Rows outside alpha.2 prerelease scope
 
