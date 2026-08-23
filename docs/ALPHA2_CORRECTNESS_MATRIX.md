@@ -2,7 +2,7 @@
 
 **Recorded:** 2026-08-22
 
-**Implementation commit:** `0191374da115be1bc5bacf1c24e05dc772e37a14`
+**Implementation commit:** `d9f42c158ecd5828e394dfd3be71d7f62b61e8a6`
 
 **Exact-head CI:** Required on the final evidence commit before the tag is
 created. GitHub branch protection and the Release workflow are the authoritative
@@ -35,7 +35,7 @@ Rows use:
 
 | Field | Value |
 | --- | --- |
-| Noter implementation commit | `0191374da115be1bc5bacf1c24e05dc772e37a14` |
+| Noter implementation commit | `d9f42c158ecd5828e394dfd3be71d7f62b61e8a6` |
 | Tree | Feature implementation frozen at the named commit; this evidence document is its descendant |
 | Build profiles | Locked workspace tests and release all-features Windows GUI |
 | Tester | Automated maintainer session with live native UI inspection on the development host |
@@ -51,19 +51,19 @@ Commands and results at the implementation commit:
 
 | Gate | Result |
 | --- | --- |
-| `cargo test --locked --workspace --all-targets --all-features` | 649 passed, 0 failed |
-| Python unittest discovery | 154 passed, 1 environment skip |
-| Whole-workspace line coverage | 93.47 percent |
-| Trust-kernel line coverage | 94.32 percent |
+| `cargo test --locked --workspace --all-targets --all-features` | 705 passed, 0 failed |
+| Python unittest discovery | 164 passed, 1 environment skip |
+| Whole-workspace line coverage | 93.49 percent |
+| Trust-kernel line coverage | 93.53 percent |
 | Formatting and strict Clippy | Pass |
 | Rustdoc with warnings denied | Pass |
 | RustSec audit | Pass, no advisory warnings |
 | Dependency license and source policy | Pass |
 | Documentation links and release configuration | Pass |
-| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated and visually reviewed |
+| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source and visually reviewed; approved input digest `e1166d865703936680fc0f6b0b5cfcbd61f2414cd2615df94529003f4bda2ef5` |
 | `dist plan --tag v0.1.0-alpha.2` | Pass, expected archive, installer, checksum, SBOM, and attestation inventory |
 
-The 649 Rust tests comprise 242 library unit tests, 366 binary unit tests, 15
+The 705 Rust tests comprise 268 library unit tests, 396 binary unit tests, 15
 integration and property tests, and 26 native-platform unit tests.
 
 ## Alpha.2 critical rows
@@ -85,7 +85,7 @@ for the later full release-candidate matrix.
 | --- | --- | --- |
 | IO-04..IO-09 empty/BOM/EOL round-trips | Pass | Document fixtures, properties, and golden matrix |
 | IO-12 metadata policy, Windows NTFS subset | Partial | Prior native NTFS and WSL2 ext4 evidence remains current |
-| IO-13 refuse final reparse/symlink | Pass | File-observation and native-platform truth tables |
+| IO-13 refuse final reparse/symlink | Pass | File-observation, native-platform, and command-line no-follow preflight fixtures, including nonblocking Unix FIFO rejection |
 | IO-14 cloud/network/removable limits | Blocked | No SMB, cloud write, removable, or weak filesystem was available |
 | IO-15..IO-20 platform metadata matrix | Partial | Windows private DACL and NTFS replacement are covered; native macOS and full Linux fixtures remain open |
 
@@ -96,13 +96,15 @@ for the later full release-candidate matrix.
 | REC-01 force-kill before idle debounce | Partial | Scheduler bounds are tested; the live run killed only after a durable record appeared |
 | REC-02 force-kill after idle debounce | Pass | Live release GUI run described below restored the exact observed editor value |
 | REC-03 force-kill during recovery replacement | Blocked | Destructive concurrent-write timing was not exercised interactively |
-| REC-04 newest valid offer | Pass | Startup ordering, validation, and stale-outcome tests |
-| REC-05 restore opens dirty without writing original | Pass | Restore first persists a successor snapshot under an exclusive lease, then retires the startup record |
-| REC-06 Save and Discard delete only owned records | Pass | Owned-record and distinct-instance regression tests plus live Discard cleanup |
+| REC-04 maximal valid offers | Pass | Bounded metadata-only startup scan coalesces authenticated schema-v2 instance revisions and proven causal successors while retaining legacy and incomparable branches |
+| REC-05 restore opens dirty without writing original | Pass | Restore revalidates the exact claimed artifact, requires successor backup cleanup and parent durability, and treats later predecessor cleanup failure as non-fatal |
+| REC-06 Save and Discard delete only owned records | Pass | FIFO persist fencing, keyed owned cleanup, dual fact-bound lease deletion, exact-handle deletion, path-replacement refusal, live-instance refusal, and distinct-branch regressions |
 | REC-07 Cancel preserves recovery | Pass | Recovery-offer Cancel is inert and stale UI outcomes cannot delete newer records |
-| REC-08 invalid records quarantine visibly | Pass | Corrupt, truncated, wrong-version, and checksum campaigns |
-| REC-09 distinct instances | Pass | Lease failures fail closed and instances cannot claim one another's records |
-| REC-10 persistence failure visible | Pass | Identity, lease, and persist failures surface an unavailable or failure notice |
+| REC-08 invalid records quarantine visibly | Pass | Corrupt, truncated, wrong-version, lineage, whole-record checksum, bounded-read, and quarantine-result campaigns |
+| REC-09 distinct instances | Pass | Two independent locked paths survive one pathname rebind; lease failures fail closed and instances cannot claim one another's records |
+| REC-10 persistence and cleanup failure visible | Pass | Identity, lease, persist, and authorized-deletion failures retain the offer or surface a durable warning |
+| REC-11 Undo and Redo recovery freshness | Pass | Persist C, Undo to dirty B, restart, and verify B bytes plus directional selection |
+| REC-12 startup resource bounds | Pass | 1,024 raw-entry, 256 eligible-candidate, 128 MiB aggregate-read, 32-offer, 32-quarantine-result, and 16-superseded-handle bounds are surfaced; exact stale-live cleanup guarantees progress across bounded launches |
 
 Live Windows method for REC-02:
 
@@ -133,7 +135,8 @@ It contains no remaining recovery payload.
 | --- | --- | --- |
 | CON-01..CON-03 classify external change | Pass | Pure conflict-classifier truth tables |
 | CON-04 Reload guarded when dirty | Pass | Lifecycle and conflict integration paths |
-| CON-05 Keep Editing never rebaselines | Pass | Conflict reducer regression coverage |
+| CON-05 Keep Editing never rebaselines | Pass | Exact successful disk evidence, changed-same-class, and uninspectable-state reducer regressions |
+| CON-06 retained clean revision protected | Pass | External replacement immediately guards native Close, modified status, lifecycle, and recovery while ordinary Save still conflicts |
 | CON-07 overwrite second confirmation | Pass | Explicit confirmation truth table |
 | CON-08 conflict during Save | Pass | Save logic refuses overwrite of an externally changed version |
 
@@ -145,11 +148,12 @@ It contains no remaining recovery payload.
 | EDT-02 Shift extend | Pass | Pure selection tests and Markdown adapter integration |
 | EDT-04 Cut and Paste shared path | Pass | Shared edit-path and paste-origin bounds tests |
 | EDT-05..EDT-08 undo and coalescing | Pass | History tests, long-session bound fixture, and typing/paste separation |
-| EDT-09..EDT-11 find, replace, and go-to-line | Pass | Search property tests and app integration tests |
+| EDT-09..EDT-11 find, replace, and go-to-line | Pass | Search properties, empty-query Find navigation, ordered input, and app integration tests |
 | EDT-03 mouse drag selection | Partial | Markdown cross-block pointer suite passes; Text Mode click behavior remains a native-widget residual |
 | EDT-12 word wrap | Pass | Preference and UI paths preserve source bytes |
+| View-command focus and bounds | Pass | Keyboard zoom preserves focused controls; bounded menu commands disable honestly at limits |
 | Interactive-size ceiling | Pass | Typing, paste, IME, inline reopen, automatic Enter transforms, and whole-text replacement reject growth before mutation |
-| Automatic Enter boundaries | Pass | Repeated Enter events are preserved, marker-interior carets use ordinary editing, and LF/CRLF following lines remain separate |
+| Automatic Enter boundaries | Pass | Repeated Enter events are preserved, IME cancellation restores the canonical caret, code remains literal, marker-interior carets use ordinary editing, and LF/CRLF following lines remain separate |
 
 ### Privacy and security
 
@@ -158,7 +162,7 @@ It contains no remaining recovery payload.
 | SEC-01 no unexpected network | Pass | No background network path; update status only links on explicit user action |
 | SEC-03 recovery permissions | Partial | Owner-restricted recovery siblings and Windows private-file tests pass; native Unix permissions remain hosted-test evidence |
 | SEC-05 Markdown remote content | Pass | Restricted native model performs no remote fetch |
-| Changed-code security review | Pass | Independent diff scan reproduced six recovery/editing findings; checker passes found additional Restore, recovery-rearm, Enter, and benchmark-deadline defects; all were fixed and regression-tested before the implementation commit |
+| Changed-code security review | Pass | Scan `6d00a423-9f78-4a9e-b0d1-3aeaae438369` reproduced three medium and three low recovery/input findings plus one self-only IME product defect. The final immutable full-range scan `15828ff9-557f-47ab-9906-03aaac622aca` re-reviewed all 22 changed surfaces at `d9f42c1` with complete coverage and zero reportable findings. |
 
 ### Rows outside alpha.2 prerelease scope
 
@@ -204,8 +208,8 @@ cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --workspace --all-targets --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
-cargo audit
-cargo deny check
+cargo audit --deny warnings
+cargo deny --locked check
 python -m unittest discover -s scripts -p "test_*.py"
 ruff check scripts
 ruff format --check scripts
