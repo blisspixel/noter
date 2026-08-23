@@ -2,7 +2,7 @@
 
 **Recorded:** 2026-08-23
 
-**Implementation commit:** `27b9fe7f10dc01a0e4b7004c453ebde510db36d0`
+**Implementation commit:** `9e0534df68c9b6eeae76b9ab213bea4b49e82849`
 
 **Exact-head CI:** Required on the final evidence commit before the tag is
 created. GitHub branch protection and the Release workflow are the authoritative
@@ -22,6 +22,13 @@ whether recovery, conflict handling, editing bounds, clipboard and navigation,
 and the available trust evidence are strong enough for careful prerelease
 dogfood with backups.
 
+Alpha.2 recovery support is limited to a normally permissioned, local,
+owner-controlled per-user state root. Group-writable or ACL-shared directories
+and redirected, synchronized, network, removable, or weak-filesystem state roots
+are unverified and outside this prerelease boundary. Recovery files are
+owner-restricted, but alpha.2 does not yet verify or bind the enclosing recovery
+directory namespace.
+
 Rows use:
 
 | Result | Meaning |
@@ -35,7 +42,7 @@ Rows use:
 
 | Field | Value |
 | --- | --- |
-| Noter implementation commit | `27b9fe7f10dc01a0e4b7004c453ebde510db36d0` |
+| Noter implementation commit | `9e0534df68c9b6eeae76b9ab213bea4b49e82849` |
 | Tree | Feature implementation frozen at the named commit; this evidence document is its descendant |
 | Build profiles | Locked workspace tests and release all-features Windows GUI |
 | Tester | Automated maintainer session with live native UI inspection on the development host |
@@ -51,20 +58,20 @@ Commands and results at the implementation commit:
 
 | Gate | Result |
 | --- | --- |
-| `cargo test --locked --workspace --all-targets --all-features` | 812 passed, 0 failed |
-| Python unittest discovery | 172 passed, 4 Windows-host environment skips |
-| Whole-workspace line coverage | Prior exact hosted descendant: 94.18 percent, 34,353 of 36,474 lines; final exact-head rerun required |
-| Trust-kernel line coverage | Prior exact hosted descendant: 93.72 percent, 14,457 of 15,425 lines; final exact-head rerun required |
+| `cargo test --locked --workspace --all-targets --all-features` | 819 passed, 0 failed |
+| Python unittest discovery | 192 passed, 4 expected Windows-host environment skips |
+| Whole-workspace line coverage | Local implementation rerun: 94.14 percent, 34,859 of 37,028 lines; final exact-head rerun required |
+| Trust-kernel line coverage | Local implementation rerun: 93.38 percent, 13,531 of 14,490 lines; final exact-head rerun required |
 | Formatting and strict Clippy | Pass |
 | Rustdoc with warnings denied | Pass |
 | RustSec audit | Pass, no advisory warnings |
 | Dependency license and source policy | Pass |
-| Focused mutation-gap reruns | Pass; the final line-ending, first-ending, recovery-store, and stable live-lease binding campaigns caught every viable mutant with zero missed or timed-out results. The corrected split-CRLF boundary rerun caught 15 and rejected 2 at compile time; the real live-lease fact rerun caught all 5. Platform-specific helper names keep cfg-inactive Unix and Windows candidates on their executable host without narrowing either host's owned scope. Three platform race match guards remain narrowly excluded because portable tests cannot force them without mocking the native install or rename path, while their adjacent success and failure surfaces are covered. |
+| Focused mutation-gap reruns | Pass; the final line-ending, first-ending, recovery-store, and stable live-lease binding campaigns caught every viable mutant with zero missed or timed-out results. The corrected split-CRLF boundary rerun caught 15 and rejected 2 at compile time; the real live-lease fact rerun caught all 5. Platform-specific helper names keep cfg-inactive Unix and Windows candidates on their executable host without narrowing either host's owned scope. Three platform race match guards remain narrowly excluded because portable tests cannot force them without mocking the native install or rename path, while their adjacent success and failure surfaces are covered. Those exclusions do not prove atomic Unix pathname replacement or unlink against a writer controlling the directory. |
 | Documentation links and release configuration | Pass |
-| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source; all five outputs remained byte-identical to the visually reviewed set; approved input digest `8ce752054adf0fc8a58339c3c7dedb13522f104d6b47c6d4d26e5d8d6f39a22f` |
+| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source and visually reviewed at full size; Text Mode now records the restored editor focus and caret, while all four Markdown captures remained byte-identical; approved input digest `bb234c2a84188d47c94d549a809f92a8c1b1924614ecc56b1e10d7e41f638fce` |
 | `dist plan --tag v0.1.0-alpha.2` | Pass, expected archive, installer, checksum, SBOM, and attestation inventory |
 
-The 812 Rust tests comprise 312 library unit tests, 457 binary unit tests, 15
+The 819 Rust tests comprise 312 library unit tests, 464 binary unit tests, 15
 integration and property tests, and 28 native-platform unit tests.
 
 ## Alpha.2 critical rows
@@ -96,16 +103,16 @@ for the later full release-candidate matrix.
 | --- | --- | --- |
 | REC-01 force-kill before idle debounce | Partial | Scheduler bounds are tested; the live run killed only after a durable record appeared |
 | REC-02 force-kill after idle debounce | Pass | Live release GUI run described below restored an exact intentionally empty dirty editor value |
-| REC-03 force-kill during recovery replacement | Blocked | Destructive concurrent-write timing was not exercised interactively |
+| REC-03 force-kill during recovery replacement | Blocked | Destructive concurrent-write timing was not exercised interactively; adversarial namespace replacement is outside the alpha.2 owner-controlled state-root boundary |
 | REC-04 maximal valid offers | Pass | Bounded metadata-only startup scan coalesces authenticated schema-v2 instance revisions and proven causal successors while retaining legacy and incomparable branches |
 | REC-05 restore opens dirty without writing original | Pass | Restore revalidates the exact claimed artifact, requires successor backup cleanup and parent durability, and treats later predecessor cleanup failure as non-fatal |
-| REC-06 Save and Discard delete only owned records | Pass | FIFO persist fencing, keyed owned cleanup, dual fact-bound lease deletion, exact-handle deletion, path-replacement refusal, live-instance refusal, and distinct-branch regressions |
+| REC-06 Save and Discard delete only owned records | Pass | Within the owner-controlled state-root boundary: FIFO persist fencing, keyed owned pathname cleanup for Save, dual fact-bound lease deletion, Windows handle-bound offer and lease deletion, Unix pre/post-validated pathname cleanup, path-replacement refusal, live-instance refusal, and distinct-branch regressions |
 | REC-07 Cancel preserves recovery | Pass | Recovery-offer Cancel is inert and stale UI outcomes cannot delete newer records |
 | REC-08 invalid records quarantine visibly | Pass | Corrupt, truncated, wrong-version, lineage, whole-record checksum, bounded-read, exact quarantine-copy, and quarantine-result campaigns |
-| REC-09 distinct instances | Pass | Two independent locked paths survive one pathname rebind; lease failures fail closed, instances cannot claim one another's records, and a pathname/header identity disagreement remains untouched without an offer |
+| REC-09 distinct instances | Pass | Within the owner-controlled state-root boundary, two independent locked paths survive one pathname rebind; lease failures fail closed, instances cannot claim one another's records, and a pathname/header identity disagreement remains untouched without an offer |
 | REC-10 persistence and cleanup failure visible | Pass | Identity, lease, persist, and authorized-deletion failures retain the offer or surface a durable warning |
 | REC-11 Undo and Redo recovery freshness | Pass | Persist C, Undo to dirty B, restart, and verify B bytes plus directional selection |
-| REC-12 startup resource bounds | Pass | 1,024 raw-entry, 256 eligible-candidate, 128 MiB aggregate-read, 32-offer, 32-quarantine-result, and 16-superseded-handle bounds are surfaced; exact stale-live cleanup guarantees progress across bounded launches |
+| REC-12 startup resource bounds | Pass | 1,024 raw-entry, 256 eligible-candidate, 128 MiB aggregate-read, 32-offer, 32-quarantine-result, and 16-superseded-handle bounds are surfaced; stale-live cleanup under the supported platform deletion contract guarantees progress across bounded launches |
 
 Live Windows method for REC-02:
 
@@ -131,6 +138,8 @@ The isolated root was under
 `%LOCALAPPDATA%\Temp\noter-alpha2-e2e-...`. The harness validated that target
 under the system temporary directory and removed it after observing zero record
 and lease files, so it contains no remaining recovery payload.
+This local fixture did not exercise a shared, redirected, synchronized, remote,
+removable, weak, or adversarial recovery namespace.
 
 ### External changes
 
@@ -164,9 +173,9 @@ and lease files, so it contains no remaining recovery payload.
 | ID | Result | Evidence |
 | --- | --- | --- |
 | SEC-01 no unexpected network | Pass | No background network path; update status only links on explicit user action |
-| SEC-03 recovery permissions | Pass | Exact corrected-head Windows, Linux, and macOS suites cover protected Windows DACL creation, Unix owner-only recovery siblings, macOS ACL absence, and fail-closed unsupported states |
+| SEC-03 recovery permissions | Pass | Exact corrected-head Windows, Linux, and macOS suites cover protected Windows DACL creation, Unix owner-only recovery files, macOS ACL absence, and fail-closed unsupported file semantics; they do not verify ownership or ACL isolation of the enclosing state and recovery directories |
 | SEC-05 Markdown remote content | Pass | Restricted native model performs no remote fetch |
-| Changed-code security review | Pass | Immutable full-range scan `8d960079-7db3-47eb-87f0-2b4fedc83845` reviewed the protected-base range through `cc7c8ca` with complete 28-file coverage. It reported one low-severity terminal-control path and suppressed two Unix recovery pathname races because they require full same-user control of the owner-private state directory, confer no new authority, and fail postcondition ratification. Commit `fd28af8` closes the finding at the complete-diagnostic stderr boundary. Descendant scans `37f04fa4-8385-4e1c-98f1-0151e839db1c` through `fd28af8` and `8e0162d9-f6c1-4140-84f9-19f90a026317` through final implementation `27b9fe7` both have complete coverage and zero findings. |
+| Changed-code security review | Pass | Immutable full-range scan `8d960079-7db3-47eb-87f0-2b4fedc83845` reviewed the protected-base range through `cc7c8ca` with complete 28-file coverage. It reported one low-severity terminal-control path and classified two Unix recovery pathname races outside alpha.2's supported boundary because they require full same-user control of the owner-controlled state directory and confer no new authority under the repository threat model. Postcondition checks reject false success after detected rebinding, but they do not make pathname replacement or unlink atomic, preserve a predecessor already replaced, or undo a wrong unlink. Commit `fd28af8` closes the finding at the complete-diagnostic stderr boundary. Descendant scans `37f04fa4-8385-4e1c-98f1-0151e839db1c` through `fd28af8`, `8e0162d9-f6c1-4140-84f9-19f90a026317` through `27b9fe7`, and evidence-only scan `5ffa86b7-6da9-46d5-bf62-916786e0f1d9` through `58c87ff` all have complete coverage and zero findings. Final immutable range scan `9266e1c4-e897-43e5-893c-1d1c0362a48a` reviewed the nine executable or security-sensitive surfaces from `58c87ff` through final implementation `9e0534d` with complete coverage and zero findings. |
 
 ### Rows outside alpha.2 prerelease scope
 
@@ -177,6 +186,7 @@ and lease files, so it contains no remaining recovery payload.
 | PERF full benchmark re-run | N/A | Existing M1 baseline remains the reference; the termination harness deadline regression is unit-tested |
 | REL packaging soak and 14-day dogfood | N/A | Full release candidate and 0.1.0 |
 | IO cloud write, second identity, and power loss | Blocked | Required environment unavailable |
+| REC shared, redirected, remote, or weak state root | N/A | Namespace isolation and adversarial-race evidence are unavailable; these roots are unsupported in alpha.2 |
 
 ## Cross-platform posture
 
@@ -194,9 +204,10 @@ security finding cannot be deferred for this prerelease.
 ## Prerelease judgment
 
 The implementation is ready for a narrowly scoped `0.1.0-alpha.2` prerelease
-for careful local dogfood with backups once all required checks succeed on the
-final branch head and again on protected `main`. It is not evidence for an RC or
-stable label.
+for careful local dogfood with backups when the state root is a normally
+permissioned, local, owner-controlled per-user directory and all required checks
+succeed on the final branch head and again on protected `main`. It is not
+evidence for an RC or stable label.
 
 The explicit 2026-08-22 alpha checkpoint accepts the named REC-01, REC-03,
 non-Windows interactive GUI, filesystem-environment, IME, and accessibility
