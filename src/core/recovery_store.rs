@@ -1941,7 +1941,7 @@ fn inspect_windows_recovery_artifact(
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    observe_recovery_artifact(path, &file).map(Some)
+    observe_windows_recovery_artifact(path, &file).map(Some)
 }
 
 #[cfg(windows)]
@@ -1952,18 +1952,20 @@ struct OpenRecoveryArtifact {
 }
 
 #[cfg(windows)]
-fn open_recovery_artifact_for_cleanup(path: &Path) -> io::Result<Option<OpenRecoveryArtifact>> {
+fn open_windows_recovery_artifact_for_cleanup(
+    path: &Path,
+) -> io::Result<Option<OpenRecoveryArtifact>> {
     let file = match noter_platform::open_for_cleanup(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    let observation = observe_recovery_artifact(path, &file)?;
+    let observation = observe_windows_recovery_artifact(path, &file)?;
     Ok(Some(OpenRecoveryArtifact { file, observation }))
 }
 
 #[cfg(windows)]
-fn open_recovery_artifact_for_ratification(
+fn open_windows_recovery_artifact_for_ratification(
     path: &Path,
 ) -> io::Result<Option<OpenRecoveryArtifact>> {
     let file = match noter_platform::open_for_reconciliation(path) {
@@ -1971,19 +1973,22 @@ fn open_recovery_artifact_for_ratification(
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    let observation = observe_recovery_artifact(path, &file)?;
+    let observation = observe_windows_recovery_artifact(path, &file)?;
     Ok(Some(OpenRecoveryArtifact { file, observation }))
 }
 
 #[cfg(windows)]
-fn delete_verified_recovery_artifact(artifact: OpenRecoveryArtifact) -> io::Result<()> {
+fn delete_verified_windows_recovery_artifact(artifact: OpenRecoveryArtifact) -> io::Result<()> {
     noter_platform::delete_open_file(&artifact.file)?;
     drop(artifact.file);
     Ok(())
 }
 
 #[cfg(windows)]
-fn observe_recovery_artifact(path: &Path, file: &File) -> io::Result<RecoveryArtifactObservation> {
+fn observe_windows_recovery_artifact(
+    path: &Path,
+    file: &File,
+) -> io::Result<RecoveryArtifactObservation> {
     let metadata = file.metadata()?;
     let facts = noter_platform::file_facts(file)?;
     if !metadata.is_file() || facts.link_count() != 1 {
@@ -1999,7 +2004,7 @@ fn observe_recovery_artifact(path: &Path, file: &File) -> io::Result<RecoveryArt
         ));
     }
 
-    let fingerprint = fingerprint_bound_open_file(file, facts, metadata.len())?;
+    let fingerprint = fingerprint_bound_open_windows_file(file, facts, metadata.len())?;
     revalidate_path_identity(path, facts, metadata.len())?;
     Ok(RecoveryArtifactObservation {
         identity: facts.identity(),
@@ -2009,7 +2014,7 @@ fn observe_recovery_artifact(path: &Path, file: &File) -> io::Result<RecoveryArt
 }
 
 #[cfg(windows)]
-fn fingerprint_bound_open_file(
+fn fingerprint_bound_open_windows_file(
     file: &File,
     expected_facts: noter_platform::FileFacts,
     expected_len: u64,
@@ -2057,8 +2062,8 @@ fn reconcile_windows_recovery_replace(
     expected: RecoveryArtifactObservation,
     platform_error: io::Error,
 ) -> Result<RecoveryParentSync, RecoveryCommitFailure> {
-    let destination_ratification =
-        open_recovery_artifact_for_ratification(destination).map_err(|error| {
+    let destination_ratification = open_windows_recovery_artifact_for_ratification(destination)
+        .map_err(|error| {
             uncertain_windows_recovery_failure(
                 stage,
                 backup,
@@ -2069,7 +2074,7 @@ fn reconcile_windows_recovery_replace(
     let destination_state = destination_ratification
         .as_ref()
         .map(|artifact| artifact.observation);
-    let stage_artifact = open_recovery_artifact_for_cleanup(stage).map_err(|error| {
+    let stage_artifact = open_windows_recovery_artifact_for_cleanup(stage).map_err(|error| {
         uncertain_windows_recovery_failure(
             stage,
             backup,
@@ -2077,7 +2082,7 @@ fn reconcile_windows_recovery_replace(
             "the staged recovery snapshot could not be verified after replacement failure",
         )
     })?;
-    let backup_artifact = open_recovery_artifact_for_cleanup(backup).map_err(|error| {
+    let backup_artifact = open_windows_recovery_artifact_for_cleanup(backup).map_err(|error| {
         uncertain_windows_recovery_failure(
             stage,
             backup,
@@ -2107,7 +2112,7 @@ fn reconcile_windows_recovery_replace(
     let stage_is_intended = stage_state.is_some_and(|actual| intended.matches(actual));
     if destination_state == Some(expected) && stage_is_intended && backup_state.is_none() {
         let artifact = stage_artifact.expect("the verified intended stage must be open");
-        delete_verified_recovery_artifact(artifact).map_err(|error| {
+        delete_verified_windows_recovery_artifact(artifact).map_err(|error| {
             uncertain_windows_recovery_failure(
                 stage,
                 backup,
@@ -2193,8 +2198,8 @@ fn finalize_reconciled_windows_recovery_with_cleanup_hook(
     backup_required: bool,
     before_cleanup: impl FnOnce() -> io::Result<()>,
 ) -> Result<(), RecoveryCommitFailure> {
-    let destination_ratification =
-        open_recovery_artifact_for_ratification(destination).map_err(|error| {
+    let destination_ratification = open_windows_recovery_artifact_for_ratification(destination)
+        .map_err(|error| {
             uncertain_windows_recovery_failure(
                 stage,
                 backup,
@@ -2205,7 +2210,7 @@ fn finalize_reconciled_windows_recovery_with_cleanup_hook(
     let destination_state = destination_ratification
         .as_ref()
         .map(|artifact| artifact.observation);
-    let stage_artifact = open_recovery_artifact_for_cleanup(stage).map_err(|error| {
+    let stage_artifact = open_windows_recovery_artifact_for_cleanup(stage).map_err(|error| {
         uncertain_windows_recovery_failure(
             stage,
             backup,
@@ -2213,7 +2218,7 @@ fn finalize_reconciled_windows_recovery_with_cleanup_hook(
             "the recovery stage could not be verified after reconciliation",
         )
     })?;
-    let backup_artifact = open_recovery_artifact_for_cleanup(backup).map_err(|error| {
+    let backup_artifact = open_windows_recovery_artifact_for_cleanup(backup).map_err(|error| {
         uncertain_windows_recovery_failure(
             stage,
             backup,
@@ -2253,7 +2258,7 @@ fn finalize_reconciled_windows_recovery_with_cleanup_hook(
         )
     })?;
     if let Some(artifact) = stage_artifact {
-        delete_verified_recovery_artifact(artifact).map_err(|error| {
+        delete_verified_windows_recovery_artifact(artifact).map_err(|error| {
             uncertain_windows_recovery_failure(
                 stage,
                 backup,
@@ -2263,7 +2268,7 @@ fn finalize_reconciled_windows_recovery_with_cleanup_hook(
         })?;
     }
     if let Some(artifact) = backup_artifact {
-        delete_verified_recovery_artifact(artifact).map_err(|error| {
+        delete_verified_windows_recovery_artifact(artifact).map_err(|error| {
             uncertain_windows_recovery_failure(
                 stage,
                 backup,
@@ -2283,8 +2288,8 @@ fn uncertain_windows_recovery_failure(
     cause: &io::Error,
     detail: &str,
 ) -> RecoveryCommitFailure {
-    let stage = recovery_artifact_label(stage, "a private recovery stage");
-    let backup = recovery_artifact_label(backup, "a private recovery backup");
+    let stage = windows_recovery_artifact_label(stage, "a private recovery stage");
+    let backup = windows_recovery_artifact_label(backup, "a private recovery backup");
     let os_code = cause
         .raw_os_error()
         .map_or_else(String::new, |code| format!(", OS code {code}"));
@@ -2298,7 +2303,7 @@ fn uncertain_windows_recovery_failure(
 }
 
 #[cfg(windows)]
-fn recovery_artifact_label(path: &Path, fallback: &str) -> String {
+fn windows_recovery_artifact_label(path: &Path, fallback: &str) -> String {
     path.file_name().map_or_else(
         || fallback.to_owned(),
         |name| format!("`{}`", name.to_string_lossy()),
@@ -3254,16 +3259,127 @@ mod tests {
         let stage = directory.path().join("record.stage");
         let displaced_stage = directory.path().join("displaced.stage");
         fs::write(&stage, snapshot_at(60, 8, 17, b"verified stage").encode())?;
-        let artifact = open_recovery_artifact_for_cleanup(&stage)?
+        let artifact = open_windows_recovery_artifact_for_cleanup(&stage)?
             .expect("the recovery stage should be inspectable");
 
         fs::rename(&stage, &displaced_stage)?;
         fs::write(&stage, b"rebound stage")?;
-        delete_verified_recovery_artifact(artifact)?;
+        delete_verified_windows_recovery_artifact(artifact)?;
 
         assert!(!displaced_stage.exists());
         assert_eq!(fs::read(&stage)?, b"rebound stage");
         Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_recovery_artifact_opening_classifies_each_outcome() -> io::Result<()> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        let directory = tempdir()?;
+        let present = directory.path().join("present.rec");
+        let missing = directory.path().join("missing.rec");
+        let blocked = directory.path().join("blocked.rec");
+        let bytes = snapshot_at(60, 20, 29, b"bound recovery content").encode();
+        fs::write(&present, &bytes)?;
+        fs::write(&blocked, &bytes)?;
+
+        let cleanup = open_windows_recovery_artifact_for_cleanup(&present)?
+            .expect("an existing regular recovery artifact must open for cleanup");
+        assert_eq!(cleanup.observation.length, bytes.len() as u64);
+        assert_eq!(
+            cleanup.observation.fingerprint,
+            ContentFingerprint::from_bytes(&bytes)
+        );
+        drop(cleanup);
+
+        let ratification = open_windows_recovery_artifact_for_ratification(&present)?
+            .expect("an existing regular recovery artifact must open for ratification");
+        assert_eq!(ratification.observation.length, bytes.len() as u64);
+        assert_eq!(
+            ratification.observation.fingerprint,
+            ContentFingerprint::from_bytes(&bytes)
+        );
+        drop(ratification);
+
+        assert!(open_windows_recovery_artifact_for_cleanup(&missing)?.is_none());
+        assert!(open_windows_recovery_artifact_for_ratification(&missing)?.is_none());
+
+        let exclusive = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&blocked)?;
+        let cleanup_error = open_windows_recovery_artifact_for_cleanup(&blocked)
+            .expect_err("a sharing failure must not be classified as a missing artifact");
+        assert_ne!(cleanup_error.kind(), io::ErrorKind::NotFound);
+        let ratification_error = open_windows_recovery_artifact_for_ratification(&blocked)
+            .expect_err("a sharing failure must not be classified as a missing artifact");
+        assert_ne!(ratification_error.kind(), io::ErrorKind::NotFound);
+        drop(exclusive);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_recovery_observation_binds_content_length_and_single_link() -> io::Result<()> {
+        let directory = tempdir()?;
+        let primary = directory.path().join("primary.rec");
+        let other = directory.path().join("other.rec");
+        let alias = directory.path().join("primary-alias.rec");
+        let bytes = snapshot_at(60, 21, 30, b"exact observed recovery").encode();
+        fs::write(&primary, &bytes)?;
+        fs::write(&other, b"different recovery bytes")?;
+
+        let file = noter_platform::open_existing_no_follow(&primary)?;
+        let facts = noter_platform::file_facts(&file)?;
+        let observation = observe_windows_recovery_artifact(&primary, &file)?;
+        assert_eq!(observation.identity, facts.identity());
+        assert_eq!(observation.length, bytes.len() as u64);
+        assert_eq!(
+            observation.fingerprint,
+            ContentFingerprint::from_bytes(&bytes)
+        );
+
+        let other_file = noter_platform::open_existing_no_follow(&other)?;
+        let other_facts = noter_platform::file_facts(&other_file)?;
+        let wrong_facts =
+            fingerprint_bound_open_windows_file(&file, other_facts, bytes.len() as u64)
+                .expect_err("a different file identity must fail bound fingerprinting");
+        assert_eq!(wrong_facts.kind(), io::ErrorKind::InvalidData);
+        let wrong_length = fingerprint_bound_open_windows_file(
+            &file,
+            facts,
+            u64::try_from(bytes.len())
+                .expect("fixture length")
+                .saturating_add(1),
+        )
+        .expect_err("a different expected length must fail bound fingerprinting");
+        assert_eq!(wrong_length.kind(), io::ErrorKind::InvalidData);
+        drop(file);
+
+        fs::hard_link(&primary, &alias)?;
+        let linked_file = noter_platform::open_existing_no_follow(&primary)?;
+        let linked = observe_windows_recovery_artifact(&primary, &linked_file)
+            .expect_err("a multiply linked recovery artifact is not private");
+        assert_eq!(linked.kind(), io::ErrorKind::InvalidData);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_recovery_artifact_labels_are_exact() {
+        assert_eq!(
+            windows_recovery_artifact_label(
+                Path::new(r"C:\recovery\snapshot.stage"),
+                "fallback stage"
+            ),
+            "`snapshot.stage`"
+        );
+        assert_eq!(
+            windows_recovery_artifact_label(Path::new(r"C:\"), "fallback stage"),
+            "fallback stage"
+        );
     }
 
     #[cfg(windows)]

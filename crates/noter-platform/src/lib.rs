@@ -47,10 +47,18 @@ use imp::{
     windows_file_facts as platform_file_facts, windows_install_new as platform_install_new,
     windows_open_existing_no_follow as platform_open_existing_no_follow,
     windows_open_for_cleanup as platform_open_for_cleanup,
-    windows_open_for_reconciliation as platform_open_for_reconciliation,
     windows_replace_existing as platform_replace_existing, windows_sync_file as platform_sync_file,
     windows_sync_parent as platform_sync_parent,
 };
+
+#[cfg(any(unix, test))]
+const fn combine_disjoint_flag_bits(left: u32, right: u32) -> u32 {
+    assert!(
+        left & right == 0,
+        "overlapping flags cannot be combined as disjoint values"
+    );
+    left + right
+}
 
 #[derive(Debug)]
 struct RetainedPrivateCreation {
@@ -329,9 +337,7 @@ pub fn open_for_cleanup(path: &Path) -> io::Result<File> {
 /// Returns an operating-system error when the final entry cannot be opened
 /// without following a reparse point or competing access prevents ratification.
 #[cfg(windows)]
-pub fn open_for_reconciliation(path: &Path) -> io::Result<File> {
-    platform_open_for_reconciliation(path)
-}
+pub use imp::windows_open_for_reconciliation as open_for_reconciliation;
 
 /// Requests deletion of the exact object represented by an open file handle.
 ///
@@ -496,7 +502,7 @@ impl ParentSyncReceipt {
     }
 
     #[cfg(windows)]
-    const fn unsupported() -> Self {
+    const fn windows_unsupported() -> Self {
         Self { _private: () }
     }
 
@@ -714,6 +720,7 @@ mod imp {
     use super::{
         CommitReceipt, FileChangeToken, FileFacts, FileIdentity, IdentityQuality,
         InstallNewOutcome, ParentSyncOutcome, ParentSyncReceipt, ReplaceExistingOutcome,
+        combine_disjoint_flag_bits,
     };
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -984,18 +991,40 @@ mod imp {
     #[cfg(not(target_os = "macos"))]
     pub fn unix_create_private_new_at(parent: &File, name: &OsStr) -> io::Result<File> {
         let file = File::from(
-            openat(
-                parent,
-                name,
-                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .map_err(io::Error::from)?,
+            openat(parent, name, unix_private_create_flags(), Mode::empty())
+                .map_err(io::Error::from)?,
         );
         if let Err(error) = unix_restrict_open_file_to_owner(&file) {
             return Err(super::retained_private_creation_error(error));
         }
         Ok(file)
+    }
+
+    const fn unix_combine_disjoint_flags(left: OFlags, right: OFlags) -> OFlags {
+        OFlags::from_bits_retain(combine_disjoint_flag_bits(left.bits(), right.bits()))
+    }
+
+    const fn unix_private_create_flags() -> OFlags {
+        unix_combine_disjoint_flags(
+            unix_combine_disjoint_flags(
+                unix_combine_disjoint_flags(
+                    unix_combine_disjoint_flags(OFlags::RDWR, OFlags::CREATE),
+                    OFlags::EXCL,
+                ),
+                OFlags::NOFOLLOW,
+            ),
+            OFlags::CLOEXEC,
+        )
+    }
+
+    const fn unix_existing_read_flags() -> OFlags {
+        unix_combine_disjoint_flags(
+            unix_combine_disjoint_flags(
+                unix_combine_disjoint_flags(OFlags::RDONLY, OFlags::NOFOLLOW),
+                OFlags::NONBLOCK,
+            ),
+            OFlags::CLOEXEC,
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -1278,14 +1307,9 @@ mod imp {
     }
 
     fn unix_open_existing_at(parent: &File, name: &OsStr) -> io::Result<File> {
-        openat(
-            parent,
-            name,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map(File::from)
-        .map_err(io::Error::from)
+        openat(parent, name, unix_existing_read_flags(), Mode::empty())
+            .map(File::from)
+            .map_err(io::Error::from)
     }
 
     pub fn unix_install_new(
@@ -2030,8 +2054,9 @@ mod imp {
         #[cfg(target_os = "macos")]
         use super::macos_xattr_is_missing as native_xattr_is_missing;
         use super::{
-            ExtendedAttribute, MetadataStamp, unix_metadata_payload_stamp_matches,
-            unix_metadata_source_matches, unix_metadata_stamp, unix_no_replace_is_unavailable,
+            ExtendedAttribute, MetadataStamp, OFlags, unix_existing_read_flags,
+            unix_metadata_payload_stamp_matches, unix_metadata_source_matches, unix_metadata_stamp,
+            unix_no_replace_is_unavailable, unix_private_create_flags,
             unix_verify_destination_stamp, unix_verify_native_xattrs, unix_xattr_call_failed,
             unix_xattr_read_should_retry, unix_xattr_size_exceeds_limit,
         };
@@ -2241,6 +2266,18 @@ mod imp {
             assert!(unix_no_replace_is_unavailable(rustix::io::Errno::NOTSUP));
             assert!(!unix_no_replace_is_unavailable(rustix::io::Errno::EXIST));
             assert!(!unix_no_replace_is_unavailable(rustix::io::Errno::PERM));
+        }
+
+        #[test]
+        fn descriptor_relative_open_flag_policies_are_exact() {
+            assert_eq!(
+                unix_private_create_flags(),
+                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC
+            );
+            assert_eq!(
+                unix_existing_read_flags(),
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC
+            );
         }
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -2971,6 +3008,12 @@ mod imp {
             .open(path)
     }
 
+    /// Opens an existing entry while denying competing Windows mutation access.
+    ///
+    /// # Errors
+    ///
+    /// Returns an operating-system error when the final entry cannot be opened
+    /// without following a reparse point or competing access prevents ratification.
     pub fn windows_open_for_reconciliation(path: &Path) -> io::Result<File> {
         OpenOptions::new()
             .read(true)
@@ -3080,7 +3123,7 @@ mod imp {
 
         Ok(CommitReceipt::new(
             ReplaceExistingOutcome::Clean,
-            ParentSyncReceipt::unsupported(),
+            ParentSyncReceipt::windows_unsupported(),
         ))
     }
 
@@ -3108,7 +3151,7 @@ mod imp {
 
         Ok(CommitReceipt::new(
             InstallNewOutcome::Clean,
-            ParentSyncReceipt::unsupported(),
+            ParentSyncReceipt::windows_unsupported(),
         ))
     }
 
@@ -3810,6 +3853,8 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::ffi::OsStr;
     use std::fs::{self, File, hard_link};
     use std::io::{self, Read, Write};
 
@@ -3821,9 +3866,13 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use xattr::FileExt;
 
+    #[cfg(unix)]
+    use super::imp::unix_require_name_matches;
     #[cfg(target_os = "linux")]
     use super::sync_file;
-    use super::{FileChangeToken, FileIdentity, IdentityQuality, file_facts};
+    use super::{
+        FileChangeToken, FileIdentity, IdentityQuality, combine_disjoint_flag_bits, file_facts,
+    };
     #[cfg(unix)]
     use super::{
         InstallNewOutcome, ParentSyncOutcome, ParentSyncReceipt, ReplaceExistingOutcome,
@@ -3856,6 +3905,15 @@ mod tests {
         assert_eq!(identity.quality(), IdentityQuality::Preferred);
         assert_eq!(identity.volume(), 17);
         assert_eq!(identity.file(), 29);
+    }
+
+    #[test]
+    fn disjoint_flag_bits_are_combined_exactly_and_overlap_is_rejected() {
+        assert_eq!(combine_disjoint_flag_bits(0b0001, 0b0100), 0b0101);
+        assert!(
+            std::panic::catch_unwind(|| combine_disjoint_flag_bits(0b0011, 0b0010)).is_err(),
+            "overlapping flags must be rejected"
+        );
     }
 
     #[cfg(any(unix, windows))]
@@ -3893,6 +3951,26 @@ mod tests {
             open_existing_no_follow(&link).is_err(),
             "the native open must not follow a final symlink"
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_relative_name_check_requires_the_exact_open_identity() -> io::Result<()> {
+        let directory = tempdir()?;
+        let named_path = directory.path().join("stage.txt");
+        let other_path = directory.path().join("other.txt");
+        fs::write(&named_path, b"named stage")?;
+        fs::write(&other_path, b"different object")?;
+        let parent = File::open(directory.path())?;
+        let named = File::open(&named_path)?;
+        let other = File::open(&other_path)?;
+
+        unix_require_name_matches(&parent, OsStr::new("stage.txt"), &named)?;
+        let error = unix_require_name_matches(&parent, OsStr::new("stage.txt"), &other)
+            .expect_err("a rebound stage name must not match another open object");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         Ok(())
     }
 

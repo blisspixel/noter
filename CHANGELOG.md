@@ -325,7 +325,9 @@ that candidate is frozen for publication.
 - Prove both split-CRLF range endpoints and real recovery-lease identity and
   hard-link transitions directly. Explicit Unix and Windows recovery helper
   names keep cfg-inactive mutations on the host that can execute them without
-  narrowing either platform's campaign.
+  narrowing either platform's campaign. Assert that descriptor-relative Unix
+  flags are disjoint before combining them, and test the exact creation, open,
+  and name-to-identity policies so valid mutations cannot escape detection.
 - Define the scoped alpha publication gate separately from the complete RC and
   stable release matrix. Alpha limitations must be recorded and assigned to a
   later blocking milestone, and critical or high security or data-safety
