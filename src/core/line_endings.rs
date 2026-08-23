@@ -730,6 +730,7 @@ mod tests {
 
         assert!(profile.insertion_context(source, 1..source.len()).is_none());
         assert!(profile.insertion_context(source, 0..3).is_none());
+        assert!(profile.insertion_context(source, 3..source.len()).is_none());
         assert!(profile.insertion_context(source, source.len()..0).is_none());
         assert!(
             profile

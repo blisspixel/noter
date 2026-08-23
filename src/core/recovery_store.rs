@@ -391,7 +391,22 @@ impl RecoveryStore {
     pub fn persist(&self, snapshot: &RecoverySnapshot) -> io::Result<()> {
         let destination = self.record_path(snapshot.instance_id());
         let encoded = snapshot.encode();
-        write_atomic_private(&destination, snapshot.instance_id(), &encoded)
+        #[cfg(unix)]
+        {
+            write_atomic_private_unix(&destination, snapshot.instance_id(), &encoded)
+        }
+        #[cfg(windows)]
+        {
+            write_atomic_private_windows(&destination, snapshot.instance_id(), &encoded)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (destination, encoded);
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "recovery persistence is unsupported on this operating system",
+            ))
+        }
     }
 
     /// Removes only the active record for an owned instance after save or
@@ -1590,7 +1605,7 @@ impl TemporaryArtifactKind {
 }
 
 #[cfg(unix)]
-fn write_atomic_private(
+fn write_atomic_private_unix(
     destination: &Path,
     instance_id: RecoveryInstanceId,
     bytes: &[u8],
@@ -1646,13 +1661,13 @@ fn unix_recovery_stage_path(parent: &Path, instance_id: RecoveryInstanceId) -> P
     ))
 }
 
-#[cfg(not(unix))]
-fn write_atomic_private(
+#[cfg(windows)]
+fn write_atomic_private_windows(
     destination: &Path,
     instance_id: RecoveryInstanceId,
     bytes: &[u8],
 ) -> io::Result<()> {
-    write_atomic_private_with(
+    write_atomic_private_windows_with(
         destination,
         instance_id,
         bytes,
@@ -1661,7 +1676,7 @@ fn write_atomic_private(
 }
 
 #[cfg(windows)]
-fn write_atomic_private_with(
+fn write_atomic_private_windows_with(
     destination: &Path,
     instance_id: RecoveryInstanceId,
     bytes: &[u8],
@@ -1756,7 +1771,7 @@ struct RecoveryCommitFailure {
 #[cfg(any(windows, test))]
 impl RecoveryCommitFailure {
     #[cfg(windows)]
-    const fn preserve(error: io::Error) -> Self {
+    const fn preserve_windows_artifacts(error: io::Error) -> Self {
         Self { error }
     }
 }
@@ -1823,14 +1838,14 @@ fn finish_replace_with(
     ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
 ) -> Result<RecoveryCommitSuccess, RecoveryCommitFailure> {
     #[cfg(windows)]
-    let intended = inspect_recovery_artifact(stage)?.ok_or_else(|| {
+    let intended = inspect_windows_recovery_artifact(stage)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "recovery stage disappeared before replacement",
         )
     })?;
     #[cfg(windows)]
-    let expected = inspect_recovery_artifact(destination)?.ok_or_else(|| {
+    let expected = inspect_windows_recovery_artifact(destination)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "recovery destination disappeared before replacement",
@@ -1849,7 +1864,7 @@ fn finish_replace_with(
                             stage,
                             destination,
                             backup,
-                            IntendedRecoveryContent::from_observation(intended),
+                            IntendedWindowsRecoveryContent::from_observation(intended),
                             expected,
                             &success,
                             true,
@@ -1881,7 +1896,7 @@ fn finish_replace_with(
                 stage,
                 destination,
                 backup,
-                IntendedRecoveryContent::from_observation(intended),
+                IntendedWindowsRecoveryContent::from_observation(intended),
                 expected,
                 error,
             )
@@ -1902,12 +1917,12 @@ struct RecoveryArtifactObservation {
 
 #[cfg(windows)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct IntendedRecoveryContent {
+struct IntendedWindowsRecoveryContent {
     observation: RecoveryArtifactObservation,
 }
 
 #[cfg(windows)]
-impl IntendedRecoveryContent {
+impl IntendedWindowsRecoveryContent {
     const fn from_observation(observation: RecoveryArtifactObservation) -> Self {
         Self { observation }
     }
@@ -1918,7 +1933,9 @@ impl IntendedRecoveryContent {
 }
 
 #[cfg(windows)]
-fn inspect_recovery_artifact(path: &Path) -> io::Result<Option<RecoveryArtifactObservation>> {
+fn inspect_windows_recovery_artifact(
+    path: &Path,
+) -> io::Result<Option<RecoveryArtifactObservation>> {
     let file = match noter_platform::open_existing_no_follow(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -2036,7 +2053,7 @@ fn reconcile_windows_recovery_replace(
     stage: &Path,
     destination: &Path,
     backup: &Path,
-    intended: IntendedRecoveryContent,
+    intended: IntendedWindowsRecoveryContent,
     expected: RecoveryArtifactObservation,
     platform_error: io::Error,
 ) -> Result<RecoveryParentSync, RecoveryCommitFailure> {
@@ -2098,7 +2115,9 @@ fn reconcile_windows_recovery_replace(
                 "the proven non-committing recovery stage could not be cleaned safely",
             )
         })?;
-        return Err(RecoveryCommitFailure::preserve(platform_error));
+        return Err(RecoveryCommitFailure::preserve_windows_artifacts(
+            platform_error,
+        ));
     }
 
     if destination_state.is_none() && stage_is_intended && backup_state == Some(expected) {
@@ -2145,7 +2164,7 @@ fn finalize_reconciled_windows_recovery(
     stage: &Path,
     destination: &Path,
     backup: &Path,
-    intended: IntendedRecoveryContent,
+    intended: IntendedWindowsRecoveryContent,
     expected: RecoveryArtifactObservation,
     cause: &io::Error,
     backup_required: bool,
@@ -2168,7 +2187,7 @@ fn finalize_reconciled_windows_recovery_with_cleanup_hook(
     stage: &Path,
     destination: &Path,
     backup: &Path,
-    intended: IntendedRecoveryContent,
+    intended: IntendedWindowsRecoveryContent,
     expected: RecoveryArtifactObservation,
     cause: &io::Error,
     backup_required: bool,
@@ -2269,7 +2288,7 @@ fn uncertain_windows_recovery_failure(
     let os_code = cause
         .raw_os_error()
         .map_or_else(String::new, |code| format!(", OS code {code}"));
-    RecoveryCommitFailure::preserve(io::Error::new(
+    RecoveryCommitFailure::preserve_windows_artifacts(io::Error::new(
         cause.kind(),
         format!(
             "{detail} after {:?}{os_code}. Recovery candidates {stage} and {backup} were preserved when present. Inspect the canonical recovery record and every existing candidate before retrying or removing either candidate.",
@@ -2590,6 +2609,31 @@ mod tests {
     }
 
     #[test]
+    fn live_lease_fact_comparison_requires_real_identity_and_link_count() -> io::Result<()> {
+        let directory = tempdir()?;
+        let first_path = directory.path().join("first.live");
+        let alias_path = directory.path().join("first-alias.live");
+        let second_path = directory.path().join("second.live");
+        fs::write(&first_path, b"first lease")?;
+        fs::write(&second_path, b"second lease")?;
+
+        let initial = noter_platform::file_facts(&File::open(&first_path)?)?;
+        let same = noter_platform::file_facts(&File::open(&first_path)?)?;
+        let different = noter_platform::file_facts(&File::open(&second_path)?)?;
+        assert!(live_lease_facts_match(same, initial));
+        assert!(!live_lease_facts_match(different, initial));
+
+        fs::hard_link(&first_path, &alias_path)?;
+        let linked = noter_platform::file_facts(&File::open(&first_path)?)?;
+        let alias = noter_platform::file_facts(&File::open(&alias_path)?)?;
+        assert_eq!(linked.identity(), initial.identity());
+        assert_ne!(linked.link_count(), initial.link_count());
+        assert!(!live_lease_facts_match(linked, initial));
+        assert!(live_lease_facts_match(linked, alias));
+        Ok(())
+    }
+
+    #[test]
     fn recovery_instance_sources_reconcile_only_when_they_agree() {
         let first = RecoveryInstanceId::new([1; 16]);
         let second = RecoveryInstanceId::new([2; 16]);
@@ -2781,11 +2825,11 @@ mod tests {
         let second = snapshot_at(60, 7, 16, b"second recovery");
         let stage = unix_recovery_stage_path(directory.path(), first.instance_id());
 
-        write_atomic_private(&destination, first.instance_id(), &first.encode())?;
+        write_atomic_private_unix(&destination, first.instance_id(), &first.encode())?;
         assert_eq!(fs::read(&destination)?, first.encode());
         assert!(!stage.exists());
 
-        write_atomic_private(&destination, second.instance_id(), &second.encode())?;
+        write_atomic_private_unix(&destination, second.instance_id(), &second.encode())?;
         assert_eq!(fs::read(&destination)?, second.encode());
         assert!(!stage.exists());
         Ok(())
@@ -2882,8 +2926,9 @@ mod tests {
         let stage = unix_recovery_stage_path(directory.path(), snapshot.instance_id());
         fs::write(&stage, b"retained partial recovery")?;
 
-        let error = write_atomic_private(&destination, snapshot.instance_id(), &snapshot.encode())
-            .expect_err("a retained stage must stop retries from accumulating artifacts");
+        let error =
+            write_atomic_private_unix(&destination, snapshot.instance_id(), &snapshot.encode())
+                .expect_err("a retained stage must stop retries from accumulating artifacts");
 
         assert_eq!(error.kind(), io::ErrorKind::ResourceBusy);
         assert_eq!(fs::read(&stage)?, b"retained partial recovery");
@@ -2938,7 +2983,7 @@ mod tests {
         fs::write(&destination, &predecessor_bytes)?;
         let artifact_paths = std::cell::RefCell::new(None);
 
-        let error = write_atomic_private_with(
+        let error = write_atomic_private_windows_with(
             &destination,
             intended.instance_id(),
             &intended_bytes,
@@ -2979,7 +3024,7 @@ mod tests {
         fs::write(&destination, &predecessor_bytes)?;
         let artifact_paths = std::cell::RefCell::new(None);
 
-        let error = write_atomic_private_with(
+        let error = write_atomic_private_windows_with(
             &destination,
             intended.instance_id(),
             &intended_bytes,
@@ -3021,11 +3066,11 @@ mod tests {
         let intended = snapshot_at(60, 7, 16, b"intended recovery").encode();
         fs::write(&destination, &intended)?;
         fs::write(&backup, &predecessor)?;
-        let intended = IntendedRecoveryContent::from_observation(
-            inspect_recovery_artifact(&destination)?
+        let intended = IntendedWindowsRecoveryContent::from_observation(
+            inspect_windows_recovery_artifact(&destination)?
                 .expect("the intended destination should be inspectable"),
         );
-        let expected = inspect_recovery_artifact(&backup)?
+        let expected = inspect_windows_recovery_artifact(&backup)?
             .expect("the predecessor backup should be inspectable");
         let cause = io::Error::other("injected successful replacement");
 
@@ -3065,11 +3110,11 @@ mod tests {
         let unexpected = snapshot_at(60, 11, 20, b"unexpected recovery").encode();
         fs::write(&destination, &intended_bytes)?;
         fs::write(&backup, &predecessor)?;
-        let intended = IntendedRecoveryContent::from_observation(
-            inspect_recovery_artifact(&destination)?
+        let intended = IntendedWindowsRecoveryContent::from_observation(
+            inspect_windows_recovery_artifact(&destination)?
                 .expect("the intended destination should be inspectable"),
         );
-        let expected = inspect_recovery_artifact(&backup)?
+        let expected = inspect_windows_recovery_artifact(&backup)?
             .expect("the predecessor backup should be inspectable");
         let cause = io::Error::other("injected successful replacement");
 
@@ -3170,11 +3215,11 @@ mod tests {
         let intended_bytes = snapshot_at(60, 13, 22, b"intended recovery").encode();
         fs::write(&destination, &intended_bytes)?;
         fs::write(&backup, &predecessor)?;
-        let intended = IntendedRecoveryContent::from_observation(
-            inspect_recovery_artifact(&destination)?
+        let intended = IntendedWindowsRecoveryContent::from_observation(
+            inspect_windows_recovery_artifact(&destination)?
                 .expect("the intended destination should be inspectable"),
         );
-        let expected = inspect_recovery_artifact(&backup)?
+        let expected = inspect_windows_recovery_artifact(&backup)?
             .expect("the predecessor backup should be inspectable");
         let cause = io::Error::other("injected successful replacement");
 
@@ -3235,7 +3280,7 @@ mod tests {
         fs::write(&destination, &predecessor_bytes)?;
         let artifact_paths = std::cell::RefCell::new(None);
 
-        write_atomic_private_with(
+        write_atomic_private_windows_with(
             &destination,
             intended.instance_id(),
             &intended_bytes,
@@ -3276,7 +3321,7 @@ mod tests {
         fs::write(&destination, &predecessor_bytes)?;
         let artifact_paths = std::cell::RefCell::new(None);
 
-        let error = write_atomic_private_with(
+        let error = write_atomic_private_windows_with(
             &destination,
             intended.instance_id(),
             &intended_bytes,
@@ -3319,7 +3364,7 @@ mod tests {
         fs::write(&destination, &predecessor_bytes)?;
         let artifact_paths = std::cell::RefCell::new(None);
 
-        write_atomic_private_with(
+        write_atomic_private_windows_with(
             &destination,
             intended.instance_id(),
             &intended_bytes,
@@ -3356,7 +3401,7 @@ mod tests {
         fs::write(&destination, &predecessor_bytes)?;
         let artifact_paths = std::cell::RefCell::new(None);
 
-        let error = write_atomic_private_with(
+        let error = write_atomic_private_windows_with(
             &destination,
             intended.instance_id(),
             &intended_bytes,
