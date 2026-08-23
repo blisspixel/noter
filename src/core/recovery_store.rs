@@ -1416,6 +1416,7 @@ const fn complete_bound_read_matches(
     bytes_read_match && facts_match && length_matches
 }
 
+#[cfg(any(windows, test))]
 const fn reconciled_cleanup_state_is_exact(
     destination_matches: bool,
     stage_matches_or_is_absent: bool,
@@ -1507,7 +1508,7 @@ fn delete_claimed_live_path(
         Ok(()) => Ok(()),
         Err(error) => {
             if requires_path_delete_fallback(error.kind()) {
-                if noter_platform::file_facts(lease)? != expected_facts {
+                if !live_lease_facts_match(noter_platform::file_facts(lease)?, expected_facts) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "recovery live lease changed while its claim was held",
@@ -1533,7 +1534,7 @@ fn delete_claimed_live_path_unix_fallback(
             _ => return Err(error),
         },
     };
-    if noter_platform::file_facts(&path_file)? != expected_facts {
+    if !live_lease_facts_match(noter_platform::file_facts(&path_file)?, expected_facts) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery live pathname changed before claim cleanup",
@@ -1552,6 +1553,23 @@ fn delete_claimed_live_path_unix_fallback(
 
 fn delete_locked_live_path(path: &Path, locked: &LockedLiveFile) -> io::Result<()> {
     delete_claimed_live_path(path, &locked.file, locked.facts)
+}
+
+fn live_lease_facts_match(
+    actual: noter_platform::FileFacts,
+    expected: noter_platform::FileFacts,
+) -> bool {
+    stable_live_lease_binding_matches(
+        actual.identity() == expected.identity(),
+        actual.link_count() == expected.link_count(),
+    )
+}
+
+const fn stable_live_lease_binding_matches(
+    identity_matches: bool,
+    link_count_matches: bool,
+) -> bool {
+    identity_matches && link_count_matches
 }
 
 #[cfg(any(windows, test))]
@@ -2493,6 +2511,10 @@ mod tests {
         assert!(!complete_bound_read_matches(false, true, true));
         assert!(!complete_bound_read_matches(true, false, true));
         assert!(!complete_bound_read_matches(true, true, false));
+
+        assert!(stable_live_lease_binding_matches(true, true));
+        assert!(!stable_live_lease_binding_matches(false, true));
+        assert!(!stable_live_lease_binding_matches(true, false));
 
         assert!(reconciled_cleanup_state_is_exact(true, true, true));
         assert!(!reconciled_cleanup_state_is_exact(false, true, true));
