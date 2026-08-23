@@ -1423,6 +1423,9 @@ mod tests {
             Err(RecoveryQuarantineReason::Truncated)
         ));
 
+        let current = root.encode();
+        assert!(parse_recovery_header(&current[..V2_FIXED_HEADER_LEN]).is_ok());
+
         let mut nonzero_absent_predecessor = root.encode();
         nonzero_absent_predecessor[53] = 1;
         assert!(matches!(

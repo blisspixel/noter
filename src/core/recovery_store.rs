@@ -360,13 +360,9 @@ impl RecoveryStore {
         })();
         match attempt {
             Ok(lease) => Ok(lease),
-            Err(error) => match error.kind() {
-                io::ErrorKind::ResourceBusy => Err(error),
-                _ => Err(classify_nonbusy_lease_error(
-                    error,
-                    self.instance_is_live(instance_id).unwrap_or(false),
-                )),
-            },
+            Err(error) => Err(classify_live_lease_acquisition_error(error, || {
+                self.instance_is_live(instance_id).unwrap_or(false)
+            })),
         }
     }
 
@@ -1209,6 +1205,16 @@ fn classify_nonbusy_lease_error(error: io::Error, observed_live: bool) -> io::Er
     }
 }
 
+fn classify_live_lease_acquisition_error(
+    error: io::Error,
+    observe_live: impl FnOnce() -> bool,
+) -> io::Error {
+    match error.kind() {
+        io::ErrorKind::ResourceBusy => error,
+        _ => classify_nonbusy_lease_error(error, observe_live()),
+    }
+}
+
 const fn is_quarantine_name_collision(kind: io::ErrorKind) -> bool {
     matches!(kind, io::ErrorKind::AlreadyExists)
 }
@@ -1800,6 +1806,24 @@ mod tests {
             reclassified.to_string(),
             "recovery live lease is held by another Noter window"
         );
+
+        let busy = classify_live_lease_acquisition_error(
+            io::Error::new(io::ErrorKind::ResourceBusy, "exact contention evidence"),
+            || panic!("an exact contention result must not be probed again"),
+        );
+        assert_eq!(busy.kind(), io::ErrorKind::ResourceBusy);
+        assert_eq!(busy.to_string(), "exact contention evidence");
+
+        let mut probed = false;
+        let inferred_busy = classify_live_lease_acquisition_error(
+            io::Error::new(io::ErrorKind::PermissionDenied, "ambiguous lease failure"),
+            || {
+                probed = true;
+                true
+            },
+        );
+        assert!(probed);
+        assert_eq!(inferred_busy.kind(), io::ErrorKind::ResourceBusy);
 
         assert!(is_quarantine_name_collision(io::ErrorKind::AlreadyExists));
         assert!(!is_quarantine_name_collision(
@@ -2547,6 +2571,19 @@ mod tests {
         assert_eq!(release_error.kind(), io::ErrorKind::InvalidData);
         assert!(!store.live_guard_path(snapshot.instance_id()).exists());
         remove_file_if_present(&displaced)?;
+        Ok(())
+    }
+
+    #[test]
+    fn unix_live_cleanup_accepts_an_already_unlinked_path() -> io::Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("claimed.live");
+        let locked = acquire_live_file(&path)?;
+        fs::remove_file(&path)?;
+
+        delete_claimed_live_path_unix_fallback(&path, &locked.file, locked.facts)?;
+
+        assert!(!path.exists());
         Ok(())
     }
 

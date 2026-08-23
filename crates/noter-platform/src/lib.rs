@@ -3491,6 +3491,11 @@ mod tests {
         fs::write(&path, b"exact document bytes")?;
 
         let mut file = open_existing_no_follow(&path)?;
+        #[cfg(unix)]
+        assert!(
+            rustix::fs::fcntl_getfl(&file)?.contains(rustix::fs::OFlags::NONBLOCK),
+            "the native open must retain nonblocking status"
+        );
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
 
