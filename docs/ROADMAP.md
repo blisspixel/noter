@@ -64,9 +64,10 @@ does not expand unsafe UI surface.
    Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
 8. **Release gate in progress:**
    [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) records the
-   current implementation commit, local gates, and a 2026-08-22 Windows live
-   GUI pass covering idle recovery persistence, force-kill, restart offer,
-   exact restored editor text, explicit discard, and clean lease removal.
+   current implementation commit, local gates, and a 2026-08-23 Windows live
+   GUI pass covering exact empty dirty recovery persistence, force-kill,
+   restart offer, exact restored editor text, successor transfer, explicit
+   discard, and clean dual-lease removal.
    Interactive non-Windows GUI smoke is explicitly deferred to beta.1 because
    this release host has no interactive non-Windows desktop. Alpha.2 remains a
    prerelease, and exact-head hosted Windows, Linux, and macOS CI is still
@@ -102,7 +103,7 @@ does not expand unsafe UI surface.
 | M2 | Usable prototype shell, themes, and update entry points | In progress |
 | M3 | Editing transactions, undo, search, and text commands | In progress |
 | M4 | Lifecycle, recovery, and external-change handling | In progress |
-| M5 | Production editor, accessibility, and performance | Planned |
+| M5 | Production editor, accessibility, and performance | Gate specified; next after alpha.2 |
 | M6 | Native Markdown editor and quality engine | In progress |
 | M7 | Cross-platform distribution and first public-quality release | Planned |
 
@@ -129,6 +130,10 @@ fail closed, identity changes keep worker epochs monotonic, and stale UI
 completions cannot delete newer records. Each identity now has two independent
 fact-bound lease paths, cleanup and identity rotation wait behind a FIFO worker
 fence, and schema v1 metadata cannot suppress authenticated schema v2 state.
+Unix persistence binds the parent directory, consumes its exact open stage with
+a descriptor-relative rename, and ratifies the consumed identity after commit.
+Windows uses deterministic per-instance stage and backup slots, exact
+destination and predecessor reconciliation, and handle-bound cleanup.
 External Keep Editing is bound to one exact successful observation rather than
 a broad conflict class. Text Mode and active or inactive Markdown now project
 LF, CRLF, CR, and mixed source as logical rows without rewriting untouched
@@ -558,6 +563,71 @@ The current bundled Inter configuration retains egui's complete default
 fallback chain, including its emoji fonts, so pasted Unicode remains intact.
 The current renderer's emoji output is monochrome and is not accepted as final
 cross-platform appearance evidence. No spell-check provider is implemented.
+
+Research completed on 2026-08-23 makes the next decision narrower. The current
+egui `TextEdit` remains the correctness adapter, but stock egui 0.35 with
+AccessKit 0.24 is a provisional no-go for the 50 MiB production path. It shapes
+and exposes complete wrapped content, rebuilds the enabled accessibility tree,
+uses visual-row-derived text-run identities, and does not route every offscreen
+text-run action back to the outer editor. Viewport-only semantics are not an
+acceptable workaround because native text providers must expose and navigate
+the complete document.
+
+The research is anchored in the tagged
+[egui 0.35 text-accessibility implementation](https://github.com/emilk/egui/blob/0.35.0/crates/egui/src/text_selection/accesskit_text.rs),
+the [AccessKit architecture](https://github.com/AccessKit/accesskit), and the
+native text-provider contracts for
+[Windows UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-implementingtextandtextrange),
+[macOS accessibility](https://developer.apple.com/documentation/AppKit/NSAccessibilityProtocol),
+and [AT-SPI](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/iface.Text.html).
+
+The first candidate is therefore a rope-authoritative editor with a
+backend-neutral visible-layout adapter. Parley is the first shaping candidate;
+`cosmic-text` is the fallback candidate. Neither is accepted by research alone.
+The gate must prove shaping, bidi, hit testing, IME, retained accessibility, and
+the published performance budgets in the actual application.
+
+### One-week feasibility gate
+
+1. **Day 1, baseline and corpora:** freeze 1 MiB and 50 MiB representative,
+   many-short-line, pathological-long-line, mixed-EOL, Unicode, bidi, and
+   Markdown corpora. Measure the current adapter with platform accessibility
+   inactive and active, including node count, allocation, frame time, and
+   offscreen navigation failures.
+2. **Day 2, semantic core:** make a rope the sole complete-text authority in the
+   slice; add typed byte, character, line, UTF-16, and visual-row positions;
+   maintain exact line-ending and hard-line indexes; and differentially test
+   edits, directional selection, Unicode boundaries, and source-to-accessible
+   position mapping against the existing transaction model.
+3. **Day 3, bounded layout and accessibility:** lay out only visible rows plus
+   bounded overscan, route work through one latest-wins revision-tagged worker,
+   and prototype a retained AccessKit editor subtree with stable run identities,
+   full-document semantic text, visible-only geometry, set-selection,
+   replace-selection, focus, and child-run scroll-into-view actions.
+4. **Day 4, native input:** run NVDA, VoiceOver, and Orca smoke matrices plus one
+   real CJK IME. Cover dead keys, emoji, combining marks, mixed bidi, wrapped and
+   unwrapped text, 125 to 200 percent scaling, selection events, read-all, and
+   offscreen range selection that visibly reveals the same text.
+5. **Day 5, adversarial measurement and decision:** run at least 30 release-build
+   samples where a percentile is claimed, record complete corpus and hardware
+   details, and accept, conditionally accept, or reject ADR-004 with a bounded
+   next implementation.
+
+### Gate decision
+
+- **Go:** every correctness, native accessibility, IME, and performance gate
+  passes. In particular, no ordinary frame copies or reshapes the complete
+  document; 50 MiB reaches its first editable frame at p95 at most 2 seconds;
+  input reaches paint at p95 at most 16.7 ms and p99 at most 33 ms; warm scroll
+  is p99 at most 16.7 ms; first literal search is p95 at most 800 ms; RSS is at
+  most 350 MiB; and an offscreen native text range can be selected and revealed.
+- **Conditional go:** the same user-visible gates pass, but a small isolated
+  upstream-quality egui or AccessKit extension is required. The decision record
+  must bound maintenance and name the upstream path.
+- **No-go:** success requires viewport-only accessibility, complete tree or
+  document reconstruction per frame, omitted bidi or IME behavior, weakened
+  budgets, or separate handwritten native editor semantics per platform. Stop
+  M6 surface expansion and evaluate another GUI or text stack explicitly.
 
 ### Exit criteria
 

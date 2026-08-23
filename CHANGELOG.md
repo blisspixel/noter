@@ -26,7 +26,7 @@ that candidate is frozen for publication.
 - Add `RecoveryScheduleState::next_persist_delay`, the pure wake-up deadline an
   interface needs to keep the recovery-point objective while it sleeps.
 - Record the `0.1.0-alpha.2` correctness matrix against implementation commit
-  `2aa4a89`, mapping dogfood-critical recovery, conflict, clipboard,
+  `125783b`, mapping dogfood-critical recovery, conflict, clipboard,
   navigation, coverage, security review, and live native recovery evidence to
   the scoped prerelease decision.
 - Record partial M2 installed-product evidence for a disposable Windows
@@ -62,6 +62,10 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Release a Unix or macOS recovery lease cleanly after its pathname is safely
+  rebound. Cleanup now compares the locked object's stable file identity and
+  hard-link count instead of a rename-sensitive change timestamp; a replacement
+  object or added hard link still fails closed.
 - Preserve LF, CRLF, CR, and mixed source exactly through Text Mode plus active
   editing and inactive rendering in Markdown Mode. Logical newlines render,
   select, and delete atomically; Text Mode and active Markdown source editors
@@ -280,6 +284,13 @@ that candidate is frozen for publication.
 
 ### Changed
 
+- Specify the M5 production-editor gate as a one-week measured decision with a
+  rope-authoritative semantic model, bounded visible layout, retained
+  full-document accessibility, real screen-reader and CJK IME evidence, exact
+  latency and memory budgets, and explicit go, conditional-go, and no-go rules.
+- Keep the macOS mutation campaign on executable macOS and shared Unix code.
+  Windows-only receipt and commit mutations remain owned by the sharded Windows
+  campaign instead of appearing as equivalent macOS survivors.
 - Define the scoped alpha publication gate separately from the complete RC and
   stable release matrix. Alpha limitations must be recorded and assigned to a
   later blocking milestone, and critical or high security or data-safety

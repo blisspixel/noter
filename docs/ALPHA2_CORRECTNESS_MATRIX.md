@@ -2,7 +2,7 @@
 
 **Recorded:** 2026-08-23
 
-**Implementation commit:** `2aa4a898758379af4be29d4fc235b38ff1473984`
+**Implementation commit:** `125783b4337d0f246515a14112e9b983810b8316`
 
 **Exact-head CI:** Required on the final evidence commit before the tag is
 created. GitHub branch protection and the Release workflow are the authoritative
@@ -35,7 +35,7 @@ Rows use:
 
 | Field | Value |
 | --- | --- |
-| Noter implementation commit | `2aa4a898758379af4be29d4fc235b38ff1473984` |
+| Noter implementation commit | `125783b4337d0f246515a14112e9b983810b8316` |
 | Tree | Feature implementation frozen at the named commit; this evidence document is its descendant |
 | Build profiles | Locked workspace tests and release all-features Windows GUI |
 | Tester | Automated maintainer session with live native UI inspection on the development host |
@@ -51,21 +51,21 @@ Commands and results at the implementation commit:
 
 | Gate | Result |
 | --- | --- |
-| `cargo test --locked --workspace --all-targets --all-features` | 721 passed, 0 failed |
-| Python unittest discovery | 165 passed, 1 environment skip |
-| Whole-workspace line coverage | 93.66 percent |
-| Trust-kernel line coverage | 93.88 percent |
+| `cargo test --locked --workspace --all-targets --all-features` | 811 passed, 0 failed |
+| Python unittest discovery | 169 passed, 4 Windows-host environment skips |
+| Whole-workspace line coverage | 94.18 percent, 34,353 of 36,474 lines |
+| Trust-kernel line coverage | 93.72 percent, 14,457 of 15,425 lines |
 | Formatting and strict Clippy | Pass |
 | Rustdoc with warnings denied | Pass |
 | RustSec audit | Pass, no advisory warnings |
 | Dependency license and source policy | Pass |
-| Focused mutation-gap reruns | Pass; schema-v2 boundary, exact `ResourceBusy`, and missing claimed-path mutants are caught; the exact Unix OR-to-XOR flag mutant is algebraically equivalent and narrowly excluded while OR-to-AND remains in scope and runtime flag behavior is asserted |
+| Focused mutation-gap reruns | Pass; the final line-ending, first-ending, recovery-store, and stable live-lease binding reruns caught every viable mutant with zero missed or timed-out results; three platform race match guards remain narrowly excluded because portable tests cannot force them without mocking the native install or rename path, while their adjacent success and failure surfaces are covered |
 | Documentation links and release configuration | Pass |
-| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source; all five outputs remained byte-identical to the visually reviewed set; approved input digest `8a35bd2b27d0908ce3424c6e1b5c36357d0575641a3af5ed0c6160bdcfca467a` |
+| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source; all five outputs remained byte-identical to the visually reviewed set; approved input digest `1fcc1e7711c71e215ecbad9e8dada9a85a9b1aac140a06ea3aa8576d5f33a716` |
 | `dist plan --tag v0.1.0-alpha.2` | Pass, expected archive, installer, checksum, SBOM, and attestation inventory |
 
-The 721 Rust tests comprise 282 library unit tests, 398 binary unit tests, 15
-integration and property tests, and 26 native-platform unit tests.
+The 811 Rust tests comprise 311 library unit tests, 457 binary unit tests, 15
+integration and property tests, and 28 native-platform unit tests.
 
 ## Alpha.2 critical rows
 
@@ -95,7 +95,7 @@ for the later full release-candidate matrix.
 | ID | Result | Evidence |
 | --- | --- | --- |
 | REC-01 force-kill before idle debounce | Partial | Scheduler bounds are tested; the live run killed only after a durable record appeared |
-| REC-02 force-kill after idle debounce | Pass | Live release GUI run described below restored the exact observed editor value |
+| REC-02 force-kill after idle debounce | Pass | Live release GUI run described below restored an exact intentionally empty dirty editor value |
 | REC-03 force-kill during recovery replacement | Blocked | Destructive concurrent-write timing was not exercised interactively |
 | REC-04 maximal valid offers | Pass | Bounded metadata-only startup scan coalesces authenticated schema-v2 instance revisions and proven causal successors while retaining legacy and incomparable branches |
 | REC-05 restore opens dirty without writing original | Pass | Restore revalidates the exact claimed artifact, requires successor backup cleanup and parent durability, and treats later predecessor cleanup failure as non-fatal |
@@ -111,24 +111,26 @@ Live Windows method for REC-02:
 
 1. Built the release all-features GUI and launched it with the test-only
    isolated state-directory override.
-2. Located the real Noter window and editable control through native Windows UI
-   Automation, then entered `alppha2 recovery probe`. The doubled character is
-   the exact value observed after synthetic native input and is intentionally
-   retained for equality checking.
-3. Waited for one 152-byte recovery record, then terminated the process without
-   a graceful close.
+2. Opened a source fixture containing `alpha2 recovery probe`, located the real
+   Noter window and `Document text editor` control through native Windows UI
+   Automation, then invoked Edit > Select All and Edit > Cut. This made the
+   authoritative document intentionally empty and dirty without synthetic
+   keystrokes or clipboard injection.
+3. Waited for one 252-byte recovery record and two independent live-lease files,
+   then terminated the process without a graceful close.
 4. Restarted against the same isolated state root and observed the Restore
    offer.
-5. Selected Restore and verified the editor value was exactly
-   `alppha2 recovery probe`.
-6. Verified a distinct successor recovery record and exactly one held successor
-   lease existed after Restore.
+5. Selected Restore and verified the editor value was the exact empty dirty
+   source, rather than the nonempty disk fixture.
+6. Verified a distinct successor recovery record and exactly two held successor
+   lease files existed after Restore.
 7. Closed through the dirty-document prompt with explicit Discard Changes and
    verified zero recovery records and zero lease files remained.
 
-The isolated root was
-`C:\Users\Nick Seal\AppData\Local\Temp\noter-alpha2-e2e-8af10467b7204174a0613ec0215c6edc`.
-It contains no remaining recovery payload.
+The isolated root was under
+`%LOCALAPPDATA%\Temp\noter-alpha2-e2e-...`. The harness validated that target
+under the system temporary directory and removed it after observing zero record
+and lease files, so it contains no remaining recovery payload.
 
 ### External changes
 
@@ -153,6 +155,7 @@ It contains no remaining recovery payload.
 | EDT-03 mouse drag selection | Partial | Markdown cross-block pointer suite passes; Text Mode click behavior remains a native-widget residual |
 | EDT-12 word wrap | Pass | Preference and UI paths preserve source bytes |
 | View-command focus and bounds | Pass | Keyboard zoom preserves focused controls; bounded menu commands disable honestly at limits |
+| Automated editor accessibility semantics | Pass | Text Mode exposes `Document text editor`; active Markdown source exposes `Markdown source editor`; semantic tests cover multiline editable roles, stable names, caret and selection projection, CR/LF/CRLF source mapping, and formatting-control state |
 | Interactive-size ceiling | Pass | Typing, paste, IME, inline reopen, automatic Enter transforms, and whole-text replacement reject growth before mutation |
 | Automatic Enter boundaries | Pass | Repeated Enter events are preserved, IME cancellation restores the canonical caret, code remains literal, marker-interior carets use ordinary editing, and LF/CRLF following lines remain separate |
 
@@ -161,9 +164,9 @@ It contains no remaining recovery payload.
 | ID | Result | Evidence |
 | --- | --- | --- |
 | SEC-01 no unexpected network | Pass | No background network path; update status only links on explicit user action |
-| SEC-03 recovery permissions | Partial | Owner-restricted recovery siblings and Windows private-file tests pass; native Unix permissions remain hosted-test evidence |
+| SEC-03 recovery permissions | Pass | Exact corrected-head Windows, Linux, and macOS suites cover protected Windows DACL creation, Unix owner-only recovery siblings, macOS ACL absence, and fail-closed unsupported states |
 | SEC-05 Markdown remote content | Pass | Restricted native model performs no remote fetch |
-| Changed-code security review | Pass | Scan `6d00a423-9f78-4a9e-b0d1-3aeaae438369` reproduced three medium and three low recovery/input findings plus one self-only IME product defect. The final immutable full-range scan `f38406a6-2003-4858-be12-3720abb42fbe` re-reviewed all 23 changed surfaces at `2aa4a89` with complete coverage and zero reportable findings. |
+| Changed-code security review | Pass | Final immutable full-range scan `b4f20ba6-e34d-4c75-bb44-a8050747d03d` reviewed the protected-base range through `125783b` with complete coverage and zero reportable findings. One Unix check-to-rename candidate remains suppressed as same-authority defense in depth because directory-write authority already permits direct recovery replacement and post-rename identity ratification prevents false success. |
 
 ### Rows outside alpha.2 prerelease scope
 

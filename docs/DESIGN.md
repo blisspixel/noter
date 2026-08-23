@@ -1,8 +1,8 @@
 # Noter Technical Design
 
-**Version:** 0.3
+**Version:** 0.4
 
-**Reviewed:** 2026-08-04
+**Reviewed:** 2026-08-23
 
 **Status:** Active architecture contract
 
@@ -68,6 +68,16 @@ The current development checkpoint has:
 - one pure lifecycle reducer used by dirty New, Open, Reload, Close, and Quit,
   with Save, Discard, and Cancel effects shared by menu and native-close paths
   and correlated to the exact document revision that authorized them;
+- private versioned crash recovery with bounded scheduling, whole-record
+  integrity, causal lineage, two independent instance leases, exact startup
+  claims, durable successor transfer, and a fenced background persistence
+  worker;
+- exact external-change decisions with Keep Editing bound to one successful
+  observation and overwrite bound to a second confirmation of that same disk
+  state;
+- one ordered command path for file, edit, navigation, formatting, Find,
+  Replace, pointer, accessibility, clipboard, and IME events, with blocking
+  decisions isolating document input;
 - current local Rust tests and whole-workspace and trust-kernel coverage above
   their respective 80 and 90 percent gates, with volatile measurements kept in
   the dedicated evidence records rather than duplicated here;
@@ -80,22 +90,20 @@ The current development checkpoint has:
   of 970 Linux, 939 Windows, and 47 macOS candidates with no miss, timeout, or
   recognized infrastructure failure.
 
-The latest verified implementation checkpoint passes all nine required jobs in
-exact-commit run
-[30737535516](https://github.com/blisspixel/noter/actions/runs/30737535516)
-for commit `76594b89c1967546893cef73569041fa148573a9`. A reproducible local
-trust-kernel benchmark baseline now exists; the manual
-metadata and weaker-filesystem evidence named by ADR-003, and later M5 GUI and
-input benchmarks remain open. The edit foundation still requires complete
-navigation and clipboard policy, long-session fixtures, and cross-platform
-evidence. Pure recovery scheduling and private recovery storage exist; app
-wiring, overwrite-with-second-confirm, accessibility evidence, and release
-performance evidence also remain open. M1 through M4 therefore remain In
-Progress even where their current implementation slices are substantial.
+The current correctness-alpha implementation and its exact measurements are
+recorded in
+[ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md). Recovery wiring,
+overwrite second-confirmation, clipboard commands, caret navigation,
+long-session history, and cross-platform automated suites are present. The
+remaining M1 through M4 gaps are named filesystem environments, installed and
+packaged product exercises, native window-manager interaction, and interactive
+non-Windows GUI evidence. M5 still owns the production editor, real IME and
+screen-reader matrices, 50 MiB performance, and final display behavior.
 
-The local test and coverage measurements above describe the current source
-checkpoint, not hosted release evidence. The M1 paragraph identifies the latest
-immutable commit whose complete hosted matrix is verified.
+Volatile counts and run identifiers stay in dedicated evidence records rather
+than this architecture contract. Historical M1 paragraphs retain their own
+exact verified checkpoints so later implementation does not rewrite earlier
+evidence.
 
 ## 2. Architectural principles
 
@@ -833,6 +841,49 @@ A one-week vertical slice must demonstrate:
 - search and styled-source ranges;
 - deterministic frame-time instrumentation.
 
+The slice uses one `Rope` as the only complete-text authority. The current
+framework `String` may remain only as the bounded correctness adapter outside
+the slice. Editor APIs use distinct byte, character, logical-line, UTF-16, and
+visual-row index types so a valid offset from one coordinate space cannot be
+passed silently to another. An incremental line-ending index preserves exact
+CR, LF, and CRLF source while exposing one accessible hard break for each
+terminator. A content revision identifies every edit; saved-state equality may
+be confirmed in the background, but the document remains conservatively dirty
+until exact equality is proved.
+
+An `EditorSemanticModel` owns directional selection, grapheme and word movement,
+hard-line and paragraph boundaries, source-to-accessible position mapping, IME
+composition state, and stable semantic run identities. Keyboard input,
+accessibility actions, recovery, search, and rendering must query this model
+instead of independently reimplementing positions or Unicode boundaries.
+
+Layout sits behind a backend-neutral adapter. Parley is evaluated first and
+`cosmic-text` second; no backend is accepted until measured in the application.
+The renderer shapes visible logical or wrapped rows plus bounded overscan and
+stores a bounded glyph atlas and row cache. Cache keys include document
+generation, content revision, persistent line identity, width, font, scale,
+wrap policy, and theme. A pathological single line must not allocate or shape
+the complete line on an ordinary frame.
+
+One bounded analysis worker uses a synchronous queue with latest-wins
+replacement. Requests and results carry document generation and content
+revision, stale results are ignored, and cancellation is checked between rope
+chunks. Literal search reports progressive matches from rope chunks. Recovery
+streams a cheap rope snapshot on the worker and never first creates a complete
+document `Vec` on the UI thread. Opening, external observation, and save remain
+correlated effects and move off the UI thread only after the editor gate proves
+that their completion ordering remains exact.
+
+The accessibility prototype is a retained editor subtree attached to the normal
+egui application tree. It exposes one stable multiline text input and
+full-document `TextRun` semantics with persistent IDs. Text and boundary data
+remain available for offscreen native ranges; optional bounds and character
+geometry are published only for visible rows plus overscan. Scrolling changes
+geometry, not text identities. `SetTextSelection`, `ReplaceSelectedText`, focus,
+and child-run `ScrollIntoView` route directly to the semantic model, reject stale
+or foreign IDs, update the authoritative directional selection once, and reveal
+the focus endpoint. A viewport-only tree does not satisfy the contract.
+
 The slice must pass correctness tests, 1 MiB interaction budgets, one real CJK
 IME, NVDA or another real screen reader, and show a measured route to 50 MiB.
 Failure means retaining the correctness adapter with reduced performance claims
@@ -861,10 +912,12 @@ viewport moves.
 
 The editor accessibility node exposes:
 
-- editable text value or bounded text runs;
+- one stable multiline editable-text role and name;
+- complete semantic text runs with stable identities, including offscreen text;
+- visible-row geometry plus bounded overscan without dropping offscreen text;
 - caret and selection;
 - line and character navigation;
-- replace-selection and set-selection actions;
+- replace-selection, set-selection, focus, and scroll-into-view actions;
 - read-only, modified, and validation state;
 - find, recovery, error, and conflict announcements.
 
@@ -1323,6 +1376,12 @@ clearly accepted residual risk before release.
   an explicit deterministic mixed-EOL insertion policy.
 - **ADR-003:** durable replacement uses an injected adapter, platform commit
   semantics, identity revalidation, and explicit durability outcomes.
+- **ADR-004, pending:** the M5 production editor uses a rope-authoritative
+  semantic model, bounded visible layout, and retained full-document
+  accessibility only if the one-week gate meets every correctness, IME,
+  accessibility, memory, and latency requirement. The gate records Parley,
+  `cosmic-text`, any isolated egui or AccessKit extension, and alternate GUI
+  stacks as measured alternatives rather than assumptions.
 
 ADR-002 and ADR-003 are accepted. ADR-003 implementation verification remains
 in progress until its named platform matrix is green. No custom editor
