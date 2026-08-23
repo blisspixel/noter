@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
-import re
 import os
+import re
 import stat
 import sys
+import unicodedata
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -126,6 +127,25 @@ def first_symlink_component(root: Path, destination: Path) -> Path | None:
     return None
 
 
+def terminal_safe_diagnostic(diagnostic: str) -> str:
+    """Render non-printing Unicode code points as visible terminal-safe escapes."""
+
+    rendered: list[str] = []
+    for character in diagnostic:
+        if not unicodedata.category(character).startswith("C"):
+            rendered.append(character)
+            continue
+
+        code_point = ord(character)
+        if code_point <= 0xFF:
+            rendered.append(f"\\x{code_point:02x}")
+        elif code_point <= 0xFFFF:
+            rendered.append(f"\\u{code_point:04x}")
+        else:
+            rendered.append(f"\\U{code_point:08x}")
+    return "".join(rendered)
+
+
 def missing_links(root: Path) -> list[str]:
     """Return diagnostics for missing local inline-link paths and fragments."""
     diagnostics: list[str] = []
@@ -239,7 +259,10 @@ def main() -> int:
     root = Path(__file__).resolve().parent.parent
     diagnostics = missing_links(root)
     if diagnostics:
-        print("\n".join(diagnostics), file=sys.stderr)
+        print(
+            "\n".join(terminal_safe_diagnostic(item) for item in diagnostics),
+            file=sys.stderr,
+        )
         return 1
 
     print("All local Markdown link targets exist.")

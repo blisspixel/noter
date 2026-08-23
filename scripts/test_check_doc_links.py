@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import tempfile
@@ -9,7 +10,40 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from check_doc_links import MAX_MARKDOWN_BYTES, missing_links
+from check_doc_links import (
+    MAX_MARKDOWN_BYTES,
+    main,
+    missing_links,
+    terminal_safe_diagnostic,
+)
+
+
+class TerminalDiagnosticTests(unittest.TestCase):
+    def test_escapes_terminal_controls_and_unicode_format_characters(self) -> None:
+        diagnostic = "error: \x00\x1b\x7f\x85\u202e\udcff"
+
+        self.assertEqual(
+            terminal_safe_diagnostic(diagnostic),
+            r"error: \x00\x1b\x7f\x85\u202e\udcff",
+        )
+
+    def test_preserves_printable_unicode(self) -> None:
+        self.assertEqual(
+            terminal_safe_diagnostic("guide: caf\u00e9, \u6771\u4eac, \u2713"),
+            "guide: caf\u00e9, \u6771\u4eac, \u2713",
+        )
+
+    def test_main_neutralizes_complete_diagnostics_before_stderr(self) -> None:
+        stderr = io.StringIO()
+        with (
+            patch("check_doc_links.missing_links", return_value=["bad\x1b[2Jtarget"]),
+            patch("sys.stderr", stderr),
+        ):
+            result = main()
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stderr.getvalue(), r"bad\x1b[2Jtarget" + "\n")
+        self.assertNotIn("\x1b", stderr.getvalue())
 
 
 class MarkdownInputTests(unittest.TestCase):
