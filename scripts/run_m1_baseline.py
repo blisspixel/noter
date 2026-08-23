@@ -48,11 +48,15 @@ SEARCH_MARKERS = {
 }
 
 
-def _validate_windows_process_list_counts(assigned: int, returned: int) -> int:
-    """Return a complete bounded Job Object process-list length."""
-    if assigned != returned or returned > WINDOWS_MAXIMUM_JOB_PROCESSES:
+def _validate_windows_process_list_counts(assigned: int, returned: int) -> int | None:
+    """Return a complete bounded process count, or None for a changing list."""
+    if (
+        assigned > WINDOWS_MAXIMUM_JOB_PROCESSES
+        or returned > assigned
+        or returned > WINDOWS_MAXIMUM_JOB_PROCESSES
+    ):
         raise RuntimeError("Windows command process list is incomplete or invalid")
-    return returned
+    return returned if assigned == returned else None
 
 
 ADVERSARIAL_QUERY = ("a" * 63) + "b"
@@ -740,6 +744,11 @@ class _WindowsProcessJob:
             information.number_of_assigned_processes,
             information.number_of_process_ids_in_list,
         )
+        if process_count is None:
+            # A process can exit after Job Object accounting observes it but
+            # before the identifier list is filled. Do not act on the partial
+            # snapshot. The caller retries under its existing absolute deadline.
+            return information.number_of_assigned_processes, []
 
         process_query_limited_information = 0x1000
         process_terminate = 0x0001

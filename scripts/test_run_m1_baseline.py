@@ -260,8 +260,8 @@ class OrchestrationTests(unittest.TestCase):
             ),
             baseline.WINDOWS_MAXIMUM_JOB_PROCESSES,
         )
+        self.assertIsNone(baseline._validate_windows_process_list_counts(2, 1))
         for assigned, returned in (
-            (2, 1),
             (1, 2),
             (
                 baseline.WINDOWS_MAXIMUM_JOB_PROCESSES + 1,
