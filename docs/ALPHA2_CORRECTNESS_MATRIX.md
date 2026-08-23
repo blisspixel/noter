@@ -2,7 +2,7 @@
 
 **Recorded:** 2026-08-23
 
-**Implementation commit:** `9e0534df68c9b6eeae76b9ab213bea4b49e82849`
+**Implementation commit:** `3435372d16dd8838bb228c20fc320213fe779e30`
 
 **Exact-head CI:** Required on the final evidence commit before the tag is
 created. GitHub branch protection and the Release workflow are the authoritative
@@ -42,7 +42,7 @@ Rows use:
 
 | Field | Value |
 | --- | --- |
-| Noter implementation commit | `9e0534df68c9b6eeae76b9ab213bea4b49e82849` |
+| Noter implementation commit | `3435372d16dd8838bb228c20fc320213fe779e30` |
 | Tree | Feature implementation frozen at the named commit; this evidence document is its descendant |
 | Build profiles | Locked workspace tests and release all-features Windows GUI |
 | Tester | Automated maintainer session with live native UI inspection on the development host |
@@ -58,20 +58,20 @@ Commands and results at the implementation commit:
 
 | Gate | Result |
 | --- | --- |
-| `cargo test --locked --workspace --all-targets --all-features` | 819 passed, 0 failed |
+| `cargo test --locked --workspace --all-targets --all-features` | 822 passed, 0 failed |
 | Python unittest discovery | 192 passed, 4 expected Windows-host environment skips |
-| Whole-workspace line coverage | Local implementation rerun: 94.14 percent, 34,859 of 37,028 lines; final exact-head rerun required |
-| Trust-kernel line coverage | Local implementation rerun: 93.38 percent, 13,531 of 14,490 lines; final exact-head rerun required |
+| Whole-workspace line coverage | Local implementation rerun: 94.22 percent, 35,060 of 37,211 lines; final exact-head rerun required |
+| Trust-kernel line coverage | Local implementation rerun: 93.25 percent, 14,530 of 15,581 lines; final exact-head rerun required |
 | Formatting and strict Clippy | Pass |
 | Rustdoc with warnings denied | Pass |
 | RustSec audit | Pass, no advisory warnings |
 | Dependency license and source policy | Pass |
 | Focused mutation-gap reruns | Pass; the final line-ending, first-ending, recovery-store, and stable live-lease binding campaigns caught every viable mutant with zero missed or timed-out results. The corrected split-CRLF boundary rerun caught 15 and rejected 2 at compile time; the real live-lease fact rerun caught all 5. Platform-specific helper names keep cfg-inactive Unix and Windows candidates on their executable host without narrowing either host's owned scope. Three platform race match guards remain narrowly excluded because portable tests cannot force them without mocking the native install or rename path, while their adjacent success and failure surfaces are covered. Those exclusions do not prove atomic Unix pathname replacement or unlink against a writer controlling the directory. |
 | Documentation links and release configuration | Pass |
-| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source and visually reviewed at full size; Text Mode now records the restored editor focus and caret, while all four Markdown captures remained byte-identical; approved input digest `bb234c2a84188d47c94d549a809f92a8c1b1924614ecc56b1e10d7e41f638fce` |
+| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source and visually reviewed at full size; the Light Text Mode capture records the corrected focus and caret timing, while all four Markdown captures remained byte-identical; approved input digest `9349459902ed9fe82acabb8738d113da8e59f242bbb66f137ea8461b09e0b429` |
 | `dist plan --tag v0.1.0-alpha.2` | Pass, expected archive, installer, checksum, SBOM, and attestation inventory |
 
-The 819 Rust tests comprise 312 library unit tests, 464 binary unit tests, 15
+The 822 Rust tests comprise 312 library unit tests, 467 binary unit tests, 15
 integration and property tests, and 28 native-platform unit tests.
 
 ## Alpha.2 critical rows
@@ -160,7 +160,7 @@ removable, weak, or adversarial recovery namespace.
 | EDT-02 Shift extend | Pass | Pure selection tests and Markdown adapter integration |
 | EDT-04 Cut and Paste shared path | Pass | Shared edit-path and paste-origin bounds tests |
 | EDT-05..EDT-08 undo and coalescing | Pass | History tests, long-session bound fixture, and typing/paste separation |
-| EDT-09..EDT-11 find, replace, and go-to-line | Pass | Search properties, empty-query Find navigation, ordered input, and app integration tests |
+| EDT-09..EDT-11 find, replace, and go-to-line | Pass | Search properties, empty-query Find navigation, ordered input, and app integration tests. Go To Line exclusively consumes modal prefixes through Enter, Escape, button or window completion, touch completion, and accessibility Click, then replays only document-safe suffix input on the restored selection. The matrix covers text, paste, IME commit, editing keys, and accessibility activation. |
 | EDT-03 mouse drag selection | Partial | Markdown cross-block pointer suite passes; Text Mode click behavior remains a native-widget residual |
 | EDT-12 word wrap | Pass | Preference and UI paths preserve source bytes |
 | View-command focus and bounds | Pass | Keyboard zoom preserves focused controls; bounded menu commands disable honestly at limits |
@@ -175,7 +175,7 @@ removable, weak, or adversarial recovery namespace.
 | SEC-01 no unexpected network | Pass | No background network path; update status only links on explicit user action |
 | SEC-03 recovery permissions | Pass | Exact corrected-head Windows, Linux, and macOS suites cover protected Windows DACL creation, Unix owner-only recovery files, macOS ACL absence, and fail-closed unsupported file semantics; they do not verify ownership or ACL isolation of the enclosing state and recovery directories |
 | SEC-05 Markdown remote content | Pass | Restricted native model performs no remote fetch |
-| Changed-code security review | Pass | Immutable full-range scan `8d960079-7db3-47eb-87f0-2b4fedc83845` reviewed the protected-base range through `cc7c8ca` with complete 28-file coverage. It reported one low-severity terminal-control path and classified two Unix recovery pathname races outside alpha.2's supported boundary because they require full same-user control of the owner-controlled state directory and confer no new authority under the repository threat model. Postcondition checks reject false success after detected rebinding, but they do not make pathname replacement or unlink atomic, preserve a predecessor already replaced, or undo a wrong unlink. Commit `fd28af8` closes the finding at the complete-diagnostic stderr boundary. Descendant scans `37f04fa4-8385-4e1c-98f1-0151e839db1c` through `fd28af8`, `8e0162d9-f6c1-4140-84f9-19f90a026317` through `27b9fe7`, and evidence-only scan `5ffa86b7-6da9-46d5-bf62-916786e0f1d9` through `58c87ff` all have complete coverage and zero findings. Final immutable range scan `9266e1c4-e897-43e5-893c-1d1c0362a48a` reviewed the nine executable or security-sensitive surfaces from `58c87ff` through final implementation `9e0534d` with complete coverage and zero findings. |
+| Changed-code security review | Pass | Immutable full-range scan `8d960079-7db3-47eb-87f0-2b4fedc83845` reviewed the protected-base range through `cc7c8ca` with complete 28-file coverage. It reported one low-severity terminal-control path and classified two Unix recovery pathname races outside alpha.2's supported boundary because they require full same-user control of the owner-controlled state directory and confer no new authority under the repository threat model. Postcondition checks reject false success after detected rebinding, but they do not make pathname replacement or unlink atomic, preserve a predecessor already replaced, or undo a wrong unlink. Commit `fd28af8` closes the finding at the complete-diagnostic stderr boundary. Descendant scans `37f04fa4-8385-4e1c-98f1-0151e839db1c` through `fd28af8`, `8e0162d9-f6c1-4140-84f9-19f90a026317` through `27b9fe7`, and evidence-only scan `5ffa86b7-6da9-46d5-bf62-916786e0f1d9` through `58c87ff` all have complete coverage and zero findings. Immutable range scan `9266e1c4-e897-43e5-893c-1d1c0362a48a` reviewed the nine executable or security-sensitive surfaces from `58c87ff` through implementation `9e0534d` with complete coverage and zero findings. Evidence-only scan `2de7e1c2-6a92-41ac-be83-83f0a8e13c45` through `2b4b18c` and precommit working-tree scan `b8940acd-a996-422b-bc55-f736f581b8be` also completed with zero findings. Final immutable range scan `d44a197d-a3bd-4d7d-90e7-dbdcdeb7fd3b` reviewed all four executable or validation surfaces from `2b4b18c` through corrected implementation `3435372` with complete coverage and zero findings. |
 
 ### Rows outside alpha.2 prerelease scope
 
