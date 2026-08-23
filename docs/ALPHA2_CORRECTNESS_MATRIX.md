@@ -2,7 +2,7 @@
 
 **Recorded:** 2026-08-23
 
-**Implementation commit:** `125783b4337d0f246515a14112e9b983810b8316`
+**Implementation commit:** `27b9fe7f10dc01a0e4b7004c453ebde510db36d0`
 
 **Exact-head CI:** Required on the final evidence commit before the tag is
 created. GitHub branch protection and the Release workflow are the authoritative
@@ -35,7 +35,7 @@ Rows use:
 
 | Field | Value |
 | --- | --- |
-| Noter implementation commit | `125783b4337d0f246515a14112e9b983810b8316` |
+| Noter implementation commit | `27b9fe7f10dc01a0e4b7004c453ebde510db36d0` |
 | Tree | Feature implementation frozen at the named commit; this evidence document is its descendant |
 | Build profiles | Locked workspace tests and release all-features Windows GUI |
 | Tester | Automated maintainer session with live native UI inspection on the development host |
@@ -51,20 +51,20 @@ Commands and results at the implementation commit:
 
 | Gate | Result |
 | --- | --- |
-| `cargo test --locked --workspace --all-targets --all-features` | 811 passed, 0 failed |
-| Python unittest discovery | 169 passed, 4 Windows-host environment skips |
-| Whole-workspace line coverage | 94.18 percent, 34,353 of 36,474 lines |
-| Trust-kernel line coverage | 93.72 percent, 14,457 of 15,425 lines |
+| `cargo test --locked --workspace --all-targets --all-features` | 812 passed, 0 failed |
+| Python unittest discovery | 172 passed, 4 Windows-host environment skips |
+| Whole-workspace line coverage | Prior exact hosted descendant: 94.18 percent, 34,353 of 36,474 lines; final exact-head rerun required |
+| Trust-kernel line coverage | Prior exact hosted descendant: 93.72 percent, 14,457 of 15,425 lines; final exact-head rerun required |
 | Formatting and strict Clippy | Pass |
 | Rustdoc with warnings denied | Pass |
 | RustSec audit | Pass, no advisory warnings |
 | Dependency license and source policy | Pass |
-| Focused mutation-gap reruns | Pass; the final line-ending, first-ending, recovery-store, and stable live-lease binding reruns caught every viable mutant with zero missed or timed-out results; three platform race match guards remain narrowly excluded because portable tests cannot force them without mocking the native install or rename path, while their adjacent success and failure surfaces are covered |
+| Focused mutation-gap reruns | Pass; the final line-ending, first-ending, recovery-store, and stable live-lease binding campaigns caught every viable mutant with zero missed or timed-out results. The corrected split-CRLF boundary rerun caught 15 and rejected 2 at compile time; the real live-lease fact rerun caught all 5. Platform-specific helper names keep cfg-inactive Unix and Windows candidates on their executable host without narrowing either host's owned scope. Three platform race match guards remain narrowly excluded because portable tests cannot force them without mocking the native install or rename path, while their adjacent success and failure surfaces are covered. |
 | Documentation links and release configuration | Pass |
-| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source; all five outputs remained byte-identical to the visually reviewed set; approved input digest `1fcc1e7711c71e215ecbad9e8dada9a85a9b1aac140a06ea3aa8576d5f33a716` |
+| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source; all five outputs remained byte-identical to the visually reviewed set; approved input digest `8ce752054adf0fc8a58339c3c7dedb13522f104d6b47c6d4d26e5d8d6f39a22f` |
 | `dist plan --tag v0.1.0-alpha.2` | Pass, expected archive, installer, checksum, SBOM, and attestation inventory |
 
-The 811 Rust tests comprise 311 library unit tests, 457 binary unit tests, 15
+The 812 Rust tests comprise 312 library unit tests, 457 binary unit tests, 15
 integration and property tests, and 28 native-platform unit tests.
 
 ## Alpha.2 critical rows
@@ -166,7 +166,7 @@ and lease files, so it contains no remaining recovery payload.
 | SEC-01 no unexpected network | Pass | No background network path; update status only links on explicit user action |
 | SEC-03 recovery permissions | Pass | Exact corrected-head Windows, Linux, and macOS suites cover protected Windows DACL creation, Unix owner-only recovery siblings, macOS ACL absence, and fail-closed unsupported states |
 | SEC-05 Markdown remote content | Pass | Restricted native model performs no remote fetch |
-| Changed-code security review | Pass | Final immutable full-range scan `b4f20ba6-e34d-4c75-bb44-a8050747d03d` reviewed the protected-base range through `125783b` with complete coverage and zero reportable findings. One Unix check-to-rename candidate remains suppressed as same-authority defense in depth because directory-write authority already permits direct recovery replacement and post-rename identity ratification prevents false success. |
+| Changed-code security review | Pass | Immutable full-range scan `8d960079-7db3-47eb-87f0-2b4fedc83845` reviewed the protected-base range through `cc7c8ca` with complete 28-file coverage. It reported one low-severity terminal-control path and suppressed two Unix recovery pathname races because they require full same-user control of the owner-private state directory, confer no new authority, and fail postcondition ratification. Commit `fd28af8` closes the finding at the complete-diagnostic stderr boundary. Descendant scans `37f04fa4-8385-4e1c-98f1-0151e839db1c` through `fd28af8` and `8e0162d9-f6c1-4140-84f9-19f90a026317` through final implementation `27b9fe7` both have complete coverage and zero findings. |
 
 ### Rows outside alpha.2 prerelease scope
 

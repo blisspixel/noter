@@ -26,7 +26,7 @@ that candidate is frozen for publication.
 - Add `RecoveryScheduleState::next_persist_delay`, the pure wake-up deadline an
   interface needs to keep the recovery-point objective while it sleeps.
 - Record the `0.1.0-alpha.2` correctness matrix against implementation commit
-  `125783b`, mapping dogfood-critical recovery, conflict, clipboard,
+  `27b9fe7`, mapping dogfood-critical recovery, conflict, clipboard,
   navigation, coverage, security review, and live native recovery evidence to
   the scoped prerelease decision.
 - Record partial M2 installed-product evidence for a disposable Windows
@@ -226,9 +226,10 @@ that candidate is frozen for publication.
   after an explicit Discard decision, so the document left on screen does not
   remain without a scheduled recovery record.
 - Let the Windows benchmark harness briefly observe a process whose exit raced
-  `TerminateProcess`, avoiding a false cleanup failure after bounded-output
-  termination while sharing the existing absolute process-tree deadline across
-  every captured handle.
+  `TerminateProcess` or the Job Object identifier-list snapshot, avoiding a
+  false cleanup failure after bounded-output termination while sharing the
+  existing absolute process-tree deadline across every captured handle. Invalid
+  or oversized process counts still fail closed.
 - Close simple bold, italic, strikethrough, and inline-code runs before a line
   break at the end of the run in Markdown Mode. The same markers reopen only
   when the next character is typed, so the file never stores an empty pair such
@@ -291,6 +292,10 @@ that candidate is frozen for publication.
 - Keep the macOS mutation campaign on executable macOS and shared Unix code.
   Windows-only receipt and commit mutations remain owned by the sharded Windows
   campaign instead of appearing as equivalent macOS survivors.
+- Prove both split-CRLF range endpoints and real recovery-lease identity and
+  hard-link transitions directly. Explicit Unix and Windows recovery helper
+  names keep cfg-inactive mutations on the host that can execute them without
+  narrowing either platform's campaign.
 - Define the scoped alpha publication gate separately from the complete RC and
   stable release matrix. Alpha limitations must be recorded and assigned to a
   later blocking milestone, and critical or high security or data-safety
@@ -588,6 +593,10 @@ that candidate is frozen for publication.
   decompression operation.
 - Escape control characters in rejected command-line values before writing
   diagnostics to a terminal.
+- Escape every non-printing Unicode code point in repository link-checker
+  diagnostics at the final stderr boundary while preserving ordinary printable
+  multilingual text. This prevents untrusted pull-request paths and filesystem
+  errors from injecting terminal or CI-log controls.
 - Ignore Noter's actual private save and backup recovery siblings, together
   with standard local Python test and coverage caches, so failed-save content
   and generated tooling output cannot be committed accidentally.

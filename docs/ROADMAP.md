@@ -229,6 +229,27 @@ The configured source and filter scope is not narrowed; structural repairs
 remove mutation sites rather than excluding them. A complete exact-head hosted
 pass remains required before alpha.2 can be tagged.
 
+Exact-head run
+[32641128954](https://github.com/blisspixel/noter/actions/runs/32641128954)
+then passed all ordinary Windows, Linux, and macOS suites, both coverage gates,
+the corrected macOS campaign, and Linux shard 1. Linux shards 0 and 2 exposed
+one missing start-side CRLF boundary assertion, one missing real-file
+lease-fact assertion, and cfg-inactive Windows helpers selected under generic
+names. Commit `cc7c8ca` adds both behavioral proofs and names the Unix and
+Windows helpers explicitly so each platform campaign owns only code it can
+execute. The final exact-head hosted mutation pass remains the publication gate.
+
+Commit `c56d3fd` also makes the Windows benchmark harness retry a transiently
+partial Job Object identifier snapshot under its existing absolute cleanup
+deadline while invalid or oversized counts still fail closed. Exact security
+scan `8d960079-7db3-47eb-87f0-2b4fedc83845` then found one low-severity raw
+terminal-control path in repository link diagnostics. Commits `fd28af8` and
+`27b9fe7` close the complete representation family at the stderr boundary,
+including Unicode line and paragraph separators. Descendant closure scans
+`37f04fa4-8385-4e1c-98f1-0151e839db1c` and
+`8e0162d9-f6c1-4140-84f9-19f90a026317` have complete coverage and zero
+findings.
+
 The schema-v2 reproducible benchmark harness is implemented at commit
 `580f164`. A 30-sample Windows reference from that clean detached commit records
 all raw latency and peak-working-set samples, the exact deterministic corpus,
