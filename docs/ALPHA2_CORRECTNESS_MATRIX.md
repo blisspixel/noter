@@ -1,8 +1,8 @@
 # 0.1.0-alpha.2 Correctness Matrix
 
-**Recorded:** 2026-08-22
+**Recorded:** 2026-08-23
 
-**Implementation commit:** `c9a7dc95a532c30171b4025f43c83187b17a4c53`
+**Implementation commit:** `2aa4a898758379af4be29d4fc235b38ff1473984`
 
 **Exact-head CI:** Required on the final evidence commit before the tag is
 created. GitHub branch protection and the Release workflow are the authoritative
@@ -35,11 +35,11 @@ Rows use:
 
 | Field | Value |
 | --- | --- |
-| Noter implementation commit | `c9a7dc95a532c30171b4025f43c83187b17a4c53` |
+| Noter implementation commit | `2aa4a898758379af4be29d4fc235b38ff1473984` |
 | Tree | Feature implementation frozen at the named commit; this evidence document is its descendant |
 | Build profiles | Locked workspace tests and release all-features Windows GUI |
 | Tester | Automated maintainer session with live native UI inspection on the development host |
-| Date | 2026-08-22 |
+| Date | 2026-08-23 |
 | Operating system | Windows 11 Pro, build 26200 |
 | Rust / Cargo | 1.97.1 / 1.97.1 |
 | Filesystem | Healthy fixed NTFS, local |
@@ -51,19 +51,20 @@ Commands and results at the implementation commit:
 
 | Gate | Result |
 | --- | --- |
-| `cargo test --locked --workspace --all-targets --all-features` | 720 passed, 0 failed |
+| `cargo test --locked --workspace --all-targets --all-features` | 721 passed, 0 failed |
 | Python unittest discovery | 165 passed, 1 environment skip |
-| Whole-workspace line coverage | 93.62 percent |
-| Trust-kernel line coverage | 93.81 percent |
+| Whole-workspace line coverage | 93.66 percent |
+| Trust-kernel line coverage | 93.88 percent |
 | Formatting and strict Clippy | Pass |
 | Rustdoc with warnings denied | Pass |
 | RustSec audit | Pass, no advisory warnings |
 | Dependency license and source policy | Pass |
+| Focused mutation-gap reruns | Pass; schema-v2 boundary, exact `ResourceBusy`, and missing claimed-path mutants are caught; the exact Unix OR-to-XOR flag mutant is algebraically equivalent and narrowly excluded while OR-to-AND remains in scope and runtime flag behavior is asserted |
 | Documentation links and release configuration | Pass |
-| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source; all five outputs remained byte-identical to the visually reviewed set; approved input digest `17e5fc6d7f755cd9bd5eefee81b11f2023d75a80a84616e0750ecdc072e1e22c` |
+| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source; all five outputs remained byte-identical to the visually reviewed set; approved input digest `e883566c03f5a04194c1af55f26235311fccabbd93f1fa00b3aaaa741872a760` |
 | `dist plan --tag v0.1.0-alpha.2` | Pass, expected archive, installer, checksum, SBOM, and attestation inventory |
 
-The 720 Rust tests comprise 281 library unit tests, 398 binary unit tests, 15
+The 721 Rust tests comprise 282 library unit tests, 398 binary unit tests, 15
 integration and property tests, and 26 native-platform unit tests.
 
 ## Alpha.2 critical rows
@@ -162,7 +163,7 @@ It contains no remaining recovery payload.
 | SEC-01 no unexpected network | Pass | No background network path; update status only links on explicit user action |
 | SEC-03 recovery permissions | Partial | Owner-restricted recovery siblings and Windows private-file tests pass; native Unix permissions remain hosted-test evidence |
 | SEC-05 Markdown remote content | Pass | Restricted native model performs no remote fetch |
-| Changed-code security review | Pass | Scan `6d00a423-9f78-4a9e-b0d1-3aeaae438369` reproduced three medium and three low recovery/input findings plus one self-only IME product defect. The final immutable full-range scan `8abe98b6-bdb7-43cf-9153-22efe1e46dfa` re-reviewed all 22 changed surfaces at `c9a7dc9` with complete coverage and zero reportable findings. |
+| Changed-code security review | Pass | Scan `6d00a423-9f78-4a9e-b0d1-3aeaae438369` reproduced three medium and three low recovery/input findings plus one self-only IME product defect. The final immutable full-range scan `f38406a6-2003-4858-be12-3720abb42fbe` re-reviewed all 23 changed surfaces at `2aa4a89` with complete coverage and zero reportable findings. |
 
 ### Rows outside alpha.2 prerelease scope
 
