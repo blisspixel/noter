@@ -53,6 +53,7 @@ jobs:
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/dist
+          if-no-files-found: error
       # sure would be cool if github gave us proper conditionals...
       # so here's a doubly-nested ternary-via-truthiness to try to provide the best possible
       # functionality based on whether this is a pull_request, and whether it's from a fork.
@@ -89,6 +90,7 @@ jobs:
         with:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
+          if-no-files-found: error
 
   # Build and packages all the platform-specific things
   build-local-artifacts:
@@ -169,9 +171,8 @@ jobs:
       - name: Fetch local artifacts
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
         with:
-          pattern: artifacts-*
+          name: artifacts-plan-dist-manifest
           path: target/distrib/
-          merge-multiple: true
       - name: Install verified cargo-auditable on macOS or Linux
         if: runner.os != 'Windows'
         shell: bash
@@ -323,6 +324,7 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+          if-no-files-found: error
 
   # Build and package all the platform-agnostic(ish) things
   build-global-artifacts:
@@ -365,8 +367,14 @@ jobs:
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
         with:
           pattern: artifacts-*
-          path: target/distrib/
-          merge-multiple: true
+          path: target/release-artifact-inputs/
+          merge-multiple: false
+      - name: Validate and assemble local artifacts
+        run: >
+          python3 scripts/check_release_artifacts.py prepare
+          --input-root target/release-artifact-inputs
+          --destination target/distrib
+          --stage global
       - id: cargo-dist
         shell: bash
         run: |
@@ -386,14 +394,15 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+          if-no-files-found: error
   # Determines if we should publish/announce
   host:
     needs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
-    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    # Publishing requires the plan and every repository-defined build stage.
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && needs.build-local-artifacts.result == 'success' && needs.build-global-artifacts.result == 'success' }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
@@ -420,8 +429,18 @@ jobs:
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
         with:
           pattern: artifacts-*
-          path: target/distrib/
-          merge-multiple: true
+          path: target/release-artifact-inputs/
+          merge-multiple: false
+      - name: Validate and assemble hosting artifacts
+        env:
+          RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
+        run: >
+          python3 scripts/check_release_artifacts.py prepare
+          --input-root target/release-artifact-inputs
+          --destination target/distrib
+          --stage host
+          --expected-tag "$RELEASE_TAG"
+          --global-result "${{ needs.build-global-artifacts.result }}"
       - name: Validate immutable release target
         shell: bash
         env:
@@ -469,21 +488,27 @@ jobs:
       - name: "Upload dist-manifest.json"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          # Overwrite the previous copy
           name: artifacts-dist-manifest
           path: dist-manifest.json
+          if-no-files-found: error
       # Fetch the exact build artifacts used for the draft upload again for
       # provenance attestation before the release becomes public.
       - name: "Download GitHub Artifacts"
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
         with:
           pattern: artifacts-*
-          path: artifacts
-          merge-multiple: true
-      - name: Cleanup
-        run: |
-          # Remove the granular manifests
-          rm -f artifacts/*-dist-manifest.json
+          path: target/release-publication-inputs/
+          merge-multiple: false
+      - name: Validate and assemble publication artifacts
+        env:
+          RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
+        run: >
+          python3 scripts/check_release_artifacts.py prepare
+          --input-root target/release-publication-inputs
+          --destination artifacts
+          --stage publish
+          --expected-tag "$RELEASE_TAG"
+          --global-result "${{ needs.build-global-artifacts.result }}"
       - name: Create or refresh GitHub Draft Release
         env:
           RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
@@ -505,6 +530,17 @@ jobs:
             done < <(printf '%s' "$release_json" | jq -r '.assets[].id')
             gh release upload "$RELEASE_TAG" artifacts/*
           fi
+      - name: Verify GitHub Draft Release Assets
+        env:
+          RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
+        run: |
+          gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            > "$RUNNER_TEMP/release.json"
+          python3 scripts/check_release_artifacts.py verify-remote \
+            --artifact-root artifacts \
+            --release-json "$RUNNER_TEMP/release.json" \
+            --expected-tag "$RELEASE_TAG"
       - name: Attest
         uses: actions/attest@c32b4b8b198b65d0bd9d63490e847ff7b53989d4
         with:
@@ -525,17 +561,6 @@ jobs:
           RELEASE_COMMIT: "${{ github.sha }}"
           RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
         run: |
-          git fetch --no-tags --depth=1 origin main
-          if [ "$RELEASE_COMMIT" != "$(git rev-parse origin/main)" ]; then
-            echo "Main advanced before final publication; refusing stale publication." >&2
-            exit 2
-          fi
-          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          if [ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$RELEASE_COMMIT" ]; then
-            echo "The release tag does not identify the built commit." >&2
-            exit 2
-          fi
-
           {
             printf '%s\n\n' "This prerelease is for evaluation and careful dogfooding."
             printf '%s\n\n' "Keep backups and do not use this alpha as the only copy of important work."
@@ -551,4 +576,31 @@ jobs:
             printf '%s\n' "Do not pipe a remote installer directly into a shell. Windows and macOS artifacts are not platform-signed."
           } > "$RUNNER_TEMP/notes.txt"
 
+          # GitHub has no conditional release-publish API bound atomically to a
+          # branch ref. Refresh both refs immediately before the publish call;
+          # the release procedure also keeps main frozen for this short window.
+          git fetch --no-tags --depth=1 origin main
+          if [ "$RELEASE_COMMIT" != "$(git rev-parse origin/main)" ]; then
+            echo "Main advanced before final publication; refusing stale publication." >&2
+            exit 2
+          fi
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          if [ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$RELEASE_COMMIT" ]; then
+            echo "The release tag does not identify the built commit." >&2
+            exit 2
+          fi
+          gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            > "$RUNNER_TEMP/final-release.json"
+          python3 scripts/check_release_artifacts.py verify-remote \
+            --artifact-root artifacts \
+            --release-json "$RUNNER_TEMP/final-release.json" \
+            --expected-tag "$RELEASE_TAG"
           gh release edit "$RELEASE_TAG" --verify-tag --prerelease --draft=false --title "Noter ${RELEASE_TAG#v}" --notes-file "$RUNNER_TEMP/notes.txt"
+          published_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+          if [ "$(printf '%s' "$published_json" | jq -r '.draft')" != "false" ] || \
+             [ "$(printf '%s' "$published_json" | jq -r '.prerelease')" != "true" ] || \
+             [ "$(printf '%s' "$published_json" | jq -r '.tag_name')" != "$RELEASE_TAG" ]; then
+            echo "Published release state does not match the requested prerelease." >&2
+            exit 2
+          fi

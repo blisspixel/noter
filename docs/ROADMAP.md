@@ -23,7 +23,7 @@ criteria and evidence land on one immutable green commit.
 | Version | Product meaning | Primary milestones | Status |
 | --- | --- | --- | --- |
 | `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1–M4 and M6 partial | Prior crate checkpoint |
-| `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups | Recovery, clipboard, overwrite confirm, first-contact honesty, and alpha evidence | **Release candidate** |
+| `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups on supported local state roots | Recovery, clipboard, overwrite confirm, first-contact honesty, and alpha evidence | **Release candidate** |
 | `0.1.0-beta.1` | Production editor path: measured performance, IME, accessibility | M5 feasibility gate and production editor; continuous Markdown editing foundation | After alpha.2 |
 | `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.1 |
 | `0.1.0` | First public-quality release | Every v0.1 requirement in REQUIREMENTS has evidence | After successful RC dogfood |
@@ -32,6 +32,11 @@ criteria and evidence land on one immutable green commit.
 `Verified` means the implementation and every named automated, manual, and
 documentation artifact exist on the same green commit. Local implementation is
 not verification.
+
+Alpha.2 recovery support is limited to a normally permissioned, local,
+owner-controlled per-user state root. Group-writable or ACL-shared directories
+and redirected, synchronized, network, removable, or weak-filesystem state roots
+remain outside this prerelease boundary.
 
 ## Order of operations
 
@@ -57,7 +62,9 @@ does not expand unsafe UI surface.
    on Windows only; the other supported platforms remain open evidence.
 6. **Partial:** remaining M1 filesystem fixtures as environments allow: macOS,
    SMB, cloud-sync, removable, weak FS, second-identity, crash-persistence.
-   Does not block dogfood on platforms already covered. Evidence:
+   This deferral covers document I/O evidence and does not extend recovery-state
+   support to those environments. It does not block dogfood on platforms already
+   covered. Evidence:
    [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
 7. **Partial:** M2 installed-product evidence: disposable Windows source
    install recorded; interactive About GUI and packaged installers remain open.
@@ -75,23 +82,28 @@ does not expand unsafe UI surface.
 
 ### Toward `0.1.0-beta.1`
 
-9. **Execute the M5 editor feasibility gate**: rope-backed or proven bounded
-   path, IME, AccessKit, display scale, 50 MiB corpus route.
-10. **Expand Markdown to continuous whole-document editing** on the production
+9. **Complete M4-H1 recovery namespace binding:** verify and retain the state and
+   recovery directory identities and access policy, route operations through
+   held directory handles, reject unsupported roots before writing recovery
+   content, and close the Unix pathname-operation contract with native race
+   fixtures and an ADR.
+10. **Execute the M5 editor feasibility gate**: rope-backed or proven bounded
+    path, IME, AccessKit, display scale, 50 MiB corpus route.
+11. **Expand Markdown to continuous whole-document editing** on the production
     editor foundation (still source-backed; no proprietary model).
 
 ### Toward `0.1.0-rc.1` and `0.1.0`
 
-11. **Complete M6 quality engine**: conformance, diagnostics, Format Document
+12. **Complete M6 quality engine**: conformance, diagnostics, Format Document
     with diff and semantic equivalence, async revision-tagged parse.
-12. **Complete M7 distribution**: signed/attested artifacts where credentials
+13. **Complete M7 distribution**: signed/attested artifacts where credentials
     exist, clean-machine install/upgrade/uninstall, updater policy.
-13. **RC dogfood**: minimum 14-day multi-person, multi-platform use without
+14. **RC dogfood**: minimum 14-day multi-person, multi-platform use without
     data loss; then publish `0.1.0`.
 
 ### After `0.1.0`
 
-14. Only ratified post-release work. Non-goals in REQUIREMENTS stay out unless
+15. Only ratified post-release work. Non-goals in REQUIREMENTS stay out unless
     product decision and a new roadmap entry promote them.
 
 ## Milestone status
@@ -111,14 +123,17 @@ does not expand unsafe UI surface.
 
 The current product checkpoint is a dogfoodable correctness alpha, not a claim
 of public-release completeness. Kill-process recovery, clipboard parity,
-conflict overwrite confirmation, and the alpha trust evidence are included. M5
-through M7 remain first-release work after this checkpoint.
+conflict overwrite confirmation, and the alpha trust evidence are included when
+the state root meets the supported local, owner-controlled boundary above. M4-H1
+namespace binding and M5 through M7 remain first-release work after this
+checkpoint.
 
 The current tree already has deterministic Undo coalescing, bounded Find and
 Replace, the pure lifecycle reducer, external-change Reload / Keep Editing /
 Save As / overwrite second-confirm, Markdown document-wide and cross-block
 selection, pure recovery scheduling with epoch-correlated persist, versioned
-recovery records, a private durable recovery store, application wiring that
+recovery records, an owner-restricted durable recovery store within the alpha.2
+state-root boundary, application wiring that
 schedules dirty persist, offers startup Restore / Discard, deletes on Save or
 Discard, and shows persist failure, and Edit-menu Cut / Copy / Paste on the
 shared edit-command path, pure caret navigation for character, word, line home
@@ -467,7 +482,8 @@ cross-platform manual evidence remain open.
 
 ## M4: Lifecycle, Recovery, and Conflicts
 
-**Outcome:** no destructive action or crash silently discards acknowledged work.
+**Outcome:** within the supported storage contract, no destructive action or
+crash silently discards acknowledged work.
 
 ### Scope
 
@@ -513,9 +529,10 @@ rebaselines the expectation, so ordinary Save still fails closed through the
 durable save protocol. Ordinary Save is paused only while the prompt is visible.
 Pure recovery scheduling (2 s idle / 15 s max, epoch-correlated persist so
 late writes cannot revive recovery after Save or Discard), versioned record
-encode/validate with UTF-8 boundary selection checks, and private durable
-recovery storage (atomic install/replace, quarantine with reported failures,
-full directory walk with a 32-offer cap) are implemented in the library.
+encode/validate with UTF-8 boundary selection checks, and owner-restricted
+durable recovery storage within the alpha.2 state-root boundary (atomic
+install/replace, quarantine with reported failures, full directory walk with a
+32-offer cap) are implemented in the library.
 Application wiring (startup offer UI, idle persist effects, state-directory
 path resolution) and overwrite-with-second-confirm are implemented. The pure
 schedule also reports the deadline of its next due persist, so an interface that
@@ -533,13 +550,33 @@ destructive commands cannot discard the last retained copy. Startup scans
 are bounded by entry and aggregate-byte budgets, retain metadata and exact open
 handles instead of document content, and use schema-v2 causal predecessor links
 rather than wall time. Save deletes only owned keyed artifacts; Restore and
-Discard act only on revalidated exact handles. A durable restore successor is
+Discard authorize only records represented by revalidated handles and use the
+platform-specific cleanup contract in DESIGN. A durable restore successor is
 never rolled back because later cleanup failed. Command-line preflight now
 rejects final links, reparse points, directories, FIFOs, and special files
 without a potentially blocking following open. A live Windows GUI test
 proved idle persistence, force-kill, startup Restore, exact recovered editor
 text, and explicit-discard cleanup. Interactive non-Windows GUI recovery and
 navigation remain a beta.1 gate and are not claimed by the alpha.2 prerelease.
+
+### M4-H1: Recovery namespace binding
+
+**Status:** Planned and required before beta.1.
+
+Open or create the platform state root, recovery root, records directory, and
+quarantine directory without following links. Verify stable directory identity,
+owner or SID, mode, ACL or DACL, and supported local-filesystem semantics, then
+retain directory handles for the session and route creation, scan, sync, rename,
+quarantine, and cleanup through them. Reject an unsafe or unverifiable root
+before writing recovery content.
+
+The Unix cleanup ADR must either provide a genuinely object-bound retirement
+strategy or retain and safely neutralize the exact opened object instead of
+claiming atomic pathname unlink. Native Windows, Linux, and macOS fixtures must
+cover group or ACL sharing, ancestor rebind, commit and cleanup final-window
+swaps, redirected roots, and explicit weak or remote filesystem rejection.
+M4-H1 passes only when every supported platform either rejects the unsafe root
+before writing recovery bytes or passes the applicable adversarial fixtures.
 
 ### Exit criteria
 
@@ -548,7 +585,7 @@ navigation remain a beta.1 gate and are not claimed by the alpha.2 prerelease.
 - Recovery meets the documented recovery-point objective.
 - Recovery never writes the original file without an explicit Save.
 - Cross-instance and external-change scenarios preserve every recoverable
-  revision.
+  revision within the supported storage contract.
 
 ## M5: Production Editor, Accessibility, and Performance
 

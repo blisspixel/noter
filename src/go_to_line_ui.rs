@@ -20,6 +20,7 @@ pub struct GoToLineDialog {
     input: String,
     validation: Option<String>,
     request_focus: bool,
+    deferred_input_events: Vec<egui::Event>,
 }
 
 impl GoToLineDialog {
@@ -28,6 +29,7 @@ impl GoToLineDialog {
         self.input = current_line.max(1).to_string();
         self.validation = None;
         self.request_focus = true;
+        self.deferred_input_events.clear();
     }
 
     pub fn owns_text_focus(&self, context: &egui::Context) -> bool {
@@ -52,7 +54,8 @@ impl GoToLineDialog {
         if !self.open {
             return None;
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        self.restore_deferred_input(context);
+        if self.take_ordered_escape(context) {
             self.open = false;
             return Some(GoToLineAction::Close);
         }
@@ -65,7 +68,7 @@ impl GoToLineDialog {
             .collapsible(false)
             .resizable(false)
             .show(context, |ui| {
-                ui.label("Line number");
+                let label = ui.label("Line number");
                 let id = egui::Id::new(LINE_INPUT_ID);
                 let stored_input_was_clamped =
                     truncate_to_utf8_byte_limit(&mut self.input, MAX_LINE_NUMBER_BYTES);
@@ -74,12 +77,14 @@ impl GoToLineDialog {
                     && sanitize_bounded_text_events(ui, id, &self.input, MAX_LINE_NUMBER_BYTES);
                 let (response, buffer_was_clamped) = {
                     let mut buffer = BoundedTextBuffer::new(&mut self.input, MAX_LINE_NUMBER_BYTES);
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut buffer)
-                            .id(id)
-                            .char_limit(MAX_LINE_NUMBER_BYTES)
-                            .desired_width(220.0),
-                    );
+                    let response = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut buffer)
+                                .id(id)
+                                .char_limit(MAX_LINE_NUMBER_BYTES)
+                                .desired_width(220.0),
+                        )
+                        .labelled_by(label.id);
                     (response, buffer.was_limited())
                 };
                 let event_was_clamped = event_was_clamped || buffer_was_clamped;
@@ -132,6 +137,49 @@ impl GoToLineDialog {
             }
         }
     }
+
+    fn restore_deferred_input(&mut self, context: &egui::Context) {
+        if self.deferred_input_events.is_empty() {
+            return;
+        }
+        context.input_mut(|input| {
+            self.deferred_input_events.append(&mut input.events);
+            std::mem::swap(&mut self.deferred_input_events, &mut input.events);
+        });
+    }
+
+    fn take_ordered_escape(&mut self, context: &egui::Context) -> bool {
+        let mut deferred = Vec::new();
+        let close = context.input_mut(|input| {
+            let Some(position) = input.events.iter().position(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Escape,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if modifiers.matches_logically(egui::Modifiers::NONE)
+                )
+            }) else {
+                return false;
+            };
+            if input.events[..position]
+                .iter()
+                .any(crate::keyboard_nav::editor_event_orders_input)
+            {
+                deferred = input.events.split_off(position);
+                return false;
+            }
+            input.events.remove(position);
+            true
+        });
+        if !deferred.is_empty() {
+            self.deferred_input_events = deferred;
+            context.request_repaint();
+        }
+        close
+    }
 }
 
 fn resolve_line_offset(source: &str, input: &str) -> Result<usize, String> {
@@ -148,6 +196,40 @@ fn resolve_line_offset(source: &str, input: &str) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_number_input_references_its_visible_label() {
+        let mut dialog = GoToLineDialog::default();
+        dialog.open(1);
+        let context = egui::Context::default();
+        context.enable_accesskit();
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            let _ = dialog.show(ui.ctx(), "one");
+        });
+        let update = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled");
+        let line_label = update
+            .nodes
+            .iter()
+            .find_map(|(id, node)| {
+                (node.role() == egui::accesskit::Role::Label && node.value() == Some("Line number"))
+                    .then_some(*id)
+            })
+            .expect("expected the visible line-number label");
+        let input = update
+            .nodes
+            .iter()
+            .find_map(|(id, node)| {
+                (*id == egui::Id::new(LINE_INPUT_ID).accesskit_id()).then_some(node)
+            })
+            .expect("expected the line-number input node");
+
+        assert_eq!(input.labelled_by(), &[line_label]);
+    }
 
     #[test]
     fn resolver_accepts_exact_mixed_ending_lines() {
@@ -202,6 +284,7 @@ mod tests {
             input: "99".to_owned(),
             validation: Some("old document error".to_owned()),
             request_focus: true,
+            deferred_input_events: vec![egui::Event::Text("stale".to_owned())],
         };
 
         dialog.reset();
@@ -210,6 +293,7 @@ mod tests {
         assert!(dialog.input.is_empty());
         assert!(dialog.validation.is_none());
         assert!(!dialog.request_focus);
+        assert!(dialog.deferred_input_events.is_empty());
     }
 
     #[test]

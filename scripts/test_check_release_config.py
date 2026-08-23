@@ -10,6 +10,7 @@ from check_release_config import (
     validate_ci_mutation_topology,
     validate_license_inventory,
     validate_manifest,
+    validate_release_artifact_validator,
     validate_repository,
     validate_sbom_generator,
     validate_wix,
@@ -43,6 +44,9 @@ class ReleaseConfigurationTests(unittest.TestCase):
         cls.sbom_generator = read_regular_file(
             REPOSITORY_ROOT / "scripts/generate_release_sboms.py"
         ).decode("utf-8")
+        cls.release_artifact_validator = read_regular_file(
+            REPOSITORY_ROOT / "scripts/check_release_artifacts.py"
+        )
 
     def test_repository_configuration_is_consistent(self) -> None:
         self.assertEqual(validate_repository(), [])
@@ -467,7 +471,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         changed = changed[:host_end] + gate_step + changed[host_end:]
 
         self.assertIn(
-            "immutable release target step must immediately precede hosting",
+            "validated hosting artifacts and immutable target must precede hosting",
             validate_workflow(changed),
         )
 
@@ -481,9 +485,111 @@ class ReleaseConfigurationTests(unittest.TestCase):
         changed = changed[:host_start] + attest_step + changed[host_start:]
 
         self.assertIn(
-            "draft upload, attestation, and publication steps must remain ordered",
+            "artifact assembly, draft upload, remote verification, attestation, and publication steps must remain ordered",
             validate_workflow(changed),
         )
+
+    def test_rejects_skipped_required_release_builds(self) -> None:
+        changed = self.workflow.replace(
+            "needs.build-local-artifacts.result == 'success' && needs.build-global-artifacts.result == 'success'",
+            "(needs.build-local-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success')",
+            1,
+        )
+
+        self.assertIn(
+            "missing required successful local and global release builds",
+            validate_workflow(changed),
+        )
+
+    def test_rejects_collision_prone_artifact_downloads(self) -> None:
+        changed = self.workflow.replace(
+            "merge-multiple: false", "merge-multiple: true", 1
+        )
+        errors = validate_workflow(changed)
+        self.assertIn(
+            "release workflow contains collision-prone release artifact merge", errors
+        )
+        self.assertIn(
+            "every multi-artifact download must preserve source directories", errors
+        )
+
+    def test_rejects_remote_asset_verification_after_attestation(self) -> None:
+        remote_marker = "      - name: Verify GitHub Draft Release Assets"
+        remote_start = self.workflow.index(remote_marker)
+        remote_end = self.workflow.index("      - ", remote_start + len(remote_marker))
+        remote_step = self.workflow[remote_start:remote_end]
+        changed = self.workflow[:remote_start] + self.workflow[remote_end:]
+        attestation_start = changed.index("      - name: Attest")
+        attestation_end = changed.index("      - ", attestation_start + 1)
+        changed = changed[:attestation_end] + remote_step + changed[attestation_end:]
+
+        errors = validate_workflow(changed)
+        self.assertIn(
+            "artifact assembly, draft upload, remote verification, attestation, and publication steps must remain ordered",
+            errors,
+        )
+        self.assertIn(
+            "publication payload, remote draft, and attestation gates must be adjacent",
+            errors,
+        )
+
+    def test_rejects_remote_asset_digest_readback_bypass(self) -> None:
+        changed = self.workflow.replace(
+            '--release-json "$RUNNER_TEMP/release.json" \\',
+            '--release-json "$RUNNER_TEMP/local.json" \\',
+            1,
+        )
+
+        self.assertIn(
+            "remote draft assets must be read back and verified before attestation",
+            validate_workflow(changed),
+        )
+
+    def test_rejects_final_tip_check_moved_away_from_publication(self) -> None:
+        marker = "          git fetch --no-tags --depth=1 origin main\n"
+        start = self.workflow.rindex(marker)
+        check_end = self.workflow.index(
+            '          gh release edit "$RELEASE_TAG"', start
+        )
+        checks = self.workflow[start:check_end]
+        changed = self.workflow[:start] + self.workflow[check_end:]
+        notes_start = changed.index(
+            "          {\n", changed.index("Finalize GitHub Release")
+        )
+        changed = changed[:notes_start] + checks + changed[notes_start:]
+
+        self.assertIn(
+            "final main, tag, and remote-asset checks must immediately precede publication",
+            validate_workflow(changed),
+        )
+
+    def test_rejects_final_remote_asset_check_moved_away_from_publication(self) -> None:
+        marker = "          gh api --method GET \\\n"
+        start = self.workflow.rindex(marker)
+        check_end = self.workflow.index(
+            '          gh release edit "$RELEASE_TAG"', start
+        )
+        checks = self.workflow[start:check_end]
+        changed = self.workflow[:start] + self.workflow[check_end:]
+        notes_start = changed.index(
+            "          {\n", changed.index("Finalize GitHub Release")
+        )
+        changed = changed[:notes_start] + checks + changed[notes_start:]
+
+        self.assertIn(
+            "final main, tag, and remote-asset checks must immediately precede publication",
+            validate_workflow(changed),
+        )
+
+    def test_rejects_unreviewed_release_artifact_validator_changes(self) -> None:
+        changed = self.release_artifact_validator.replace(
+            b'asset.get("digest") != digest', b'asset.get("digest") == digest', 1
+        )
+        errors = validate_release_artifact_validator(changed)
+        self.assertIn(
+            "release artifact validator differs from its reviewed source", errors
+        )
+        self.assertIn("missing remote SHA-256 digest verification", errors)
 
     def test_rejects_cargo_dist_publication_before_attestation(self) -> None:
         changed = self.workflow.replace(

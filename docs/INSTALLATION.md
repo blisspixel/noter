@@ -203,10 +203,20 @@ under the following directory:
 
 Inspect that directory before deleting it.
 
-Private crash recovery uses a subdirectory of that state root
+Owner-restricted crash-recovery files use a subdirectory of that state root
 (`recovery/records` for active instance records and `recovery/quarantine` for
 damaged files). Dirty editing sessions persist recovery copies there; Save and
-explicit Discard remove the owned record. Uninstall and cleanup distinguish:
+explicit Discard remove the owned record.
+
+Alpha.2 recovery is supported only when the selected state path resolves to a
+normally permissioned, local, owner-controlled per-user directory. The
+prerelease does not yet verify or bind the enclosing state and recovery
+directories. If `%APPDATA%`, `XDG_DATA_HOME`, or the platform application-support
+path is group-writable, ACL-shared, redirected, synchronized, network-hosted,
+removable, or on a weak filesystem, recovery is unverified. Keep important work
+saved and backed up, and do not rely on recovery from that state root.
+
+Uninstall and cleanup distinguish:
 
 | Kind | Location | Safe to delete when |
 | --- | --- | --- |

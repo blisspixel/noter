@@ -1,8 +1,8 @@
 # Noter Product Requirements
 
-**Version:** 0.4
+**Version:** 0.5
 
-**Reviewed:** 2026-07-31
+**Reviewed:** 2026-08-23
 
 **Status:** Ratified contract for the first public-quality release
 
@@ -154,9 +154,11 @@ Feature presence alone is not verification.
   last in-memory copy of an externally replaced clean revision, cannot complete
   until Save succeeds, Discard is explicitly confirmed, or the action is
   cancelled.
-- **FR-062 Recovery location:** Store private recovery records in the
-  per-user application state or local-data directory, never the general
-  temporary directory.
+- **FR-062 Recovery location:** Store owner-restricted recovery records in the
+  platform-selected per-user application state or local-data directory, never
+  the general temporary directory. Recovery is available only when the state
+  root and recovery subdirectories are opened without following links and
+  verified as stable, owner-controlled directories with least-permission access.
 - **FR-063 Recovery point objective:** After the first edit or detection that
   the loaded clean revision was replaced externally, persist a valid recovery
   record after at most 15 seconds of continued activity and normally within 2
@@ -196,8 +198,12 @@ Feature presence alone is not verification.
   offers. Restore and Discard reload and revalidate an exact open artifact under
   an exclusive dead-instance claim before acting. Save removes only the current
   leased instance's canonical and keyed temporary artifacts. Restore and
-  Discard remove only
-  exact validated offer handles, never every record sharing a document ID.
+  Discard authorize only artifacts represented by validated offer handles, never
+  every record sharing a document ID. For offer-handle cleanup, Windows deletion
+  remains bound to the open handle. Unix cleanup validates identity before and
+  after its portable pathname operation; it reports detected rebinding but does
+  not claim atomic exact unlink against a writer controlling the recovery
+  directory.
   Cleanup failure keeps a startup Discard record available when it remains on
   disk, or surfaces a persistent warning. After a successor is durably
   persisted and its parent-directory durability succeeds, cleanup failure never
@@ -353,9 +359,10 @@ The complete release and verification contract is in
 - **NFR-REL-04 Undo fidelity:** Applying edits and their inverse transactions
   restores identical content, selection, and caret state.
 - **NFR-REL-05 Lifecycle safety:** No destructive action can bypass FR-060.
-- **NFR-REL-06 Recovery safety:** Any valid acknowledged edit is either in the
-  current process, a successful save, or a recovery record within the stated
-  recovery point objective.
+- **NFR-REL-06 Recovery safety:** Within the supported recovery-storage contract,
+  and absent external tampering or underlying filesystem loss, any valid
+  acknowledged edit is either in the current process, a successful save, or a
+  recovery record within the stated recovery point objective.
 - **NFR-REL-07 Conflict safety:** A changed file is never silently overwritten by
   a stale in-memory revision.
 
@@ -415,7 +422,9 @@ are deferred until evidence supports a separate viewer or editing mode.
 - **NFR-SEC-02 Local scope:** Read document content only from paths the user
   explicitly opened and versioned recovery records the application created.
 - **NFR-SEC-03 Private state:** Configuration and recovery use least-permission
-  per-user directories. Recovery content is never written to diagnostic logs.
+  per-user directories. Recovery fails closed unless the state root and recovery
+  subdirectories meet FR-062. Recovery content is never written to diagnostic
+  logs.
 - **NFR-SEC-04 Dependencies:** Every direct dependency has a requirement,
   feature, size, license, maintenance, duplicate, and network-capability review.
 - **NFR-SEC-05 Supply chain:** Release workflows use immutable action revisions,

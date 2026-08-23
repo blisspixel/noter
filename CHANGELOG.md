@@ -39,9 +39,10 @@ that candidate is frozen for publication.
 - Add pure UTF-8 caret navigation for character, classic word token, logical
   line step, line home/end, and document endpoints, plus a long-session undo
   history fixture that proves retained history never exceeds configured ceilings.
-- Wire private crash recovery into the application: dirty-session persist under
-  the per-user state directory, startup Restore / Discard, quarantine notices,
-  Save and Discard cleanup, and a visible recovery persist-failure notice.
+- Wire owner-restricted crash recovery into the application: dirty-session
+  persist under the platform-selected per-user state directory, startup Restore
+  / Discard, quarantine notices, Save and Discard cleanup, and a visible recovery
+  persist-failure notice.
 - Add external-change Overwrite Disk Version behind an explicit second
   confirmation; Keep Editing still never rebaselines the trusted disk version.
 - Add Edit menu Cut / Copy / Paste on the shared edit-command path with platform
@@ -53,19 +54,24 @@ that candidate is frozen for publication.
   policy, epoch-correlated persist acknowledgements, checksum validation, UTF-8
   character-boundary selection checks, and quarantine reasons that never write a
   user document path.
-- Add durable private recovery storage that stages owner-restricted siblings,
+- Add durable owner-restricted recovery storage that stages protected siblings,
   installs or replaces instance records atomically, cleans exact displaced
   artifacts where supported or retains bounded recovery slots, bounds startup
   review by entry and aggregate byte budgets, offers at most 32 restores per
   launch, and reports quarantine relocation failures instead of claiming
   success.
+- Document that alpha.2 recovery supports only normally permissioned, local,
+  owner-controlled per-user state roots. Group-writable or ACL-shared
+  directories and redirected, synchronized, network, removable, or
+  weak-filesystem state roots remain outside this prerelease boundary.
 
 ### Fixed
 
-- Release a Unix or macOS recovery lease cleanly after its pathname is safely
-  rebound. Cleanup now compares the locked object's stable file identity and
-  hard-link count instead of a rename-sensitive change timestamp; a replacement
-  object or added hard link still fails closed.
+- Validate Unix and macOS recovery lease identity and hard-link count before
+  pathname cleanup and ratify the original object's link count afterward. A
+  detected replacement or added hard link fails cleanup. These checks report a
+  detected rebind but do not make pathname unlink atomic against a writer
+  controlling the recovery directory or undo a wrong unlink.
 - Preserve LF, CRLF, CR, and mixed source exactly through Text Mode plus active
   editing and inactive rendering in Markdown Mode. Logical newlines render,
   select, and delete atomically; Text Mode and active Markdown source editors
@@ -76,8 +82,11 @@ that candidate is frozen for publication.
   and cleanup use that held directory instead of reopening a pathname that may
   have been renamed or rebound. Recovery creates its single keyed stage through
   the same held parent and consumes that stage with a descriptor-relative rename,
-  so a successful commit leaves no recovery sibling to clean. Windows retains
-  its explicit file-only durability result.
+  so a successful in-boundary commit leaves no recovery sibling to clean.
+  Postcondition checks reject false success if the destination no longer names
+  the stage, but cannot preserve a predecessor already replaced by a writer
+  controlling the directory. Windows retains its explicit file-only durability
+  result.
 - Reconcile every Windows replacement result against the intended recovery
   bytes and captured predecessor before cleanup. Proven commits remove only
   the exact verification handles, using immediate unlink semantics when the
@@ -90,9 +99,10 @@ that candidate is frozen for publication.
   an inaccessible recovery record cannot be silently omitted from a successful
   scan.
 - Make quarantine durability explicit: sync the verified quarantine file and
-  its parent before deleting the exact source, then sync the source parent.
-  Failures retain the original or report the durable quarantine copy instead of
-  claiming cleanup that may not survive a crash.
+  its parent before deleting the validated source under the platform cleanup
+  contract, then sync the source parent. Failures retain the original or report
+  the durable quarantine copy instead of claiming cleanup that may not survive a
+  crash.
 - Retry a failed dirty recovery persist after a bounded one-second backoff while
   retaining the newest revision and epoch. Clock regression reanchors that
   backoff without creating a zero-delay repaint loop.
@@ -124,8 +134,10 @@ that candidate is frozen for publication.
   remains required without exceeding the per-job execution ceiling.
 - Fence recovery persistence before Save deletes a clean record or Discard,
   Restore, New, or Open retires an instance. Delete both independently locked
-  lease paths by verified file identity before releasing either lock, so a
-  rebound pathname cannot expose or erase a living window's recovery record.
+  lease paths through their open handles on Windows. Unix validates identity
+  before pathname unlink and ratifies link count afterward. A detected rebound
+  fails cleanup, but alpha.2 does not claim atomic unlink against a writer
+  controlling the recovery directory.
 - Treat ignored recovery backup cleanup or parent-directory sync as a failed
   successor transfer, so Restore retains its predecessor until the new record
   is durably established. Schema v1 metadata can no longer suppress a genuine
@@ -164,15 +176,17 @@ that candidate is frozen for publication.
   clocks.
 - Make recovery cleanup ownership-specific. Save removes only canonical and
   keyed temporary artifacts for its leased instance; Restore and Discard remove
-  only revalidated exact handles and never sweep another live window's document
-  lineage. Once Restore persists its successor, later cleanup failure leaves the
-  successor durable, opens the recovered document, and surfaces a warning that
-  later successful cleanup cannot erase. Successful external Reload also retires
-  the explicitly discarded private copy, while failed Reload preserves it.
-- Bind damaged-record quarantine to the exact opened artifact and refuse
-  relocation if the pathname changed or its instance is live. Filter irrelevant
-  and live artifacts before charging startup candidate budgets so bounded scans
-  cannot deterministically starve a dead canonical record.
+  only artifacts authorized by revalidated handles under the platform cleanup
+  contract and never sweep another live window's document lineage. Once Restore
+  persists its successor, later cleanup failure leaves the successor durable,
+  opens the recovered document, and surfaces a warning that later successful
+  cleanup cannot erase. Successful external Reload also retires the explicitly
+  discarded private copy, while failed Reload preserves it.
+- Authorize damaged-record quarantine from the exact opened artifact and refuse
+  relocation when validation detects that the pathname changed or its instance
+  is live. Filter irrelevant and live artifacts before charging startup
+  candidate budgets so bounded scans cannot deterministically starve a dead
+  canonical record.
 - Reject a startup argument naming a final symlink, Windows reparse point,
   directory, FIFO, or other special file through the same no-follow regular-file
   preflight as the loader. Content validation remains deferred to the GUI.
@@ -185,7 +199,14 @@ that candidate is frozen for publication.
   and correctness-matrix guidance directly in the release notes. Require
   successful exact-main CI before creating the verified tag, create or safely
   refresh one private GitHub draft with the exact workflow artifacts, attest
-  that payload, then apply reviewed notes and publish it.
+  that payload, then apply reviewed notes and publish it. Release artifact
+  downloads now retain their source containers so filename collisions fail
+  closed. The workflow requires every local and global build, assembles exactly
+  the reviewed cargo-dist plan inventory, binds target archives, checksums, and
+  SBOMs to their producer, verifies every checksum sidecar and the unified
+  checksum, and compares the private draft's uploaded names, sizes, states, and
+  GitHub SHA-256 digests to the local attestation payload before attestation and
+  again immediately before publication.
 - Bound Markdown's automatic inline reopening and list, quote, and inline-run
   Enter transforms before they mutate the active draft. Input at the document
   ceiling is rejected or UTF-8-truncated without removing an existing suffix.
@@ -211,7 +232,12 @@ that candidate is frozen for publication.
   control that lost focus.
 - Isolate destructive confirmation and recovery dialogs from editor input.
   Input that opened a blocking prompt is discarded behind it, and deferred
-  editor input is held until an already-open prompt is resolved.
+  editor input is held until an already-open prompt is resolved. Input after
+  the event that actually dismisses the final modal resumes in order with
+  document focus restored. File shortcuts also wait for an active IME commit
+  before deciding which document generation they affect.
+- Associate the visible Find, Replace, and Line number labels with their text
+  inputs in the accessibility tree.
 - Keep a window's recovery lease for its complete lifetime, including after
   Save, and remove only the recovery record when content becomes clean.
 - Treat recovery lease acquisition and ownership-probe errors as unavailable

@@ -246,7 +246,7 @@ impl FindBar {
     }
 
     fn show_query_field(&mut self, ui: &mut egui::Ui) {
-        ui.label("Find");
+        let label = ui.label("Find");
         let id = egui::Id::new(FIND_QUERY_ID);
         let query_was_clamped =
             truncate_to_utf8_byte_limit(&mut self.query, MAX_LITERAL_QUERY_BYTES);
@@ -255,13 +255,15 @@ impl FindBar {
             && sanitize_bounded_text_events(ui, id, &self.query, MAX_LITERAL_QUERY_BYTES);
         let (query_response, buffer_was_clamped) = {
             let mut buffer = BoundedTextBuffer::new(&mut self.query, MAX_LITERAL_QUERY_BYTES);
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut buffer)
-                    .id(id)
-                    .desired_width(240.0)
-                    .char_limit(MAX_LITERAL_QUERY_BYTES)
-                    .hint_text("Literal text"),
-            );
+            let response = ui
+                .add(
+                    egui::TextEdit::singleline(&mut buffer)
+                        .id(id)
+                        .desired_width(240.0)
+                        .char_limit(MAX_LITERAL_QUERY_BYTES)
+                        .hint_text("Literal text"),
+                )
+                .labelled_by(label.id);
             (response, buffer.was_limited())
         };
         let input_was_clamped = event_was_clamped || buffer_was_clamped;
@@ -329,7 +331,7 @@ impl FindBar {
     }
 
     fn show_replacement_field(&mut self, ui: &mut egui::Ui) {
-        ui.label("Replace");
+        let label = ui.label("Replace");
         let id = egui::Id::new(REPLACEMENT_ID);
         let replacement_was_clamped =
             truncate_to_utf8_byte_limit(&mut self.replacement, MAX_LITERAL_REPLACEMENT_BYTES);
@@ -343,13 +345,15 @@ impl FindBar {
         let (replacement_response, buffer_was_clamped) = {
             let mut buffer =
                 BoundedTextBuffer::new(&mut self.replacement, MAX_LITERAL_REPLACEMENT_BYTES);
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut buffer)
-                    .id(id)
-                    .desired_width(240.0)
-                    .char_limit(MAX_LITERAL_REPLACEMENT_BYTES)
-                    .hint_text("Literal replacement"),
-            );
+            let response = ui
+                .add(
+                    egui::TextEdit::singleline(&mut buffer)
+                        .id(id)
+                        .desired_width(240.0)
+                        .char_limit(MAX_LITERAL_REPLACEMENT_BYTES)
+                        .hint_text("Literal replacement"),
+                )
+                .labelled_by(label.id);
             (response, buffer.was_limited())
         };
         let input_was_clamped = event_was_clamped || buffer_was_clamped;
@@ -568,6 +572,50 @@ fn selected_query(source: &str, selection: Selection) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_and_replace_inputs_reference_their_visible_labels() {
+        let source = "one two one";
+        let mut bar = FindBar::default();
+        bar.open(true, source, Selection::caret(0));
+        let context = egui::Context::default();
+        context.enable_accesskit();
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            let _ = bar.show(ui, Revision::INITIAL, source, Selection::caret(0));
+        });
+        let update = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled");
+        let label_id = |label: &str| {
+            update
+                .nodes
+                .iter()
+                .find_map(|(id, node)| {
+                    (node.role() == egui::accesskit::Role::Label && node.value() == Some(label))
+                        .then_some(*id)
+                })
+                .unwrap_or_else(|| panic!("expected an AccessKit node labelled `{label}`"))
+        };
+        let node = |id| {
+            update
+                .nodes
+                .iter()
+                .find_map(|(candidate, node)| (*candidate == id).then_some(node))
+                .unwrap_or_else(|| panic!("expected AccessKit node {id:?}"))
+        };
+
+        assert_eq!(
+            node(egui::Id::new(FIND_QUERY_ID).accesskit_id()).labelled_by(),
+            &[label_id("Find")]
+        );
+        assert_eq!(
+            node(egui::Id::new(REPLACEMENT_ID).accesskit_id()).labelled_by(),
+            &[label_id("Replace")]
+        );
+    }
 
     fn enter_key() -> egui::Event {
         egui::Event::Key {

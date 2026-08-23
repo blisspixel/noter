@@ -108,11 +108,15 @@ Today the source build provides exact-source Text Mode, source-backed Markdown
 Mode, Undo and Redo, Find and Replace, Go To Line, wrap, zoom, five themes, and
 defensive local saves for ordinary UTF-8 `.txt` and `.md` files.
 
-The current version is `0.1.0-alpha.2`, the correctness alpha. Private crash
-recovery, explicit external-change decisions, clipboard commands, keyboard
-navigation, and first-contact behavior are ready for careful dogfood with
-backups. Continuous Markdown editing, accessibility matrices, remaining
-filesystem evidence, and public-quality distribution remain open.
+The current version is `0.1.0-alpha.2`, the correctness alpha. Owner-restricted
+crash-recovery files, explicit external-change decisions, clipboard commands,
+keyboard navigation, and first-contact behavior are ready for careful local
+dogfood with backups when Noter's state directory is a normally permissioned,
+local, owner-controlled per-user directory. Group-writable or ACL-shared
+directories and redirected, synchronized, network, removable, or weak-filesystem
+state roots remain outside alpha.2 recovery support. Continuous Markdown
+editing, accessibility matrices, remaining filesystem evidence, and
+public-quality distribution remain open.
 
 The privacy stance above is product law for every release, including alpha. What
 is still unfinished is reliability, completeness, and packaging, not a planned

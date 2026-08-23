@@ -584,6 +584,7 @@ pub struct NoterApp {
     preserve_focus_on_selection_restore: bool,
     pending_document_view: Option<DocumentView>,
     deferred_input_events: Vec<egui::Event>,
+    deferred_blocking_modal_events: Vec<egui::Event>,
     view: DocumentView,
     theme: AppTheme,
     text_wrap: TextWrap,
@@ -646,6 +647,7 @@ impl NoterApp {
             preserve_focus_on_selection_restore: false,
             pending_document_view: None,
             deferred_input_events: Vec::new(),
+            deferred_blocking_modal_events: Vec::new(),
             view: DocumentView::Text,
             theme: AppTheme::System,
             text_wrap: TextWrap::default(),
@@ -1530,6 +1532,12 @@ impl NoterApp {
     fn defer_input_events(&mut self, mut deferred: Vec<egui::Event>) {
         deferred.append(&mut self.deferred_input_events);
         self.deferred_input_events = deferred;
+    }
+
+    fn restore_document_focus(&mut self, ctx: &egui::Context) {
+        self.pending_selection_restore = Some(self.selection);
+        self.preserve_focus_on_selection_restore = false;
+        ctx.request_repaint();
     }
 
     fn blocking_modal_open(&self) -> bool {
@@ -3652,6 +3660,15 @@ impl NoterApp {
             document_shortcuts_enabled,
             go_to_line_shortcut_enabled,
         );
+        let input_file_command = match input_shortcut {
+            Some(InputShortcut::File(command)) => Some(command),
+            _ => None,
+        };
+        let input_shortcut = if input_file_command.is_some() {
+            None
+        } else {
+            input_shortcut
+        };
         let mut file_command = None;
         let mut edit_command = None;
         let mut view_command = None;
@@ -3683,13 +3700,14 @@ impl NoterApp {
             self.apply_pending_document_view();
         }
         self.show_status(ui);
+        self.show_go_to_line(ui.ctx());
         self.show_editor_with_isolated_ime_commit(ui, isolated_ime_commit);
         self.markdown_editor.finish_input_frame();
         self.apply_pending_document_view();
         if commands_enabled
             && !input_edit_executed
             && !menu_edit_executed
-            && let Some(command) = file_command
+            && let Some(command) = input_file_command.or(file_command)
         {
             self.execute_file_command(command, ui.ctx());
         }
@@ -3706,7 +3724,6 @@ impl NoterApp {
         self.update_title(ui.ctx());
         self.show_about(ui.ctx());
         self.show_updates(ui.ctx());
-        self.show_go_to_line(ui.ctx());
         if !blocking_modal_input.is_empty() {
             ui.input_mut(|input| {
                 blocking_modal_input.append(&mut input.events);
@@ -3716,16 +3733,28 @@ impl NoterApp {
         if !blocking_modal_at_start && self.blocking_modal_open() {
             self.discard_deferred_input();
         }
+        self.show_blocking_modal(ui.ctx(), recovery_offer_open, blocking_modal_at_start);
+    }
+
+    fn show_blocking_modal(
+        &mut self,
+        ctx: &egui::Context,
+        recovery_offer_open: bool,
+        blocking_modal_at_start: bool,
+    ) {
         if recovery_offer_open {
-            self.show_startup_recovery_offer(ui.ctx());
+            self.show_startup_recovery_offer(ctx);
         } else if self.pending_recovery_reconciliation.is_some() {
-            self.show_save_recovery_reconciliation(ui.ctx());
+            self.show_save_recovery_reconciliation(ctx);
         } else if self.pending_hard_link_save.is_some() {
-            self.show_hard_link_confirmation(ui.ctx());
+            self.show_hard_link_confirmation(ctx);
         } else if self.lifecycle.pending_intent().is_some() {
-            self.show_unsaved_changes_confirmation(ui.ctx());
+            self.show_unsaved_changes_confirmation(ctx);
         } else if self.conflict.is_prompting() {
-            self.show_external_change_confirmation(ui.ctx());
+            self.show_external_change_confirmation(ctx);
+        }
+        if blocking_modal_at_start && !self.blocking_modal_open() {
+            self.finish_blocking_modal_close(ctx);
         }
     }
 
@@ -3734,8 +3763,20 @@ impl NoterApp {
         ui: &egui::Ui,
         modal_opened_during_inspection: bool,
     ) -> Vec<egui::Event> {
-        let events = ui.input_mut(|input| std::mem::take(&mut input.events));
+        let mut events = ui.input_mut(|input| std::mem::take(&mut input.events));
+        if !self.deferred_blocking_modal_events.is_empty() {
+            self.deferred_blocking_modal_events.append(&mut events);
+            std::mem::swap(&mut self.deferred_blocking_modal_events, &mut events);
+        }
         if !modal_opened_during_inspection {
+            if let Some(position) = events
+                .iter()
+                .position(blocking_modal_event_may_complete_action)
+                && position + 1 < events.len()
+            {
+                self.deferred_blocking_modal_events = events.split_off(position + 1);
+                ui.ctx().request_repaint();
+            }
             return events;
         }
         let (deferred, modal): (Vec<_>, Vec<_>) = events
@@ -3746,6 +3787,17 @@ impl NoterApp {
             ui.ctx().request_repaint();
         }
         modal
+    }
+
+    fn finish_blocking_modal_close(&mut self, ctx: &egui::Context) {
+        let deferred = std::mem::take(&mut self.deferred_blocking_modal_events)
+            .into_iter()
+            .filter(document_input_event_survives_modal_transition)
+            .collect::<Vec<_>>();
+        if !deferred.is_empty() {
+            self.defer_input_events(deferred);
+        }
+        self.restore_document_focus(ctx);
     }
 
     fn surface_crash_recovery_failures(&mut self) {
@@ -4236,6 +4288,25 @@ const fn document_input_event_survives_modal_transition(event: &egui::Event) -> 
             | egui::Event::Text(_)
             | egui::Event::Key { pressed: true, .. }
             | egui::Event::Ime(_)
+    )
+}
+
+const fn blocking_modal_event_may_complete_action(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key {
+            key: egui::Key::Escape | egui::Key::Enter | egui::Key::Space,
+            pressed: true,
+            ..
+        } | egui::Event::PointerButton { pressed: false, .. }
+            | egui::Event::Touch {
+                phase: egui::TouchPhase::End | egui::TouchPhase::Cancel,
+                ..
+            }
+            | egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Click,
+                ..
+            })
     )
 }
 
@@ -5284,6 +5355,122 @@ mod tests {
     }
 
     #[test]
+    fn safety_modal_accessibility_dismissal_restores_document_focus() {
+        let mut document = Document::new();
+        document
+            .replace_text("dirty")
+            .expect("fixture edit should make the document dirty");
+        let selection = Selection::caret(5);
+        let mut app = NoterApp {
+            text: "dirty".to_owned(),
+            document,
+            selection,
+            pending_selection_restore: Some(selection),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::configure_styles(&context);
+        app.request_destructive_action(PendingAbandonAction::New, &context);
+        let modal = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+            app.render_frame(ui);
+        });
+        let cancel = accesskit_node_id(&modal, "Cancel");
+        let mut dismiss = ui_input(1_200.0, 760.0, 0.1);
+        for action in [
+            egui::accesskit::Action::Focus,
+            egui::accesskit::Action::Click,
+        ] {
+            dismiss.events.push(egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: cancel,
+                    data: None,
+                },
+            ));
+        }
+
+        let _ = context.run_ui(dismiss, |ui| app.render_frame(ui));
+        assert!(app.lifecycle.pending_intent().is_none());
+        assert_eq!(app.pending_selection_restore, Some(selection));
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.2), |ui| {
+            app.render_frame(ui);
+        });
+
+        assert!(context.memory(|memory| memory.has_focus(app.editor_id())));
+        assert_eq!(app.selection, selection);
+        assert_eq!(app.text, "dirty");
+    }
+
+    #[test]
+    fn startup_recovery_later_restores_document_focus() {
+        use noter::core::recovery::{
+            RecoveryDocumentId, RecoveryInstanceId, RecoverySnapshot, RecoverySnapshotParts,
+            RecoveryWallTime,
+        };
+        use noter::core::recovery_store::{RecoveryScanDisposition, RecoveryStore};
+        use noter::core::text_format::{Bom, Encoding};
+
+        let directory = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(directory.path()).expect("store");
+        let snapshot = RecoverySnapshot::try_new(RecoverySnapshotParts {
+            document_id: RecoveryDocumentId::new([1; 16]),
+            instance_id: RecoveryInstanceId::new([7; 16]),
+            revision: Revision::new(1),
+            created_at: RecoveryWallTime::from_unix_millis(1),
+            updated_at: RecoveryWallTime::from_unix_millis(2),
+            original_path: b"notes.txt".to_vec(),
+            bom: Bom::Absent,
+            encoding: Encoding::Utf8,
+            selection: Selection::caret(0),
+            content: b"recover me".to_vec(),
+        })
+        .expect("snapshot");
+        store.persist(&snapshot).expect("persist");
+        assert!(matches!(
+            store.scan_startup().expect("scan")[0].disposition(),
+            RecoveryScanDisposition::Offer(_)
+        ));
+
+        let mut app = NoterApp {
+            crash_recovery: CrashRecoverySession::open_at(directory.path()),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::configure_styles(&context);
+        let modal = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+            app.render_frame(ui);
+        });
+        let later = accesskit_node_id(&modal, "Later");
+        let mut dismiss = ui_input(1_200.0, 760.0, 0.1);
+        for action in [
+            egui::accesskit::Action::Focus,
+            egui::accesskit::Action::Click,
+        ] {
+            dismiss.events.push(egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: later,
+                    data: None,
+                },
+            ));
+        }
+
+        let _ = context.run_ui(dismiss, |ui| app.render_frame(ui));
+        assert!(app.crash_recovery.active_offer().is_none());
+        assert_eq!(app.pending_selection_restore, Some(Selection::caret(0)));
+        let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.2), |ui| {
+            app.render_frame(ui);
+        });
+
+        assert!(context.memory(|memory| memory.has_focus(app.editor_id())));
+        assert!(app.text.is_empty());
+    }
+
+    #[test]
     fn text_input_and_custom_navigation_share_the_ordered_queue() {
         let run = |events: Vec<egui::Event>| {
             let source = "ab cd";
@@ -6148,6 +6335,132 @@ mod tests {
         });
         assert_eq!(app.text, "dirty");
         assert!(app.lifecycle.pending_intent().is_none());
+    }
+
+    #[test]
+    fn closing_blocking_modal_replays_ordered_document_input_suffix() {
+        let cases = [
+            ("text", egui::Event::Text("x".to_owned()), "dirtyx"),
+            ("paste", egui::Event::Paste("P".to_owned()), "dirtyP"),
+            (
+                "IME commit",
+                egui::Event::Ime(egui::ImeEvent::Commit("漢".to_owned())),
+                "dirty漢",
+            ),
+            (
+                "pressed key",
+                key_press(egui::Modifiers::NONE, egui::Key::Backspace),
+                "dirt",
+            ),
+        ];
+
+        for (label, event, expected) in cases {
+            let mut document = Document::new();
+            document
+                .replace_text("dirty")
+                .expect("fixture edit should make the document dirty");
+            let selection = Selection::caret(5);
+            let mut app = NoterApp {
+                text: "dirty".to_owned(),
+                document,
+                selection,
+                pending_selection_restore: Some(selection),
+                ..NoterApp::default()
+            };
+            let context = egui::Context::default();
+            theme::configure_styles(&context);
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+                app.render_frame(ui);
+            });
+            app.request_destructive_action(PendingAbandonAction::New, &context);
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.05), |ui| {
+                app.render_frame(ui);
+            });
+
+            let mut close_then_edit = ui_input(1_200.0, 760.0, 0.1);
+            close_then_edit.events = vec![
+                egui::Event::Text("blocked".to_owned()),
+                key_press(egui::Modifiers::NONE, egui::Key::Escape),
+                event,
+            ];
+            let _ = context.run_ui(close_then_edit, |ui| app.render_frame(ui));
+
+            assert!(app.lifecycle.pending_intent().is_none(), "{label}");
+            assert_eq!(app.text, "dirty", "{label}");
+            assert!(!app.deferred_input_events.is_empty(), "{label}");
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.2), |ui| {
+                app.render_frame(ui);
+            });
+
+            assert_eq!(app.text, expected, "{label}");
+            assert_eq!(String::from(app.document.rope()), expected, "{label}");
+            assert!(app.document.is_dirty(), "{label}");
+            assert!(app.deferred_input_events.is_empty(), "{label}");
+            assert!(app.deferred_blocking_modal_events.is_empty(), "{label}");
+        }
+    }
+
+    #[test]
+    fn go_to_line_close_preserves_ordered_document_input_suffix() {
+        let cases = [
+            ("text", egui::Event::Text("x".to_owned()), "dirtyx"),
+            ("paste", egui::Event::Paste("P".to_owned()), "dirtyP"),
+            (
+                "IME commit",
+                egui::Event::Ime(egui::ImeEvent::Commit("漢".to_owned())),
+                "dirty漢",
+            ),
+            (
+                "pressed key",
+                key_press(egui::Modifiers::NONE, egui::Key::Backspace),
+                "dirt",
+            ),
+        ];
+
+        for (label, event, expected) in cases {
+            let source = "dirty";
+            let selection = Selection::caret(source.len());
+            let mut app = NoterApp {
+                text: source.to_owned(),
+                document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+                selection,
+                pending_selection_restore: Some(selection),
+                ..NoterApp::default()
+            };
+            let context = egui::Context::default();
+            theme::configure_styles(&context);
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+                app.render_frame(ui);
+            });
+            app.go_to_line.open(1);
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.05), |ui| {
+                app.render_frame(ui);
+            });
+            assert!(app.go_to_line.owns_text_focus(&context), "{label}");
+
+            let mut close_then_edit = ui_input(1_200.0, 760.0, 0.1);
+            close_then_edit.events = vec![
+                egui::Event::Text("9".to_owned()),
+                key_press(egui::Modifiers::NONE, egui::Key::Escape),
+                event,
+            ];
+            let _ = context.run_ui(close_then_edit, |ui| app.render_frame(ui));
+
+            assert!(app.go_to_line.is_open(), "{label}");
+            assert_eq!(app.text, source, "{label}");
+            let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.15), |ui| {
+                app.render_frame(ui);
+            });
+
+            assert!(!app.go_to_line.is_open(), "{label}");
+            assert_eq!(app.text, expected, "{label}");
+            assert_eq!(String::from(app.document.rope()), expected, "{label}");
+            assert!(app.document.is_dirty(), "{label}");
+            assert!(
+                context.memory(|memory| memory.has_focus(app.editor_id())),
+                "{label}"
+            );
+        }
     }
 
     #[test]
@@ -7442,6 +7755,47 @@ mod tests {
             assert_eq!(app.selection, Selection::caret(4), "{view:?}");
             assert_eq!(app.history.len(), 1, "{view:?}");
             assert_eq!(context.memory(egui::Memory::focused), Some(other_control));
+        }
+    }
+
+    #[test]
+    fn active_ime_commit_precedes_same_frame_destructive_shortcut() {
+        for view in [DocumentView::Text, DocumentView::Markdown] {
+            let source = "abc";
+            let base_selection = Selection::new(1, 2);
+            let mut app = NoterApp {
+                text: source.to_owned(),
+                document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+                selection: base_selection,
+                pending_selection_restore: Some(base_selection),
+                view,
+                ..NoterApp::default()
+            };
+            let context = egui::Context::default();
+            theme::configure_styles(&context);
+            let _ = context.run_ui(ui_input(1_000.0, 700.0, 0.0), |ui| {
+                app.render_frame(ui);
+            });
+            let _ = context.run_ui(ime_preedit_input(0.1, "仮"), |ui| {
+                app.render_frame(ui);
+            });
+            let mut new_then_commit = ui_input(1_000.0, 700.0, 0.2);
+            new_then_commit.events = vec![
+                key_press(egui::Modifiers::COMMAND, egui::Key::N),
+                egui::Event::Ime(egui::ImeEvent::Commit("漢".to_owned())),
+            ];
+
+            let _ = context.run_ui(new_then_commit, |ui| app.render_frame(ui));
+
+            assert_eq!(app.text, "a漢c", "{view:?}");
+            assert_eq!(String::from(app.document.rope()), "a漢c", "{view:?}");
+            assert_eq!(app.selection, Selection::caret(4), "{view:?}");
+            assert_eq!(app.history.len(), 1, "{view:?}");
+            assert_eq!(
+                app.lifecycle.pending_intent(),
+                Some(PendingAbandonAction::New),
+                "{view:?}"
+            );
         }
     }
 

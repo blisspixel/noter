@@ -68,10 +68,10 @@ The current development checkpoint has:
 - one pure lifecycle reducer used by dirty New, Open, Reload, Close, and Quit,
   with Save, Discard, and Cancel effects shared by menu and native-close paths
   and correlated to the exact document revision that authorized them;
-- private versioned crash recovery with bounded scheduling, whole-record
-  integrity, causal lineage, two independent instance leases, exact startup
-  claims, durable successor transfer, and a fenced background persistence
-  worker;
+- owner-restricted versioned crash recovery within the supported local,
+  owner-controlled state root, with bounded scheduling, whole-record integrity,
+  causal lineage, two independent instance leases, exact startup claims,
+  durable successor transfer, and a fenced background persistence worker;
 - exact external-change decisions with Keep Editing bound to one successful
   observation and overwrite bound to a second confirmation of that same disk
   state;
@@ -95,10 +95,11 @@ recorded in
 [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md). Recovery wiring,
 overwrite second-confirmation, clipboard commands, caret navigation,
 long-session history, and cross-platform automated suites are present. The
-remaining M1 through M4 gaps are named filesystem environments, installed and
-packaged product exercises, native window-manager interaction, and interactive
-non-Windows GUI evidence. M5 still owns the production editor, real IME and
-screen-reader matrices, 50 MiB performance, and final display behavior.
+remaining M1 through M4 gaps are named filesystem environments, recovery
+namespace binding, installed and packaged product exercises, native
+window-manager interaction, and interactive non-Windows GUI evidence. M5 still
+owns the production editor, real IME and screen-reader matrices, 50 MiB
+performance, and final display behavior.
 
 Volatile counts and run identifiers stay in dedicated evidence records rather
 than this architecture contract. Historical M1 paragraphs retain their own
@@ -651,8 +652,14 @@ identity and its next persistence wake-up is scheduled.
 
 ### 7.2 Recovery storage
 
-Recovery uses a private subdirectory of the per-user application data root
-(never the general temporary directory). Preferences may use eframe storage
+Recovery uses an owner-restricted subdirectory of the per-user application data
+root (never the general temporary directory). Alpha.2 supports recovery only
+when that platform-selected path resolves to a normally permissioned, local,
+owner-controlled per-user directory. Group-writable or ACL-shared directories
+and redirected, synchronized, network, removable, or weak-filesystem state roots
+are outside that prerelease boundary. Alpha.2 restricts individual recovery
+files but does not yet verify or bind the enclosing recovery-directory namespace;
+M4-H1 closes that gap before beta.1. Preferences may use eframe storage
 (`app.ron`); recovery records do not. The library modules are
 `core::recovery` (pure schedule and integrity) and `core::recovery_store`
 (durable private files). The binary adapter `crash_recovery` opens
@@ -680,14 +687,19 @@ whole_record_checksum (BLAKE3-256 in schema v2)
 content_bytes (serialized body including optional UTF-8 BOM)
 ```
 
-Records stage through exclusive private creation, file sync, atomic install or
-replace, exact cleanup where supported, and a containing-directory sync. Unix
+Within the supported owner-controlled namespace, records stage through exclusive
+private creation, file sync, atomic install or replace, exact cleanup where
+supported, and a containing-directory sync. Unix
 recovery binds the sibling parent before stage creation, creates or ratifies the
 single deterministic stage through that descriptor, and consumes it with a
 descriptor-relative rename. The held stage identity is checked before and after
-the rename, and no successful Unix recovery commit needs a displaced-file
-cleanup. A failed attempt retains at most that one stage and later attempts
-return `ResourceBusy` until startup review or explicit owned-artifact cleanup.
+the rename. That postcondition rejects false success when the destination no
+longer names the staged object, but it cannot make replacement atomic against a
+writer controlling the directory or restore a predecessor that writer caused to
+be replaced. Such a writer is outside the alpha.2 recovery boundary. No
+successful in-boundary Unix recovery commit needs a displaced-file cleanup. A
+failed attempt retains at most that one stage and later attempts return
+`ResourceBusy` until startup review or explicit owned-artifact cleanup.
 Windows reserves one deterministic stage and one deterministic backup per
 instance. Replacement reconciliation holds the exact destination handle while
 verified stage and backup handles are cleaned. Any failure retains only those
@@ -707,8 +719,12 @@ Each process holds two independently named and locked sibling objects for the
 complete lifetime of its current recovery instance. Save removes only the
 content record, not those leases, so later unsaved edits under the same identity
 remain hidden from other living windows. A single pathname rebind cannot hide a
-live owner because either locked object proves liveness. Release deletes both
-exact locked objects by file identity before dropping either lock. New, Open,
+live owner because either locked object proves liveness. On Windows, release
+deletes both locked objects through their open handles before dropping either
+lock. Unix release validates file identity before pathname unlink and ratifies
+the original object's link count afterward. A detected rebind fails cleanup, but
+those checks cannot make unlink atomic against a writer controlling the
+directory or undo a wrong unlink. New, Open,
 Restore, and Discard advance the scheduler epoch and publish it to the worker
 gate before releasing the prior lease. Save and every identity transition then
 send a FIFO fence and wait until every earlier persistence request has
@@ -726,8 +742,9 @@ opens the recovered document, and surfaces a warning.
 
 Startup enumerates at most 1,024 raw directory entries, examines at most 256
 eligible non-live recovery candidates, and reads at most 128 MiB of encoded
-records. Stale live markers are removed only under an exclusive claim so later
-bounded launches make progress through crash residue. It validates one complete
+records. Stale live markers are removed only under an exclusive claim and the
+platform-specific deletion rules above so later bounded launches make progress
+through crash residue. It validates one complete
 record at a time, then retains only metadata and exact open handles. At most 32
 maximal offers, 32 quarantine results, and 16 superseded handles per offer are
 retained. Reaching any bound is visible and leaves unreviewed artifacts
@@ -753,8 +770,9 @@ Every offered Restore or Discard acquires the dead instance's exclusive lease,
 checks the open handle before and after a bounded read, reopens the pathname
 without following links, and requires the same object and complete validated
 metadata. Save removes only its own canonical record and keyed temporary names.
-Restore and Discard remove only exact scan-produced handles, with the primary
-artifact last, and never delete by document ID. Corrupt or unsupported records
+Restore and Discard authorize only artifacts represented by exact scan-produced
+handles and use the platform-specific deletion rules above, with the primary
+artifact last. They never delete by document ID. Corrupt or unsupported records
 are quarantined; quarantine relocation failures leave the damaged file in place
 and are reported. Restored content always opens dirty and never writes the
 original user path until Save.
