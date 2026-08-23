@@ -54,12 +54,57 @@ that candidate is frozen for publication.
   character-boundary selection checks, and quarantine reasons that never write a
   user document path.
 - Add durable private recovery storage that stages owner-restricted siblings,
-  installs or replaces instance records atomically, removes displaced stage and
-  backup siblings after success, bounds startup review by entry and aggregate
-  byte budgets, offers at most 32 restores per launch, and reports quarantine
-  relocation failures instead of claiming success.
+  installs or replaces instance records atomically, cleans exact displaced
+  artifacts where supported or retains bounded recovery slots, bounds startup
+  review by entry and aggregate byte budgets, offers at most 32 restores per
+  launch, and reports quarantine relocation failures instead of claiming
+  success.
 
 ### Fixed
+
+- Preserve LF, CRLF, CR, and mixed source exactly through Text Mode plus active
+  editing and inactive rendering in Markdown Mode. Logical newlines render,
+  select, and delete atomically; Text Mode and active Markdown source editors
+  copy and cut exact native source. Enter, paste, and IME input follow the
+  nearest whole-document convention within the exact source-byte ceiling.
+- Keep the exact Unix parent directory opened for atomic replacement or
+  exclusive installation in a one-shot commit receipt. General-save durability
+  and cleanup use that held directory instead of reopening a pathname that may
+  have been renamed or rebound. Recovery creates its single keyed stage through
+  the same held parent and consumes that stage with a descriptor-relative rename,
+  so a successful commit leaves no recovery sibling to clean. Windows retains
+  its explicit file-only durability result.
+- Reconcile every Windows replacement result against the intended recovery
+  bytes and captured predecessor before cleanup. Proven commits remove only
+  the exact verification handles, using immediate unlink semantics when the
+  filesystem supports them; ambiguous outcomes fail closed and preserve the
+  staged content and predecessor needed for recovery. Deterministic per-instance
+  stage and backup slots make later retries return `ResourceBusy` before they
+  can accumulate another pair of artifacts.
+- Ignore only a recovery candidate that disappears between startup enumeration
+  and metadata lookup. Preserve and surface every other metadata I/O error so
+  an inaccessible recovery record cannot be silently omitted from a successful
+  scan.
+- Make quarantine durability explicit: sync the verified quarantine file and
+  its parent before deleting the exact source, then sync the source parent.
+  Failures retain the original or report the durable quarantine copy instead of
+  claiming cleanup that may not survive a crash.
+- Retry a failed dirty recovery persist after a bounded one-second backoff while
+  retaining the newest revision and epoch. Clock regression reanchors that
+  backoff without creating a zero-delay repaint loop.
+- Bind external-change overwrite confirmation to the exact regular-file
+  observation reviewed. If the disk entry changes before the second
+  confirmation, Noter preserves the newer revision and opens a fresh conflict
+  decision instead of silently rebaselining and overwriting it.
+- Let keyboard and screen-reader users activate inactive formatted Markdown
+  with Enter, Space, or the platform accessibility Click action. Text Mode and
+  active Markdown editing now expose stable, distinct accessible editor names.
+- Reject repository documentation links through every symbolic path component,
+  including links that resolve back inside the checkout, so validation behaves
+  consistently across Git hosts and cannot approve a repository escape.
+- Serialize publication attempts for the same release tag without canceling or
+  replacing a queued run. Pull-request plans and dry runs retain isolated
+  concurrency groups.
 
 - Open private recovery storage only once during application construction, and
   isolate application unit tests from the platform recovery directory so

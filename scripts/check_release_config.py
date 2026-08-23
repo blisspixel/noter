@@ -36,11 +36,11 @@ PINNED_RELEASE_TOOL_DIGESTS = {
 }
 PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 REVIEWED_RELEASE_WORKFLOW_SHA256 = (
-    "2fccc8987f4b747d6db77d61cf4c08665886b6f747bb024c0eaa004dd3e14e1d"
+    "d4158b18ffa03e16af89c7c5421bbfbc1aee6ab52c1a1d977fe42a256a8e0f82"
 )
 REVIEWED_WIX_SHA256 = "90d3892cab5d6b450a76a5f1b1596a061306f2bddcac2908c7e59a99a00fa6be"
 REVIEWED_CI_WORKFLOW_SHA256 = (
-    "5c626c7a7491443ebccf3f53214126690107699e80ca165ce0810833fa81aeb0"
+    "659390e29dd69f97b7277eccd2e4a9e8389570c33bf64f4ff49cac53279289e2"
 )
 REVIEWED_CI_TEST_JOB_SHA256 = (
     "7abb1436d4c1bbcd14c106d5bf60812866df7265966156226d7353561f2ad785"
@@ -124,6 +124,26 @@ def _executable_shell_lines(script: str | None) -> tuple[str, ...]:
         for line in script.splitlines()
         if (stripped := line.strip()) and not stripped.startswith("#")
     )
+
+
+def _top_level_mapping(text: str, name: str) -> tuple[str, ...] | None:
+    """Return one top-level YAML mapping without accepting duplicate keys."""
+
+    lines = text.splitlines()
+    marker = f"{name}:"
+    starts = [index for index, line in enumerate(lines) if line == marker]
+    if len(starts) != 1:
+        return None
+    start = starts[0]
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index] and not lines[index][0].isspace()
+        ),
+        len(lines),
+    )
+    return tuple(lines[start:end])
 
 
 def validate_manifest(text: str) -> list[str]:
@@ -210,6 +230,16 @@ def validate_workflow(text: str) -> list[str]:
     header = text[:jobs_marker]
     pre_host = text[:host_marker]
     host = text[host_marker:]
+    expected_concurrency = (
+        "concurrency:",
+        "  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag != 'dry-run' && inputs.tag || github.run_id }}",
+        "  queue: max",
+        "  cancel-in-progress: false",
+    )
+    if _top_level_mapping(header, "concurrency") != expected_concurrency:
+        errors.append(
+            "publishing tags must queue without cancellation while PR plans and dry runs stay isolated"
+        )
     immutable_target_script = _literal_run_step(
         host, "Validate immutable release target", errors
     )

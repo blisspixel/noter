@@ -35,6 +35,13 @@ pub const RECOVERY_MAX_DIRTY_INTERVAL: Duration = Duration::from_secs(15);
 /// needs a wake-up so a completed worker result is applied promptly.
 pub const RECOVERY_IN_FLIGHT_POLL: Duration = Duration::from_millis(16);
 
+/// Minimum delay before retrying a failed recovery persistence attempt.
+///
+/// A persistent storage failure must not turn an expired dirty deadline into
+/// an immediate repaint and full-snapshot loop. Dirty state remains armed, but
+/// the adapter gets a bounded pause before it retries.
+pub const RECOVERY_RETRY_BACKOFF: Duration = Duration::from_secs(1);
+
 /// Maximum encoded original-path metadata retained in a recovery record.
 pub const MAX_RECOVERY_PATH_BYTES: usize = 128 * 1024;
 
@@ -934,6 +941,7 @@ pub struct RecoveryScheduleState {
     dirty_since: Option<RecoveryClock>,
     last_persisted_revision: Option<Revision>,
     in_flight_revision: Option<Revision>,
+    last_failure_at: Option<RecoveryClock>,
     /// Increments on clean and discard so late disk completions cannot apply.
     epoch: u64,
 }
@@ -947,6 +955,7 @@ impl Default for RecoveryScheduleState {
             dirty_since: None,
             last_persisted_revision: None,
             in_flight_revision: None,
+            last_failure_at: None,
             epoch: 0,
         }
     }
@@ -1012,18 +1021,27 @@ impl RecoveryScheduleState {
         }
         let last_edit_at = self.last_edit_at?;
         let dirty_since = self.dirty_since?;
-        let (Some(idle), Some(dirty_for)) = (
+        let elapsed = (
             now.elapsed().checked_sub(last_edit_at.elapsed()),
             now.elapsed().checked_sub(dirty_since.elapsed()),
-        ) else {
-            // A clock regression is already due, exactly as `tick` decides.
-            return Some(Duration::ZERO);
-        };
-        Some(
-            RECOVERY_IDLE_DEBOUNCE
+        );
+        let due_delay = match elapsed {
+            (Some(idle), Some(dirty_for)) => RECOVERY_IDLE_DEBOUNCE
                 .saturating_sub(idle)
                 .min(RECOVERY_MAX_DIRTY_INTERVAL.saturating_sub(dirty_for)),
-        )
+            // A regression makes the ordinary dirty deadline due, exactly as
+            // `tick` decides. A failure anchored at the regressed time can
+            // still impose its bounded retry delay below.
+            (None, _) | (_, None) => Duration::ZERO,
+        };
+        let retry_delay = self.last_failure_at.map_or(Duration::ZERO, |failed_at| {
+            now.elapsed()
+                .checked_sub(failed_at.elapsed())
+                .map_or(Duration::ZERO, |elapsed| {
+                    RECOVERY_RETRY_BACKOFF.saturating_sub(elapsed)
+                })
+        });
+        Some(due_delay.max(retry_delay))
     }
 
     /// Applies one scheduling command and returns the adapter effect.
@@ -1060,6 +1078,7 @@ impl RecoveryScheduleState {
         self.last_edit_at = None;
         self.dirty_since = None;
         self.in_flight_revision = None;
+        self.last_failure_at = None;
         self.last_persisted_revision = None;
         self.epoch = self.epoch.wrapping_add(1);
         // A clean document still needs any owned recovery artifact removed.
@@ -1071,6 +1090,7 @@ impl RecoveryScheduleState {
         self.last_edit_at = None;
         self.dirty_since = None;
         self.in_flight_revision = None;
+        self.last_failure_at = None;
         self.current_revision = Revision::INITIAL;
         self.last_persisted_revision = None;
         self.epoch = self.epoch.wrapping_add(1);
@@ -1087,6 +1107,16 @@ impl RecoveryScheduleState {
         if self.last_persisted_revision == Some(self.current_revision) {
             return RecoveryScheduleEffect::None;
         }
+        if let Some(failed_at) = self.last_failure_at {
+            let retry_is_due = now
+                .elapsed()
+                .checked_sub(failed_at.elapsed())
+                .is_none_or(|elapsed| elapsed >= RECOVERY_RETRY_BACKOFF);
+            if !retry_is_due {
+                return RecoveryScheduleEffect::None;
+            }
+        }
+        self.last_failure_at = None;
 
         let Some(last_edit_at) = self.last_edit_at else {
             return RecoveryScheduleEffect::None;
@@ -1122,6 +1152,7 @@ impl RecoveryScheduleState {
             return RecoveryScheduleEffect::None;
         }
         self.in_flight_revision = None;
+        self.last_failure_at = None;
         self.last_persisted_revision = Some(revision);
         if self.dirty && self.current_revision == revision {
             // This dirty interval is covered until the next edit.
@@ -1140,6 +1171,7 @@ impl RecoveryScheduleState {
             return RecoveryScheduleEffect::None;
         }
         self.in_flight_revision = None;
+        self.last_failure_at = Some(now);
         // Keep the dirty interval open so the next eligible tick retries.
         if self.dirty_since.is_none() {
             self.dirty_since = Some(now);
@@ -2194,6 +2226,214 @@ mod tests {
         );
         assert!(state.in_flight_revision().is_none());
         assert!(state.is_dirty());
+    }
+
+    #[test]
+    fn persist_failure_uses_a_bounded_retry_delay() {
+        let mut state = RecoveryScheduleState::default();
+        let epoch = state.epoch();
+        let _ = state.reduce(RecoveryScheduleCommand::Edited {
+            revision: Revision::new(7),
+            now: RecoveryClock::new(Duration::ZERO),
+        });
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Tick {
+                now: RecoveryClock::new(RECOVERY_IDLE_DEBOUNCE),
+            }),
+            RecoveryScheduleEffect::Persist {
+                revision: Revision::new(7),
+                epoch,
+            }
+        );
+
+        let failed_at = RecoveryClock::new(Duration::from_secs(3));
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::PersistFailed {
+                revision: Revision::new(7),
+                epoch,
+                now: failed_at,
+            }),
+            RecoveryScheduleEffect::None
+        );
+        assert_eq!(
+            state.next_persist_delay(failed_at),
+            Some(RECOVERY_RETRY_BACKOFF)
+        );
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Tick { now: failed_at }),
+            RecoveryScheduleEffect::None
+        );
+
+        let just_before_retry = RecoveryClock::new(
+            failed_at
+                .elapsed()
+                .saturating_add(RECOVERY_RETRY_BACKOFF)
+                .saturating_sub(Duration::from_millis(1)),
+        );
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Tick {
+                now: just_before_retry,
+            }),
+            RecoveryScheduleEffect::None
+        );
+        assert_eq!(
+            state.next_persist_delay(just_before_retry),
+            Some(Duration::from_millis(1))
+        );
+
+        let retry_at =
+            RecoveryClock::new(failed_at.elapsed().saturating_add(RECOVERY_RETRY_BACKOFF));
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Tick { now: retry_at }),
+            RecoveryScheduleEffect::Persist {
+                revision: Revision::new(7),
+                epoch,
+            }
+        );
+    }
+
+    #[test]
+    fn retry_backoff_and_tick_agree_after_a_clock_regression() {
+        let mut state = RecoveryScheduleState::default();
+        let epoch = state.epoch();
+        let _ = state.reduce(RecoveryScheduleCommand::Edited {
+            revision: Revision::new(5),
+            now: RecoveryClock::new(Duration::from_secs(10)),
+        });
+        let _ = state.reduce(RecoveryScheduleCommand::Tick {
+            now: RecoveryClock::new(Duration::from_secs(12)),
+        });
+        let _ = state.reduce(RecoveryScheduleCommand::PersistFailed {
+            revision: Revision::new(5),
+            epoch,
+            now: RecoveryClock::new(Duration::from_secs(13)),
+        });
+
+        let regressed = RecoveryClock::new(Duration::from_secs(1));
+        assert_eq!(state.next_persist_delay(regressed), Some(Duration::ZERO));
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Tick { now: regressed }),
+            RecoveryScheduleEffect::Persist {
+                revision: Revision::new(5),
+                epoch,
+            }
+        );
+
+        let _ = state.reduce(RecoveryScheduleCommand::PersistFailed {
+            revision: Revision::new(5),
+            epoch,
+            now: regressed,
+        });
+        assert_eq!(
+            state.next_persist_delay(regressed),
+            Some(RECOVERY_RETRY_BACKOFF)
+        );
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Tick { now: regressed }),
+            RecoveryScheduleEffect::None
+        );
+    }
+
+    #[test]
+    fn edit_during_backoff_retries_the_newest_revision_after_normal_debounce() {
+        let mut state = RecoveryScheduleState::default();
+        let epoch = state.epoch();
+        let _ = state.reduce(RecoveryScheduleCommand::Edited {
+            revision: Revision::new(1),
+            now: RecoveryClock::new(Duration::ZERO),
+        });
+        let _ = state.reduce(RecoveryScheduleCommand::Tick {
+            now: RecoveryClock::new(RECOVERY_IDLE_DEBOUNCE),
+        });
+        let _ = state.reduce(RecoveryScheduleCommand::PersistFailed {
+            revision: Revision::new(1),
+            epoch,
+            now: RecoveryClock::new(Duration::from_secs(3)),
+        });
+        let edited_at = RecoveryClock::new(Duration::from_millis(3_500));
+        let _ = state.reduce(RecoveryScheduleCommand::Edited {
+            revision: Revision::new(2),
+            now: edited_at,
+        });
+
+        let backoff_boundary = RecoveryClock::new(Duration::from_secs(4));
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Tick {
+                now: backoff_boundary,
+            }),
+            RecoveryScheduleEffect::None
+        );
+        assert_eq!(
+            state.next_persist_delay(backoff_boundary),
+            Some(Duration::from_millis(1_500))
+        );
+
+        assert_eq!(
+            state.reduce(RecoveryScheduleCommand::Tick {
+                now: RecoveryClock::new(Duration::from_millis(5_500)),
+            }),
+            RecoveryScheduleEffect::Persist {
+                revision: Revision::new(2),
+                epoch,
+            }
+        );
+    }
+
+    #[test]
+    fn stale_outcomes_do_not_change_backoff_and_clean_transitions_clear_it() {
+        let mut failed = RecoveryScheduleState::default();
+        let epoch = failed.epoch();
+        let _ = failed.reduce(RecoveryScheduleCommand::Edited {
+            revision: Revision::new(1),
+            now: RecoveryClock::new(Duration::ZERO),
+        });
+        let _ = failed.reduce(RecoveryScheduleCommand::Tick {
+            now: RecoveryClock::new(RECOVERY_IDLE_DEBOUNCE),
+        });
+        let failed_at = RecoveryClock::new(Duration::from_secs(3));
+        let _ = failed.reduce(RecoveryScheduleCommand::PersistFailed {
+            revision: Revision::new(1),
+            epoch,
+            now: failed_at,
+        });
+        let _ = failed.reduce(RecoveryScheduleCommand::PersistAcknowledged {
+            revision: Revision::new(1),
+            epoch: epoch.wrapping_add(1),
+        });
+        let _ = failed.reduce(RecoveryScheduleCommand::PersistFailed {
+            revision: Revision::new(99),
+            epoch,
+            now: RecoveryClock::new(Duration::from_secs(100)),
+        });
+        assert_eq!(
+            failed.next_persist_delay(RecoveryClock::new(Duration::from_millis(3_250))),
+            Some(Duration::from_millis(750))
+        );
+
+        let mut clean = failed;
+        let _ = clean.reduce(RecoveryScheduleCommand::BecameClean {
+            revision: Revision::new(1),
+        });
+        assert!(clean.last_failure_at.is_none());
+        assert_eq!(clean.next_persist_delay(failed_at), None);
+        let _ = clean.reduce(RecoveryScheduleCommand::Edited {
+            revision: Revision::new(2),
+            now: failed_at,
+        });
+        assert_eq!(
+            clean.next_persist_delay(failed_at),
+            Some(RECOVERY_IDLE_DEBOUNCE)
+        );
+
+        let mut discarded = failed;
+        let _ = discarded.reduce(RecoveryScheduleCommand::Discarded);
+        assert!(discarded.last_failure_at.is_none());
+        assert_eq!(discarded.next_persist_delay(failed_at), None);
+
+        let mut reset = failed;
+        reset.reset_for_new_identity();
+        assert!(reset.last_failure_at.is_none());
+        assert_eq!(reset.next_persist_delay(failed_at), None);
     }
 
     #[test]

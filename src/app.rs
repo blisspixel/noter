@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use eframe::egui;
+use eframe::egui::TextBuffer as _;
 use noter::core::conflict::{
     ConflictCommand, ConflictDecision, ConflictEffect, ConflictState, classify_external_change,
 };
@@ -15,16 +16,18 @@ use noter::core::lifecycle::{
     DestructiveIntent as PendingAbandonAction, DirtyDecision, LifecycleCommand, LifecycleEffect,
     LifecycleState, SaveContinuation,
 };
+use noter::core::line_endings::LineEndingProfile;
 use noter::core::markdown::count_markdown_diagnostics;
 use noter::core::revision::Revision;
-use noter::core::save::{SaveOutcome, SaveStage};
+use noter::core::save::{FileObservation, SaveOutcome, SaveStage, TargetState};
 use noter::core::search::SearchDirection;
 use noter::core::undo::{HistoryApplyOutcome, HistoryRecordOutcome, UndoHistory};
 use noter::error::NoterError;
 
 use crate::bounded_text_input::{
-    BoundedTextBuffer, ImeFrameState, focused_ime_frame_state, isolate_active_ime_commit,
-    retain_active_ime_commit_focus, sanitize_bounded_text_events, take_events_after_ime_terminal,
+    ImeFrameState, ProjectedTextBuffer, ProjectedTextCache, display_selection_to_source,
+    focused_ime_frame_state, isolate_active_ime_commit, retain_active_ime_commit_focus,
+    sanitize_projected_text_events, source_selection_to_display, take_events_after_ime_terminal,
 };
 use crate::crash_recovery::{
     CrashRecoverySession, RECOVERY_CLEANUP_FAILURE_MESSAGE, RECOVERY_PERSIST_FAILURE_MESSAGE,
@@ -45,6 +48,7 @@ use crate::markdown_ui::{MarkdownEditor, MarkdownProjectionLimit, markdown_proje
 use crate::theme::{self, AppTheme, THEME_STORAGE_KEY};
 
 const EDITOR_ID_SALT: &str = "noter-document-editor";
+const TEXT_EDITOR_ACCESSIBLE_NAME: &str = "Document text editor";
 const ABOUT_SUMMARY: &str = "A focused editor for plain text and Markdown files.";
 const ABOUT_MARKDOWN_STATUS: &str = "Markdown Mode provides a formatted, direct editing surface while keeping ordinary Markdown source authoritative on disk.";
 const ABOUT_PRIVACY: &str = "Noter has no accounts, telemetry, or background network activity.";
@@ -184,6 +188,12 @@ enum EditCommand {
     FindPrevious,
     Replace,
     GoToLine,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NativeClipboardAction {
+    Copy,
+    Cut,
 }
 
 impl EditCommand {
@@ -478,6 +488,14 @@ struct TextImeComposition {
 }
 
 #[derive(Debug)]
+struct TextProjectionCache {
+    document_serial: u64,
+    revision: Revision,
+    ime_active: bool,
+    projection: ProjectedTextCache,
+}
+
+#[derive(Debug)]
 enum PendingHardLinkSave {
     Current {
         target: PathBuf,
@@ -558,6 +576,7 @@ impl UpdateStatusState {
 pub struct NoterApp {
     text: String,
     text_ime_composition: Option<TextImeComposition>,
+    text_projection_cache: Option<TextProjectionCache>,
     document: Document,
     history: UndoHistory,
     selection: Selection,
@@ -619,6 +638,7 @@ impl NoterApp {
         Self {
             text: String::new(),
             text_ime_composition: None,
+            text_projection_cache: None,
             document: Document::new(),
             history: UndoHistory::default(),
             selection: Selection::caret(0),
@@ -1256,9 +1276,9 @@ impl NoterApp {
         let Some(path) = self.document.path().map(Path::to_path_buf) else {
             return;
         };
-        let Some(expected) = self.document.saved_target() else {
+        if self.document.saved_target().is_none() {
             return;
-        };
+        }
 
         let (now, focus_regained, window_focused) = ctx.input(|input| {
             (
@@ -1287,6 +1307,31 @@ impl NoterApp {
             ctx.request_repaint_after(Duration::from_secs_f64(EXTERNAL_INSPECT_INTERVAL_SECS));
         }
         let observed = inspect_target(&path, SaveStage::InspectInitial).map_err(|_| ());
+        self.record_external_observation(observed, ctx);
+    }
+
+    fn revoke_stale_close_authorization(&mut self, ctx: &egui::Context) {
+        let revision = self.document.revision();
+        if !self.lifecycle.close_authorized(revision) {
+            return;
+        }
+        let effect = self.lifecycle.reduce(LifecycleCommand::Request {
+            intent: PendingAbandonAction::Quit,
+            document_dirty: true,
+            revision,
+        });
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        self.apply_lifecycle_effect(effect, ctx);
+    }
+
+    fn record_external_observation(
+        &mut self,
+        observed: Result<TargetState, ()>,
+        ctx: &egui::Context,
+    ) {
+        let Some(expected) = self.document.saved_target() else {
+            return;
+        };
         let kind = classify_external_change(Some(expected), Some(observed));
         let _ = self.conflict.reduce(ConflictCommand::ObservedExact {
             kind,
@@ -1309,20 +1354,6 @@ impl NoterApp {
         }
     }
 
-    fn revoke_stale_close_authorization(&mut self, ctx: &egui::Context) {
-        let revision = self.document.revision();
-        if !self.lifecycle.close_authorized(revision) {
-            return;
-        }
-        let effect = self.lifecycle.reduce(LifecycleCommand::Request {
-            intent: PendingAbandonAction::Quit,
-            document_dirty: true,
-            revision,
-        });
-        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        self.apply_lifecycle_effect(effect, ctx);
-    }
-
     fn apply_conflict_effect(&mut self, effect: ConflictEffect, ctx: &egui::Context) {
         match effect {
             ConflictEffect::None
@@ -1331,11 +1362,13 @@ impl NoterApp {
             ConflictEffect::RequestReload if self.document.is_dirty() => self.request_reload(ctx),
             ConflictEffect::RequestReload => self.discard_retained_clean_copy_and_reload(),
             ConflictEffect::RequestSaveAs => self.do_save_as(),
-            ConflictEffect::AuthorizeOverwrite => self.perform_authorized_overwrite(),
+            ConflictEffect::AuthorizeOverwrite(reviewed) => {
+                self.perform_authorized_overwrite(reviewed, ctx);
+            }
         }
     }
 
-    fn perform_authorized_overwrite(&mut self) {
+    fn perform_authorized_overwrite(&mut self, reviewed: FileObservation, ctx: &egui::Context) {
         let Some(path) = self.document.path().map(Path::to_path_buf) else {
             self.error_msg = Some(
                 "Overwrite is unavailable because this document has not been saved yet.".to_owned(),
@@ -1343,21 +1376,18 @@ impl NoterApp {
             return;
         };
         match inspect_target(&path, SaveStage::InspectInitial) {
-            Ok(noter::core::save::TargetState::Regular(observation)) => {
+            Ok(TargetState::Regular(observation)) if observation == reviewed => {
                 self.document.rebaseline_to_observed_disk(observation);
                 self.do_save();
             }
-            Ok(noter::core::save::TargetState::Missing) => {
+            Ok(observed) => {
+                self.record_external_observation(Ok(observed), ctx);
                 self.error_msg = Some(
-                    "Overwrite stopped because the file is now missing. Use Save As to keep your work.".to_owned(),
-                );
-            }
-            Ok(noter::core::save::TargetState::Special(_)) => {
-                self.error_msg = Some(
-                    "Overwrite stopped because the path is no longer an ordinary file. Use Save As.".to_owned(),
+                    "Overwrite stopped because the disk version changed again. Review the latest disk state before retrying.".to_owned(),
                 );
             }
             Err(error) => {
+                self.record_external_observation(Err(()), ctx);
                 self.error_msg = Some(format!(
                     "Overwrite stopped because the path could not be inspected safely: {error}"
                 ));
@@ -1548,6 +1578,52 @@ impl NoterApp {
         }
     }
 
+    fn take_native_text_clipboard_action(
+        &mut self,
+        ui: &egui::Ui,
+        editor_focused: bool,
+    ) -> Option<NativeClipboardAction> {
+        if !editor_focused {
+            return None;
+        }
+        let composition_active = self.text_ime_composition.is_some();
+        let mut deferred = Vec::new();
+        let action = ui.input_mut(|input| {
+            let (position, action) =
+                input
+                    .events
+                    .iter()
+                    .enumerate()
+                    .find_map(|(position, event)| {
+                        let action = match event {
+                            egui::Event::Copy => NativeClipboardAction::Copy,
+                            egui::Event::Cut => NativeClipboardAction::Cut,
+                            _ => return None,
+                        };
+                        Some((position, action))
+                    })?;
+            if input.events[..position]
+                .iter()
+                .any(editor_event_orders_input)
+            {
+                deferred = input.events.split_off(position);
+                return None;
+            }
+            input.events.remove(position);
+            deferred = input.events.split_off(position);
+            // The widget selects its transient pre-edit range, so native Copy
+            // or Cut would otherwise publish or mutate bytes that have not
+            // reached authoritative document state. Consume the action while
+            // retaining its ordered suffix until composition terminates.
+            (!composition_active).then_some(action)
+        });
+        if !deferred.is_empty() {
+            self.defer_input_events(deferred);
+            ui.ctx().request_repaint();
+        }
+        action
+    }
+
     fn collect_input_shortcut(
         &mut self,
         ui: &egui::Ui,
@@ -1625,6 +1701,14 @@ impl NoterApp {
     }
 
     fn execute_edit_command(&mut self, command: EditCommand, ctx: &egui::Context) {
+        if matches!(command, EditCommand::Copy | EditCommand::Cut)
+            && self.document_ime_composition_active()
+        {
+            // A pre-edit draft has no stable authoritative-source selection.
+            // Consume every app-level route, including menu and logical-key
+            // commands, until the composition commits or cancels.
+            return;
+        }
         match command {
             EditCommand::Find => {
                 self.find_bar.open(false, &self.text, self.selection);
@@ -2261,6 +2345,10 @@ impl NoterApp {
     }
 
     fn replace_selection_with(&mut self, replacement: &str, origin: EditOrigin) {
+        if self.view == DocumentView::Text {
+            self.replace_text_selection_with_projection(replacement, origin);
+            return;
+        }
         let range = self.selection.ordered_range();
         let start = range.start().min(self.text.len());
         let end = range.end().min(self.text.len());
@@ -2284,6 +2372,40 @@ impl NoterApp {
             origin,
             observed_at,
         });
+    }
+
+    fn replace_text_selection_with_projection(&mut self, replacement: &str, origin: EditOrigin) {
+        let maximum = self.interactive_text_maximum();
+        let insertion_context = LineEndingProfile::detect(&self.text).full_insertion_context();
+        let mut next = self.text.clone();
+        let Some((selection_after, was_limited)) = (|| {
+            let mut buffer = ProjectedTextBuffer::new(&mut next, maximum, insertion_context);
+            let cursor_range = buffer.selection_to_display(self.selection)?;
+            let mut cursor = buffer.delete_selected(&cursor_range);
+            buffer.insert_text_at(&mut cursor, replacement, usize::MAX);
+            let selection_after =
+                buffer.selection_to_source(egui::text::CCursorRange::one(cursor))?;
+            Some((selection_after, buffer.was_limited()))
+        })() else {
+            return;
+        };
+        if was_limited {
+            self.error_msg = Some(format!(
+                "{TEXT_INPUT_LIMIT_PREFIX} {maximum}-byte safety limit. Text within the remaining budget was preserved."
+            ));
+        }
+        if next == self.text {
+            return;
+        }
+        self.text = next;
+        self.record_editor_change(EditorFrameOutcome {
+            changed: true,
+            selection: selection_after,
+            origin,
+            observed_at: EditTimestamp::default(),
+        });
+        self.pending_selection_restore = Some(self.selection);
+        self.preserve_focus_on_selection_restore = false;
     }
 
     fn show_view_menu(&mut self, ui: &mut egui::Ui, command: &mut Option<ViewCommandRequest>) {
@@ -2995,7 +3117,20 @@ impl NoterApp {
                     DocumentView::Markdown => self.show_markdown_editor(ui),
                 };
                 if outcome.changed {
+                    let revision_before = self.document.revision();
+                    let text_projection_is_current = matches!(self.view, DocumentView::Text)
+                        && self.text_projection_cache.as_ref().is_some_and(|cache| {
+                            cache.document_serial == self.document_editor_serial
+                                && cache.revision == revision_before
+                        });
                     self.record_editor_change(outcome);
+                    if text_projection_is_current
+                        && self.document.revision() != revision_before
+                        && let Some(cache) = self.text_projection_cache.as_mut()
+                    {
+                        cache.revision = self.document.revision();
+                        cache.ime_active = self.text_ime_composition.is_some();
+                    }
                 } else {
                     self.selection = valid_selection_or_end(&self.text, outcome.selection);
                 }
@@ -3085,6 +3220,38 @@ impl NoterApp {
         self.show_text_editor_with_limit(ui, self.interactive_text_maximum())
     }
 
+    fn cancel_text_ime_for_plain_enter(&mut self, ui: &egui::Ui) -> bool {
+        let should_cancel = self.text_ime_composition.is_some()
+            && ui.input(|input| {
+                input.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        egui::Event::Key {
+                            key: egui::Key::Enter,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } if !modifiers.any()
+                    )
+                })
+            });
+        let Some(composition) = should_cancel
+            .then(|| self.text_ime_composition.take())
+            .flatten()
+        else {
+            return false;
+        };
+        // Enter owns the logical line break. Cancel the transient pre-edit
+        // first so the widget applies that one bounded edit to authoritative
+        // source rather than publishing the draft through an empty IME
+        // terminal paired with the key event.
+        self.selection = composition.base_selection;
+        self.pending_selection_restore = Some(composition.base_selection);
+        self.preserve_focus_on_selection_restore = true;
+        self.text_projection_cache = None;
+        true
+    }
+
     fn show_text_editor_with_limit(
         &mut self,
         ui: &mut egui::Ui,
@@ -3095,6 +3262,7 @@ impl NoterApp {
         let editor_id = self.editor_id();
         let ime_focus_restore =
             retain_active_ime_commit_focus(ui, editor_id, self.text_ime_composition.is_some());
+        let cancelled_ime_for_plain_enter = self.cancel_text_ime_for_plain_enter(ui);
         // Apply pure word/line-home/document policy before TextEdit so Ctrl/Cmd
         // and Home/End share one path with unit tests. Plain arrows stay with
         // egui for platform grapheme movement.
@@ -3119,9 +3287,16 @@ impl NoterApp {
                 self.preserve_focus_on_selection_restore = true;
             }
         }
+        let native_clipboard_action = self.take_native_text_clipboard_action(ui, editor_focused);
         let (restored_selection, restore_focus) = self.restore_text_editor_selection(ui, editor_id);
+        let insertion_context = LineEndingProfile::detect(&self.text).full_insertion_context();
         let (ime_state, event_was_limited) =
-            self.prepare_text_ime_input(ui, editor_id, maximum_text_bytes);
+            self.prepare_text_ime_input(ui, editor_id, maximum_text_bytes, insertion_context);
+        let native_cut_changed = native_clipboard_action
+            .is_some_and(|action| self.apply_native_text_clipboard_action(ui, editor_id, action));
+        if native_cut_changed {
+            self.text_projection_cache = None;
+        }
 
         let viewport_size = ui.available_size();
         let desired_width = if self.text_wrap.is_wrapped() {
@@ -3129,33 +3304,14 @@ impl NoterApp {
         } else {
             f32::INFINITY
         };
-        let (response, buffer_was_limited) = {
-            let editable_text = self
-                .text_ime_composition
-                .as_mut()
-                .map_or(&mut self.text, |composition| &mut composition.draft);
-            let mut buffer = BoundedTextBuffer::new(editable_text, maximum_text_bytes);
-            let editor = egui::TextEdit::multiline(&mut buffer)
-                .id(editor_id)
-                .font(egui::TextStyle::Monospace)
-                .code_editor()
-                .desired_width(desired_width)
-                .min_size(viewport_size)
-                .frame(egui::Frame::NONE)
-                .lock_focus(true);
-            let response = if self.text_wrap.is_wrapped() {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| ui.add(editor))
-                    .inner
-            } else {
-                egui::ScrollArea::both()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| ui.add(editor))
-                    .inner
-            };
-            (response, buffer.was_limited())
-        };
+        let (response, buffer_was_limited, widget_source_selection) = self.render_text_edit(
+            ui,
+            editor_id,
+            maximum_text_bytes,
+            insertion_context,
+            viewport_size,
+            desired_width,
+        );
         let input_was_limited = event_was_limited || buffer_was_limited;
         if input_was_limited {
             self.error_msg = Some(format!(
@@ -3169,17 +3325,20 @@ impl NoterApp {
         }
         let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
         let displayed_text = self.text_editor_displayed_text();
-        let widget_selection = state.cursor.char_range().map_or_else(
-            || {
-                restored_selection
-                    .unwrap_or_else(|| valid_selection_or_end(displayed_text, self.selection))
-            },
-            |range| selection_from_cursor_range(displayed_text, range),
-        );
+        let fallback_selection = restored_selection
+            .unwrap_or_else(|| valid_selection_or_end(displayed_text, self.selection));
+        let widget_selection = widget_source_selection
+            .or_else(|| {
+                source_selection_to_display(displayed_text, fallback_selection)
+                    .and_then(|range| display_selection_to_source(displayed_text, range))
+            })
+            .unwrap_or_else(|| Selection::caret(displayed_text.len()));
+        let widget_changed = native_cut_changed
+            || (response.changed() && !(cancelled_ime_for_plain_enter && input_was_limited));
         let (changed, selection) = self.resolve_text_ime_input(
             ui,
             ime_state,
-            response.changed(),
+            widget_changed,
             widget_selection,
             &mut state,
         );
@@ -3198,10 +3357,117 @@ impl NoterApp {
         }
     }
 
+    fn render_text_edit(
+        &mut self,
+        ui: &mut egui::Ui,
+        editor_id: egui::Id,
+        maximum_text_bytes: usize,
+        insertion_context: noter::core::line_endings::LineEndingInsertionContext,
+        viewport_size: egui::Vec2,
+        desired_width: f32,
+    ) -> (egui::Response, bool, Option<Selection>) {
+        let document_serial = self.document_editor_serial;
+        let revision = self.document.revision();
+        let ime_active = self.text_ime_composition.is_some();
+        let cached_projection = self
+            .text_projection_cache
+            .take()
+            .filter(|cache| {
+                cache.document_serial == document_serial
+                    && cache.revision == revision
+                    && cache.ime_active == ime_active
+            })
+            .map(|cache| cache.projection);
+        let editable_text = self
+            .text_ime_composition
+            .as_mut()
+            .map_or(&mut self.text, |composition| &mut composition.draft);
+        let mut buffer = ProjectedTextBuffer::new_reusing(
+            editable_text,
+            maximum_text_bytes,
+            insertion_context,
+            cached_projection,
+        );
+        let editor = egui::TextEdit::multiline(&mut buffer)
+            .id(editor_id)
+            .font(egui::TextStyle::Monospace)
+            .code_editor()
+            .desired_width(desired_width)
+            .min_size(viewport_size)
+            .frame(egui::Frame::NONE)
+            .lock_focus(true);
+        let output = if self.text_wrap.is_wrapped() {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| editor.show(ui))
+                .inner
+        } else {
+            egui::ScrollArea::both()
+                .auto_shrink([false, false])
+                .show(ui, |ui| editor.show(ui))
+                .inner
+        };
+        set_editor_name(ui, output.response.id, TEXT_EDITOR_ACCESSIBLE_NAME);
+        let selection = output
+            .cursor_range
+            .and_then(|cursor_range| buffer.selection_to_source(cursor_range));
+        let was_limited = buffer.was_limited();
+        let projection = buffer.into_cache();
+        self.text_projection_cache = Some(TextProjectionCache {
+            document_serial,
+            revision,
+            ime_active,
+            projection,
+        });
+        (output.response.response, was_limited, selection)
+    }
+
     fn text_editor_displayed_text(&self) -> &str {
         self.text_ime_composition
             .as_ref()
             .map_or(self.text.as_str(), |composition| composition.draft.as_str())
+    }
+
+    fn apply_native_text_clipboard_action(
+        &mut self,
+        ui: &egui::Ui,
+        editor_id: egui::Id,
+        action: NativeClipboardAction,
+    ) -> bool {
+        let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
+        let source = self.text_editor_displayed_text();
+        let Some(cursor_range) = state.cursor.char_range() else {
+            return false;
+        };
+        let Some(selection) = display_selection_to_source(source, cursor_range) else {
+            return false;
+        };
+        let selected = selection.ordered_range();
+        let Some(exact_source) = source.get(selected.start()..selected.end()) else {
+            return false;
+        };
+        if exact_source.is_empty() {
+            return false;
+        }
+        ui.ctx().copy_text(exact_source.to_owned());
+        if action == NativeClipboardAction::Copy {
+            return false;
+        }
+
+        let editable_text = self
+            .text_ime_composition
+            .as_mut()
+            .map_or(&mut self.text, |composition| &mut composition.draft);
+        editable_text.replace_range(selected.start()..selected.end(), "");
+        let Some(cursor_range) =
+            source_selection_to_display(editable_text, Selection::caret(selected.start()))
+        else {
+            return false;
+        };
+        state.cursor.set_char_range(Some(cursor_range));
+        state.clear_undoer();
+        egui::TextEdit::store_state(ui.ctx(), editor_id, state);
+        true
     }
 
     fn restore_text_editor_selection(
@@ -3219,13 +3485,14 @@ impl NoterApp {
         let restore_focus = restored_selection.is_some()
             && !std::mem::take(&mut self.preserve_focus_on_selection_restore);
         let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
-        if let Some(selection) = restored_selection {
-            if let Some(cursor_range) = cursor_range_from_selection(&self.text, selection) {
-                state.cursor.set_char_range(Some(cursor_range));
-            }
-            if restore_focus {
-                ui.memory_mut(|memory| memory.request_focus(editor_id));
-            }
+        let restored_selection = restored_selection.and_then(|selection| {
+            let cursor_range = source_selection_to_display(&self.text, selection)?;
+            let canonical = display_selection_to_source(&self.text, cursor_range)?;
+            state.cursor.set_char_range(Some(cursor_range));
+            Some(canonical)
+        });
+        if restored_selection.is_some() && restore_focus {
+            ui.memory_mut(|memory| memory.request_focus(editor_id));
         }
         state.clear_undoer();
         egui::TextEdit::store_state(ui.ctx(), editor_id, state);
@@ -3237,6 +3504,7 @@ impl NoterApp {
         ui: &egui::Ui,
         editor_id: egui::Id,
         maximum_text_bytes: usize,
+        insertion_context: noter::core::line_endings::LineEndingInsertionContext,
     ) -> (ImeFrameState, bool) {
         let composition_was_active = self.text_ime_composition.is_some();
         let state_before_sanitizing =
@@ -3247,11 +3515,12 @@ impl NoterApp {
                 base_selection: self.selection,
             });
         }
-        let event_was_limited = sanitize_bounded_text_events(
+        let event_was_limited = sanitize_projected_text_events(
             ui,
             editor_id,
             self.text_editor_displayed_text(),
             maximum_text_bytes,
+            insertion_context,
         );
         (
             focused_ime_frame_state(ui, editor_id, composition_was_active),
@@ -3289,7 +3558,7 @@ impl NoterApp {
                     .text_ime_composition
                     .take()
                     .map_or(self.selection, |composition| composition.base_selection);
-                if let Some(cursor_range) = cursor_range_from_selection(&self.text, base_selection)
+                if let Some(cursor_range) = source_selection_to_display(&self.text, base_selection)
                 {
                     state.cursor.set_char_range(Some(cursor_range));
                 }
@@ -3659,17 +3928,34 @@ impl NoterApp {
         }
         self.show_editor(ui);
         if commit_was_isolated {
-            let removed = ui.input_mut(|input| input.events.pop());
-            debug_assert!(matches!(
-                removed,
-                Some(egui::Event::Ime(egui::ImeEvent::Commit(_)))
-            ));
+            let frame_retained_commit = ui.input_mut(|input| {
+                if matches!(
+                    input.events.last(),
+                    Some(egui::Event::Ime(egui::ImeEvent::Commit(_)))
+                ) {
+                    input.events.pop();
+                    true
+                } else {
+                    false
+                }
+            });
+            let app_owns_deferred_commit = self
+                .deferred_input_events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Ime(egui::ImeEvent::Commit(_))));
+            debug_assert!(
+                frame_retained_commit
+                    || app_owns_deferred_commit
+                    || self.markdown_editor.owns_deferred_ime_commit(),
+                "an isolated IME commit must remain frame-owned or be acknowledged by document deferral"
+            );
         }
     }
 
     fn advance_document_editor(&mut self) {
         self.document_editor_serial = self.document_editor_serial.wrapping_add(1);
         self.text_ime_composition = None;
+        self.text_projection_cache = None;
         self.discard_deferred_input();
     }
 
@@ -4018,11 +4304,9 @@ fn direct_input_origin(ui: &egui::Ui, fallback: EditOrigin) -> EditOrigin {
     })
 }
 
-fn char_index_to_byte(source: &str, character: usize) -> usize {
-    source
-        .char_indices()
-        .nth(character)
-        .map_or(source.len(), |(offset, _)| offset)
+fn set_editor_name(ui: &egui::Ui, id: egui::Id, name: &'static str) {
+    ui.ctx()
+        .accesskit_node_builder(id, |node| node.set_label(name));
 }
 
 fn byte_at_or_before(source: &str, position: usize) -> usize {
@@ -4073,28 +4357,6 @@ fn projected_replacement_length(
     source_len
         .checked_sub(removed)?
         .checked_add(replacement_len)
-}
-
-fn selection_from_cursor_range(source: &str, range: egui::text::CCursorRange) -> Selection {
-    Selection::new(
-        char_index_to_byte(source, range.secondary.index.into()),
-        char_index_to_byte(source, range.primary.index.into()),
-    )
-}
-
-fn cursor_range_from_selection(
-    source: &str,
-    selection: Selection,
-) -> Option<egui::text::CCursorRange> {
-    if !selection_is_valid(source, selection) {
-        return None;
-    }
-    let anchor = source[..selection.anchor()].chars().count();
-    let active = source[..selection.active()].chars().count();
-    Some(egui::text::CCursorRange::two(
-        egui::text::CCursor::new(anchor),
-        egui::text::CCursor::new(active),
-    ))
 }
 
 const fn valid_selection_or_end(source: &str, selection: Selection) -> Selection {
@@ -4379,6 +4641,24 @@ mod tests {
             .to_owned()
     }
 
+    fn accesskit_role_and_value(
+        output: &egui::FullOutput,
+        label: &str,
+    ) -> (egui::accesskit::Role, Option<String>) {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled")
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| (node.role(), node.value().map(str::to_owned)))
+            })
+            .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}`"))
+    }
+
     fn accesskit_node_id(output: &egui::FullOutput, label: &str) -> egui::accesskit::NodeId {
         output
             .platform_output
@@ -4651,6 +4931,73 @@ mod tests {
             origin,
             observed_at: EditTimestamp::default(),
         });
+    }
+
+    fn text_mode_test_app(source: &str, selection: Selection) -> NoterApp {
+        NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection,
+            pending_selection_restore: Some(selection),
+            ..NoterApp::default()
+        }
+    }
+
+    fn show_text_test_frame(
+        app: &mut NoterApp,
+        context: &egui::Context,
+        time: f64,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut input = ui_input(800.0, 600.0, time);
+        input.events = events;
+        context.run_ui(input, |ui| app.show_editor(ui))
+    }
+
+    fn document_ime_test_app(view: DocumentView) -> NoterApp {
+        let source = "a\r\nbc";
+        let selection = Selection::new(3, 4);
+        NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            selection,
+            pending_selection_restore: Some(selection),
+            view,
+            ..NoterApp::default()
+        }
+    }
+
+    fn show_document_test_frame(
+        app: &mut NoterApp,
+        context: &egui::Context,
+        time: f64,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut input = ui_input(1_200.0, 760.0, time);
+        input.events = events;
+        context.run_ui(input, |ui| app.render_frame(ui))
+    }
+
+    fn active_document_ime_draft(app: &NoterApp) -> Option<&str> {
+        match app.view {
+            DocumentView::Text => app
+                .text_ime_composition
+                .as_ref()
+                .map(|composition| composition.draft.as_str()),
+            DocumentView::Markdown => app.markdown_editor.active_ime_draft(),
+        }
+    }
+
+    fn copied_text(output: &egui::FullOutput) -> Vec<&str> {
+        output
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
     }
 
     fn active_test_recovery(path: PathBuf, message: &str) -> SaveRecovery {
@@ -5688,22 +6035,23 @@ mod tests {
         };
         let mode = || key_press(mode_modifiers, egui::Key::M);
         let enter = || key_press(egui::Modifiers::NONE, egui::Key::Enter);
+        let default_ending = noter::core::line_endings::LineEnding::platform_default().as_str();
 
         assert_eq!(
             run(DocumentView::Markdown, vec![mode(), enter()]),
-            (DocumentView::Text, "- item\n".to_owned())
+            (DocumentView::Text, format!("- item{default_ending}"))
         );
         assert_eq!(
             run(DocumentView::Markdown, vec![enter(), mode()]),
-            (DocumentView::Text, "- item\n- ".to_owned())
+            (DocumentView::Text, format!("- item{default_ending}- "))
         );
         assert_eq!(
             run(DocumentView::Text, vec![mode(), enter()]),
-            (DocumentView::Markdown, "- item\n- ".to_owned())
+            (DocumentView::Markdown, format!("- item{default_ending}- "))
         );
         assert_eq!(
             run(DocumentView::Text, vec![enter(), mode()]),
-            (DocumentView::Markdown, "- item\n".to_owned())
+            (DocumentView::Markdown, format!("- item{default_ending}"))
         );
     }
 
@@ -7257,6 +7605,700 @@ mod tests {
         let current = (cursor, app.text);
         assert!(!state.undoer().has_undo(&current));
         assert!(!state.undoer().has_redo(&current));
+    }
+
+    #[test]
+    fn text_editor_has_a_stable_accessible_name() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let source = "Accessible source";
+        let mut app = NoterApp {
+            text: source.to_owned(),
+            document: Document::from_bytes(source.as_bytes()).expect("fixture should load"),
+            ..NoterApp::default()
+        };
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(640.0);
+            assert!(!app.show_text_editor(ui).changed);
+        });
+
+        assert_eq!(
+            accesskit_role_and_value(&output, "Document text editor"),
+            (
+                egui::accesskit::Role::MultilineTextInput,
+                Some(source.to_owned())
+            )
+        );
+    }
+
+    #[test]
+    fn text_editor_projects_cr_only_lines_without_changing_authoritative_source() {
+        let source = "one\rtwo\rthree";
+        let mut app = text_mode_test_app(source, Selection::caret(0));
+        let context = egui::Context::default();
+        context.enable_accesskit();
+
+        let output = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| app.show_editor(ui));
+
+        assert_eq!(
+            accesskit_value(&output, TEXT_EDITOR_ACCESSIBLE_NAME),
+            "one\ntwo\nthree"
+        );
+        assert_eq!(app.text, source);
+        assert_eq!(String::from(app.document.rope()), source);
+    }
+
+    #[test]
+    fn text_editor_deletes_crlf_atomically_in_both_directions() {
+        for (selection, key) in [
+            (Selection::caret(3), egui::Key::Backspace),
+            (Selection::caret(1), egui::Key::Delete),
+        ] {
+            let source = "a\r\nb";
+            let mut app = text_mode_test_app(source, selection);
+            let context = egui::Context::default();
+            let _ = show_text_test_frame(&mut app, &context, 0.0, Vec::new());
+
+            let _ = show_text_test_frame(
+                &mut app,
+                &context,
+                0.1,
+                vec![key_press(egui::Modifiers::NONE, key)],
+            );
+
+            assert_eq!(app.text, "ab", "{key:?}");
+            assert_eq!(String::from(app.document.rope()), "ab", "{key:?}");
+            assert_eq!(app.selection, Selection::caret(1), "{key:?}");
+            assert_eq!(app.history.len(), 1, "{key:?}");
+            app.execute_edit_command(EditCommand::Undo, &context);
+            assert_eq!(app.text, source, "{key:?}");
+            assert_eq!(app.selection, selection, "{key:?}");
+            app.execute_edit_command(EditCommand::Redo, &context);
+            assert_eq!(app.text, "ab", "{key:?}");
+        }
+    }
+
+    #[test]
+    fn text_editor_canonicalizes_directional_crlf_midpoint_selections() {
+        for (selection, expected) in [
+            (Selection::caret(2), Selection::caret(1)),
+            (Selection::new(1, 2), Selection::new(1, 3)),
+            (Selection::new(3, 2), Selection::new(3, 1)),
+        ] {
+            let mut app = text_mode_test_app("a\r\nb", selection);
+            let context = egui::Context::default();
+
+            let _ = show_text_test_frame(&mut app, &context, 0.0, Vec::new());
+
+            assert_eq!(app.selection, expected, "{selection:?}");
+            assert_eq!(app.text, "a\r\nb");
+        }
+    }
+
+    #[test]
+    fn text_editor_enter_uses_uniform_default_and_mixed_nearest_endings() {
+        let default = noter::core::line_endings::LineEnding::platform_default().as_str();
+        let cases = [
+            ("a\nb", Selection::caret(1), "a\n\nb".to_owned()),
+            ("a\r\nb", Selection::caret(1), "a\r\n\r\nb".to_owned()),
+            ("a\rb", Selection::caret(1), "a\r\rb".to_owned()),
+            ("ab", Selection::caret(1), format!("a{default}b")),
+            (
+                "a\r\nb\nc\r",
+                Selection::caret(0),
+                "\r\na\r\nb\nc\r".to_owned(),
+            ),
+            (
+                "a\r\nb\nc\r",
+                Selection::caret(4),
+                "a\r\nb\r\n\nc\r".to_owned(),
+            ),
+        ];
+
+        for (source, selection, expected) in cases {
+            let mut app = text_mode_test_app(source, selection);
+            let context = egui::Context::default();
+            let _ = show_text_test_frame(&mut app, &context, 0.0, Vec::new());
+            let _ = show_text_test_frame(
+                &mut app,
+                &context,
+                0.1,
+                vec![key_press(egui::Modifiers::NONE, egui::Key::Enter)],
+            );
+
+            assert_eq!(app.text, expected, "source {source:?}");
+            assert_eq!(
+                String::from(app.document.rope()),
+                expected,
+                "source {source:?}"
+            );
+            assert_eq!(app.history.len(), 1, "source {source:?}");
+        }
+    }
+
+    #[test]
+    fn text_editor_normalizes_multiline_paste_and_preserves_unrelated_endings() {
+        let source = "head\r\nHERE\nkeep\rtail";
+        let selection = Selection::new(6, 10);
+        let expected = "head\r\nA\r\nB\r\nC\r\nD\nkeep\rtail";
+        let mut app = text_mode_test_app(source, selection);
+        let context = egui::Context::default();
+        let _ = show_text_test_frame(&mut app, &context, 0.0, Vec::new());
+
+        let _ = show_text_test_frame(
+            &mut app,
+            &context,
+            0.1,
+            vec![egui::Event::Paste("A\nB\r\nC\rD".to_owned())],
+        );
+
+        assert_eq!(app.text, expected);
+        assert_eq!(String::from(app.document.rope()), expected);
+        assert_eq!(app.history.len(), 1);
+        app.execute_edit_command(EditCommand::Undo, &context);
+        assert_eq!(app.text, source);
+        assert_eq!(app.selection, selection);
+        app.execute_edit_command(EditCommand::Redo, &context);
+        assert_eq!(app.text, expected);
+    }
+
+    #[test]
+    fn text_mode_menu_paste_uses_the_same_source_projection_transaction() {
+        let source = "head\r\nHERE\nkeep\rtail";
+        let selection = Selection::new(6, 10);
+        let expected = "head\r\nA\r\nB\r\nC\r\nD\nkeep\rtail";
+        let mut app = text_mode_test_app(source, selection);
+        let context = egui::Context::default();
+        let mut input = ui_input(800.0, 600.0, 0.0);
+        input.events = vec![egui::Event::Paste("A\nB\r\nC\rD".to_owned())];
+
+        let _ = context.run_ui(input, |ui| app.clipboard_paste(ui.ctx()));
+
+        assert_eq!(app.text, expected);
+        assert_eq!(String::from(app.document.rope()), expected);
+        assert_eq!(app.history.len(), 1);
+        app.execute_edit_command(EditCommand::Undo, &context);
+        assert_eq!(app.text, source);
+        assert_eq!(app.selection, selection);
+    }
+
+    #[test]
+    fn native_text_copy_and_cut_use_exact_source_bytes() {
+        let source = "a\r\nb\rc\n";
+        let selection = Selection::new(1, 3);
+        for event in [egui::Event::Copy, egui::Event::Cut] {
+            let mut app = text_mode_test_app(source, selection);
+            let context = egui::Context::default();
+            let _ = show_text_test_frame(&mut app, &context, 0.0, Vec::new());
+
+            let output = show_text_test_frame(&mut app, &context, 0.1, vec![event.clone()]);
+            let copied = output
+                .platform_output
+                .commands
+                .iter()
+                .filter_map(|command| match command {
+                    egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(copied, ["\r\n"], "{event:?}");
+
+            if matches!(event, egui::Event::Cut) {
+                assert_eq!(app.text, "ab\rc\n");
+                assert_eq!(app.history.len(), 1);
+                app.execute_edit_command(EditCommand::Undo, &context);
+                assert_eq!(app.text, source);
+                assert_eq!(app.selection, selection);
+            } else {
+                assert_eq!(app.text, source);
+                assert!(!app.history.can_undo());
+            }
+        }
+    }
+
+    #[test]
+    fn native_text_copy_and_cut_respect_ime_terminal_order() {
+        for action in [egui::Event::Copy, egui::Event::Cut] {
+            for commit in [false, true] {
+                for action_first in [false, true] {
+                    let mut app = document_ime_test_app(DocumentView::Text);
+                    let context = egui::Context::default();
+                    theme::configure_styles(&context);
+                    let _ = show_document_test_frame(&mut app, &context, 0.0, Vec::new());
+                    let _ = show_document_test_frame(
+                        &mut app,
+                        &context,
+                        0.1,
+                        vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                            text: "漢".to_owned(),
+                            active_range_chars: None,
+                        })],
+                    );
+                    assert_eq!(active_document_ime_draft(&app), Some("a\r\n漢c"));
+
+                    let terminal = if commit {
+                        egui::Event::Ime(egui::ImeEvent::Commit("漢".to_owned()))
+                    } else {
+                        egui::Event::Ime(egui::ImeEvent::Preedit {
+                            text: String::new(),
+                            active_range_chars: None,
+                        })
+                    };
+                    let events = if action_first {
+                        vec![action.clone(), terminal]
+                    } else {
+                        vec![terminal, action.clone()]
+                    };
+                    let first = show_document_test_frame(&mut app, &context, 0.2, events);
+                    assert!(copied_text(&first).is_empty());
+                    if action_first {
+                        assert_eq!(active_document_ime_draft(&app), Some("a\r\n漢c"));
+                        assert_eq!(app.text, "a\r\nbc");
+                        assert_eq!(String::from(app.document.rope()), "a\r\nbc");
+                        assert_eq!(app.selection, Selection::new(3, 4));
+                        assert!(!app.history.can_undo());
+                    } else {
+                        assert_eq!(active_document_ime_draft(&app), None);
+                        assert_eq!(app.text, if commit { "a\r\n漢c" } else { "a\r\nbc" });
+                        assert_eq!(app.history.len(), usize::from(commit));
+                    }
+
+                    let second = show_document_test_frame(&mut app, &context, 0.3, Vec::new());
+                    let copied = copied_text(&second);
+                    let cut_after_cancel =
+                        !action_first && !commit && matches!(action, egui::Event::Cut);
+                    let clipboard_after_cancel = !action_first && !commit;
+                    let expected = if commit {
+                        "a\r\n漢c"
+                    } else if cut_after_cancel {
+                        "a\r\nc"
+                    } else {
+                        "a\r\nbc"
+                    };
+                    assert_eq!(active_document_ime_draft(&app), None);
+                    assert_eq!(app.text, expected);
+                    assert_eq!(String::from(app.document.rope()), expected);
+                    assert_eq!(
+                        copied,
+                        if clipboard_after_cancel {
+                            vec!["b"]
+                        } else {
+                            vec![]
+                        }
+                    );
+                    assert_eq!(app.history.len(), usize::from(commit || cut_after_cancel));
+                    assert_eq!(
+                        app.selection,
+                        if commit {
+                            Selection::caret(6)
+                        } else if cut_after_cancel {
+                            Selection::caret(3)
+                        } else {
+                            Selection::new(3, 4)
+                        }
+                    );
+                    if commit || cut_after_cancel {
+                        app.execute_edit_command(EditCommand::Undo, &context);
+                        assert_eq!(app.text, "a\r\nbc");
+                        assert_eq!(String::from(app.document.rope()), "a\r\nbc");
+                        assert_eq!(app.selection, Selection::new(3, 4));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn menu_copy_and_cut_respect_text_and_markdown_ime_terminal_order() {
+        for view in [DocumentView::Text, DocumentView::Markdown] {
+            for action in [EditCommand::Copy, EditCommand::Cut] {
+                for commit in [false, true] {
+                    for action_first in [false, true] {
+                        let mut app = document_ime_test_app(view);
+                        let context = egui::Context::default();
+                        theme::configure_styles(&context);
+                        let _ = show_document_test_frame(&mut app, &context, 0.0, Vec::new());
+                        let _ = show_document_test_frame(
+                            &mut app,
+                            &context,
+                            0.1,
+                            vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                                text: "漢".to_owned(),
+                                active_range_chars: None,
+                            })],
+                        );
+                        assert_eq!(active_document_ime_draft(&app), Some("a\r\n漢c"));
+                        assert_eq!(app.text, "a\r\nbc");
+                        assert_eq!(app.selection, Selection::new(3, 4));
+                        assert!(!app.history.can_undo());
+
+                        let terminal = if commit {
+                            egui::Event::Ime(egui::ImeEvent::Commit("漢".to_owned()))
+                        } else {
+                            egui::Event::Ime(egui::ImeEvent::Preedit {
+                                text: String::new(),
+                                active_range_chars: None,
+                            })
+                        };
+                        let mut copied = Vec::new();
+                        if action_first {
+                            let output = context.run_ui(ui_input(1_200.0, 760.0, 0.2), |ui| {
+                                app.execute_edit_command(action, ui.ctx());
+                            });
+                            copied.extend(copied_text(&output).into_iter().map(str::to_owned));
+                            assert_eq!(active_document_ime_draft(&app), Some("a\r\n漢c"));
+                            assert_eq!(app.text, "a\r\nbc");
+                            assert_eq!(String::from(app.document.rope()), "a\r\nbc");
+                            assert_eq!(app.selection, Selection::new(3, 4));
+                            assert!(!app.history.can_undo());
+                            let output =
+                                show_document_test_frame(&mut app, &context, 0.3, vec![terminal]);
+                            copied.extend(copied_text(&output).into_iter().map(str::to_owned));
+                        } else {
+                            let output =
+                                show_document_test_frame(&mut app, &context, 0.2, vec![terminal]);
+                            copied.extend(copied_text(&output).into_iter().map(str::to_owned));
+                            let output = context.run_ui(ui_input(1_200.0, 760.0, 0.3), |ui| {
+                                app.execute_edit_command(action, ui.ctx());
+                            });
+                            copied.extend(copied_text(&output).into_iter().map(str::to_owned));
+                        }
+
+                        assert_eq!(active_document_ime_draft(&app), None);
+                        let cut_after_cancel =
+                            !action_first && !commit && action == EditCommand::Cut;
+                        let expected = if commit {
+                            "a\r\n漢c"
+                        } else if cut_after_cancel {
+                            "a\r\nc"
+                        } else {
+                            "a\r\nbc"
+                        };
+                        assert_eq!(
+                            app.text, expected,
+                            "{view:?} {action:?} {commit} {action_first}"
+                        );
+                        assert_eq!(String::from(app.document.rope()), expected);
+                        let copy_after_cancel =
+                            !action_first && !commit && action == EditCommand::Copy;
+                        assert_eq!(
+                            copied,
+                            if copy_after_cancel || cut_after_cancel {
+                                vec!["b"]
+                            } else {
+                                vec![]
+                            }
+                        );
+                        let changed = commit || cut_after_cancel;
+                        assert_eq!(app.history.len(), usize::from(changed));
+                        if changed {
+                            app.execute_edit_command(EditCommand::Undo, &context);
+                            assert_eq!(app.text, "a\r\nbc");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn logical_copy_and_cut_shortcuts_respect_ime_terminal_order() {
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+        for view in [DocumentView::Text, DocumentView::Markdown] {
+            for (action, key) in [
+                (EditCommand::Copy, egui::Key::C),
+                (EditCommand::Cut, egui::Key::X),
+            ] {
+                for commit in [false, true] {
+                    for action_first in [false, true] {
+                        let mut app = document_ime_test_app(view);
+                        let context = egui::Context::default();
+                        theme::configure_styles(&context);
+                        let _ = show_document_test_frame(&mut app, &context, 0.0, Vec::new());
+                        let _ = show_document_test_frame(
+                            &mut app,
+                            &context,
+                            0.1,
+                            vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                                text: "漢".to_owned(),
+                                active_range_chars: None,
+                            })],
+                        );
+                        let terminal = if commit {
+                            egui::Event::Ime(egui::ImeEvent::Commit("漢".to_owned()))
+                        } else {
+                            egui::Event::Ime(egui::ImeEvent::Preedit {
+                                text: String::new(),
+                                active_range_chars: None,
+                            })
+                        };
+                        let shortcut = key_press(command, key);
+                        let events = if action_first {
+                            vec![shortcut, terminal]
+                        } else {
+                            vec![terminal, shortcut]
+                        };
+                        let first = show_document_test_frame(&mut app, &context, 0.2, events);
+                        let second = show_document_test_frame(&mut app, &context, 0.3, Vec::new());
+                        let mut copied = copied_text(&first)
+                            .into_iter()
+                            .chain(copied_text(&second))
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>();
+                        copied.sort();
+
+                        assert_eq!(active_document_ime_draft(&app), None);
+                        let cut_after_cancel =
+                            !action_first && !commit && action == EditCommand::Cut;
+                        let expected = if commit {
+                            "a\r\n漢c"
+                        } else if cut_after_cancel {
+                            "a\r\nc"
+                        } else {
+                            "a\r\nbc"
+                        };
+                        assert_eq!(
+                            app.text, expected,
+                            "{view:?} {action:?} {commit} {action_first}"
+                        );
+                        assert_eq!(String::from(app.document.rope()), expected);
+                        let clipboard_after_cancel = !action_first && !commit;
+                        assert_eq!(
+                            copied,
+                            if clipboard_after_cancel {
+                                vec!["b"]
+                            } else {
+                                vec![]
+                            }
+                        );
+                        let changed = commit || cut_after_cancel;
+                        assert_eq!(app.history.len(), usize::from(changed));
+                        if changed {
+                            app.execute_edit_command(EditCommand::Undo, &context);
+                            assert_eq!(app.text, "a\r\nbc");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_markdown_copy_and_cut_can_defer_an_isolated_ime_terminal() {
+        for action in [egui::Event::Copy, egui::Event::Cut] {
+            for commit in [false, true] {
+                let mut app = document_ime_test_app(DocumentView::Markdown);
+                let context = egui::Context::default();
+                theme::configure_styles(&context);
+                let _ = show_document_test_frame(&mut app, &context, 0.0, Vec::new());
+                let _ = show_document_test_frame(
+                    &mut app,
+                    &context,
+                    0.1,
+                    vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                        text: "漢".to_owned(),
+                        active_range_chars: None,
+                    })],
+                );
+                let terminal = if commit {
+                    egui::Event::Ime(egui::ImeEvent::Commit("漢".to_owned()))
+                } else {
+                    egui::Event::Ime(egui::ImeEvent::Preedit {
+                        text: String::new(),
+                        active_range_chars: None,
+                    })
+                };
+
+                let first = show_document_test_frame(
+                    &mut app,
+                    &context,
+                    0.2,
+                    vec![action.clone(), terminal],
+                );
+                assert!(copied_text(&first).is_empty());
+                assert_eq!(app.text, "a\r\nbc");
+                assert_eq!(active_document_ime_draft(&app), Some("a\r\n漢c"));
+                assert!(!app.history.can_undo());
+
+                let second = show_document_test_frame(&mut app, &context, 0.3, Vec::new());
+                assert!(copied_text(&second).is_empty());
+                assert_eq!(active_document_ime_draft(&app), None);
+                let expected = if commit { "a\r\n漢c" } else { "a\r\nbc" };
+                assert_eq!(app.text, expected);
+                assert_eq!(String::from(app.document.rope()), expected);
+                assert_eq!(app.history.len(), usize::from(commit));
+            }
+        }
+    }
+
+    #[test]
+    fn text_ime_normalizes_crlf_commit_and_cancel_without_leaking_a_draft() {
+        let source = "a\r\nb";
+        let selection = Selection::new(3, 4);
+        let mut app = text_mode_test_app(source, selection);
+        let context = egui::Context::default();
+        let _ = show_text_test_frame(&mut app, &context, 0.0, Vec::new());
+
+        let preedit = context.run_ui(ime_preedit_input(0.1, "仮\n名"), |ui| app.show_editor(ui));
+        assert!(
+            rendered_text(&preedit)
+                .iter()
+                .any(|(text, _)| text.contains("a\n仮\n名"))
+        );
+        assert_eq!(app.text, source);
+        assert_eq!(String::from(app.document.rope()), source);
+
+        let _ = context.run_ui(ime_commit_input(0.2, "漢\n字"), |ui| app.show_editor(ui));
+        assert_eq!(app.text, "a\r\n漢\r\n字");
+        assert_eq!(app.selection, Selection::caret(11));
+        assert_eq!(app.history.len(), 1);
+        app.execute_edit_command(EditCommand::Undo, &context);
+        assert_eq!(app.text, source);
+        assert_eq!(app.selection, selection);
+
+        let _ = show_text_test_frame(&mut app, &context, 0.3, Vec::new());
+        let _ = context.run_ui(ime_preedit_input(0.4, "仮\n名"), |ui| app.show_editor(ui));
+        let _ = context.run_ui(ime_preedit_input(0.5, ""), |ui| app.show_editor(ui));
+        let _ = show_text_test_frame(&mut app, &context, 0.6, Vec::new());
+        assert_eq!(app.text, source);
+        assert_eq!(String::from(app.document.rope()), source);
+        assert_eq!(app.selection, selection);
+        assert!(!app.history.can_undo());
+        assert!(app.history.can_redo());
+    }
+
+    #[test]
+    fn text_ime_inserts_each_newline_only_commit_once_with_local_endings() {
+        for (source, expected, caret) in [
+            ("a\nb", "a\n\nb", 2),
+            ("a\r\nb", "a\r\n\r\nb", 3),
+            ("a\rb", "a\r\rb", 2),
+        ] {
+            for payload in ["\n", "\r", "\r\n"] {
+                let mut app = text_mode_test_app(source, Selection::caret(1));
+                let context = egui::Context::default();
+                let _ = show_text_test_frame(&mut app, &context, 0.0, Vec::new());
+
+                let _ = context.run_ui(ime_commit_input(0.1, payload), |ui| {
+                    app.show_editor(ui);
+                });
+
+                assert_eq!(app.text, expected, "source {source:?}, payload {payload:?}");
+                assert_eq!(
+                    String::from(app.document.rope()),
+                    expected,
+                    "source {source:?}, payload {payload:?}"
+                );
+                assert_eq!(app.selection, Selection::caret(caret));
+                assert_eq!(app.history.len(), 1);
+                app.execute_edit_command(EditCommand::Undo, &context);
+                assert_eq!(app.text, source);
+                assert_eq!(app.selection, Selection::caret(1));
+            }
+        }
+    }
+
+    #[test]
+    fn text_ime_deduplicates_enter_and_newline_commit_during_preedit() {
+        for payload in ["\n", "\r", "\r\n"] {
+            let source = "a\r\nb";
+            let mut app = text_mode_test_app(source, Selection::caret(1));
+            let context = egui::Context::default();
+            let _ = show_text_test_frame(&mut app, &context, 0.0, Vec::new());
+            let _ = context.run_ui(ime_preedit_input(0.1, "draft"), |ui| {
+                app.show_editor(ui);
+            });
+            assert!(app.text_ime_composition.is_some());
+
+            let _ = show_text_test_frame(
+                &mut app,
+                &context,
+                0.2,
+                vec![
+                    key_press(egui::Modifiers::NONE, egui::Key::Enter),
+                    egui::Event::Ime(egui::ImeEvent::Commit(payload.to_owned())),
+                ],
+            );
+
+            assert_eq!(app.text, "a\r\n\r\nb", "payload {payload:?}");
+            assert_eq!(String::from(app.document.rope()), "a\r\n\r\nb");
+            assert_eq!(app.selection, Selection::caret(3));
+            assert!(app.text_ime_composition.is_none());
+            assert_eq!(app.history.len(), 1);
+        }
+    }
+
+    #[test]
+    fn text_ime_rejected_crlf_terminals_never_publish_the_preedit_draft() {
+        for paired_enter in [false, true] {
+            let source = "a\r\nb";
+            let selection = Selection::new(3, 4);
+            let mut app = text_mode_test_app(source, selection);
+            let context = egui::Context::default();
+            let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| {
+                assert!(!app.show_text_editor_with_limit(ui, source.len()).changed);
+            });
+            let _ = context.run_ui(ime_preedit_input(0.1, "x"), |ui| {
+                assert!(!app.show_text_editor_with_limit(ui, source.len()).changed);
+            });
+            assert_eq!(
+                app.text_ime_composition
+                    .as_ref()
+                    .map(|composition| composition.draft.as_str()),
+                Some("a\r\nx")
+            );
+
+            let mut terminal = ime_commit_input(0.2, "\n");
+            if paired_enter {
+                terminal
+                    .events
+                    .insert(0, key_press(egui::Modifiers::NONE, egui::Key::Enter));
+            }
+            let _ = context.run_ui(terminal, |ui| {
+                assert!(!app.show_text_editor_with_limit(ui, source.len()).changed);
+            });
+
+            assert_eq!(app.text, source, "paired_enter={paired_enter}");
+            assert_eq!(String::from(app.document.rope()), source);
+            assert_eq!(app.selection, selection);
+            assert!(app.text_ime_composition.is_none());
+            assert!(!app.history.can_undo());
+        }
+    }
+
+    #[test]
+    fn text_editor_enforces_source_byte_limits_across_crlf_projection() {
+        let context = egui::Context::default();
+        let mut app = text_mode_test_app("a\r\nb", Selection::new(1, 3));
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| {
+            assert!(!app.show_text_editor_with_limit(ui, 4).changed);
+        });
+        let mut replacement = ui_input(800.0, 600.0, 0.1);
+        replacement.events = vec![egui::Event::Paste("é".to_owned())];
+        let _ = context.run_ui(replacement, |ui| {
+            assert!(app.show_text_editor_with_limit(ui, 4).changed);
+        });
+        assert_eq!(app.text, "aéb");
+
+        let mut app = text_mode_test_app("a\r\nb", Selection::new(3, 4));
+        let _ = context.run_ui(ui_input(800.0, 600.0, 0.2), |ui| {
+            assert!(!app.show_text_editor_with_limit(ui, 4).changed);
+        });
+        let mut newline = ui_input(800.0, 600.0, 0.3);
+        newline.events = vec![egui::Event::Paste("\n".to_owned())];
+        let _ = context.run_ui(newline, |ui| {
+            assert!(!app.show_text_editor_with_limit(ui, 4).changed);
+        });
+        assert_eq!(app.text, "a\r\nb");
+        assert!(app.error_msg.as_deref().is_some_and(|message| {
+            message.contains("4-byte safety limit")
+                && message.contains("remaining budget was preserved")
+        }));
     }
 
     #[test]
@@ -9046,6 +10088,98 @@ mod tests {
             .active_offer()
             .expect("the retained in-memory disk version should be recoverable");
         assert_eq!(offer.metadata().content_len(), b"original".len());
+        Ok(())
+    }
+
+    #[test]
+    fn overwrite_confirmation_reprompts_when_disk_changes_after_review()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let path = directory.path().join("overwrite-race.txt");
+        fs::write(&path, b"original")?;
+        let mut document = Document::from_path(&path)?;
+        document.replace_text("local revision")?;
+        let trusted_target = document.saved_target();
+        let mut app = NoterApp {
+            text: "local revision".to_owned(),
+            document,
+            ..NoterApp::default()
+        };
+        fs::write(&path, b"external revision A")?;
+        let reviewed = match inspect_target(&path, SaveStage::InspectInitial)? {
+            TargetState::Regular(observation) => observation,
+            state => panic!("expected a regular-file observation, got {state:?}"),
+        };
+        let context = egui::Context::default();
+
+        inspect_external_change_for_test(&mut app, &context);
+        let effect = app
+            .conflict
+            .reduce(ConflictCommand::Decide(ConflictDecision::RequestOverwrite));
+        app.apply_conflict_effect(effect, &context);
+        assert!(app.conflict.is_confirming_overwrite());
+
+        fs::write(&path, b"newer external revision B")?;
+        let effect = app
+            .conflict
+            .reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite));
+        assert_eq!(effect, ConflictEffect::AuthorizeOverwrite(reviewed));
+        app.apply_conflict_effect(effect, &context);
+
+        assert_eq!(fs::read(&path)?, b"newer external revision B");
+        assert_eq!(app.text, "local revision");
+        assert!(app.document.is_dirty());
+        assert_eq!(app.document.saved_target(), trusted_target);
+        assert!(app.conflict.is_prompting());
+        assert!(!app.conflict.is_confirming_overwrite());
+        assert_eq!(
+            app.conflict.prompt_kind(),
+            Some(ExternalChangeKind::ContentOrIdentityChanged)
+        );
+        assert!(app.external_memory_at_risk);
+        assert!(
+            app.error_msg
+                .as_deref()
+                .is_some_and(|message| { message.contains("disk version changed again") })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn overwrite_confirmation_commits_when_reviewed_disk_state_is_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let path = directory.path().join("overwrite-unchanged.txt");
+        fs::write(&path, b"original")?;
+        let mut document = Document::from_path(&path)?;
+        document.replace_text("local revision")?;
+        let mut app = NoterApp {
+            text: "local revision".to_owned(),
+            document,
+            ..NoterApp::default()
+        };
+        fs::write(&path, b"external revision A")?;
+        let reviewed = match inspect_target(&path, SaveStage::InspectInitial)? {
+            TargetState::Regular(observation) => observation,
+            state => panic!("expected a regular-file observation, got {state:?}"),
+        };
+        let context = egui::Context::default();
+
+        inspect_external_change_for_test(&mut app, &context);
+        let effect = app
+            .conflict
+            .reduce(ConflictCommand::Decide(ConflictDecision::RequestOverwrite));
+        app.apply_conflict_effect(effect, &context);
+        let effect = app
+            .conflict
+            .reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite));
+        assert_eq!(effect, ConflictEffect::AuthorizeOverwrite(reviewed));
+        app.apply_conflict_effect(effect, &context);
+
+        assert_eq!(fs::read(&path)?, b"local revision");
+        assert!(!app.document.is_dirty());
+        assert!(!app.conflict.is_prompting());
+        assert!(!app.external_memory_at_risk);
         Ok(())
     }
 

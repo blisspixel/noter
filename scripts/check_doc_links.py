@@ -115,10 +115,22 @@ def normalized_path(path: Path) -> Path:
     return Path(os.path.abspath(path))
 
 
+def first_symlink_component(root: Path, destination: Path) -> Path | None:
+    """Return the first symlink below a lexical repository root, if any."""
+
+    current = root
+    for component in destination.relative_to(root).parts:
+        current /= component
+        if stat.S_ISLNK(current.lstat().st_mode):
+            return current
+    return None
+
+
 def missing_links(root: Path) -> list[str]:
     """Return diagnostics for missing local inline-link paths and fragments."""
     diagnostics: list[str] = []
     repository_root = normalized_path(root)
+    resolved_repository_root = repository_root.resolve(strict=True)
     contents: dict[Path, str] = {}
 
     for document in markdown_files(root):
@@ -171,6 +183,40 @@ def missing_links(root: Path) -> list[str]:
 
                 if not destination.exists():
                     diagnostics.append(f"{relative}:{line_number}: missing {target}")
+                    continue
+
+                try:
+                    resolved_destination = destination.resolve(strict=True)
+                    resolved_destination.relative_to(resolved_repository_root)
+                except ValueError:
+                    diagnostics.append(
+                        f"{relative}:{line_number}: local link leaves repository: {target}"
+                    )
+                    continue
+                except (OSError, RuntimeError) as error:
+                    diagnostics.append(
+                        f"{relative}:{line_number}: local link cannot be resolved: "
+                        f"{target}: {error}"
+                    )
+                    continue
+
+                # Repository links must behave identically on hosts where Git
+                # checks symlinks out as links or as plain target-text files.
+                # Reject every symlink component, including links that happen to
+                # resolve inside the repository, instead of validating one host's
+                # checkout representation and publishing a different result.
+                try:
+                    symlink = first_symlink_component(repository_root, destination)
+                except OSError as error:
+                    diagnostics.append(
+                        f"{relative}:{line_number}: local link cannot be inspected: "
+                        f"{target}: {error}"
+                    )
+                    continue
+                if symlink is not None:
+                    diagnostics.append(
+                        f"{relative}:{line_number}: local link uses a symbolic path: {target}"
+                    )
                     continue
 
                 fragment = unquote(parsed.fragment)

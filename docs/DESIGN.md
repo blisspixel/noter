@@ -370,6 +370,7 @@ Filesystem operations are injected:
 ```rust
 trait Storage {
     type Temporary;
+    type ParentSync;
 
     fn inspect(&mut self, path: &Path, stage: SaveStage)
         -> Result<TargetState, StorageError>;
@@ -391,8 +392,8 @@ trait Storage {
         temp: Self::Temporary,
         destination: &Path,
         expected: TargetState,
-    ) -> ReplaceOutcome<Self::Temporary>;
-    fn sync_parent(&mut self, destination: &Path) -> DurabilityOutcome;
+    ) -> ReplaceOutcome<Self::Temporary, Self::ParentSync>;
+    fn sync_parent(&mut self, receipt: Self::ParentSync) -> DurabilityOutcome;
     fn discard(&mut self, temp: Self::Temporary) -> Result<(), StorageError>;
 }
 ```
@@ -434,17 +435,30 @@ never infers commit state from a generic I/O error.
     on an exact match, restrict that same open displaced object to owner-only
     access before retaining it, then sync again.
 11. Reconcile platform results whose documented failure may have side effects.
-12. Sync the parent directory where the platform provides a meaningful operation.
+12. Consume the one-shot parent receipt returned by the commit and sync that
+    exact directory where the platform provides a meaningful operation.
 13. Report the exact outcome and either clean by handle or retain the artifact
     with an explicit warning.
 
 On Windows, the adapter uses `ReplaceFileW` with a random same-volume backup and
 no ignore-merge flags for existing destinations. It uses `MoveFileExW` with
 only `MOVEFILE_WRITE_THROUGH` for absent destinations, so it cannot replace or
-copy across volumes accidentally. On Unix, it opens the sibling parent and uses
-an atomic exchange for existing-file replacement. The displaced destination
-remains at the temporary path after its identity, fingerprint, length, and link
-count are checked. The exchange can legitimately change that inode's `ctime`,
+copy across volumes accidentally. On Unix, general document replacement opens
+the sibling parent, uses that descriptor for the atomic commit, and retains the
+same descriptor in a non-cloneable receipt together with the committed temporary
+basename through post-commit verification and cleanup. Recovery persistence is
+specialized: it binds the parent before creating the single deterministic keyed
+stage, creates through that descriptor where supported, and on macOS ratifies
+the ACL-aware path creation against the held parent. It then consumes the stage
+with a descriptor-relative rename. Success leaves no displaced recovery
+temporary to clean, and the original parent descriptor is synchronized
+directly. A pre-commit failure retains the one keyed stage for inspection and
+later attempts fail with `ResourceBusy`, so failures cannot grow an unbounded
+set of artifacts. A renamed or rebound parent pathname therefore cannot redirect
+either the commit or the durability barrier. For general saves,
+the displaced destination remains at the temporary path after its identity,
+fingerprint, length, and link count are checked. The exchange can legitimately
+change that inode's `ctime`,
 so the post-exchange observation ratifies the new token without treating it as
 the source of metadata to apply. The displaced file's stable metadata payload
 must still equal the immutable snapshot captured and revalidated before commit.
@@ -459,8 +473,11 @@ and removal guidance. Absent-file installation uses `RENAME_NOREPLACE` where
 available. Its no-overwrite hard-link fallback also retains the temporary name
 with the same actionable warning instead of unlinking by pathname. Windows
 cleanup opens the verified object without write sharing, then marks that exact
-handle for deletion. Unix synchronizes the opened parent; Windows reports
-file-only durability because it exposes no equivalent directory barrier here.
+handle for deletion. It requests immediate POSIX unlink semantics first and
+falls back to delete-on-close only when the filesystem explicitly rejects that
+operation. Unix synchronizes the receipt's opened parent. Windows consumes the
+same typed receipt but reports file-only durability because it exposes no
+equivalent directory barrier here.
 
 Save outcomes are explicit:
 
@@ -656,12 +673,19 @@ content_bytes (serialized body including optional UTF-8 BOM)
 ```
 
 Records stage through exclusive private creation, file sync, atomic install or
-replace, backup cleanup, and a containing-directory sync. Unix exchange leaves
-the previous destination on the stage path; that displaced file is removed
-after a successful replace so recovery siblings do not accumulate silently.
-Windows replacement backups of superseded recovery content are removed after
-success. Cleanup or parent-sync failure is a failed transfer and keeps any
-predecessor record available.
+replace, exact cleanup where supported, and a containing-directory sync. Unix
+recovery binds the sibling parent before stage creation, creates or ratifies the
+single deterministic stage through that descriptor, and consumes it with a
+descriptor-relative rename. The held stage identity is checked before and after
+the rename, and no successful Unix recovery commit needs a displaced-file
+cleanup. A failed attempt retains at most that one stage and later attempts
+return `ResourceBusy` until startup review or explicit owned-artifact cleanup.
+Windows reserves one deterministic stage and one deterministic backup per
+instance. Replacement reconciliation holds the exact destination handle while
+verified stage and backup handles are cleaned. Any failure retains only those
+slots, and later retries return `ResourceBusy` before creating another artifact.
+Cleanup or parent-sync failure is a failed transfer and keeps any predecessor
+record available.
 
 The pure scheduler uses a 2-second idle debounce and a 15-second maximum
 interval while dirty. Persist requests carry a session epoch. Save success and
@@ -699,7 +723,10 @@ bounded launches make progress through crash residue. It validates one complete
 record at a time, then retains only metadata and exact open handles. At most 32
 maximal offers, 32 quarantine results, and 16 superseded handles per offer are
 retained. Reaching any bound is visible and leaves unreviewed artifacts
-unchanged. Strict revision order between two whole-record-authenticated
+unchanged. A candidate that disappears between enumeration and metadata lookup
+is an ordinary `NotFound` race and is skipped. Every other metadata I/O error is
+returned unchanged so an inaccessible record cannot be silently omitted from a
+successful scan. Strict revision order between two whole-record-authenticated
 schema-v2 records and schema-v2 direct predecessor links are the only
 coalescing relations. Wall time is display metadata, not cross-instance
 authority. Legacy records never suppress schema-v2 records by mutable header

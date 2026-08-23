@@ -106,7 +106,8 @@ is never interpreted as non-commit.
    immediately revalidate the closed sibling's native identity, length, and
    BLAKE3-256 fingerprint. Treat a postcommit mismatch from the remaining
    same-authority handoff window as indeterminate.
-9. Use the platform commit primitive for existing or absent destinations.
+9. Use the platform commit primitive for existing or absent destinations and
+   retain its non-cloneable receipt for the exact parent used by the commit.
 10. For an existing Unix destination, verify the displaced original after
    exchange, then compare its stable ownership, mode, ACL, and extended
    attributes with the immutable metadata snapshot captured and revalidated
@@ -120,7 +121,9 @@ is never interpreted as non-commit.
     warning and never produces a false privacy guarantee.
 11. Reconcile documented ambiguous platform results before assigning commit
    state.
-12. Sync the containing directory or request the strongest supported equivalent.
+12. Consume the commit receipt to sync the exact opened containing directory or
+    request the strongest supported equivalent. Never reopen a successful Unix
+    commit's parent by pathname because that name may have been rebound.
 13. Delete only through a handle-bound primitive. If the platform cannot provide
     one, retain the private artifact and report the cleanup warning.
 
@@ -144,6 +147,15 @@ durability policy.
 
 No platform may fall back to deleting the destination first. No cross-volume
 copy-and-delete operation is described as atomic replacement.
+
+The platform boundary returns a typed commit receipt containing the unchanged
+outcome enum and an opaque one-shot parent token. Unix tokens own the same
+directory descriptor used for descriptor-relative exchange, no-replace rename,
+or link installation. Windows tokens deliberately resolve to `Unsupported`, so
+callers retain the established `FileSynced` ceiling without inventing a parent
+barrier. A reconciled commit for which no successful primitive returned a token
+must report that limitation explicitly rather than reopening a Unix path and
+claiming directory durability.
 
 ### Links, read-only files, and special paths
 

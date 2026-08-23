@@ -30,10 +30,14 @@ authoritative. Changing modes never rewrites a file.
   visually formatted while editing the exact backing source range. Markdown
   delimiters remain in the edit buffer and on disk even when they are not
   painted.
-- Clicking or dragging directly over inactive formatted content activates the
-  corresponding source caret or selection. A primary-pointer drag can continue
-  forward or backward across separately rendered blocks, keeps the native live
-  selection visible, and scrolls at a bounded speed near the document edges.
+- Clicking, focusing and pressing Enter or Space, or using the platform
+  accessibility Click action on inactive formatted content activates the
+  corresponding source caret. Keyboard and accessibility activation place the
+  caret at the first rendered source boundary, after any hidden leading syntax.
+  Dragging activates the corresponding source selection. A primary-pointer drag
+  can continue forward or backward across separately rendered blocks, keeps the
+  native live selection visible, and scrolls at a bounded speed near the
+  document edges.
   Escape, pointer loss without a completed primary release, or window focus
   loss cancels without activating an edit and collapses selection to the drag
   origin caret so lagged application state cannot keep an aborted multi-block
@@ -44,6 +48,9 @@ authoritative. Changing modes never rewrites a file.
   character-reference spans so an edit cannot split their source syntax.
   Synthesized text without a safe source substring remains visible and editable
   as raw source.
+- Text Mode exposes its editable surface as `Document text editor` through the
+  platform accessibility bridge. An active Markdown range is named
+  `Markdown source editor`; both expose their multiline editable value.
 - A selected link destination is temporarily revealed and underlined while it
   is edited, then hidden again after the caret leaves that target.
 - One fixed-width paragraph-style selector sets selected logical lines to
@@ -85,6 +92,10 @@ authoritative. Changing modes never rewrites a file.
   selection can span parsed blocks and native or mixed line endings; switching
   views activates one contiguous source-backed edit region and preserves the
   exact anchor and caret. Invalid UTF-8 boundaries fail closed in Text Mode.
+- Copy and Cut preserve the exact selected source, including native line
+  endings, in Text Mode and the active Markdown source editor. While an IME
+  pre-edit is active, those actions are consumed without changing the clipboard
+  or source; finish or cancel the composition before retrying them.
 - Switching to Text Mode exposes the exact source produced by those edits.
 - Source diagnostics currently report skipped heading levels, spaces that
   prevent portable emphasis, unsafe trailing spaces, repeated blank lines, and
@@ -142,8 +153,12 @@ complete.
   on the next line. Enter on an empty list or quote item removes that marker and
   leaves a paragraph. Fenced and indented code remain literal: list-like and
   emphasis-like text inside code does not trigger these Enter transforms.
-  Native line endings are preserved. Cancelling an unfinished IME pre-edit with
-  Enter restores the canonical source selection before applying the line break.
+  Active and inactive Markdown rows display LF, CRLF, and CR as one logical
+  newline while retaining their exact source bytes and selection boundaries.
+  Enter, multiline paste, and IME input use the nearest native ending, including
+  the source immediately outside an active block in a mixed-ending document.
+  Cancelling an unfinished IME pre-edit with Enter restores the canonical source
+  selection before applying the line break.
 - GFM and CommonMark conformance, malformed-input behavior, IME, screen-reader,
   high-DPI, and large-file requirements still require release evidence.
 - The synchronous prototype accepts at most 1 MiB of source, 8,192 logical

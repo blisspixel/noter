@@ -2,14 +2,16 @@ use std::ops::Range;
 
 use eframe::egui;
 use noter::core::edit::{EditOrigin, Selection};
-use noter::core::line_endings::logical_lines;
+use noter::core::line_endings::{
+    LineEnding, LineEndingInsertionContext, LineEndingProfile, logical_lines,
+};
 use noter::core::markdown::recoverable_emphasis_spans;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::bounded_text_input::{
-    BoundedTextBuffer, ImeCommitFocusRestore, ImeFrameState, focused_ime_frame_state,
-    retain_active_ime_commit_focus, sanitize_bounded_text_events, take_events_after_ime_terminal,
-    truncate_to_utf8_byte_limit,
+    ImeCommitFocusRestore, ImeFrameState, ProjectedTextBuffer, SourceDisplayProjection,
+    focused_ime_frame_state, retain_active_ime_commit_focus, sanitize_projected_text_events,
+    take_events_after_ime_terminal, truncate_to_utf8_byte_limit,
 };
 use crate::keyboard_nav::{
     KeyboardPlatform, consume_navigation_gestures, editor_event_may_change_focus,
@@ -17,6 +19,7 @@ use crate::keyboard_nav::{
 };
 
 const ACTIVE_EDITOR_ID: &str = "noter-markdown-active-block";
+const MARKDOWN_EDITOR_ACCESSIBLE_NAME: &str = "Markdown source editor";
 const EXPANDED_FORMAT_MIN_WIDTH: f32 = 480.0;
 const FORMAT_BUTTON_SIZE: egui::Vec2 = egui::vec2(32.0, 28.0);
 const CODE_BUTTON_SIZE: egui::Vec2 = egui::vec2(38.0, 28.0);
@@ -117,6 +120,39 @@ fn direct_input_origin(ui: &egui::Ui) -> EditOrigin {
             EditOrigin::MarkdownInput
         }
     })
+}
+
+fn set_editor_name(ui: &egui::Ui, id: egui::Id, name: &'static str) {
+    ui.ctx()
+        .accesskit_node_builder(id, |node| node.set_label(name));
+}
+
+fn show_projected_markdown_text_edit(
+    ui: &mut egui::Ui,
+    draft: &mut String,
+    editor_id: egui::Id,
+    maximum_draft_bytes: usize,
+    insertion_context: LineEndingInsertionContext,
+    rows: usize,
+    layouter: &mut dyn FnMut(&egui::Ui, &dyn egui::TextBuffer, f32) -> std::sync::Arc<egui::Galley>,
+) -> (egui::text_edit::TextEditOutput, bool, Option<Selection>) {
+    let mut buffer = ProjectedTextBuffer::new(draft, maximum_draft_bytes, insertion_context);
+    let editor = egui::TextEdit::multiline(&mut buffer)
+        .id(editor_id)
+        .font(egui::TextStyle::Body)
+        .desired_width(f32::INFINITY)
+        .desired_rows(rows)
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(
+            BLOCK_HORIZONTAL_PADDING,
+            BLOCK_VERTICAL_PADDING,
+        )))
+        .layouter(layouter);
+    let output = editor.show(ui);
+    set_editor_name(ui, output.response.id, MARKDOWN_EDITOR_ACCESSIBLE_NAME);
+    let selection = output
+        .cursor_range
+        .and_then(|cursor_range| buffer.selection_to_source(cursor_range));
+    (output, buffer.was_limited(), selection)
 }
 
 fn markdown_parser_options() -> Options {
@@ -487,6 +523,12 @@ struct BlockImeComposition {
     base_selection: CharSelection,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NativeClipboardAction {
+    Copy,
+    Cut,
+}
+
 impl ActiveBlock {
     fn new(source_range: Range<usize>, draft: String, editor_serial: u64) -> Self {
         let end = draft.chars().count();
@@ -550,6 +592,19 @@ impl ActiveBlock {
             })
     }
 
+    fn display_selection(&self) -> Option<egui::text::CCursorRange> {
+        let draft = self.displayed_draft();
+        SourceDisplayProjection::new(draft)
+            .selection_to_display(self.selection.to_byte_selection(draft))
+    }
+
+    fn ordered_display_range(&self) -> Range<usize> {
+        self.display_selection().map_or(0..0, |selection| {
+            usize::from(selection.secondary.index).min(usize::from(selection.primary.index))
+                ..usize::from(selection.secondary.index).max(usize::from(selection.primary.index))
+        })
+    }
+
     fn prepare_text_edit_state(
         &mut self,
         ui: &egui::Ui,
@@ -559,11 +614,7 @@ impl ActiveBlock {
         let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
         let restore_focus = self.request_focus;
         if restore_focus || restore_selection {
-            let anchor = egui::text::CCursor::new(self.selection.anchor);
-            let caret = egui::text::CCursor::new(self.selection.active);
-            state
-                .cursor
-                .set_char_range(Some(egui::text::CCursorRange::two(anchor, caret)));
+            state.cursor.set_char_range(self.display_selection());
             if restore_focus {
                 ui.memory_mut(|memory| memory.request_focus(editor_id));
                 self.request_focus = false;
@@ -579,6 +630,7 @@ impl ActiveBlock {
         ui: &egui::Ui,
         editor_id: egui::Id,
         maximum_draft_bytes: usize,
+        insertion_context: LineEndingInsertionContext,
     ) -> (ImeFrameState, bool) {
         let composition_was_active = self.ime_composition.is_some();
         let state_before_sanitizing =
@@ -589,11 +641,12 @@ impl ActiveBlock {
                 base_selection: self.selection,
             });
         }
-        let input_was_limited = sanitize_bounded_text_events(
+        let input_was_limited = sanitize_projected_text_events(
             ui,
             editor_id,
             self.displayed_draft(),
             maximum_draft_bytes,
+            insertion_context,
         );
         (
             focused_ime_frame_state(ui, editor_id, composition_was_active),
@@ -607,14 +660,73 @@ impl ActiveBlock {
             .map_or(&mut self.draft, |composition| &mut composition.draft)
     }
 
-    fn resolve_ime_input(
+    fn apply_native_clipboard_action(
+        &mut self,
+        ui: &egui::Ui,
+        action: NativeClipboardAction,
+    ) -> bool {
+        let selected = self
+            .selection
+            .to_byte_selection(&self.draft)
+            .ordered_range();
+        let Some(exact_source) = self.draft.get(selected.start()..selected.end()) else {
+            return false;
+        };
+        if exact_source.is_empty() {
+            return false;
+        }
+        ui.ctx().copy_text(exact_source.to_owned());
+        if action == NativeClipboardAction::Copy {
+            return false;
+        }
+
+        self.draft
+            .replace_range(selected.start()..selected.end(), "");
+        self.selection = CharSelection::caret(byte_index_to_char(&self.draft, selected.start()));
+        self.pending_reopen = None;
+        self.dirty = true;
+        self.pending_origin.get_or_insert(EditOrigin::MarkdownInput);
+        true
+    }
+
+    fn resolve_projected_ime_input(
         &mut self,
         ui: &egui::Ui,
         ime_state: ImeFrameState,
         widget_changed: bool,
+        widget_source_selection: Option<Selection>,
+        state: &mut egui::text_edit::TextEditState,
+        rejected_cancelled_enter: bool,
+    ) -> bool {
+        let widget_selection = widget_source_selection.map_or(self.selection, |selection| {
+            CharSelection::from_byte_selection(self.displayed_draft(), selection)
+        });
+        self.resolve_ime_input(
+            ui,
+            ime_state,
+            widget_changed,
+            widget_selection,
+            state,
+            rejected_cancelled_enter,
+        )
+    }
+
+    fn resolve_ime_input(
+        &mut self,
+        ui: &egui::Ui,
+        mut ime_state: ImeFrameState,
+        mut widget_changed: bool,
         widget_selection: CharSelection,
         state: &mut egui::text_edit::TextEditState,
+        rejected_cancelled_enter: bool,
     ) -> bool {
+        if rejected_cancelled_enter {
+            // TextEdit collapses a selection even when the bounded buffer
+            // rejects the paired Enter. Treat that attempted terminal as a
+            // cancellation so the authoritative selection is restored too.
+            ime_state = ImeFrameState::Cancelled;
+            widget_changed = false;
+        }
         match ime_state {
             ImeFrameState::Composing => false,
             ImeFrameState::Committed => {
@@ -630,11 +742,7 @@ impl ActiveBlock {
             }
             ImeFrameState::Cancelled => {
                 self.cancel_ime_composition();
-                let anchor = egui::text::CCursor::new(self.selection.anchor);
-                let caret = egui::text::CCursor::new(self.selection.active);
-                state
-                    .cursor
-                    .set_char_range(Some(egui::text::CCursorRange::two(anchor, caret)));
+                state.cursor.set_char_range(self.display_selection());
                 ui.ctx().request_repaint();
                 false
             }
@@ -654,6 +762,7 @@ impl ActiveBlock {
         &mut self,
         ui: &egui::Ui,
         maximum_draft_bytes: usize,
+        insertion_context: LineEndingInsertionContext,
     ) -> (bool, bool) {
         if self.selection.anchor != self.selection.active {
             self.pending_reopen = None;
@@ -699,8 +808,12 @@ impl ActiveBlock {
         };
 
         let caret = self.selection.active;
-        let handles_enter = close_inline_run_for_line_break(&self.draft, caret).is_some()
-            || continue_or_exit_line_prefix(&self.draft, caret).is_some();
+        let caret_byte = char_index_to_byte(&self.draft, caret);
+        let Some(ending) = insertion_context.insertion_at(&self.draft, caret_byte) else {
+            return (reopened, reopen_was_limited);
+        };
+        let handles_enter = close_inline_run_for_line_break(&self.draft, caret, ending).is_some()
+            || continue_or_exit_line_prefix(&self.draft, caret, ending).is_some();
         let enter_count = if handles_enter {
             consume_leading_plain_enters(ui)
         } else {
@@ -709,7 +822,8 @@ impl ActiveBlock {
         let mut handled_break = false;
         let mut break_was_limited = false;
         for _ in 0..enter_count {
-            let (changed, was_limited) = self.apply_consumed_enter_break(maximum_draft_bytes);
+            let (changed, was_limited) =
+                self.apply_consumed_enter_break(maximum_draft_bytes, insertion_context);
             handled_break |= changed;
             break_was_limited |= was_limited;
         }
@@ -720,10 +834,18 @@ impl ActiveBlock {
         )
     }
 
-    fn apply_consumed_enter_break(&mut self, maximum_draft_bytes: usize) -> (bool, bool) {
+    fn apply_consumed_enter_break(
+        &mut self,
+        maximum_draft_bytes: usize,
+        insertion_context: LineEndingInsertionContext,
+    ) -> (bool, bool) {
         let caret = self.selection.active;
+        let caret_byte = char_index_to_byte(&self.draft, caret);
+        let Some(ending) = insertion_context.insertion_at(&self.draft, caret_byte) else {
+            return (false, false);
+        };
         let prefix = line_prefix_at(&self.draft, caret);
-        if let Some(closed) = close_inline_run_for_line_break(&self.draft, caret) {
+        if let Some(closed) = close_inline_run_for_line_break(&self.draft, caret, ending) {
             let mut text = closed.text;
             let mut next_caret = closed.caret_chars;
             if let Some(prefix) = prefix.as_ref().filter(|prefix| !prefix.rest_is_empty) {
@@ -744,7 +866,7 @@ impl ActiveBlock {
             self.pending_origin.get_or_insert(EditOrigin::MarkdownInput);
             return (true, false);
         }
-        if let Some((text, next_caret)) = continue_or_exit_line_prefix(&self.draft, caret) {
+        if let Some((text, next_caret)) = continue_or_exit_line_prefix(&self.draft, caret, ending) {
             if text.len() > maximum_draft_bytes {
                 return (false, true);
             }
@@ -755,12 +877,11 @@ impl ActiveBlock {
             self.pending_origin.get_or_insert(EditOrigin::MarkdownInput);
             return (true, false);
         }
-        if self.draft.len() >= maximum_draft_bytes {
+        if ending.as_str().len() > maximum_draft_bytes.saturating_sub(self.draft.len()) {
             return (false, true);
         }
-        let byte = char_index_to_byte(&self.draft, caret);
-        self.draft.insert(byte, '\n');
-        self.selection = CharSelection::caret(caret + 1);
+        self.draft.insert_str(caret_byte, ending.as_str());
+        self.selection = CharSelection::caret(caret + ending.as_str().chars().count());
         self.pending_reopen = None;
         self.dirty = true;
         self.pending_origin.get_or_insert(EditOrigin::MarkdownInput);
@@ -772,7 +893,8 @@ impl ActiveBlock {
         ui: &egui::Ui,
         os: egui::os::OperatingSystem,
         maximum_draft_bytes: usize,
-    ) -> (bool, bool) {
+        insertion_context: LineEndingInsertionContext,
+    ) -> (bool, bool, bool) {
         let gestures = consume_navigation_gestures(ui, KeyboardPlatform::from_egui(os));
         let restored_navigation = if gestures.is_empty() {
             false
@@ -794,11 +916,44 @@ impl ActiveBlock {
         let (restored_break, input_was_limited) = if self.ime_composition.is_some() {
             (false, false)
         } else {
-            self.apply_line_break_and_reopen_policy(ui, maximum_draft_bytes)
+            self.apply_line_break_and_reopen_policy(ui, maximum_draft_bytes, insertion_context)
         };
         (
             restored_navigation || restored_ime_cancel || restored_break,
             input_was_limited,
+            restored_ime_cancel,
+        )
+    }
+
+    fn apply_pre_widget_input(
+        &mut self,
+        ui: &egui::Ui,
+        editor_accepts_input: bool,
+        maximum_draft_bytes: usize,
+        insertion_context: LineEndingInsertionContext,
+        native_clipboard_action: Option<NativeClipboardAction>,
+    ) -> (bool, bool, bool, bool) {
+        let native_cut_changed = native_clipboard_action
+            .is_some_and(|action| self.apply_native_clipboard_action(ui, action));
+        // Apply pure word/line-home/document policy before TextEdit so Markdown
+        // shares one path with Text Mode and unit tests. Plain arrows stay with
+        // egui for platform grapheme movement.
+        let (policy_restored_selection, input_was_limited, cancelled_ime_for_plain_enter) =
+            if editor_accepts_input {
+                self.apply_focused_editor_input(
+                    ui,
+                    ui.ctx().os(),
+                    maximum_draft_bytes,
+                    insertion_context,
+                )
+            } else {
+                (false, false, false)
+            };
+        (
+            native_cut_changed,
+            native_cut_changed || policy_restored_selection,
+            input_was_limited,
+            cancelled_ime_for_plain_enter,
         )
     }
 
@@ -1159,7 +1314,8 @@ impl MarkdownEditor {
                 .on_hover_text(if enabled {
                     command.hover_text(ui.ctx())
                 } else {
-                    "Click or drag in formatted text to activate formatting".to_owned()
+                    "Click, press Enter or Space, or drag in formatted text to activate formatting"
+                        .to_owned()
                 });
             response.widget_info(|| {
                 egui::WidgetInfo::selected(
@@ -1214,8 +1370,9 @@ impl MarkdownEditor {
                 "Paragraph styles are unavailable for this Markdown structure",
             );
         } else {
-            response
-                .on_disabled_hover_text("Click or drag in formatted text to activate formatting");
+            response.on_disabled_hover_text(
+                "Click, press Enter or Space, or drag in formatted text to activate formatting",
+            );
         }
         requested
     }
@@ -1272,8 +1429,9 @@ impl MarkdownEditor {
             })
             .response;
         if !enabled {
-            response
-                .on_disabled_hover_text("Click or drag in formatted text to activate formatting");
+            response.on_disabled_hover_text(
+                "Click, press Enter or Space, or drag in formatted text to activate formatting",
+            );
         }
         requested_style
             .map(ToolbarAction::BlockStyle)
@@ -1418,6 +1576,7 @@ impl MarkdownEditor {
         {
             return MarkdownShowOutcome::ProjectionLimitExceeded { limit, origin };
         }
+        let line_endings = LineEndingProfile::detect(source);
         if !self.cancel_rendered_drag_on_escape_or_input_loss(ui) && self.rendered_drag.is_some() {
             self.retire_active();
         }
@@ -1429,7 +1588,7 @@ impl MarkdownEditor {
             }
             let maximum_draft_bytes = self.maximum_active_draft_bytes(source, maximum_source_bytes);
             let (active_changed, finish_requested, active_draft_limit) =
-                self.show_active_editor(ui, maximum_draft_bytes);
+                self.show_active_editor(ui, source, line_endings, maximum_draft_bytes);
             if finish_requested {
                 finish_serial = self.active.as_ref().map(|active| active.editor_serial);
             }
@@ -1465,7 +1624,7 @@ impl MarkdownEditor {
                     let maximum_draft_bytes =
                         self.maximum_active_draft_bytes(source, maximum_source_bytes);
                     let (_, finish_requested, projection_limit) =
-                        self.show_active_editor(ui, maximum_draft_bytes);
+                        self.show_active_editor(ui, source, line_endings, maximum_draft_bytes);
                     if finish_requested {
                         finish_serial = self.active.as_ref().map(|active| active.editor_serial);
                     }
@@ -1748,7 +1907,7 @@ impl MarkdownEditor {
             .response
             .clone()
             .on_hover_cursor(egui::CursorIcon::Text)
-            .on_hover_text("Drag to select or click to edit this formatted content");
+            .on_hover_text("Drag to select, click to edit, or focus and press Enter or Space");
 
         if label.response.drag_started_by(egui::PointerButton::Primary)
             && let Some(position) = ui.input(|input| input.pointer.press_origin())
@@ -1762,11 +1921,14 @@ impl MarkdownEditor {
         {
             target.replace_if_nearer(pointer_target);
         }
-        let rendered_selection = if label.response.clicked_by(egui::PointerButton::Primary) {
-            label
-                .response
-                .interact_pointer_pos()
-                .map(|position| CharSelection::caret(label.cursor_at(position)))
+        let rendered_selection = if label.response.clicked() {
+            Some(label.response.interact_pointer_pos().map_or_else(
+                // Keyboard and AccessKit clicks have no pointer coordinate.
+                // Start at the first rendered source boundary so hidden syntax
+                // cannot receive an inaccessible caret.
+                || CharSelection::caret(0),
+                |position| CharSelection::caret(label.cursor_at(position)),
+            ))
         } else {
             None
         };
@@ -1783,6 +1945,8 @@ impl MarkdownEditor {
     fn show_active_editor(
         &mut self,
         ui: &mut egui::Ui,
+        source: &str,
+        line_endings: LineEndingProfile,
         maximum_draft_bytes: usize,
     ) -> (bool, bool, Option<MarkdownProjectionLimit>) {
         if !self.deferred_input_restored {
@@ -1798,31 +1962,38 @@ impl MarkdownEditor {
             self.serialize_next_ime_composition(ui);
             self.serialize_next_custom_input(ui);
         }
-        let format_command = editor_accepts_input
-            .then(|| Self::take_format_command(ui))
-            .flatten();
-        if let Some(command) = format_command {
+        let native_clipboard_action = self.take_native_clipboard_action(ui, editor_accepts_input);
+        if editor_accepts_input && let Some(command) = Self::take_format_command(ui) {
             self.apply_command(command);
         }
         let Some(active) = self.active.as_mut() else {
             return (false, false, None);
         };
-        let editor_id = active.editor_id();
-        // Apply pure word/line-home/document policy before TextEdit so Markdown
-        // shares one path with Text Mode and unit tests. Plain arrows stay with
-        // egui for platform grapheme movement.
-        let (restore_selection, policy_was_limited) = if editor_accepts_input {
-            active.apply_focused_editor_input(ui, ui.ctx().os(), maximum_draft_bytes)
-        } else {
-            (false, false)
+        let Some(insertion_context) =
+            line_endings.insertion_context(source, active.source_range.clone())
+        else {
+            return (false, false, None);
         };
+        let editor_id = active.editor_id();
+        let (
+            native_cut_changed,
+            restore_selection,
+            policy_was_limited,
+            cancelled_ime_for_plain_enter,
+        ) = active.apply_pre_widget_input(
+            ui,
+            editor_accepts_input,
+            maximum_draft_bytes,
+            insertion_context,
+            native_clipboard_action,
+        );
         self.input_was_limited |= policy_was_limited;
         let finish_requested = prepare_escape_finish(ui, editor_id);
         let input_origin = direct_input_origin(ui);
-        let selection = active.selection.ordered_range();
+        let selection = active.ordered_display_range();
         let restore_focus = active.prepare_text_edit_state(ui, editor_id, restore_selection);
         let (ime_state, ime_input_was_limited) =
-            active.prepare_ime_input(ui, editor_id, maximum_draft_bytes);
+            active.prepare_ime_input(ui, editor_id, maximum_draft_bytes, insertion_context);
         self.input_was_limited |= ime_input_was_limited;
         let rows = logical_lines(active.displayed_draft()).count().max(1) + 1;
 
@@ -1835,21 +2006,16 @@ impl MarkdownEditor {
             live_projection_limit = live_projection_limit.or(layout.projection_limit);
             ui.fonts_mut(|fonts| fonts.layout_job(layout.job))
         };
-        let (mut output, buffer_was_limited) = {
-            let mut buffer = BoundedTextBuffer::new(active.editable_draft(), maximum_draft_bytes);
-            let editor = egui::TextEdit::multiline(&mut buffer)
-                .id(editor_id)
-                .font(egui::TextStyle::Body)
-                .desired_width(f32::INFINITY)
-                .desired_rows(rows)
-                .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(
-                    BLOCK_HORIZONTAL_PADDING,
-                    BLOCK_VERTICAL_PADDING,
-                )))
-                .layouter(&mut layouter);
-            let output = editor.show(ui);
-            (output, buffer.was_limited())
-        };
+        let (mut output, buffer_was_limited, widget_source_selection) =
+            show_projected_markdown_text_edit(
+                ui,
+                active.editable_draft(),
+                editor_id,
+                maximum_draft_bytes,
+                insertion_context,
+                rows,
+                &mut layouter,
+            );
         self.input_was_limited |= buffer_was_limited;
         if restore_focus {
             // Toolbar and mode clicks can surrender the focus requested before
@@ -1857,22 +2023,16 @@ impl MarkdownEditor {
             output.response.request_focus();
         }
         retain_escape_focus(ui, editor_id);
-        let widget_selection = output
-            .cursor_range
-            .map_or(active.selection, |cursor_range| {
-                CharSelection::new(
-                    cursor_range.secondary.index.into(),
-                    cursor_range.primary.index.into(),
-                )
-            });
-
-        let changed = active.resolve_ime_input(
+        let widget_changed = active.resolve_projected_ime_input(
             ui,
             ime_state,
             output.response.changed(),
-            widget_selection,
+            widget_source_selection,
             &mut output.state,
+            cancelled_ime_for_plain_enter
+                && (policy_was_limited || ime_input_was_limited || buffer_was_limited),
         );
+        let changed = native_cut_changed || widget_changed;
         if finish_requested {
             ui.input_mut(|input| input.events.retain(|event| !is_plain_escape_press(event)));
         }
@@ -1921,6 +2081,21 @@ impl MarkdownEditor {
         !self.deferred_input_events.is_empty()
     }
 
+    pub(crate) fn owns_deferred_ime_commit(&self) -> bool {
+        self.deferred_input_events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Ime(egui::ImeEvent::Commit(_))))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_ime_draft(&self) -> Option<&str> {
+        self.active
+            .as_ref()?
+            .ime_composition
+            .as_ref()
+            .map(|composition| composition.draft.as_str())
+    }
+
     fn take_format_command(ui: &egui::Ui) -> Option<MarkdownCommand> {
         ui.input_mut(|input| {
             let (position, command) =
@@ -1943,6 +2118,56 @@ impl MarkdownEditor {
         std::mem::swap(deferred, &mut self.deferred_input_events);
         self.deferred_input_owns_editor =
             owns_editor && (previous_was_empty || previous_owns_editor);
+    }
+
+    fn take_native_clipboard_action(
+        &mut self,
+        ui: &egui::Ui,
+        editor_accepts_input: bool,
+    ) -> Option<NativeClipboardAction> {
+        if !editor_accepts_input {
+            return None;
+        }
+        let composition_active = self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.ime_composition.is_some());
+        let mut deferred = Vec::new();
+        let action = ui.input_mut(|input| {
+            let (position, action) =
+                input
+                    .events
+                    .iter()
+                    .enumerate()
+                    .find_map(|(position, event)| {
+                        let action = match event {
+                            egui::Event::Copy => NativeClipboardAction::Copy,
+                            egui::Event::Cut => NativeClipboardAction::Cut,
+                            _ => return None,
+                        };
+                        Some((position, action))
+                    })?;
+            if input.events[..position]
+                .iter()
+                .any(editor_event_orders_input)
+            {
+                deferred = input.events.split_off(position);
+                return None;
+            }
+            input.events.remove(position);
+            deferred = input.events.split_off(position);
+            // A preedit draft has no stable authoritative-source selection:
+            // copying its canonical display could rewrite native endings, while
+            // cutting it would mutate transient state that commit or cancel may
+            // later replace. Consume the action without clipboard or document
+            // effects until the composition reaches its ordered terminal event.
+            (!composition_active).then_some(action)
+        });
+        if !deferred.is_empty() {
+            self.defer_editor_input(&mut deferred, true);
+            ui.ctx().request_repaint();
+        }
+        action
     }
 
     fn serialize_next_ime_composition(&mut self, ui: &egui::Ui) {
@@ -2527,9 +2752,25 @@ fn markdown_render_projection(source: &str, style: &egui::Style) -> MarkdownRend
     let mut source_span_for_rendered_character = Vec::new();
     let mut line_prefix_is_indentation = true;
 
-    for (source_character, (index, character)) in source.char_indices().enumerate() {
+    let mut source_characters = source.char_indices().enumerate().peekable();
+    while let Some((source_character, (index, source_character_value))) = source_characters.next() {
+        let mut source_span_end = source_character + 1;
+        let mut source_byte_end = index + source_character_value.len_utf8();
+        let character = if source_character_value == '\r' {
+            if source_characters
+                .peek()
+                .is_some_and(|(_, (_, next))| *next == '\n')
+            {
+                source_characters.next();
+                source_span_end += 1;
+                source_byte_end += 1;
+            }
+            '\n'
+        } else {
+            source_character_value
+        };
         let at_indented_line_start = line_prefix_is_indentation;
-        let followed_by_space = source[index + character.len_utf8()..].starts_with(' ');
+        let followed_by_space = source[source_byte_end..].starts_with(' ');
         line_prefix_is_indentation = match character {
             '\n' | '\r' => true,
             ' ' | '\t' => line_prefix_is_indentation,
@@ -2560,7 +2801,7 @@ fn markdown_render_projection(source: &str, style: &egui::Style) -> MarkdownRend
             at_indented_line_start,
             followed_by_space,
         ));
-        source_span_for_rendered_character.push(source_character..source_character + 1);
+        source_span_for_rendered_character.push(source_character..source_span_end);
     }
     append_render_run(&mut job, &mut run, run_style, style);
     extend_synthesized_source_spans(
@@ -2591,15 +2832,35 @@ fn reference_definition_projection(source: &str, style: &egui::Style) -> Markdow
         color: style.visuals.text_color(),
         ..Default::default()
     };
-    job.append(source, 0.0, format);
+    let (display, source_span_for_rendered_character) = canonical_source_projection(source);
+    job.append(&display, 0.0, format);
     MarkdownRenderProjection {
         job,
         source_map: RenderedSourceMap {
-            source_span_for_rendered_character: (0..source.chars().count())
-                .map(|character| character..character + 1)
-                .collect(),
+            source_span_for_rendered_character,
         },
     }
+}
+
+fn canonical_source_projection(source: &str) -> (String, Vec<Range<usize>>) {
+    let mut display = String::with_capacity(source.len());
+    let mut spans = Vec::with_capacity(source.chars().count());
+    let mut characters = source.chars().enumerate().peekable();
+    while let Some((source_character, character)) = characters.next() {
+        if character == '\r' {
+            let mut source_end = source_character + 1;
+            if characters.peek().is_some_and(|(_, next)| *next == '\n') {
+                characters.next();
+                source_end += 1;
+            }
+            display.push('\n');
+            spans.push(source_character..source_end);
+        } else {
+            display.push(character);
+            spans.push(source_character..source_character + 1);
+        }
+    }
+    (display, spans)
 }
 
 fn extend_synthesized_source_spans(
@@ -3586,7 +3847,11 @@ fn empty_marker_pair_at_caret(source: &str, caret_bytes: usize) -> Option<&'stat
     })
 }
 
-fn close_inline_run_for_line_break(source: &str, caret_chars: usize) -> Option<ClosedInlineBreak> {
+fn close_inline_run_for_line_break(
+    source: &str,
+    caret_chars: usize,
+    ending: LineEnding,
+) -> Option<ClosedInlineBreak> {
     if source.is_empty() {
         return None;
     }
@@ -3600,12 +3865,16 @@ fn close_inline_run_for_line_break(source: &str, caret_chars: usize) -> Option<C
 
     if let Some(marker) = empty_marker_pair_at_caret(source, caret_bytes) {
         let width = marker.len();
-        let mut text =
-            String::with_capacity(source.len().saturating_sub(2 * width).saturating_add(1));
+        let mut text = String::with_capacity(
+            source
+                .len()
+                .saturating_sub(2 * width)
+                .saturating_add(ending.as_str().len()),
+        );
         text.push_str(&source[..caret_bytes - width]);
-        text.push('\n');
+        text.push_str(ending.as_str());
         text.push_str(&source[caret_bytes + width..]);
-        let caret = byte_index_to_char(&text, caret_bytes - width + 1);
+        let caret = byte_index_to_char(&text, caret_bytes - width + ending.as_str().len());
         return Some(ClosedInlineBreak {
             text,
             caret_chars: caret,
@@ -3637,11 +3906,11 @@ fn close_inline_run_for_line_break(source: &str, caret_chars: usize) -> Option<C
         if contains_line_break(&source[opener_end..caret_bytes]) {
             continue;
         }
-        let mut text = String::with_capacity(source.len() + 1);
+        let mut text = String::with_capacity(source.len() + ending.as_str().len());
         text.push_str(&source[..range.end]);
-        text.push('\n');
+        text.push_str(ending.as_str());
         text.push_str(&source[range.end..]);
-        let caret = byte_index_to_char(&text, range.end + 1);
+        let caret = byte_index_to_char(&text, range.end + ending.as_str().len());
         return Some(ClosedInlineBreak {
             text,
             caret_chars: caret,
@@ -3714,7 +3983,11 @@ fn parse_list_or_quote_prefix(content: &str) -> Option<LinePrefix> {
     })
 }
 
-fn continue_or_exit_line_prefix(source: &str, caret_chars: usize) -> Option<(String, usize)> {
+fn continue_or_exit_line_prefix(
+    source: &str,
+    caret_chars: usize,
+    ending: LineEnding,
+) -> Option<(String, usize)> {
     let caret_bytes = char_index_to_byte(source, caret_chars);
     if byte_is_in_code_block(source, caret_bytes) {
         return None;
@@ -3738,18 +4011,13 @@ fn continue_or_exit_line_prefix(source: &str, caret_chars: usize) -> Option<(Str
                 let caret = byte_index_to_char(&text, offset);
                 return Some((text, caret));
             }
-            let full_end = content_end + ending_len;
-            let insert_ending = line.ending().map_or("\n", |ending| ending.as_str());
+            let insert_ending = ending.as_str();
             let mut text =
                 String::with_capacity(source.len() + insert_ending.len() + prefix.marker.len());
             text.push_str(&source[..offset + rel]);
             text.push_str(insert_ending);
             text.push_str(&prefix.marker);
-            text.push_str(&source[offset + rel..content_end]);
-            if full_end < source.len() {
-                text.push_str(insert_ending);
-            }
-            text.push_str(&source[full_end..]);
+            text.push_str(&source[offset + rel..]);
             let caret = byte_index_to_char(
                 &text,
                 offset + rel + insert_ending.len() + prefix.marker.len(),
@@ -4214,6 +4482,24 @@ mod tests {
             .iter()
             .find_map(|(id, node)| (node.label() == Some(label)).then_some(*id))
             .unwrap_or_else(|| panic!("expected an AccessKit node labeled `{label}`"))
+    }
+
+    fn accesskit_node_id_by_value(
+        output: &egui::FullOutput,
+        value: &str,
+    ) -> egui::accesskit::NodeId {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled")
+            .nodes
+            .iter()
+            .find_map(|(id, node)| {
+                (node.role() == egui::accesskit::Role::Label && node.value() == Some(value))
+                    .then_some(*id)
+            })
+            .unwrap_or_else(|| panic!("expected an AccessKit node with value `{value}`"))
     }
 
     fn accesskit_bounds_starting_with(
@@ -4779,33 +5065,44 @@ mod tests {
 
     #[test]
     fn enter_at_the_end_of_an_inline_run_closes_before_the_break() {
-        let closed = close_inline_run_for_line_break("**hello**", 7).expect("end of strong");
+        let closed =
+            close_inline_run_for_line_break("**hello**", 7, LineEnding::Lf).expect("end of strong");
         assert_eq!(closed.text, "**hello**\n");
         assert_eq!(closed.caret_chars, 10);
         assert_eq!(closed.marker, "**");
 
-        let italic = close_inline_run_for_line_break("*hello*", 6).expect("end of emphasis");
+        let italic =
+            close_inline_run_for_line_break("*hello*", 6, LineEnding::Lf).expect("end of emphasis");
         assert_eq!(italic.text, "*hello*\n");
         assert_eq!(italic.marker, "*");
 
-        let strike = close_inline_run_for_line_break("~~hello~~", 7).expect("end of strike");
+        let strike =
+            close_inline_run_for_line_break("~~hello~~", 7, LineEnding::Lf).expect("end of strike");
         assert_eq!(strike.text, "~~hello~~\n");
         assert_eq!(strike.marker, "~~");
 
-        let code = close_inline_run_for_line_break("`hello`", 6).expect("end of code");
+        let code =
+            close_inline_run_for_line_break("`hello`", 6, LineEnding::Lf).expect("end of code");
         assert_eq!(code.text, "`hello`\n");
         assert_eq!(code.marker, "`");
     }
 
     #[test]
     fn enter_inside_an_inline_run_leaves_a_legal_span() {
-        assert_eq!(close_inline_run_for_line_break("**hello**", 4), None);
-        assert_eq!(close_inline_run_for_line_break("**a\nb**", 4), None);
+        assert_eq!(
+            close_inline_run_for_line_break("**hello**", 4, LineEnding::Lf),
+            None
+        );
+        assert_eq!(
+            close_inline_run_for_line_break("**a\nb**", 4, LineEnding::Lf),
+            None
+        );
     }
 
     #[test]
     fn enter_between_empty_markers_does_not_leave_an_empty_pair() {
-        let closed = close_inline_run_for_line_break("Text ****", 7).expect("empty pair");
+        let closed =
+            close_inline_run_for_line_break("Text ****", 7, LineEnding::Lf).expect("empty pair");
         assert_eq!(closed.text, "Text \n");
         assert_eq!(closed.caret_chars, 6);
         assert_eq!(closed.marker, "**");
@@ -4814,11 +5111,20 @@ mod tests {
     #[test]
     fn enter_policies_leave_fenced_and_indented_code_literal() {
         let fenced_markers = "```text\n****\n```";
-        assert_eq!(close_inline_run_for_line_break(fenced_markers, 10), None);
+        assert_eq!(
+            close_inline_run_for_line_break(fenced_markers, 10, LineEnding::Lf),
+            None
+        );
         let fenced_list = "```text\n- literal\n```";
-        assert_eq!(continue_or_exit_line_prefix(fenced_list, 17), None);
+        assert_eq!(
+            continue_or_exit_line_prefix(fenced_list, 17, LineEnding::Lf),
+            None
+        );
         let indented = "    - literal\n";
-        assert_eq!(continue_or_exit_line_prefix(indented, 13), None);
+        assert_eq!(
+            continue_or_exit_line_prefix(indented, 13, LineEnding::Lf),
+            None
+        );
     }
 
     #[test]
@@ -4831,20 +5137,24 @@ mod tests {
 
     #[test]
     fn enter_continues_a_list_item_and_quote() {
-        let (text, caret) = continue_or_exit_line_prefix("- item", 6).expect("list");
+        let (text, caret) =
+            continue_or_exit_line_prefix("- item", 6, LineEnding::Lf).expect("list");
         assert_eq!(text, "- item\n- ");
         assert_eq!(caret, 9);
 
         let (text, caret) =
-            continue_or_exit_line_prefix(&"- hello|there".replace('|', ""), 7).expect("split");
+            continue_or_exit_line_prefix(&"- hello|there".replace('|', ""), 7, LineEnding::Lf)
+                .expect("split");
         assert_eq!(text, "- hello\n- there");
         assert_eq!(caret, 10);
 
-        let (text, caret) = continue_or_exit_line_prefix("> quoted\r\n", 8).expect("quote crlf");
-        assert_eq!(text, "> quoted\r\n> ");
+        let (text, caret) =
+            continue_or_exit_line_prefix("> quoted\r\n", 8, LineEnding::CrLf).expect("quote crlf");
+        assert_eq!(text, "> quoted\r\n> \r\n");
         assert_eq!(caret, 12);
 
-        let (text, caret) = continue_or_exit_line_prefix("  - nested", 10).expect("indent");
+        let (text, caret) =
+            continue_or_exit_line_prefix("  - nested", 10, LineEnding::Lf).expect("indent");
         assert_eq!(text, "  - nested\n  - ");
         assert_eq!(caret, 15);
 
@@ -4855,27 +5165,44 @@ mod tests {
             ("> quote", 1),
             ("  - nested", 3),
         ] {
-            assert_eq!(continue_or_exit_line_prefix(source, caret), None);
+            assert_eq!(
+                continue_or_exit_line_prefix(source, caret, LineEnding::Lf),
+                None
+            );
         }
 
-        let (text, caret) =
-            continue_or_exit_line_prefix("- item\nnext", 6).expect("following LF line");
+        let (text, caret) = continue_or_exit_line_prefix("- item\nnext", 6, LineEnding::Lf)
+            .expect("following LF line");
         assert_eq!(text, "- item\n- \nnext");
         assert_eq!(caret, 9);
 
-        let (text, caret) =
-            continue_or_exit_line_prefix("> quoted\r\nnext", 8).expect("following CRLF line");
+        let (text, caret) = continue_or_exit_line_prefix("> quoted\r\nnext", 8, LineEnding::CrLf)
+            .expect("following CRLF line");
         assert_eq!(text, "> quoted\r\n> \r\nnext");
         assert_eq!(caret, 12);
     }
 
     #[test]
+    fn custom_enter_uses_the_chosen_ending_and_preserves_the_following_terminator() {
+        let inline = close_inline_run_for_line_break("**hello**", 7, LineEnding::Cr)
+            .expect("inline run should close before a CR break");
+        assert_eq!(inline.text, "**hello**\r");
+        assert_eq!(inline.caret_chars, 10);
+
+        let (list, caret) = continue_or_exit_line_prefix("- item\rnext", 6, LineEnding::CrLf)
+            .expect("list should continue with the chosen CRLF ending");
+        assert_eq!(list, "- item\r\n- \rnext");
+        assert_eq!(caret, 10);
+    }
+
+    #[test]
     fn enter_on_an_empty_list_item_exits_the_list() {
-        let (text, caret) = continue_or_exit_line_prefix("- item\n- ", 9).expect("exit");
+        let (text, caret) =
+            continue_or_exit_line_prefix("- item\n- ", 9, LineEnding::Lf).expect("exit");
         assert_eq!(text, "- item\n");
         assert_eq!(caret, 7);
 
-        let (text, caret) = continue_or_exit_line_prefix("- ", 2).expect("empty");
+        let (text, caret) = continue_or_exit_line_prefix("- ", 2, LineEnding::Lf).expect("empty");
         assert_eq!(text, "");
         assert_eq!(caret, 0);
     }
@@ -4888,6 +5215,10 @@ mod tests {
             repeat: false,
             modifiers: egui::Modifiers::NONE,
         }
+    }
+
+    fn platform_eol() -> &'static str {
+        LineEnding::platform_default().as_str()
     }
 
     fn editor_with_active(draft: &str, caret_chars: usize) -> (MarkdownEditor, egui::Id) {
@@ -4935,8 +5266,11 @@ mod tests {
         enter.events.push(enter_key());
         let _ = show_markdown_frame(&context, &mut editor, &mut source, enter);
 
-        assert_eq!(source, "abc\nXYZ");
-        assert_eq!(editor.source_selection(), Some(Selection::caret(4)));
+        assert_eq!(source, format!("abc{}XYZ", platform_eol()));
+        assert_eq!(
+            editor.source_selection(),
+            Some(Selection::caret(3 + platform_eol().len()))
+        );
     }
 
     #[test]
@@ -4955,12 +5289,12 @@ mod tests {
         let mut enter = egui::RawInput::default();
         enter.events.push(enter_key());
         let _ = show_markdown_frame(&context, &mut editor, &mut source, enter);
-        assert_eq!(source, "**hello**\n");
+        assert_eq!(source, format!("**hello**{}", platform_eol()));
 
         let mut typed = egui::RawInput::default();
         typed.events.push(egui::Event::Text("b".to_owned()));
         let _ = show_markdown_frame(&context, &mut editor, &mut source, typed);
-        assert_eq!(source, "**hello**\n**b**");
+        assert_eq!(source, format!("**hello**{}**b**", platform_eol()));
         assert!(!source.contains("****"));
     }
 
@@ -4980,7 +5314,7 @@ mod tests {
         let mut enter = egui::RawInput::default();
         enter.events.push(enter_key());
         let _ = show_markdown_frame(&context, &mut editor, &mut source, enter);
-        assert_eq!(source, "- item\n- ");
+        assert_eq!(source, format!("- item{}- ", platform_eol()));
     }
 
     #[test]
@@ -4999,7 +5333,7 @@ mod tests {
         let mut enter = egui::RawInput::default();
         enter.events.extend([enter_key(), enter_key()]);
         let _ = show_markdown_frame(&context, &mut editor, &mut source, enter);
-        assert_eq!(source, "- item\n- ");
+        assert_eq!(source, format!("- item{}- ", platform_eol()));
         let _ = show_markdown_frame(
             &context,
             &mut editor,
@@ -5007,7 +5341,7 @@ mod tests {
             egui::RawInput::default(),
         );
 
-        assert_eq!(source, "- item\n");
+        assert_eq!(source, format!("- item{}", platform_eol()));
     }
 
     #[test]
@@ -5041,7 +5375,7 @@ mod tests {
                 egui::RawInput::default(),
             );
 
-            assert_eq!(source, "- itemx\n- ", "{label}");
+            assert_eq!(source, format!("- itemx{}- ", platform_eol()), "{label}");
         }
 
         let context = egui::Context::default();
@@ -5066,7 +5400,7 @@ mod tests {
             egui::RawInput::default(),
         );
 
-        assert_eq!(source, "- item\n- x");
+        assert_eq!(source, format!("- item{}- x", platform_eol()));
     }
 
     #[test]
@@ -5154,7 +5488,7 @@ mod tests {
             let mut enter = egui::RawInput::default();
             enter.events.push(enter_key());
             let _ = show_markdown_frame(&context, &mut editor, &mut source, enter);
-            assert_eq!(source, "**hello**\n");
+            assert_eq!(source, format!("**hello**{}", platform_eol()));
             (context, editor, source)
         };
 
@@ -5170,7 +5504,7 @@ mod tests {
             &mut source,
             egui::RawInput::default(),
         );
-        assert_eq!(source, "**hello**\n\nx");
+        assert_eq!(source, format!("**hello**{0}{0}x", platform_eol()));
 
         let (context, mut editor, mut source) = prepare_pending();
         let mut text_around_enter = egui::RawInput::default();
@@ -5192,7 +5526,7 @@ mod tests {
             &mut source,
             egui::RawInput::default(),
         );
-        assert_eq!(source, "**hello**\n**a**\n**b**");
+        assert_eq!(source, format!("**hello**{0}**a**{0}**b**", platform_eol()));
 
         let (context, mut editor, mut source) = prepare_pending();
         let mut native_text = egui::RawInput::default();
@@ -5207,7 +5541,7 @@ mod tests {
             egui::Event::Text("b".to_owned()),
         ]);
         let _ = show_markdown_frame(&context, &mut editor, &mut source, native_text);
-        assert_eq!(source, "**hello**\n**b**");
+        assert_eq!(source, format!("**hello**{}**b**", platform_eol()));
     }
 
     #[test]
@@ -5407,7 +5741,7 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         });
         let _ = show_markdown_frame(&context, &mut editor, &mut source, escape);
-        assert_eq!(source, "**hello**\n");
+        assert_eq!(source, format!("**hello**{}", platform_eol()));
         assert!(!source.contains("****"));
         assert!(!editor.is_editing());
     }
@@ -6149,6 +6483,105 @@ mod tests {
 
         assert!(editor.is_editing());
         assert_eq!(source, "Select this text");
+    }
+
+    #[test]
+    fn accesskit_click_activates_the_first_rendered_source_caret() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "# Heading".to_owned();
+        let rendered = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            assert!(!editor.show(ui, &mut source).changed());
+        });
+        let block = accesskit_node_id_by_value(&rendered, "Heading");
+
+        let mut click = egui::RawInput::default();
+        click.events.push(egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Click,
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: block,
+                data: None,
+            },
+        ));
+        let _ = context.run_ui(click, |ui| {
+            ui.set_width(800.0);
+            assert!(!editor.show(ui, &mut source).changed());
+        });
+
+        assert!(editor.is_editing());
+        assert_eq!(editor.source_selection(), Some(Selection::caret(2)));
+        assert_eq!(source, "# Heading");
+    }
+
+    #[test]
+    fn focused_formatted_content_activates_from_enter_and_space() {
+        for key in [egui::Key::Enter, egui::Key::Space] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            let mut editor = MarkdownEditor::default();
+            let mut source = "Keyboard block".to_owned();
+            let rendered = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(800.0);
+                assert!(!editor.show(ui, &mut source).changed());
+            });
+            let block = accesskit_node_id_by_value(&rendered, "Keyboard block");
+
+            let mut focus = egui::RawInput::default();
+            focus.events.push(egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::Focus,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: block,
+                    data: None,
+                },
+            ));
+            let _ = context.run_ui(focus, |ui| {
+                ui.set_width(800.0);
+                assert!(!editor.show(ui, &mut source).changed());
+            });
+
+            let mut activate = egui::RawInput::default();
+            activate.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            let _ = context.run_ui(activate, |ui| {
+                ui.set_width(800.0);
+                assert!(!editor.show(ui, &mut source).changed());
+            });
+
+            assert!(editor.is_editing(), "{key:?} should activate the block");
+            assert_eq!(editor.source_selection(), Some(Selection::caret(0)));
+            assert_eq!(source, "Keyboard block");
+        }
+    }
+
+    #[test]
+    fn active_markdown_editor_has_a_stable_accessible_name() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut editor = MarkdownEditor::default();
+        let mut source = "Accessible source".to_owned();
+        editor.activate_first_block(&source);
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            assert!(!editor.show(ui, &mut source).changed());
+        });
+
+        assert_eq!(
+            accesskit_role_and_value(&output, "Markdown source editor"),
+            (
+                egui::accesskit::Role::MultilineTextInput,
+                Some("Accessible source".to_owned())
+            )
+        );
     }
 
     #[test]
@@ -7109,8 +7542,66 @@ mod tests {
 
         assert_eq!(
             markdown_render_layout(source, &egui::Style::default()).text,
-            "• first\r\n  • second\rparagraph * prose\n  nested"
+            "• first\n  • second\nparagraph * prose\n  nested"
         );
+    }
+
+    #[test]
+    fn inactive_projection_canonicalizes_crlf_and_cr_with_atomic_source_spans() {
+        let source = "one\r\ntwo\rthree";
+        let projection = markdown_render_projection(source, &egui::Style::default());
+
+        assert_eq!(projection.job.text, "one\ntwo\nthree");
+        assert_eq!(
+            projection.source_map.source_span_for_rendered_character,
+            vec![
+                0..1,
+                1..2,
+                2..3,
+                3..5,
+                5..6,
+                6..7,
+                7..8,
+                8..9,
+                9..10,
+                10..11,
+                11..12,
+                12..13,
+                13..14,
+            ]
+        );
+        assert_eq!(
+            projection
+                .source_map
+                .source_selection(CharSelection::new(3, 4)),
+            CharSelection::new(3, 5),
+            "selecting the displayed newline must select all of source CRLF"
+        );
+        assert_eq!(
+            projection
+                .source_map
+                .source_selection(CharSelection::caret(4)),
+            CharSelection::caret(5),
+            "the cursor after CRLF must skip its unreachable midpoint"
+        );
+    }
+
+    #[test]
+    fn inactive_reference_projection_uses_canonical_rows_without_mutating_source() {
+        let source = "[one]: /first\r\n[two]: /second\r[three]: /third";
+        let projection = reference_definition_projection(source, &egui::Style::default());
+
+        assert_eq!(
+            projection.job.text,
+            "[one]: /first\n[two]: /second\n[three]: /third"
+        );
+        assert_eq!(
+            projection
+                .source_map
+                .source_selection(CharSelection::new(13, 14)),
+            CharSelection::new(13, 15)
+        );
+        assert_eq!(source, "[one]: /first\r\n[two]: /second\r[three]: /third");
     }
 
     #[test]
@@ -8011,6 +8502,566 @@ mod tests {
     }
 
     #[test]
+    fn active_editor_projects_cr_only_rows_and_source_selection_exactly() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let source_text = "one\rtwo";
+        let (mut editor, _) = editor_with_active(source_text, 4);
+        let mut source = source_text.to_owned();
+
+        let output = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        assert_eq!(
+            accesskit_role_and_value(&output, "Markdown source editor"),
+            (
+                egui::accesskit::Role::MultilineTextInput,
+                Some("one\ntwo".to_owned())
+            )
+        );
+        assert_eq!(editor.source_selection(), Some(Selection::caret(4)));
+        assert_eq!(source, source_text);
+    }
+
+    #[test]
+    fn active_editor_projects_crlf_for_accesskit_and_cursor_state() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let source_text = "a\r\nb";
+        let (mut editor, editor_id) = editor_with_active(source_text, 3);
+        let mut source = source_text.to_owned();
+
+        let output = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        assert_eq!(
+            accesskit_role_and_value(&output, "Markdown source editor"),
+            (
+                egui::accesskit::Role::MultilineTextInput,
+                Some("a\nb".to_owned())
+            )
+        );
+        let cursor = egui::TextEdit::load_state(&context, editor_id)
+            .and_then(|state| state.cursor.char_range())
+            .expect("the active editor should retain a canonical cursor");
+        assert_eq!(cursor.primary.index, egui::text::CharIndex(2));
+        assert_eq!(cursor.secondary.index, egui::text::CharIndex(2));
+        assert_eq!(editor.source_selection(), Some(Selection::caret(3)));
+        assert_eq!(source, source_text);
+    }
+
+    #[test]
+    fn active_editor_maps_source_selection_to_canonical_display_cursors() {
+        let mut active = ActiveBlock::new(0..6, "a\r\nbé".to_owned(), 1);
+        active.selection = CharSelection::new(3, 5);
+
+        let display = active
+            .display_selection()
+            .expect("source boundaries should map to display cursors");
+
+        assert_eq!(usize::from(display.secondary.index), 2);
+        assert_eq!(usize::from(display.primary.index), 4);
+        let projection = SourceDisplayProjection::new(active.displayed_draft());
+        assert_eq!(
+            projection.selection_to_source(display),
+            Some(Selection::new(3, 6))
+        );
+    }
+
+    #[test]
+    fn active_editor_preserves_reverse_selection_across_crlf() {
+        let context = egui::Context::default();
+        let source_text = "a\r\nbé";
+        let mut active = ActiveBlock::new(0..source_text.len(), source_text.to_owned(), 1);
+        active.selection = CharSelection::new(5, 1);
+        let editor_id = active.editor_id();
+        let mut editor = MarkdownEditor {
+            active: Some(active),
+            finished_selection: None,
+            next_editor_serial: 1,
+            rendered_drag: None,
+            input_was_limited: false,
+            deferred_input_events: Vec::new(),
+            deferred_input_owns_editor: false,
+            deferred_input_restored: false,
+        };
+        let mut source = source_text.to_owned();
+
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        assert_eq!(editor.source_selection(), Some(Selection::new(6, 1)));
+        let cursor = egui::TextEdit::load_state(&context, editor_id)
+            .and_then(|state| state.cursor.char_range())
+            .expect("the reverse selection should remain in widget state");
+        assert_eq!(cursor.secondary.index, egui::text::CharIndex(4));
+        assert_eq!(cursor.primary.index, egui::text::CharIndex(1));
+        assert_eq!(source, source_text);
+    }
+
+    #[test]
+    fn active_editor_copy_and_cut_use_exact_crlf_source() {
+        let source_text = "a\r\nb";
+        for event in [egui::Event::Copy, egui::Event::Cut] {
+            let context = egui::Context::default();
+            let mut active = ActiveBlock::new(0..source_text.len(), source_text.to_owned(), 1);
+            active.selection = CharSelection::new(1, 3);
+            let editor_id = active.editor_id();
+            let mut editor = MarkdownEditor {
+                active: Some(active),
+                finished_selection: None,
+                next_editor_serial: 1,
+                rendered_drag: None,
+                input_was_limited: false,
+                deferred_input_events: Vec::new(),
+                deferred_input_owns_editor: false,
+                deferred_input_restored: false,
+            };
+            let mut source = source_text.to_owned();
+            context.memory_mut(|memory| memory.request_focus(editor_id));
+            let _ = show_markdown_frame(
+                &context,
+                &mut editor,
+                &mut source,
+                egui::RawInput::default(),
+            );
+
+            let input = egui::RawInput {
+                events: vec![event.clone()],
+                ..Default::default()
+            };
+            let output = show_markdown_frame(&context, &mut editor, &mut source, input);
+            let copied = output
+                .platform_output
+                .commands
+                .iter()
+                .filter_map(|command| match command {
+                    egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(copied, ["\r\n"], "{event:?}");
+
+            if matches!(event, egui::Event::Cut) {
+                assert_eq!(source, "ab");
+                assert_eq!(editor.source_selection(), Some(Selection::caret(1)));
+            } else {
+                assert_eq!(source, source_text);
+                assert_eq!(editor.source_selection(), Some(Selection::new(1, 3)));
+            }
+        }
+    }
+
+    #[test]
+    fn active_editor_consumes_copy_and_cut_until_crlf_or_cr_preedit_terminates() {
+        for ending in ["\r\n", "\r"] {
+            for clipboard in [egui::Event::Copy, egui::Event::Cut] {
+                for commit in [false, true] {
+                    let context = egui::Context::default();
+                    let source_text = format!("a{ending}bc");
+                    let selected_start = 1 + ending.chars().count();
+                    let mut active = ActiveBlock::new(0..source_text.len(), source_text.clone(), 1);
+                    active.selection = CharSelection::new(selected_start, selected_start + 1);
+                    let editor_id = active.editor_id();
+                    let mut editor = MarkdownEditor {
+                        active: Some(active),
+                        finished_selection: None,
+                        next_editor_serial: 1,
+                        rendered_drag: None,
+                        input_was_limited: false,
+                        deferred_input_events: Vec::new(),
+                        deferred_input_owns_editor: false,
+                        deferred_input_restored: false,
+                    };
+                    let mut source = source_text.clone();
+                    context.memory_mut(|memory| memory.request_focus(editor_id));
+                    let _ = show_markdown_frame(
+                        &context,
+                        &mut editor,
+                        &mut source,
+                        egui::RawInput::default(),
+                    );
+
+                    let preedit = egui::RawInput {
+                        events: vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                            text: "漢".to_owned(),
+                            active_range_chars: Some(0..1),
+                        })],
+                        ..Default::default()
+                    };
+                    let _ = show_markdown_frame(&context, &mut editor, &mut source, preedit);
+                    let preedit_draft = editor
+                        .active
+                        .as_ref()
+                        .and_then(|active| active.ime_composition.as_ref())
+                        .map(|composition| composition.draft.clone())
+                        .expect("the preedit draft should remain transient");
+                    assert_eq!(preedit_draft, format!("a{ending}漢c"));
+                    assert_eq!(source, source_text);
+
+                    let terminal = if commit {
+                        egui::Event::Ime(egui::ImeEvent::Commit("漢".to_owned()))
+                    } else {
+                        egui::Event::Ime(egui::ImeEvent::Preedit {
+                            text: String::new(),
+                            active_range_chars: None,
+                        })
+                    };
+                    let action = egui::RawInput {
+                        events: vec![clipboard.clone(), terminal],
+                        ..Default::default()
+                    };
+                    let output = show_markdown_frame(&context, &mut editor, &mut source, action);
+                    assert!(
+                        output
+                            .platform_output
+                            .commands
+                            .iter()
+                            .all(|command| !matches!(command, egui::OutputCommand::CopyText(_))),
+                        "{ending:?} {clipboard:?} commit={commit}"
+                    );
+                    assert_eq!(source, source_text);
+                    assert_eq!(
+                        editor
+                            .active
+                            .as_ref()
+                            .and_then(|active| active.ime_composition.as_ref())
+                            .map(|composition| composition.draft.as_str()),
+                        Some(preedit_draft.as_str()),
+                        "{ending:?} {clipboard:?} commit={commit}"
+                    );
+
+                    let _ = show_markdown_frame(
+                        &context,
+                        &mut editor,
+                        &mut source,
+                        egui::RawInput::default(),
+                    );
+                    assert!(!editor.has_active_ime_composition());
+                    if commit {
+                        assert_eq!(source, preedit_draft);
+                        assert_eq!(
+                            editor.source_selection(),
+                            Some(Selection::caret(1 + ending.len() + "漢".len()))
+                        );
+                    } else {
+                        assert_eq!(source, source_text);
+                        assert_eq!(
+                            editor.source_selection(),
+                            Some(Selection::new(1 + ending.len(), 1 + ending.len() + 1))
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn active_editor_deletes_crlf_as_one_display_character() {
+        let context = egui::Context::default();
+        let (mut editor, editor_id) = editor_with_active("a\r\nb", 3);
+        let mut source = "a\r\nb".to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::Backspace,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+
+        assert_eq!(source, "ab");
+        assert_eq!(editor.source_selection(), Some(Selection::caret(1)));
+    }
+
+    #[test]
+    fn active_editor_uses_external_mixed_context_and_preserves_the_next_ending() {
+        let context = egui::Context::default();
+        let mut source = "head\r\n- item\rnext\n".to_owned();
+        let (mut editor, editor_id) = editor_with_active("- item", 6);
+        editor
+            .active
+            .as_mut()
+            .expect("fixture should remain active")
+            .source_range = 6..12;
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        let mut input = egui::RawInput::default();
+        input.events.push(enter_key());
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+
+        assert_eq!(source, "head\r\n- item\r\n- \rnext\n");
+        assert_eq!(editor.source_selection(), Some(Selection::caret(16)));
+    }
+
+    #[test]
+    fn active_editor_normalizes_multiline_paste_to_the_local_ending() {
+        let context = egui::Context::default();
+        let source_text = "one\r\ntwo";
+        let (mut editor, editor_id) = editor_with_active(source_text, source_text.chars().count());
+        let mut source = source_text.to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        let mut input = egui::RawInput::default();
+        input
+            .events
+            .push(egui::Event::Paste("A\nB\rC\r\nD".to_owned()));
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+
+        assert_eq!(source, "one\r\ntwoA\r\nB\r\nC\r\nD");
+        assert!(!editor.take_input_was_limited());
+    }
+
+    #[test]
+    fn active_editor_enforces_source_bytes_after_crlf_normalization() {
+        let context = egui::Context::default();
+        let source_text = "a\r\nb";
+        let maximum = source_text.len() + 2;
+        let (mut editor, editor_id) = editor_with_active(source_text, source_text.chars().count());
+        let mut source = source_text.to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(640.0);
+            let _ = editor.show_with_source_byte_limit(ui, &mut source, maximum);
+        });
+
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Paste("\nX".to_owned()));
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(640.0);
+            let _ = editor.show_with_source_byte_limit(ui, &mut source, maximum);
+        });
+
+        assert_eq!(source, "a\r\nb\r\n");
+        assert_eq!(source.len(), maximum);
+        assert!(editor.take_input_was_limited());
+    }
+
+    #[test]
+    fn active_editor_rejected_crlf_terminals_never_publish_the_preedit_draft() {
+        for paired_enter in [false, true] {
+            let context = egui::Context::default();
+            let source_text = "a\r\nb";
+            let mut active = ActiveBlock::new(0..source_text.len(), source_text.to_owned(), 1);
+            active.selection = CharSelection::new(3, 4);
+            let editor_id = active.editor_id();
+            let mut editor = MarkdownEditor {
+                active: Some(active),
+                finished_selection: None,
+                next_editor_serial: 1,
+                rendered_drag: None,
+                input_was_limited: false,
+                deferred_input_events: Vec::new(),
+                deferred_input_owns_editor: false,
+                deferred_input_restored: false,
+            };
+            let mut source = source_text.to_owned();
+            context.memory_mut(|memory| memory.request_focus(editor_id));
+            let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(640.0);
+                assert!(
+                    !editor
+                        .show_with_source_byte_limit(ui, &mut source, source_text.len())
+                        .changed()
+                );
+            });
+            let preedit = egui::RawInput {
+                events: vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                    text: "x".to_owned(),
+                    active_range_chars: None,
+                })],
+                ..Default::default()
+            };
+            let _ = context.run_ui(preedit, |ui| {
+                ui.set_width(640.0);
+                assert!(
+                    !editor
+                        .show_with_source_byte_limit(ui, &mut source, source_text.len())
+                        .changed()
+                );
+            });
+            assert_eq!(editor.active_ime_draft(), Some("a\r\nx"));
+
+            let mut events = vec![egui::Event::Ime(egui::ImeEvent::Commit("\n".to_owned()))];
+            if paired_enter {
+                events.insert(0, enter_key());
+            }
+            let terminal = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let _ = context.run_ui(terminal, |ui| {
+                ui.set_width(640.0);
+                assert!(
+                    !editor
+                        .show_with_source_byte_limit(ui, &mut source, source_text.len())
+                        .changed()
+                );
+            });
+
+            assert_eq!(source, source_text, "paired_enter={paired_enter}");
+            assert_eq!(editor.source_selection(), Some(Selection::new(3, 4)));
+            assert!(!editor.has_active_ime_composition());
+            assert!(editor.take_input_was_limited());
+        }
+    }
+
+    #[test]
+    fn active_editor_normalizes_multiline_ime_commit_to_cr() {
+        let context = egui::Context::default();
+        let source_text = "a\rb";
+        let (mut editor, editor_id) = editor_with_active(source_text, source_text.chars().count());
+        let mut source = source_text.to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = show_markdown_frame(
+            &context,
+            &mut editor,
+            &mut source,
+            egui::RawInput::default(),
+        );
+
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Ime(egui::ImeEvent::Commit(
+            "X\nY\r\nZ".to_owned(),
+        )));
+        let _ = show_markdown_frame(&context, &mut editor, &mut source, input);
+
+        assert_eq!(source, "a\rbX\rY\rZ");
+        assert_eq!(
+            editor.source_selection(),
+            Some(Selection::caret(source.len()))
+        );
+    }
+
+    #[test]
+    fn active_editor_projects_crlf_preedit_ranges_before_across_and_after_newline() {
+        for (original, expected) in [(0..1, 0..1), (1..3, 1..2), (3..5, 2..4)] {
+            let context = egui::Context::default();
+            let source_text = "x\r\n";
+            let (mut editor, editor_id) = editor_with_active(source_text, 0);
+            let mut source = source_text.to_owned();
+            context.memory_mut(|memory| memory.request_focus(editor_id));
+            let _ = show_markdown_frame(
+                &context,
+                &mut editor,
+                &mut source,
+                egui::RawInput::default(),
+            );
+
+            let input = egui::RawInput {
+                events: vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                    text: "a\r\nbc".to_owned(),
+                    active_range_chars: Some(original.clone()),
+                })],
+                ..Default::default()
+            };
+            let mut sanitized = None;
+            let _ = context.run_ui(input, |ui| {
+                ui.set_width(800.0);
+                let _ = editor.show_with_source_byte_limit(ui, &mut source, 64);
+                sanitized = ui.input(|input| match &input.events[0] {
+                    egui::Event::Ime(egui::ImeEvent::Preedit {
+                        text,
+                        active_range_chars,
+                    }) => Some((text.clone(), active_range_chars.clone())),
+                    _ => None,
+                });
+            });
+
+            assert_eq!(sanitized, Some(("a\nbc".to_owned(), Some(expected))));
+            assert_eq!(source, source_text);
+            assert_eq!(
+                editor
+                    .active
+                    .as_ref()
+                    .and_then(|active| active.ime_composition.as_ref())
+                    .map(|composition| composition.draft.as_str()),
+                Some("a\r\nbcx\r\n"),
+                "{original:?}"
+            );
+            assert!(!editor.take_input_was_limited(), "{original:?}");
+        }
+    }
+
+    #[test]
+    fn active_editor_clears_a_truncated_crlf_preedit_range_at_the_source_ceiling() {
+        let context = egui::Context::default();
+        let source_text = "x\r\n";
+        let (mut editor, editor_id) = editor_with_active(source_text, 0);
+        let mut source = source_text.to_owned();
+        context.memory_mut(|memory| memory.request_focus(editor_id));
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(800.0);
+            let _ = editor.show_with_source_byte_limit(ui, &mut source, 7);
+        });
+
+        let input = egui::RawInput {
+            events: vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                text: "a\r\nbc".to_owned(),
+                active_range_chars: Some(3..5),
+            })],
+            ..Default::default()
+        };
+        let mut sanitized = None;
+        let _ = context.run_ui(input, |ui| {
+            ui.set_width(800.0);
+            let _ = editor.show_with_source_byte_limit(ui, &mut source, 7);
+            sanitized = ui.input(|input| match &input.events[0] {
+                egui::Event::Ime(egui::ImeEvent::Preedit {
+                    text,
+                    active_range_chars,
+                }) => Some((text.clone(), active_range_chars.clone())),
+                _ => None,
+            });
+        });
+
+        assert_eq!(sanitized, Some(("a\nb".to_owned(), None)));
+        assert_eq!(source, source_text);
+        assert_eq!(
+            editor
+                .active
+                .as_ref()
+                .and_then(|active| active.ime_composition.as_ref())
+                .map(|composition| composition.draft.as_str()),
+            Some("a\r\nbx\r\n")
+        );
+        assert!(editor.take_input_was_limited());
+    }
+
+    #[test]
     fn char_and_byte_selection_round_trip_multibyte() {
         let source = "café world";
         // "café" is 5 bytes (é is 2); caret after é is char index 4, byte 5.
@@ -8055,7 +9106,7 @@ mod tests {
     fn bounded_inline_reopen_never_truncates_existing_suffix() {
         let context = egui::Context::default();
         let mut source = "**hi** TAIL".to_owned();
-        let maximum = source.len() + 1;
+        let maximum = source.len() + platform_eol().len();
         let (mut editor, editor_id) = editor_with_active(&source, 4);
         context.memory_mut(|memory| memory.request_focus(editor_id));
 
@@ -8073,7 +9124,7 @@ mod tests {
                     .changed()
             );
         });
-        assert_eq!(source, "**hi**\n TAIL");
+        assert_eq!(source, format!("**hi**{} TAIL", platform_eol()));
 
         let mut paste = egui::RawInput::default();
         paste.events.push(egui::Event::Paste("ABCDE".to_owned()));
@@ -8085,7 +9136,7 @@ mod tests {
             );
         });
 
-        assert_eq!(source, "**hi**\n TAIL");
+        assert_eq!(source, format!("**hi**{} TAIL", platform_eol()));
         assert!(editor.take_input_was_limited());
     }
 

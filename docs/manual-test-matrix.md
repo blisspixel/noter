@@ -198,8 +198,9 @@ full manual matrix.
 - [ ] A11Y-01 Complete New, Open, Edit, Find, Save, conflict, recovery, and Close
   workflows without a mouse.
 - [ ] A11Y-02 Menus expose names, enabled state, checked state, and shortcuts.
-- [ ] A11Y-03 The editor exposes text, caret, selection, editable state, and
-  actions to the platform screen reader.
+- [ ] A11Y-03 Text Mode is named `Document text editor` and an active Markdown
+  range is named `Markdown source editor`; both expose text, caret, selection,
+  editable state, and actions to the platform screen reader.
 - [ ] A11Y-04 Modified, error, recovery, find, and conflict states are announced.
 - [ ] A11Y-05 Focus order is stable and focus never becomes trapped.
 - [ ] A11Y-06 Information is not conveyed by color alone.
@@ -299,11 +300,18 @@ Attach the reproducible benchmark report rather than estimating subjectively.
 
 - [ ] MD-01 Text Mode schedules no Markdown work and exposes exact source.
 - [ ] MD-02 Switching between Text Mode and Markdown Mode changes no bytes.
+  In LF, CRLF, CR, and mixed fixtures, forward and reverse selection, Delete,
+  Enter, multiline paste, IME pre-edit, IME commit, Undo, and Redo retain exact
+  untouched terminators and never expose a caret inside CRLF. Copy and Cut
+  retain exact source in Text Mode and the active Markdown source editor; an
+  active IME pre-edit consumes them without clipboard or source changes.
 - [ ] MD-03 Clicking or dragging formatted content activates the matching
-  complete source range, keeps supported syntax visually formatted, and
-  updates only that range. Hidden delimiters, escapes, and character references
-  are never split by a visual caret or selection; unsafe synthesis falls back
-  to visible source.
+  complete source range. Focusing an inactive block and pressing Enter or Space,
+  or invoking its platform accessibility Click action, activates a caret at the
+  first rendered source boundary. Every route keeps supported syntax visually
+  formatted and updates only that range. Hidden delimiters, escapes, and
+  character references are never split by a visual caret or selection; unsafe
+  synthesis falls back to visible source.
 - [ ] MD-04 Paragraph and all six ATX heading levels are exact idempotent style
   choices; each changed style, formatting action, and safe fix is one minimal
   undo transaction. Choosing the current style creates no edit or selection

@@ -3,10 +3,14 @@
 //! The product crate forbids unsafe code. Calls that cannot yet be expressed
 //! through stable standard-library APIs live here behind safe, tested types.
 
+#[cfg(unix)]
+use std::ffi::OsString;
 use std::fmt;
 use std::fs::File;
 use std::io;
 use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 #[cfg(unix)]
 use imp::{
@@ -43,6 +47,7 @@ use imp::{
     windows_file_facts as platform_file_facts, windows_install_new as platform_install_new,
     windows_open_existing_no_follow as platform_open_existing_no_follow,
     windows_open_for_cleanup as platform_open_for_cleanup,
+    windows_open_for_reconciliation as platform_open_for_reconciliation,
     windows_replace_existing as platform_replace_existing, windows_sync_file as platform_sync_file,
     windows_sync_parent as platform_sync_parent,
 };
@@ -73,7 +78,7 @@ impl std::error::Error for RetainedPrivateCreation {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(unix, test))]
 fn retained_private_creation_error(cause: io::Error) -> io::Error {
     io::Error::new(
         cause.kind(),
@@ -312,6 +317,22 @@ pub fn open_for_cleanup(path: &Path) -> io::Result<File> {
     platform_open_for_cleanup(path)
 }
 
+/// Opens an existing Windows entry for reconciliation and prevents mutation.
+///
+/// The returned handle denies new or existing write and delete access while it
+/// remains open. Because Windows rename and unlink operations require delete
+/// access, callers can ratify a canonical destination and keep that exact
+/// pathname stable while cleaning related candidates by handle.
+///
+/// # Errors
+///
+/// Returns an operating-system error when the final entry cannot be opened
+/// without following a reparse point or competing access prevents ratification.
+#[cfg(windows)]
+pub fn open_for_reconciliation(path: &Path) -> io::Result<File> {
+    platform_open_for_reconciliation(path)
+}
+
 /// Requests deletion of the exact object represented by an open file handle.
 ///
 /// Windows marks the handle's file for deletion when the last handle closes.
@@ -425,6 +446,87 @@ pub enum ParentSyncOutcome {
     Unsupported,
 }
 
+/// Successful commit result paired with its exact parent-directory barrier.
+///
+/// The parent receipt is deliberately one-shot and non-cloneable. After
+/// splitting the result, callers may perform platform-safe verification before
+/// consuming the parent token. The token intentionally exposes no basename
+/// cleanup operation because a directory entry can rebind after commit.
+#[must_use = "a successful commit receipt carries the exact parent-directory barrier"]
+#[derive(Debug)]
+pub struct CommitReceipt<T> {
+    outcome: T,
+    parent_sync: ParentSyncReceipt,
+}
+
+impl<T> CommitReceipt<T> {
+    const fn new(outcome: T, parent_sync: ParentSyncReceipt) -> Self {
+        Self {
+            outcome,
+            parent_sync,
+        }
+    }
+
+    /// Splits the platform outcome from the one-shot parent-directory token.
+    pub fn into_parts(self) -> (T, ParentSyncReceipt) {
+        (self.outcome, self.parent_sync)
+    }
+}
+
+/// One-shot persistence barrier for the exact parent used by a commit.
+///
+/// Unix receipts own the directory descriptor used by the descriptor-relative
+/// commit. Windows receipts preserve the platform's explicit unsupported
+/// result without pretending that a directory barrier exists.
+#[must_use = "consume the receipt to complete or classify parent-directory durability"]
+#[derive(Debug)]
+pub struct ParentSyncReceipt {
+    #[cfg(unix)]
+    parent: File,
+    _private: (),
+}
+
+impl ParentSyncReceipt {
+    #[cfg(unix)]
+    const fn from_open_parent(parent: File) -> Self {
+        Self {
+            parent,
+            _private: (),
+        }
+    }
+
+    #[cfg(windows)]
+    const fn unsupported() -> Self {
+        Self { _private: () }
+    }
+
+    /// Synchronizes the exact directory used by the successful commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an operating-system error when the held Unix directory barrier
+    /// fails. Windows returns [`ParentSyncOutcome::Unsupported`].
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn sync(self) -> io::Result<ParentSyncOutcome> {
+        #[cfg(unix)]
+        {
+            self.parent.sync_all()?;
+            Ok(ParentSyncOutcome::Synced)
+        }
+        #[cfg(windows)]
+        {
+            Ok(ParentSyncOutcome::Unsupported)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "parent synchronization is unsupported on this operating system",
+            ))
+        }
+    }
+}
+
 /// Atomically replaces an existing destination with its private sibling.
 ///
 /// On Windows, `backup` is required so documented partial failures can be
@@ -438,8 +540,117 @@ pub fn replace_existing(
     temporary: &Path,
     destination: &Path,
     backup: Option<&Path>,
-) -> io::Result<ReplaceExistingOutcome> {
+) -> io::Result<CommitReceipt<ReplaceExistingOutcome>> {
     platform_replace_existing(temporary, destination, backup)
+}
+
+/// Descriptor-bound Unix sibling directory used by recovery-only commits.
+///
+/// The directory is opened before the private stage is created. Creation is
+/// descriptor-relative where the platform permits it; macOS instead uses its
+/// atomic ACL-aware creation primitive and ratifies the result against this
+/// descriptor. The consuming rename always uses the held directory, so a
+/// pathname rebind cannot be acknowledged as a successful recovery commit.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct UnixRecoveryCommitParent {
+    parent: File,
+    parent_path: PathBuf,
+    destination_name: OsString,
+}
+
+#[cfg(unix)]
+impl UnixRecoveryCommitParent {
+    /// Opens and binds the destination's containing directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the destination has no basename or its containing
+    /// directory cannot be opened.
+    pub fn bind(destination: &Path) -> io::Result<Self> {
+        let parent_path = unix_normalized_parent(destination).to_path_buf();
+        let destination_name = destination.file_name().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "recovery destination has no filename",
+            )
+        })?;
+        let parent = File::open(&parent_path)?;
+        Ok(Self {
+            parent,
+            parent_path,
+            destination_name: destination_name.to_os_string(),
+        })
+    }
+
+    /// Exclusively creates one private stage in the bound directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `temporary` is not a sibling of the bound
+    /// destination or descriptor-relative private creation fails.
+    pub fn create_private_new(&self, temporary: &Path) -> io::Result<File> {
+        let temporary_name = self.require_sibling_name(temporary)?;
+        #[cfg(target_os = "macos")]
+        {
+            // Apple's file-security creation API is path-based but prevents
+            // inherited ACL access during creation. Ratify its result against
+            // the already-open parent before allowing it to commit.
+            let file = create_private_new_file(temporary)?;
+            imp::unix_require_name_matches(&self.parent, temporary_name, &file)?;
+            Ok(file)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            imp::unix_create_private_new_at(&self.parent, temporary_name)
+        }
+    }
+
+    /// Consumes the exact staged object into the destination basename.
+    ///
+    /// The open stage is checked both before and after the rename. A competing
+    /// basename replacement can therefore never be acknowledged as the staged
+    /// recovery snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path is not a sibling, the stage basename no
+    /// longer identifies `staged`, or the descriptor-relative rename fails.
+    pub fn replace_existing_consuming(
+        self,
+        temporary: &Path,
+        staged: &File,
+    ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>> {
+        let temporary_name = self.require_sibling_name(temporary)?.to_os_string();
+        imp::unix_replace_existing_consuming_in_parent(
+            self.parent,
+            &temporary_name,
+            &self.destination_name,
+            staged,
+        )
+    }
+
+    fn require_sibling_name<'a>(&self, path: &'a Path) -> io::Result<&'a std::ffi::OsStr> {
+        if unix_normalized_parent(path) != self.parent_path {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "recovery stage and destination paths are not siblings",
+            ));
+        }
+        path.file_name().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "recovery stage has no filename",
+            )
+        })
+    }
+}
+
+#[cfg(unix)]
+fn unix_normalized_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 /// Installs a private sibling only if the destination remains absent.
@@ -448,7 +659,10 @@ pub fn replace_existing(
 ///
 /// Returns the raw operating-system failure. An `AlreadyExists` error is an
 /// exclusive-create conflict, while other failures require reconciliation.
-pub fn install_new(temporary: &Path, destination: &Path) -> io::Result<InstallNewOutcome> {
+pub fn install_new(
+    temporary: &Path,
+    destination: &Path,
+) -> io::Result<CommitReceipt<InstallNewOutcome>> {
     platform_install_new(temporary, destination)
 }
 
@@ -461,7 +675,12 @@ pub fn sync_file(file: &File) -> io::Result<()> {
     platform_sync_file(file)
 }
 
-/// Synchronizes the destination's containing directory when supported.
+/// Synchronizes the destination's currently resolved containing directory.
+///
+/// This path-based operation is for direct-create flows that have no commit
+/// receipt. Callers of [`replace_existing`] and [`install_new`] must instead
+/// consume the returned [`ParentSyncReceipt`] so a renamed or rebound parent
+/// pathname cannot redirect the durability barrier.
 ///
 /// # Errors
 ///
@@ -486,14 +705,15 @@ mod imp {
     use std::path::Path;
 
     use rustix::fs::{
-        AtFlags, Gid, Mode, RawMode, RenameFlags, Uid, fchmod, fchown, linkat, renameat_with,
+        AtFlags, Gid, Mode, OFlags, RawMode, RenameFlags, Uid, fchmod, fchown, linkat, openat,
+        renameat, renameat_with,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use xattr::FileExt;
 
     use super::{
-        FileChangeToken, FileFacts, FileIdentity, IdentityQuality, InstallNewOutcome,
-        ParentSyncOutcome, ReplaceExistingOutcome,
+        CommitReceipt, FileChangeToken, FileFacts, FileIdentity, IdentityQuality,
+        InstallNewOutcome, ParentSyncOutcome, ParentSyncReceipt, ReplaceExistingOutcome,
     };
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -761,6 +981,23 @@ mod imp {
             .open(path)
     }
 
+    #[cfg(not(target_os = "macos"))]
+    pub fn unix_create_private_new_at(parent: &File, name: &OsStr) -> io::Result<File> {
+        let file = File::from(
+            openat(
+                parent,
+                name,
+                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(io::Error::from)?,
+        );
+        if let Err(error) = unix_restrict_open_file_to_owner(&file) {
+            return Err(super::retained_private_creation_error(error));
+        }
+        Ok(file)
+    }
+
     #[cfg(target_os = "macos")]
     pub fn macos_create_private_new_file(path: &Path) -> io::Result<File> {
         let file = macos_private_creation::create(path)?;
@@ -982,7 +1219,7 @@ mod imp {
         temporary: &Path,
         destination: &Path,
         _backup: Option<&Path>,
-    ) -> io::Result<ReplaceExistingOutcome> {
+    ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>> {
         unix_with_sibling_parent(
             temporary,
             destination,
@@ -1000,7 +1237,61 @@ mod imp {
         )
     }
 
-    pub fn unix_install_new(temporary: &Path, destination: &Path) -> io::Result<InstallNewOutcome> {
+    pub fn unix_replace_existing_consuming_in_parent(
+        parent: File,
+        temporary_name: &OsStr,
+        destination_name: &OsStr,
+        staged: &File,
+    ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>> {
+        let staged_identity = unix_file_facts(staged)?.identity();
+        unix_require_name_matches(&parent, temporary_name, staged)?;
+
+        renameat(&parent, temporary_name, &parent, destination_name).map_err(io::Error::from)?;
+        let committed = unix_open_existing_at(&parent, destination_name)?;
+        if unix_file_facts(&committed)?.identity() != staged_identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recovery destination does not identify the staged object after rename",
+            ));
+        }
+        drop(committed);
+        Ok(CommitReceipt::new(
+            ReplaceExistingOutcome::Clean,
+            ParentSyncReceipt::from_open_parent(parent),
+        ))
+    }
+
+    pub fn unix_require_name_matches(
+        parent: &File,
+        name: &OsStr,
+        expected: &File,
+    ) -> io::Result<()> {
+        let expected_identity = unix_file_facts(expected)?.identity();
+        let named = unix_open_existing_at(parent, name)?;
+        if unix_file_facts(&named)?.identity() != expected_identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recovery stage basename no longer identifies the staged object",
+            ));
+        }
+        Ok(())
+    }
+
+    fn unix_open_existing_at(parent: &File, name: &OsStr) -> io::Result<File> {
+        openat(
+            parent,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map(File::from)
+        .map_err(io::Error::from)
+    }
+
+    pub fn unix_install_new(
+        temporary: &Path,
+        destination: &Path,
+    ) -> io::Result<CommitReceipt<InstallNewOutcome>> {
         unix_with_sibling_parent(
             temporary,
             destination,
@@ -1051,7 +1342,7 @@ mod imp {
         temporary: &Path,
         destination: &Path,
         operation: impl FnOnce(&File, &OsStr, &OsStr) -> io::Result<T>,
-    ) -> io::Result<T> {
+    ) -> io::Result<CommitReceipt<T>> {
         let temporary_parent = unix_normalized_parent(temporary);
         let destination_parent = unix_normalized_parent(destination);
         if temporary_parent != destination_parent {
@@ -1073,7 +1364,11 @@ mod imp {
             )
         })?;
         let parent = File::open(temporary_parent)?;
-        operation(&parent, temporary_name, destination_name)
+        let outcome = operation(&parent, temporary_name, destination_name)?;
+        Ok(CommitReceipt::new(
+            outcome,
+            ParentSyncReceipt::from_open_parent(parent),
+        ))
     }
 
     fn unix_normalized_parent(path: &Path) -> &Path {
@@ -2232,8 +2527,9 @@ mod imp {
     use std::path::Path;
 
     use windows_sys::Win32::Foundation::{
-        ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE,
-        INVALID_HANDLE_VALUE, LocalFree,
+        ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER,
+        ERROR_NOT_SUPPORTED, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE,
+        LocalFree,
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
@@ -2246,16 +2542,18 @@ mod imp {
     };
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL,
-        FILE_BASIC_INFO, FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileBasicInfo, FileDispositionInfo,
-        FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
-        MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW, SetFileInformationByHandle,
+        FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+        FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileBasicInfo,
+        FileDispositionInfo, FileDispositionInfoEx, FileIdInfo, GetFileInformationByHandle,
+        GetFileInformationByHandleEx, MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW,
+        SetFileInformationByHandle,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     use super::{
-        FileChangeToken, FileFacts, FileIdentity, IdentityQuality, InstallNewOutcome,
-        ParentSyncOutcome, ReplaceExistingOutcome,
+        CommitReceipt, FileChangeToken, FileFacts, FileIdentity, IdentityQuality,
+        InstallNewOutcome, ParentSyncOutcome, ParentSyncReceipt, ReplaceExistingOutcome,
     };
 
     const MAX_SID_STRING_UNITS: usize = 256;
@@ -2673,6 +2971,14 @@ mod imp {
             .open(path)
     }
 
+    pub fn windows_open_for_reconciliation(path: &Path) -> io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+    }
+
     pub fn windows_open_existing_no_follow(path: &Path) -> io::Result<File> {
         OpenOptions::new()
             .read(true)
@@ -2683,6 +2989,43 @@ mod imp {
 
     #[allow(unsafe_code)]
     pub fn windows_delete_open_file(file: &File) -> io::Result<()> {
+        let extended_disposition = FILE_DISPOSITION_INFO_EX {
+            Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+        };
+        let extended_size = u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "FILE_DISPOSITION_INFO_EX size does not fit the Windows API parameter",
+            )
+        })?;
+        // POSIX disposition unlinks the verified object's name immediately,
+        // avoiding a delete-pending pathname that directory enumeration can
+        // still observe. Older filesystems fall back to legacy delete-on-close.
+        if unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileDispositionInfoEx,
+                std::ptr::from_ref(&extended_disposition).cast(),
+                extended_size,
+            )
+        } != 0
+        {
+            return Ok(());
+        }
+        let extended_error = io::Error::last_os_error();
+        let extended_delete_unsupported = extended_error
+            .raw_os_error()
+            .and_then(|code| u32::try_from(code).ok())
+            .is_some_and(|code| {
+                matches!(
+                    code,
+                    ERROR_INVALID_FUNCTION | ERROR_NOT_SUPPORTED | ERROR_INVALID_PARAMETER
+                )
+            });
+        if !extended_delete_unsupported {
+            return Err(extended_error);
+        }
+
         let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
         let disposition_size = u32::try_from(size_of::<FILE_DISPOSITION_INFO>()).map_err(|_| {
             io::Error::new(
@@ -2712,7 +3055,7 @@ mod imp {
         temporary: &Path,
         destination: &Path,
         backup: Option<&Path>,
-    ) -> io::Result<ReplaceExistingOutcome> {
+    ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>> {
         let temporary = windows_wide_path(temporary)?;
         let destination = windows_wide_path(destination)?;
         let backup = backup.map(windows_wide_path).transpose()?;
@@ -2735,14 +3078,17 @@ mod imp {
             return Err(io::Error::last_os_error());
         }
 
-        Ok(ReplaceExistingOutcome::Clean)
+        Ok(CommitReceipt::new(
+            ReplaceExistingOutcome::Clean,
+            ParentSyncReceipt::unsupported(),
+        ))
     }
 
     #[allow(unsafe_code)]
     pub fn windows_install_new(
         temporary: &Path,
         destination: &Path,
-    ) -> io::Result<InstallNewOutcome> {
+    ) -> io::Result<CommitReceipt<InstallNewOutcome>> {
         let temporary = windows_wide_path(temporary)?;
         let destination = windows_wide_path(destination)?;
 
@@ -2760,7 +3106,10 @@ mod imp {
             return Err(io::Error::last_os_error());
         }
 
-        Ok(InstallNewOutcome::Clean)
+        Ok(CommitReceipt::new(
+            InstallNewOutcome::Clean,
+            ParentSyncReceipt::unsupported(),
+        ))
     }
 
     pub fn windows_sync_file(file: &File) -> io::Result<()> {
@@ -2905,10 +3254,10 @@ mod imp {
             windows_delete_open_file, windows_descriptor_dacl_sddl, windows_extended_information,
             windows_finalize_private_creation, windows_identity_from_information,
             windows_open_existing_no_follow, windows_open_for_cleanup,
-            windows_private_security_policy, windows_private_security_policy_for_sid,
-            windows_security_descriptor_from_sddl, windows_sid_string,
-            windows_token_user_buffer_length, windows_validate_token_user_returned_length,
-            windows_verify_private_file_security,
+            windows_open_for_reconciliation, windows_private_security_policy,
+            windows_private_security_policy_for_sid, windows_security_descriptor_from_sddl,
+            windows_sid_string, windows_token_user_buffer_length,
+            windows_validate_token_user_returned_length, windows_verify_private_file_security,
         };
 
         #[test]
@@ -3216,6 +3565,25 @@ mod imp {
         }
 
         #[test]
+        fn reconciliation_ratification_denies_write_rename_and_delete() -> io::Result<()> {
+            let directory = tempdir()?;
+            let path = directory.path().join("ratified.txt");
+            let moved = directory.path().join("moved.txt");
+            fs::write(&path, b"ratified revision")?;
+
+            let ratification = windows_open_for_reconciliation(&path)?;
+            assert!(OpenOptions::new().write(true).open(&path).is_err());
+            assert!(fs::rename(&path, &moved).is_err());
+            assert!(fs::remove_file(&path).is_err());
+            assert_eq!(fs::read(&path)?, b"ratified revision");
+
+            drop(ratification);
+            fs::rename(&path, &moved)?;
+            assert_eq!(fs::read(&moved)?, b"ratified revision");
+            Ok(())
+        }
+
+        #[test]
         fn observation_open_preserves_ordinary_writer_sharing() -> io::Result<()> {
             let directory = tempdir()?;
             let path = directory.path().join("observed.txt");
@@ -3382,7 +3750,9 @@ mod imp {
     use std::io;
     use std::path::Path;
 
-    use super::{FileFacts, InstallNewOutcome, ParentSyncOutcome, ReplaceExistingOutcome};
+    use super::{
+        CommitReceipt, FileFacts, InstallNewOutcome, ParentSyncOutcome, ReplaceExistingOutcome,
+    };
 
     pub fn unsupported_file_facts(_file: &File) -> io::Result<FileFacts> {
         Err(io::Error::new(
@@ -3411,14 +3781,14 @@ mod imp {
         _temporary: &Path,
         _destination: &Path,
         _backup: Option<&Path>,
-    ) -> io::Result<ReplaceExistingOutcome> {
+    ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>> {
         unsupported_error("file replacement")
     }
 
     pub fn unsupported_install_new(
         _temporary: &Path,
         _destination: &Path,
-    ) -> io::Result<InstallNewOutcome> {
+    ) -> io::Result<CommitReceipt<InstallNewOutcome>> {
         unsupported_error("exclusive file installation")
     }
 
@@ -3455,7 +3825,12 @@ mod tests {
     use super::sync_file;
     use super::{FileChangeToken, FileIdentity, IdentityQuality, file_facts};
     #[cfg(unix)]
-    use super::{ReplaceExistingOutcome, replace_existing, unix_restrict_open_file_to_owner};
+    use super::{
+        InstallNewOutcome, ParentSyncOutcome, ParentSyncReceipt, ReplaceExistingOutcome,
+        install_new, replace_existing, unix_restrict_open_file_to_owner,
+    };
+    #[cfg(windows)]
+    use super::{InstallNewOutcome, ParentSyncOutcome, ReplaceExistingOutcome, install_new};
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::{
         apply_required_metadata, capture_required_metadata, required_metadata_matches_source,
@@ -3527,6 +3902,16 @@ mod tests {
         let device = File::options().write(true).open("/dev/full")?;
 
         assert!(sync_file(&device).is_err());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_parent_receipt_propagates_barrier_failures() -> io::Result<()> {
+        let device = File::options().write(true).open("/dev/full")?;
+        let receipt = super::ParentSyncReceipt::from_open_parent(device);
+
+        assert!(receipt.sync().is_err());
         Ok(())
     }
 
@@ -3625,11 +4010,98 @@ mod tests {
         fs::write(&temporary, b"new bytes")?;
         fs::write(&destination, b"old bytes")?;
 
-        let outcome = replace_existing(&temporary, &destination, None)?;
+        let (outcome, parent_sync) = replace_existing(&temporary, &destination, None)?.into_parts();
 
         assert_eq!(outcome, ReplaceExistingOutcome::DisplacedDestination);
+        assert_eq!(parent_sync.sync()?, ParentSyncOutcome::Synced);
         assert_eq!(fs::read(&destination)?, b"new bytes");
         assert_eq!(fs::read(&temporary)?, b"old bytes");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn assert_parent_receipt_survives_rebind(
+        parent_sync: ParentSyncReceipt,
+        active: &std::path::Path,
+        moved: &std::path::Path,
+    ) -> io::Result<()> {
+        let committed_parent = file_facts(&parent_sync.parent)?.identity();
+        fs::rename(active, moved)?;
+        fs::create_dir(active)?;
+        let moved_parent = file_facts(&File::open(moved)?)?.identity();
+        let rebound_parent = file_facts(&File::open(active)?)?.identity();
+
+        assert_eq!(committed_parent, moved_parent);
+        assert_ne!(committed_parent, rebound_parent);
+        assert_eq!(parent_sync.sync()?, ParentSyncOutcome::Synced);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_parent_receipt_remains_bound_after_path_rebind() -> io::Result<()> {
+        let directory = tempdir()?;
+        let active = directory.path().join("active");
+        let moved = directory.path().join("moved");
+        fs::create_dir(&active)?;
+        let temporary = active.join("temporary.txt");
+        let destination = active.join("destination.txt");
+        fs::write(&temporary, b"new bytes")?;
+        fs::write(&destination, b"old bytes")?;
+
+        let (outcome, parent_sync) = replace_existing(&temporary, &destination, None)?.into_parts();
+
+        assert_eq!(outcome, ReplaceExistingOutcome::DisplacedDestination);
+        assert_parent_receipt_survives_rebind(parent_sync, &active, &moved)?;
+        assert_eq!(fs::read(moved.join("destination.txt"))?, b"new bytes");
+        assert!(!active.join("destination.txt").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installation_parent_receipt_remains_bound_after_path_rebind() -> io::Result<()> {
+        let directory = tempdir()?;
+        let active = directory.path().join("active");
+        let moved = directory.path().join("moved");
+        fs::create_dir(&active)?;
+        let temporary = active.join("temporary.txt");
+        let destination = active.join("destination.txt");
+        fs::write(&temporary, b"new bytes")?;
+
+        let (outcome, parent_sync) = install_new(&temporary, &destination)?.into_parts();
+
+        assert!(matches!(
+            outcome,
+            InstallNewOutcome::Clean | InstallNewOutcome::CommittedWithRetainedTemporary
+        ));
+        assert_parent_receipt_survives_rebind(parent_sync, &active, &moved)?;
+        assert_eq!(fs::read(moved.join("destination.txt"))?, b"new bytes");
+        assert!(!active.join("destination.txt").exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_commit_receipts_report_parent_sync_as_unsupported() -> io::Result<()> {
+        let directory = tempdir()?;
+        let replacement = directory.path().join("replacement.txt");
+        let destination = directory.path().join("destination.txt");
+        let installation = directory.path().join("installation.txt");
+        let installed = directory.path().join("installed.txt");
+        fs::write(&replacement, b"replacement")?;
+        fs::write(&destination, b"previous")?;
+        fs::write(&installation, b"installation")?;
+
+        let (replace_outcome, replace_parent) =
+            super::replace_existing(&replacement, &destination, None)?.into_parts();
+        let (install_outcome, install_parent) =
+            install_new(&installation, &installed)?.into_parts();
+
+        assert_eq!(replace_outcome, ReplaceExistingOutcome::Clean);
+        assert!(matches!(install_outcome, InstallNewOutcome::Clean));
+        assert_eq!(replace_parent.sync()?, ParentSyncOutcome::Unsupported);
+        assert_eq!(install_parent.sync()?, ParentSyncOutcome::Unsupported);
         Ok(())
     }
 

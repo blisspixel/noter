@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-08-22
+**Updated:** 2026-08-23
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -130,7 +130,12 @@ completions cannot delete newer records. Each identity now has two independent
 fact-bound lease paths, cleanup and identity rotation wait behind a FIFO worker
 fence, and schema v1 metadata cannot suppress authenticated schema v2 state.
 External Keep Editing is bound to one exact successful observation rather than
-a broad conflict class. Markdown automatic Enter and inline
+a broad conflict class. Text Mode and active or inactive Markdown now project
+LF, CRLF, CR, and mixed source as logical rows without rewriting untouched
+terminators. Text Mode and the active Markdown source editor keep selection and
+clipboard operations bound to exact source offsets, while Enter, paste, and IME
+input in either active editor preserve exact source-byte ceilings. Markdown
+automatic Enter and inline
 reopening are preflighted against the active source budget so an oversized
 operation cannot remove an existing suffix. The alpha.2 correctness record in
 [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) includes the live

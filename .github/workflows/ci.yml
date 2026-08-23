@@ -225,7 +225,7 @@ jobs:
           run_macos_mutants() {
             cargo mutants -vV --in-place --colors never --workspace \
               -p noter-platform \
-              --re '[Mm]acos'
+              --re '([Mm]acos|CommitReceipt|ParentSyncReceipt|unix_(replace_existing|install_new|with_sibling_parent))'
           }
           run_macos_mutants
           if python scripts/check_mutation_infrastructure.py mutants.out; then

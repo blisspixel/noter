@@ -289,6 +289,46 @@ class ReleaseConfigurationTests(unittest.TestCase):
         errors = validate_workflow(changed)
         self.assertTrue(any("pre-host" in error for error in errors))
 
+    def test_rejects_release_concurrency_policy_bypasses(self) -> None:
+        mutations = {
+            "missing policy": self.workflow.replace(
+                "concurrency:\n"
+                "  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag != 'dry-run' && inputs.tag || github.run_id }}\n"
+                "  queue: max\n"
+                "  cancel-in-progress: false\n\n",
+                "",
+                1,
+            ),
+            "shared dry runs": self.workflow.replace(
+                "inputs.tag != 'dry-run' && inputs.tag || github.run_id",
+                "inputs.tag || github.run_id",
+                1,
+            ),
+            "single pending run": self.workflow.replace(
+                "  queue: max",
+                "  queue: single",
+                1,
+            ),
+            "missing pending queue": self.workflow.replace(
+                "  queue: max\n",
+                "",
+                1,
+            ),
+            "canceled publication": self.workflow.replace(
+                "  cancel-in-progress: false",
+                "  cancel-in-progress: true",
+                1,
+            ),
+        }
+
+        for description, changed in mutations.items():
+            with self.subTest(description):
+                self.assertNotEqual(changed, self.workflow)
+                self.assertIn(
+                    "publishing tags must queue without cancellation while PR plans and dry runs stay isolated",
+                    validate_workflow(changed),
+                )
+
     def test_rejects_singular_sbom_output(self) -> None:
         changed = self.workflow.replace(
             "steps.cargo-dist.outputs.paths",

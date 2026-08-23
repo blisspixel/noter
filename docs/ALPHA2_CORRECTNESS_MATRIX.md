@@ -61,7 +61,7 @@ Commands and results at the implementation commit:
 | Dependency license and source policy | Pass |
 | Focused mutation-gap reruns | Pass; schema-v2 boundary, exact `ResourceBusy`, and missing claimed-path mutants are caught; the exact Unix OR-to-XOR flag mutant is algebraically equivalent and narrowly excluded while OR-to-AND remains in scope and runtime flag behavior is asserted |
 | Documentation links and release configuration | Pass |
-| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source; all five outputs remained byte-identical to the visually reviewed set; approved input digest `e883566c03f5a04194c1af55f26235311fccabbd93f1fa00b3aaaa741872a760` |
+| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source; all five outputs remained byte-identical to the visually reviewed set; approved input digest `8a35bd2b27d0908ce3424c6e1b5c36357d0575641a3af5ed0c6160bdcfca467a` |
 | `dist plan --tag v0.1.0-alpha.2` | Pass, expected archive, installer, checksum, SBOM, and attestation inventory |
 
 The 721 Rust tests comprise 282 library unit tests, 398 binary unit tests, 15

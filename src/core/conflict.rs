@@ -4,7 +4,7 @@
 //! one already-captured observation and retains the user's explicit choice.
 
 use super::revision::Revision;
-use super::save::{SpecialFileKind, TargetExpectation, TargetState};
+use super::save::{FileObservation, SpecialFileKind, TargetExpectation, TargetState};
 
 /// How the current path differs from the trusted save baseline.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -129,8 +129,8 @@ pub enum ConflictEffect {
     RequestReload,
     /// Request Save As without authorizing overwrite of the conflicting path.
     RequestSaveAs,
-    /// Authorize overwrite: rebaseline to the live disk revision and save.
-    AuthorizeOverwrite,
+    /// Authorize overwrite of the exact regular-file observation reviewed.
+    AuthorizeOverwrite(FileObservation),
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -312,9 +312,15 @@ impl ConflictState {
                 };
                 ConflictEffect::PromptOverwriteConfirm(kind)
             }
-            (ConflictPhase::ConfirmOverwrite { .. }, ConflictDecision::ConfirmOverwrite) => {
+            (
+                ConflictPhase::ConfirmOverwrite {
+                    evidence: Some(Ok(TargetState::Regular(observation))),
+                    ..
+                },
+                ConflictDecision::ConfirmOverwrite,
+            ) => {
                 self.phase = ConflictPhase::Idle;
-                ConflictEffect::AuthorizeOverwrite
+                ConflictEffect::AuthorizeOverwrite(observation)
             }
             (
                 ConflictPhase::ConfirmOverwrite {
@@ -322,7 +328,7 @@ impl ConflictState {
                     evidence,
                     revision,
                 },
-                ConflictDecision::CancelOverwrite,
+                ConflictDecision::ConfirmOverwrite | ConflictDecision::CancelOverwrite,
             ) => {
                 self.phase = ConflictPhase::Prompting {
                     kind,
@@ -594,9 +600,11 @@ mod tests {
     fn overwrite_requires_a_second_confirmation() {
         let mut state = ConflictState::default();
         let revision = Revision::new(9);
+        let reviewed = observation(9);
         assert_eq!(
-            state.reduce(ConflictCommand::Observed {
+            state.reduce(ConflictCommand::ObservedExact {
                 kind: ExternalChangeKind::ContentOrIdentityChanged,
+                evidence: Ok(TargetState::Regular(reviewed)),
                 revision,
             }),
             ConflictEffect::Prompt(ExternalChangeKind::ContentOrIdentityChanged)
@@ -624,7 +632,7 @@ mod tests {
         let _ = state.reduce(ConflictCommand::Decide(ConflictDecision::RequestOverwrite));
         assert_eq!(
             state.reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite)),
-            ConflictEffect::AuthorizeOverwrite
+            ConflictEffect::AuthorizeOverwrite(reviewed)
         );
         assert!(!state.is_prompting());
         // Stale second-confirm after idle is inert.
@@ -632,6 +640,61 @@ mod tests {
             state.reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite)),
             ConflictEffect::None
         );
+    }
+
+    #[test]
+    fn overwrite_confirmation_is_bound_to_the_exact_reviewed_observation() {
+        let first = observation(10);
+        let second = observation(11);
+        let revision = Revision::new(9);
+        let mut state = ConflictState::default();
+
+        let _ = state.reduce(ConflictCommand::ObservedExact {
+            kind: ExternalChangeKind::ContentOrIdentityChanged,
+            evidence: Ok(TargetState::Regular(first)),
+            revision,
+        });
+        let _ = state.reduce(ConflictCommand::Decide(ConflictDecision::RequestOverwrite));
+        assert!(state.is_confirming_overwrite());
+
+        assert_eq!(
+            state.reduce(ConflictCommand::ObservedExact {
+                kind: ExternalChangeKind::ContentOrIdentityChanged,
+                evidence: Ok(TargetState::Regular(second)),
+                revision,
+            }),
+            ConflictEffect::Prompt(ExternalChangeKind::ContentOrIdentityChanged)
+        );
+        assert!(state.is_prompting());
+        assert!(!state.is_confirming_overwrite());
+        assert_eq!(
+            state.reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite)),
+            ConflictEffect::None
+        );
+
+        let _ = state.reduce(ConflictCommand::Decide(ConflictDecision::RequestOverwrite));
+        assert_eq!(
+            state.reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite)),
+            ConflictEffect::AuthorizeOverwrite(second)
+        );
+    }
+
+    #[test]
+    fn overwrite_requires_exact_regular_file_evidence() {
+        let mut state = ConflictState::default();
+        let kind = ExternalChangeKind::ContentOrIdentityChanged;
+        let _ = state.reduce(ConflictCommand::Observed {
+            kind,
+            revision: Revision::new(4),
+        });
+        let _ = state.reduce(ConflictCommand::Decide(ConflictDecision::RequestOverwrite));
+
+        assert_eq!(
+            state.reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite)),
+            ConflictEffect::Prompt(kind)
+        );
+        assert!(state.is_prompting());
+        assert!(!state.is_confirming_overwrite());
     }
 
     #[test]

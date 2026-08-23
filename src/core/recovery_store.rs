@@ -11,13 +11,16 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use getrandom::fill as fill_random;
-use noter_platform::{InstallNewOutcome, ReplaceExistingOutcome};
+#[cfg(any(windows, test))]
+use noter_platform::{CommitReceipt, ReplaceExistingOutcome};
 
 use super::recovery::{
     RECOVERY_MAGIC, RECOVERY_SCHEMA_VERSION, RecoveryInstanceId, RecoveryQuarantineReason,
     RecoverySnapshot, RecoveryStartupDisposition, ValidatedRecoveryMetadata,
     ValidatedRecoveryRecord, validate_recovery_metadata, validate_recovery_record,
 };
+#[cfg(windows)]
+use super::save::ContentFingerprint;
 
 /// Subdirectory of the recovery root that holds active records.
 pub const RECOVERY_RECORDS_DIR: &str = "records";
@@ -511,12 +514,13 @@ impl RecoveryStore {
         self.release_live_lease(claim.lease)
     }
 
-    /// Releases a process-lifetime lease by deleting both exact locked paths
+    /// Releases a process-lifetime lease by deleting both exact locked objects
+    /// by handle where supported, or accepting an already-absent exact path,
     /// before either lock is dropped.
     ///
     /// # Errors
     ///
-    /// Returns an I/O error when either path no longer identifies its locked
+    /// Returns an I/O error when a present path no longer identifies its locked
     /// lease object or facts-bound deletion fails.
     pub fn release_live_lease(&self, lease: RecoveryLiveLease) -> io::Result<()> {
         let primary = delete_locked_live_path(&self.live_path(lease.instance_id), &lease.primary);
@@ -561,7 +565,8 @@ impl RecoveryStore {
     ///
     /// # Errors
     ///
-    /// Returns an I/O error when the records directory cannot be listed.
+    /// Returns an I/O error when the records directory or an enumerated entry
+    /// cannot be inspected, except for an entry that disappeared concurrently.
     #[allow(clippy::too_many_lines)]
     pub fn scan_startup(&self) -> io::Result<RecoveryStartupScan> {
         let mut scan = RecoveryStartupScan::default();
@@ -580,7 +585,7 @@ impl RecoveryStore {
                 break;
             }
             let path = next?.path();
-            let Ok(path_metadata) = fs::symlink_metadata(&path) else {
+            let Some(path_metadata) = startup_path_metadata(&path)? else {
                 continue;
             };
             if !path_metadata.file_type().is_file() {
@@ -608,7 +613,9 @@ impl RecoveryStore {
         for path in paths {
             let opened = match open_recovery_candidate(&path) {
                 Ok(opened) => opened,
-                Err(reason) => {
+                Err(OpenRecoveryCandidateFailure::Missing) => continue,
+                Err(OpenRecoveryCandidateFailure::Inaccessible(error)) => return Err(error),
+                Err(OpenRecoveryCandidateFailure::Invalid(reason)) => {
                     retain_quarantine_result(
                         &mut scan,
                         retained_quarantine_entry(
@@ -734,14 +741,23 @@ impl RecoveryStore {
     ///
     /// # Errors
     ///
-    /// Returns an I/O error when the source cannot be removed after an exact
-    /// verified quarantine copy is created. The verified copy remains available
-    /// for recovery review. A missing source is reported as
-    /// [`io::ErrorKind::NotFound`] rather than success.
+    /// Returns an I/O error when the durable quarantine copy cannot be completed,
+    /// or when the source cannot be removed or its parent cannot be synchronized
+    /// afterward. A completed copy remains available for recovery review. A
+    /// missing source is reported as [`io::ErrorKind::NotFound`] rather than
+    /// success.
     pub fn quarantine_file(&self, path: &Path) -> io::Result<PathBuf> {
         fs::symlink_metadata(path)?;
-        let opened = open_recovery_candidate(path)
-            .map_err(|reason| io::Error::new(io::ErrorKind::InvalidData, reason.description()))?;
+        let opened = open_recovery_candidate(path).map_err(|failure| match failure {
+            OpenRecoveryCandidateFailure::Missing => io::Error::new(
+                io::ErrorKind::NotFound,
+                "recovery source disappeared before it could be bound",
+            ),
+            OpenRecoveryCandidateFailure::Inaccessible(error) => error,
+            OpenRecoveryCandidateFailure::Invalid(reason) => {
+                io::Error::new(io::ErrorKind::InvalidData, reason.description())
+            }
+        })?;
         let path_instance = recovery_artifact_instance(path);
         let header_instance = peek_recovery_instance(&opened.file, opened.encoded_len)?;
         let instance_hint = reconcile_recovery_instance_ids(path_instance, header_instance)
@@ -846,6 +862,16 @@ fn quarantine_bound_file(
     opened: &OpenedRecoveryCandidate,
     bytes: &[u8],
 ) -> io::Result<(PathBuf, Option<io::Error>)> {
+    quarantine_bound_file_with(store, path, opened, bytes, noter_platform::sync_parent)
+}
+
+fn quarantine_bound_file_with(
+    store: &RecoveryStore,
+    path: &Path,
+    opened: &OpenedRecoveryCandidate,
+    bytes: &[u8],
+    mut sync_parent: impl FnMut(&Path) -> io::Result<noter_platform::ParentSyncOutcome>,
+) -> io::Result<(PathBuf, Option<io::Error>)> {
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != opened.encoded_len {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -861,10 +887,14 @@ fn quarantine_bound_file(
         return Err(error);
     }
 
-    let cleanup_result = delete_bound_candidate(path, opened);
+    noter_platform::sync_file(&quarantine_file)?;
+    let _ = sync_parent(&destination)?;
+    let cleanup_error = match delete_bound_candidate(path, opened) {
+        Ok(()) => sync_parent(path).map(|_| ()).err(),
+        Err(error) => Some(error),
+    };
     drop(quarantine_file);
-    let _ = noter_platform::sync_parent(&destination);
-    Ok((destination, cleanup_result.err()))
+    Ok((destination, cleanup_error))
 }
 
 fn create_quarantine_copy(store: &RecoveryStore, bytes: &[u8]) -> io::Result<(PathBuf, File)> {
@@ -1231,6 +1261,20 @@ fn remove_file_if_present(path: &Path) -> io::Result<()> {
     }
 }
 
+fn startup_path_metadata(path: &Path) -> io::Result<Option<fs::Metadata>> {
+    classify_startup_path_metadata(fs::symlink_metadata(path))
+}
+
+fn classify_startup_path_metadata(
+    result: io::Result<fs::Metadata>,
+) -> io::Result<Option<fs::Metadata>> {
+    match result {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn retain_quarantine_result(scan: &mut RecoveryStartupScan, entry: RecoveryScanEntry) {
     if scan.entries.len() < MAX_STARTUP_QUARANTINE_RESULTS {
         scan.entries.push(entry);
@@ -1251,24 +1295,42 @@ struct OpenedRecoveryCandidate {
     encoded_len: u64,
 }
 
+#[derive(Debug)]
+enum OpenRecoveryCandidateFailure {
+    Missing,
+    Inaccessible(io::Error),
+    Invalid(RecoveryQuarantineReason),
+}
+
+fn classify_recovery_candidate_io(error: io::Error) -> OpenRecoveryCandidateFailure {
+    if error.kind() == io::ErrorKind::NotFound {
+        OpenRecoveryCandidateFailure::Missing
+    } else {
+        OpenRecoveryCandidateFailure::Inaccessible(error)
+    }
+}
+
 fn open_recovery_candidate(
     path: &Path,
-) -> Result<OpenedRecoveryCandidate, RecoveryQuarantineReason> {
-    let file = noter_platform::open_existing_no_follow(path)
-        .map_err(|_| RecoveryQuarantineReason::Truncated)?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| RecoveryQuarantineReason::Truncated)?;
+) -> Result<OpenedRecoveryCandidate, OpenRecoveryCandidateFailure> {
+    let file =
+        noter_platform::open_existing_no_follow(path).map_err(classify_recovery_candidate_io)?;
+    let metadata = file.metadata().map_err(classify_recovery_candidate_io)?;
     if !metadata.is_file() {
-        return Err(RecoveryQuarantineReason::Truncated);
+        return Err(OpenRecoveryCandidateFailure::Invalid(
+            RecoveryQuarantineReason::Truncated,
+        ));
     }
     if exceeds_recovery_file_bound(metadata.len()) {
-        return Err(RecoveryQuarantineReason::ContentTooLarge);
+        return Err(OpenRecoveryCandidateFailure::Invalid(
+            RecoveryQuarantineReason::ContentTooLarge,
+        ));
     }
-    let facts =
-        noter_platform::file_facts(&file).map_err(|_| RecoveryQuarantineReason::Truncated)?;
+    let facts = noter_platform::file_facts(&file).map_err(classify_recovery_candidate_io)?;
     if facts.link_count() != 1 {
-        return Err(RecoveryQuarantineReason::Truncated);
+        return Err(OpenRecoveryCandidateFailure::Invalid(
+            RecoveryQuarantineReason::Truncated,
+        ));
     }
     Ok(OpenedRecoveryCandidate {
         file,
@@ -1354,6 +1416,14 @@ const fn complete_bound_read_matches(
     bytes_read_match && facts_match && length_matches
 }
 
+const fn reconciled_cleanup_state_is_exact(
+    destination_matches: bool,
+    stage_matches_or_is_absent: bool,
+    backup_matches_or_is_absent: bool,
+) -> bool {
+    destination_matches && stage_matches_or_is_absent && backup_matches_or_is_absent
+}
+
 fn require_matching_claim(
     handle: &RecoveryRecordHandle,
     claim: &RecoveryInstanceClaim,
@@ -1433,16 +1503,16 @@ fn delete_claimed_live_path(
     lease: &File,
     expected_facts: noter_platform::FileFacts,
 ) -> io::Result<()> {
-    if noter_platform::file_facts(lease)? != expected_facts {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "recovery live lease changed while its claim was held",
-        ));
-    }
     match noter_platform::delete_open_file(lease) {
         Ok(()) => Ok(()),
         Err(error) => {
             if requires_path_delete_fallback(error.kind()) {
+                if noter_platform::file_facts(lease)? != expected_facts {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "recovery live lease changed while its claim was held",
+                    ));
+                }
                 delete_claimed_live_path_unix_fallback(path, lease, expected_facts)
             } else {
                 Err(error)
@@ -1484,12 +1554,14 @@ fn delete_locked_live_path(path: &Path, locked: &LockedLiveFile) -> io::Result<(
     delete_claimed_live_path(path, &locked.file, locked.facts)
 }
 
+#[cfg(any(windows, test))]
 #[derive(Clone, Copy)]
 enum TemporaryArtifactKind {
     Stage,
     Backup,
 }
 
+#[cfg(any(windows, test))]
 impl TemporaryArtifactKind {
     const fn extension(self) -> &'static str {
         match self {
@@ -1499,37 +1571,197 @@ impl TemporaryArtifactKind {
     }
 }
 
+#[cfg(unix)]
 fn write_atomic_private(
     destination: &Path,
     instance_id: RecoveryInstanceId,
     bytes: &[u8],
+) -> io::Result<()> {
+    write_atomic_private_unix_with(destination, instance_id, bytes, |_| Ok(()))
+}
+
+#[cfg(unix)]
+fn write_atomic_private_unix_with(
+    destination: &Path,
+    instance_id: RecoveryInstanceId,
+    bytes: &[u8],
+    before_commit: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let commit_parent = noter_platform::UnixRecoveryCommitParent::bind(destination)?;
+    let stage = unix_recovery_stage_path(parent, instance_id);
+    let mut file = commit_parent.create_private_new(&stage).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                "a retained recovery stage requires startup review before persistence can retry",
+            )
+        } else {
+            error
+        }
+    })?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    noter_platform::sync_file(&file)?;
+    before_commit(&stage)?;
+
+    // Keep the exact stage object open until the consuming descriptor-relative
+    // rename completes. Any failure after exclusive creation deliberately
+    // retains the bounded keyed artifact for startup review; pathname cleanup
+    // cannot be made exact on Unix after a concurrent basename rebind.
+    let receipt = commit_parent.replace_existing_consuming(&stage, &file)?;
+    drop(file);
+    let (_outcome, parent_sync) = receipt.into_parts();
+    parent_sync.sync().map(|_| ())
+}
+
+#[cfg(unix)]
+fn unix_recovery_stage_path(parent: &Path, instance_id: RecoveryInstanceId) -> PathBuf {
+    // One reserved slot bounds every post-create failure to one retained stage
+    // per instance. Reusing or deleting an existing pathname cannot be made
+    // exact after a rebind, so a later retry reports ResourceBusy until bounded
+    // startup review or explicit owned-artifact cleanup handles the artifact.
+    parent.join(format!(
+        ".noter-recovery-{}-00000000000000000000000000000000.stage",
+        hex16(&instance_id.as_bytes())
+    ))
+}
+
+#[cfg(not(unix))]
+fn write_atomic_private(
+    destination: &Path,
+    instance_id: RecoveryInstanceId,
+    bytes: &[u8],
+) -> io::Result<()> {
+    write_atomic_private_with(
+        destination,
+        instance_id,
+        bytes,
+        noter_platform::replace_existing,
+    )
+}
+
+#[cfg(windows)]
+fn write_atomic_private_with(
+    destination: &Path,
+    instance_id: RecoveryInstanceId,
+    bytes: &[u8],
+    replace: impl FnOnce(
+        &Path,
+        &Path,
+        Option<&Path>,
+    ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
+) -> io::Result<()> {
+    write_atomic_private_with_sync(
+        destination,
+        instance_id,
+        bytes,
+        replace,
+        RecoveryParentSync::sync,
+    )
+}
+
+#[cfg(any(windows, test))]
+fn write_atomic_private_with_sync(
+    destination: &Path,
+    instance_id: RecoveryInstanceId,
+    bytes: &[u8],
+    replace: impl FnOnce(
+        &Path,
+        &Path,
+        Option<&Path>,
+    ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
+    sync_parent: impl FnOnce(RecoveryParentSync) -> io::Result<noter_platform::ParentSyncOutcome>,
 ) -> io::Result<()> {
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
 
     let stage = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Stage)?;
     let backup = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Backup)?;
-    let write_result = commit_staged_record(&stage, destination, &backup, bytes);
+    let write_result = commit_staged_record_with(&stage, destination, &backup, bytes, replace);
 
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(&stage);
-        // A failed replace may leave a backup sibling; remove only empty or
-        // newly created backup names that are not the committed destination.
-        let _ = fs::remove_file(&backup);
-        return Err(error);
-    }
-    // Successful replace on Windows keeps the previous destination in the
-    // backup path. That is superseded recovery content and must not linger.
-    remove_file_if_present(&backup)?;
-    noter_platform::sync_parent(destination).map(|_| ())
+    // Every post-create failure retains only the deterministic per-instance
+    // slots. Pathname cleanup could remove a rebound object, while the next
+    // attempt will fail with ResourceBusy before creating another artifact.
+    let success = match write_result {
+        Ok(success) => success,
+        Err(failure) => return Err(failure.error),
+    };
+    sync_parent(success.parent_sync).map(|_| ())
 }
 
-fn commit_staged_record(
+#[cfg(any(windows, test))]
+#[derive(Debug)]
+enum RecoveryParentSync {
+    Bound(noter_platform::ParentSyncReceipt),
+    #[cfg(windows)]
+    UnsupportedAfterReconciliation,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug)]
+struct RecoveryCommitSuccess {
+    parent_sync: RecoveryParentSync,
+}
+
+#[cfg(any(windows, test))]
+impl RecoveryCommitSuccess {
+    const fn clean(parent_sync: RecoveryParentSync) -> Self {
+        Self { parent_sync }
+    }
+}
+
+#[cfg(any(windows, test))]
+impl RecoveryParentSync {
+    const fn bound(receipt: noter_platform::ParentSyncReceipt) -> Self {
+        Self::Bound(receipt)
+    }
+
+    fn sync(self) -> io::Result<noter_platform::ParentSyncOutcome> {
+        match self {
+            Self::Bound(receipt) => receipt.sync(),
+            #[cfg(windows)]
+            Self::UnsupportedAfterReconciliation => {
+                Ok(noter_platform::ParentSyncOutcome::Unsupported)
+            }
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug)]
+struct RecoveryCommitFailure {
+    error: io::Error,
+}
+
+#[cfg(any(windows, test))]
+impl RecoveryCommitFailure {
+    #[cfg(windows)]
+    const fn preserve(error: io::Error) -> Self {
+        Self { error }
+    }
+}
+
+#[cfg(any(windows, test))]
+impl From<io::Error> for RecoveryCommitFailure {
+    fn from(error: io::Error) -> Self {
+        Self { error }
+    }
+}
+
+#[cfg(any(windows, test))]
+fn commit_staged_record_with(
     stage: &Path,
     destination: &Path,
     backup: &Path,
     bytes: &[u8],
-) -> io::Result<()> {
+    replace: impl FnOnce(
+        &Path,
+        &Path,
+        Option<&Path>,
+    ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
+) -> Result<RecoveryCommitSuccess, RecoveryCommitFailure> {
     let mut file = noter_platform::create_private_new_file(stage)?;
     file.write_all(bytes)?;
     file.flush()?;
@@ -1537,61 +1769,535 @@ fn commit_staged_record(
     drop(file);
 
     if destination.exists() {
-        finish_replace(stage, destination, backup)
+        finish_replace_with(stage, destination, backup, replace)
     } else {
         match noter_platform::install_new(stage, destination) {
-            Ok(InstallNewOutcome::Clean) => Ok(()),
-            Ok(InstallNewOutcome::CommittedWithRetainedTemporary) => {
-                // Destination is committed; remove the retained stage name.
-                fs::remove_file(stage)?;
-                Ok(())
+            Ok(receipt) => {
+                let (_outcome, parent_sync) = receipt.into_parts();
+                // A platform fallback may retain one keyed hard-link stage.
+                // Retaining it is safer than unlinking a basename that could
+                // have rebound after the commit; bounded recovery review and
+                // owned-artifact cleanup already recognize this exact name.
+                Ok(RecoveryCommitSuccess::clean(RecoveryParentSync::bound(
+                    parent_sync,
+                )))
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 // A concurrent install won the destination. Replace that file
                 // with this staged snapshot instead of reporting success without
                 // committing these bytes.
-                finish_replace(stage, destination, backup)
+                finish_replace_with(stage, destination, backup, replace)
             }
-            Err(error) => Err(error),
+            Err(error) => Err(error.into()),
         }
     }
 }
 
-fn finish_replace(stage: &Path, destination: &Path, backup: &Path) -> io::Result<()> {
-    match noter_platform::replace_existing(stage, destination, Some(backup))? {
-        ReplaceExistingOutcome::Clean => Ok(()),
-        ReplaceExistingOutcome::DisplacedDestination => {
-            // Unix exchange leaves the previous destination at the stage path.
-            fs::remove_file(stage)?;
-            Ok(())
+#[cfg(any(windows, test))]
+fn finish_replace_with(
+    stage: &Path,
+    destination: &Path,
+    backup: &Path,
+    replace: impl FnOnce(
+        &Path,
+        &Path,
+        Option<&Path>,
+    ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
+) -> Result<RecoveryCommitSuccess, RecoveryCommitFailure> {
+    #[cfg(windows)]
+    let intended = inspect_recovery_artifact(stage)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "recovery stage disappeared before replacement",
+        )
+    })?;
+    #[cfg(windows)]
+    let expected = inspect_recovery_artifact(destination)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "recovery destination disappeared before replacement",
+        )
+    })?;
+
+    match replace(stage, destination, Some(backup)) {
+        Ok(receipt) => {
+            let (outcome, parent_sync) = receipt.into_parts();
+            match outcome {
+                ReplaceExistingOutcome::Clean => {
+                    #[cfg(windows)]
+                    {
+                        let success = io::Error::other("recovery replacement reported success");
+                        finalize_reconciled_windows_recovery(
+                            stage,
+                            destination,
+                            backup,
+                            IntendedRecoveryContent::from_observation(intended),
+                            expected,
+                            &success,
+                            true,
+                        )?;
+                        Ok(RecoveryCommitSuccess::clean(RecoveryParentSync::bound(
+                            parent_sync,
+                        )))
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        Ok(RecoveryCommitSuccess::clean(RecoveryParentSync::bound(
+                            parent_sync,
+                        )))
+                    }
+                }
+                ReplaceExistingOutcome::DisplacedDestination => {
+                    // Injected or non-Unix exchange implementations may retain
+                    // a predecessor. Never unlink that basename after returning
+                    // from the atomic operation because it may have rebound.
+                    Ok(RecoveryCommitSuccess::clean(RecoveryParentSync::bound(
+                        parent_sync,
+                    )))
+                }
+            }
+        }
+        Err(error) => {
+            #[cfg(windows)]
+            return reconcile_windows_recovery_replace(
+                stage,
+                destination,
+                backup,
+                IntendedRecoveryContent::from_observation(intended),
+                expected,
+                error,
+            )
+            .map(RecoveryCommitSuccess::clean);
+            #[cfg(not(windows))]
+            Err(error.into())
         }
     }
 }
 
+#[cfg(windows)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct RecoveryArtifactObservation {
+    identity: noter_platform::FileIdentity,
+    fingerprint: ContentFingerprint,
+    length: u64,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct IntendedRecoveryContent {
+    observation: RecoveryArtifactObservation,
+}
+
+#[cfg(windows)]
+impl IntendedRecoveryContent {
+    const fn from_observation(observation: RecoveryArtifactObservation) -> Self {
+        Self { observation }
+    }
+
+    fn matches(self, actual: RecoveryArtifactObservation) -> bool {
+        self.observation == actual
+    }
+}
+
+#[cfg(windows)]
+fn inspect_recovery_artifact(path: &Path) -> io::Result<Option<RecoveryArtifactObservation>> {
+    let file = match noter_platform::open_existing_no_follow(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    observe_recovery_artifact(path, &file).map(Some)
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct OpenRecoveryArtifact {
+    file: File,
+    observation: RecoveryArtifactObservation,
+}
+
+#[cfg(windows)]
+fn open_recovery_artifact_for_cleanup(path: &Path) -> io::Result<Option<OpenRecoveryArtifact>> {
+    let file = match noter_platform::open_for_cleanup(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let observation = observe_recovery_artifact(path, &file)?;
+    Ok(Some(OpenRecoveryArtifact { file, observation }))
+}
+
+#[cfg(windows)]
+fn open_recovery_artifact_for_ratification(
+    path: &Path,
+) -> io::Result<Option<OpenRecoveryArtifact>> {
+    let file = match noter_platform::open_for_reconciliation(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let observation = observe_recovery_artifact(path, &file)?;
+    Ok(Some(OpenRecoveryArtifact { file, observation }))
+}
+
+#[cfg(windows)]
+fn delete_verified_recovery_artifact(artifact: OpenRecoveryArtifact) -> io::Result<()> {
+    noter_platform::delete_open_file(&artifact.file)?;
+    drop(artifact.file);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn observe_recovery_artifact(path: &Path, file: &File) -> io::Result<RecoveryArtifactObservation> {
+    let metadata = file.metadata()?;
+    let facts = noter_platform::file_facts(file)?;
+    if !metadata.is_file() || facts.link_count() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery replacement candidate is not a private regular file",
+        ));
+    }
+    if exceeds_recovery_file_bound(metadata.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery replacement candidate exceeds the supported size",
+        ));
+    }
+
+    let fingerprint = fingerprint_bound_open_file(file, facts, metadata.len())?;
+    revalidate_path_identity(path, facts, metadata.len())?;
+    Ok(RecoveryArtifactObservation {
+        identity: facts.identity(),
+        fingerprint,
+        length: metadata.len(),
+    })
+}
+
+#[cfg(windows)]
+fn fingerprint_bound_open_file(
+    file: &File,
+    expected_facts: noter_platform::FileFacts,
+    expected_len: u64,
+) -> io::Result<ContentFingerprint> {
+    if !file_binding_matches(
+        noter_platform::file_facts(file)? == expected_facts,
+        file.metadata()?.len() == expected_len,
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery replacement candidate changed before validation",
+        ));
+    }
+
+    let read_limit = MAX_RECOVERY_FILE_BYTES.checked_add(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "recovery replacement read bound cannot be represented",
+        )
+    })?;
+    let mut reader = file;
+    reader.seek(SeekFrom::Start(0))?;
+    let mut bounded = reader.take(read_limit);
+    let fingerprint = ContentFingerprint::from_reader(&mut bounded)?;
+    let bytes_read = read_limit.saturating_sub(bounded.limit());
+    if !complete_bound_read_matches(
+        bytes_read == expected_len,
+        noter_platform::file_facts(file)? == expected_facts,
+        file.metadata()?.len() == expected_len,
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery replacement candidate changed during validation",
+        ));
+    }
+    Ok(fingerprint)
+}
+
+#[cfg(windows)]
+fn reconcile_windows_recovery_replace(
+    stage: &Path,
+    destination: &Path,
+    backup: &Path,
+    intended: IntendedRecoveryContent,
+    expected: RecoveryArtifactObservation,
+    platform_error: io::Error,
+) -> Result<RecoveryParentSync, RecoveryCommitFailure> {
+    let destination_ratification =
+        open_recovery_artifact_for_ratification(destination).map_err(|error| {
+            uncertain_windows_recovery_failure(
+                stage,
+                backup,
+                &error,
+                "the destination could not be inspected after replacement failure",
+            )
+        })?;
+    let destination_state = destination_ratification
+        .as_ref()
+        .map(|artifact| artifact.observation);
+    let stage_artifact = open_recovery_artifact_for_cleanup(stage).map_err(|error| {
+        uncertain_windows_recovery_failure(
+            stage,
+            backup,
+            &error,
+            "the staged recovery snapshot could not be verified after replacement failure",
+        )
+    })?;
+    let backup_artifact = open_recovery_artifact_for_cleanup(backup).map_err(|error| {
+        uncertain_windows_recovery_failure(
+            stage,
+            backup,
+            &error,
+            "the predecessor recovery backup could not be verified after replacement failure",
+        )
+    })?;
+    let stage_state = stage_artifact.as_ref().map(|artifact| artifact.observation);
+    let backup_state = backup_artifact
+        .as_ref()
+        .map(|artifact| artifact.observation);
+    if destination_state.is_some_and(|actual| intended.matches(actual)) {
+        drop(stage_artifact);
+        drop(backup_artifact);
+        return finalize_reconciled_windows_recovery(
+            stage,
+            destination,
+            backup,
+            intended,
+            expected,
+            &platform_error,
+            false,
+        )
+        .map(|()| RecoveryParentSync::UnsupportedAfterReconciliation);
+    }
+
+    let stage_is_intended = stage_state.is_some_and(|actual| intended.matches(actual));
+    if destination_state == Some(expected) && stage_is_intended && backup_state.is_none() {
+        let artifact = stage_artifact.expect("the verified intended stage must be open");
+        delete_verified_recovery_artifact(artifact).map_err(|error| {
+            uncertain_windows_recovery_failure(
+                stage,
+                backup,
+                &error,
+                "the proven non-committing recovery stage could not be cleaned safely",
+            )
+        })?;
+        return Err(RecoveryCommitFailure::preserve(platform_error));
+    }
+
+    if destination_state.is_none() && stage_is_intended && backup_state == Some(expected) {
+        drop(stage_artifact);
+        drop(backup_artifact);
+        let completion = noter_platform::install_new(stage, destination);
+        return match completion {
+            Ok(receipt) => {
+                let (_outcome, parent_sync) = receipt.into_parts();
+                finalize_reconciled_windows_recovery(
+                    stage,
+                    destination,
+                    backup,
+                    intended,
+                    expected,
+                    &platform_error,
+                    false,
+                )
+                .map(|()| RecoveryParentSync::bound(parent_sync))
+            }
+            Err(completion_error) => finalize_reconciled_windows_recovery(
+                stage,
+                destination,
+                backup,
+                intended,
+                expected,
+                &completion_error,
+                false,
+            )
+            .map(|()| RecoveryParentSync::UnsupportedAfterReconciliation),
+        };
+    }
+
+    Err(uncertain_windows_recovery_failure(
+        stage,
+        backup,
+        &platform_error,
+        "the replacement failure left an unexplained path state",
+    ))
+}
+
+#[cfg(windows)]
+fn finalize_reconciled_windows_recovery(
+    stage: &Path,
+    destination: &Path,
+    backup: &Path,
+    intended: IntendedRecoveryContent,
+    expected: RecoveryArtifactObservation,
+    cause: &io::Error,
+    backup_required: bool,
+) -> Result<(), RecoveryCommitFailure> {
+    finalize_reconciled_windows_recovery_with_cleanup_hook(
+        stage,
+        destination,
+        backup,
+        intended,
+        expected,
+        cause,
+        backup_required,
+        || Ok(()),
+    )
+}
+
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
+fn finalize_reconciled_windows_recovery_with_cleanup_hook(
+    stage: &Path,
+    destination: &Path,
+    backup: &Path,
+    intended: IntendedRecoveryContent,
+    expected: RecoveryArtifactObservation,
+    cause: &io::Error,
+    backup_required: bool,
+    before_cleanup: impl FnOnce() -> io::Result<()>,
+) -> Result<(), RecoveryCommitFailure> {
+    let destination_ratification =
+        open_recovery_artifact_for_ratification(destination).map_err(|error| {
+            uncertain_windows_recovery_failure(
+                stage,
+                backup,
+                &error,
+                "the recovery destination could not be verified after reconciliation",
+            )
+        })?;
+    let destination_state = destination_ratification
+        .as_ref()
+        .map(|artifact| artifact.observation);
+    let stage_artifact = open_recovery_artifact_for_cleanup(stage).map_err(|error| {
+        uncertain_windows_recovery_failure(
+            stage,
+            backup,
+            &error,
+            "the recovery stage could not be verified after reconciliation",
+        )
+    })?;
+    let backup_artifact = open_recovery_artifact_for_cleanup(backup).map_err(|error| {
+        uncertain_windows_recovery_failure(
+            stage,
+            backup,
+            &error,
+            "the recovery backup could not be verified after reconciliation",
+        )
+    })?;
+    let stage_state = stage_artifact.as_ref().map(|artifact| artifact.observation);
+    let backup_state = backup_artifact
+        .as_ref()
+        .map(|artifact| artifact.observation);
+    let destination_matches = destination_state.is_some_and(|actual| intended.matches(actual));
+    let stage_matches_or_is_absent = stage_state.is_none_or(|actual| intended.matches(actual));
+    let backup_matches_or_is_absent = if backup_required {
+        backup_state == Some(expected)
+    } else {
+        backup_state.is_none_or(|actual| actual == expected)
+    };
+    if !reconciled_cleanup_state_is_exact(
+        destination_matches,
+        stage_matches_or_is_absent,
+        backup_matches_or_is_absent,
+    ) {
+        return Err(uncertain_windows_recovery_failure(
+            stage,
+            backup,
+            cause,
+            "the replacement result could not be reconciled exactly",
+        ));
+    }
+    before_cleanup().map_err(|error| {
+        uncertain_windows_recovery_failure(
+            stage,
+            backup,
+            &error,
+            "recovery cleanup could not proceed after exact verification",
+        )
+    })?;
+    if let Some(artifact) = stage_artifact {
+        delete_verified_recovery_artifact(artifact).map_err(|error| {
+            uncertain_windows_recovery_failure(
+                stage,
+                backup,
+                &error,
+                "the duplicate recovery stage could not be cleaned safely",
+            )
+        })?;
+    }
+    if let Some(artifact) = backup_artifact {
+        delete_verified_recovery_artifact(artifact).map_err(|error| {
+            uncertain_windows_recovery_failure(
+                stage,
+                backup,
+                &error,
+                "the predecessor recovery backup could not be cleaned safely",
+            )
+        })?;
+    }
+    drop(destination_ratification);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn uncertain_windows_recovery_failure(
+    stage: &Path,
+    backup: &Path,
+    cause: &io::Error,
+    detail: &str,
+) -> RecoveryCommitFailure {
+    let stage = recovery_artifact_label(stage, "a private recovery stage");
+    let backup = recovery_artifact_label(backup, "a private recovery backup");
+    let os_code = cause
+        .raw_os_error()
+        .map_or_else(String::new, |code| format!(", OS code {code}"));
+    RecoveryCommitFailure::preserve(io::Error::new(
+        cause.kind(),
+        format!(
+            "{detail} after {:?}{os_code}. Recovery candidates {stage} and {backup} were preserved when present. Inspect the canonical recovery record and every existing candidate before retrying or removing either candidate.",
+            cause.kind()
+        ),
+    ))
+}
+
+#[cfg(windows)]
+fn recovery_artifact_label(path: &Path, fallback: &str) -> String {
+    path.file_name().map_or_else(
+        || fallback.to_owned(),
+        |name| format!("`{}`", name.to_string_lossy()),
+    )
+}
+
+#[cfg(any(windows, test))]
 fn exclusive_stage_path(
     parent: &Path,
     instance_id: RecoveryInstanceId,
     kind: TemporaryArtifactKind,
 ) -> io::Result<PathBuf> {
-    for _ in 0..32 {
-        let mut random = [0_u8; 16];
-        fill_random(&mut random).map_err(|error| {
-            io::Error::other(format!("recovery stage random name failed: {error}"))
-        })?;
-        let path = parent.join(format!(
-            ".noter-recovery-{}-{}.{}",
-            hex16(&instance_id.as_bytes()),
-            hex16(&random),
-            kind.extension()
-        ));
-        if !path.exists() {
-            return Ok(path);
-        }
+    let path = parent.join(format!(
+        ".noter-recovery-{}-00000000000000000000000000000000.{}",
+        hex16(&instance_id.as_bytes()),
+        kind.extension()
+    ));
+    match fs::symlink_metadata(&path) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::ResourceBusy,
+            format!(
+                "a retained recovery {} requires startup review before persistence can retry",
+                kind.extension()
+            ),
+        )),
+        Err(error) => classify_available_recovery_slot(path, error),
     }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not allocate a private recovery stage name",
-    ))
+}
+
+#[cfg(any(windows, test))]
+fn classify_available_recovery_slot(path: PathBuf, error: io::Error) -> io::Result<PathBuf> {
+    if error.kind() == io::ErrorKind::NotFound {
+        Ok(path)
+    } else {
+        Err(error)
+    }
 }
 
 fn keyed_temporary_instance(path: &Path) -> Option<RecoveryInstanceId> {
@@ -1788,6 +2494,11 @@ mod tests {
         assert!(!complete_bound_read_matches(true, false, true));
         assert!(!complete_bound_read_matches(true, true, false));
 
+        assert!(reconciled_cleanup_state_is_exact(true, true, true));
+        assert!(!reconciled_cleanup_state_is_exact(false, true, true));
+        assert!(!reconciled_cleanup_state_is_exact(true, false, true));
+        assert!(!reconciled_cleanup_state_is_exact(true, true, false));
+
         assert!(!exceeds_recovery_file_bound(MAX_RECOVERY_FILE_BYTES));
         assert!(exceeds_recovery_file_bound(MAX_RECOVERY_FILE_BYTES + 1));
 
@@ -1836,6 +2547,24 @@ mod tests {
             io::ErrorKind::PermissionDenied
         ));
         assert!(!requires_path_delete_fallback(io::ErrorKind::ResourceBusy));
+
+        let available = PathBuf::from("available-recovery-slot.stage");
+        assert_eq!(
+            classify_available_recovery_slot(
+                available.clone(),
+                io::Error::new(io::ErrorKind::NotFound, "injected absent slot"),
+            )
+            .expect("only an absent slot is available"),
+            available
+        );
+        let code = if cfg!(windows) { 5 } else { 13 };
+        let inaccessible = classify_available_recovery_slot(
+            PathBuf::from("inaccessible-recovery-slot.stage"),
+            io::Error::from_raw_os_error(code),
+        )
+        .expect_err("an inaccessible slot must not be treated as absent");
+        assert_eq!(inaccessible.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(inaccessible.raw_os_error(), Some(code));
     }
 
     #[test]
@@ -1970,7 +2699,11 @@ mod tests {
 
         store.persist(&sample_snapshot(1, b"updated"))?;
         let entries = store.scan_startup()?;
-        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries.len(),
+            1,
+            "unexpected recovery entries: {entries:#?}"
+        );
         assert_eq!(load_offer(&store, &entries[0])?.content(), b"updated");
 
         store.delete_owned_artifacts(snapshot.instance_id())?;
@@ -1981,6 +2714,657 @@ mod tests {
                 .all(|entry| !matches!(entry.disposition(), RecoveryScanDisposition::Offer(_)))
         );
         store.delete_owned_artifacts(snapshot.instance_id())?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_recovery_install_syncs_bound_parent_after_path_rebind() -> io::Result<()> {
+        let directory = tempdir()?;
+        let active = directory.path().join("active");
+        let moved = directory.path().join("moved");
+        fs::create_dir(&active)?;
+        let destination = active.join("record.bin");
+        let snapshot = snapshot_at(60, 1, 10, b"bound recovery bytes");
+        let bytes = snapshot.encode();
+        let sync_called = std::cell::Cell::new(false);
+
+        write_atomic_private_with_sync(
+            &destination,
+            snapshot.instance_id(),
+            &bytes,
+            |_stage, _destination, _backup| {
+                panic!("an absent recovery destination must use exclusive installation")
+            },
+            |parent_sync| {
+                sync_called.set(true);
+                fs::rename(&active, &moved)?;
+                fs::create_dir(&active)?;
+                parent_sync.sync()
+            },
+        )?;
+
+        assert!(sync_called.get());
+        assert_eq!(fs::read(moved.join("record.bin"))?, bytes);
+        assert!(!active.join("record.bin").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_recovery_commit_consumes_the_reserved_stage() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("record.bin");
+        let first = snapshot_at(60, 6, 15, b"first recovery");
+        let second = snapshot_at(60, 7, 16, b"second recovery");
+        let stage = unix_recovery_stage_path(directory.path(), first.instance_id());
+
+        write_atomic_private(&destination, first.instance_id(), &first.encode())?;
+        assert_eq!(fs::read(&destination)?, first.encode());
+        assert!(!stage.exists());
+
+        write_atomic_private(&destination, second.instance_id(), &second.encode())?;
+        assert_eq!(fs::read(&destination)?, second.encode());
+        assert!(!stage.exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_recovery_commit_stays_in_original_parent_during_rebind() -> io::Result<()> {
+        let directory = tempdir()?;
+        let active = directory.path().join("active");
+        let moved = directory.path().join("moved");
+        fs::create_dir(&active)?;
+        let destination = active.join("record.bin");
+        let snapshot = snapshot_at(60, 8, 17, b"descriptor-bound recovery");
+        let encoded = snapshot.encode();
+
+        write_atomic_private_unix_with(&destination, snapshot.instance_id(), &encoded, |stage| {
+            let stage_name = stage
+                .file_name()
+                .expect("the reserved stage has a basename")
+                .to_owned();
+            fs::rename(&active, &moved)?;
+            fs::create_dir(&active)?;
+            fs::write(active.join(&stage_name), b"rebound stage")?;
+            fs::write(active.join("record.bin"), b"rebound destination")
+        })?;
+
+        assert_eq!(fs::read(moved.join("record.bin"))?, encoded);
+        assert_eq!(fs::read(active.join("record.bin"))?, b"rebound destination");
+        assert_eq!(
+            fs::read(unix_recovery_stage_path(&active, snapshot.instance_id()))?,
+            b"rebound stage"
+        );
+        assert!(!unix_recovery_stage_path(&moved, snapshot.instance_id()).exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn injected_exchange_retains_displaced_sibling_after_parent_rebind() -> io::Result<()> {
+        let directory = tempdir()?;
+        let active = directory.path().join("active");
+        let moved = directory.path().join("moved");
+        fs::create_dir(&active)?;
+        let destination = active.join("record.bin");
+        let predecessor = snapshot_at(60, 2, 11, b"predecessor recovery");
+        let predecessor_bytes = predecessor.encode();
+        let intended = snapshot_at(60, 3, 12, b"intended recovery");
+        let intended_bytes = intended.encode();
+        fs::write(&destination, &predecessor_bytes)?;
+        let rebound_stage = std::cell::RefCell::new(None);
+        let rebound_backup = std::cell::RefCell::new(None);
+
+        write_atomic_private_with_sync(
+            &destination,
+            intended.instance_id(),
+            &intended_bytes,
+            |stage, destination, backup| {
+                let receipt = noter_platform::replace_existing(stage, destination, backup)?;
+                fs::rename(&active, &moved)?;
+                fs::create_dir(&active)?;
+                fs::write(stage, b"rebound stage")?;
+                let backup = backup.expect("recovery replacement reserves a backup name");
+                fs::write(backup, b"rebound backup")?;
+                rebound_stage.replace(Some(stage.to_path_buf()));
+                rebound_backup.replace(Some(backup.to_path_buf()));
+                Ok(receipt)
+            },
+            RecoveryParentSync::sync,
+        )?;
+
+        let rebound_stage = rebound_stage
+            .into_inner()
+            .expect("replacement should record the rebound stage");
+        let rebound_backup = rebound_backup
+            .into_inner()
+            .expect("replacement should record the rebound backup");
+        let stage_name = rebound_stage
+            .file_name()
+            .expect("stage path should have a filename");
+        assert_eq!(fs::read(moved.join("record.bin"))?, intended_bytes);
+        assert_eq!(fs::read(moved.join(stage_name))?, predecessor_bytes);
+        assert_eq!(fs::read(rebound_stage)?, b"rebound stage");
+        assert_eq!(fs::read(rebound_backup)?, b"rebound backup");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_recovery_retry_refuses_a_second_retained_stage() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("record.bin");
+        let snapshot = snapshot_at(60, 4, 13, b"bounded retained recovery");
+        let stage = unix_recovery_stage_path(directory.path(), snapshot.instance_id());
+        fs::write(&stage, b"retained partial recovery")?;
+
+        let error = write_atomic_private(&destination, snapshot.instance_id(), &snapshot.encode())
+            .expect_err("a retained stage must stop retries from accumulating artifacts");
+
+        assert_eq!(error.kind(), io::ErrorKind::ResourceBusy);
+        assert_eq!(fs::read(&stage)?, b"retained partial recovery");
+        assert!(!destination.exists());
+        let keyed: Vec<_> = fs::read_dir(directory.path())?
+            .filter_map(Result::ok)
+            .filter(|entry| keyed_temporary_instance(&entry.path()) == Some(snapshot.instance_id()))
+            .collect();
+        assert_eq!(keyed.len(), 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_recovery_parent_sync_failure_preserves_committed_record() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("record.bin");
+        let snapshot = snapshot_at(60, 2, 11, b"committed before barrier failure");
+        let bytes = snapshot.encode();
+
+        let error = write_atomic_private_with_sync(
+            &destination,
+            snapshot.instance_id(),
+            &bytes,
+            |_stage, _destination, _backup| {
+                panic!("an absent recovery destination must use exclusive installation")
+            },
+            |_parent_sync| Err(io::Error::other("injected parent barrier failure")),
+        )
+        .expect_err("a failed post-commit parent barrier must be reported");
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected parent barrier failure")
+        );
+        assert_eq!(fs::read(&destination)?, bytes);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn successful_windows_replace_with_mismatched_destination_preserves_backup() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("record.bin");
+        let predecessor = snapshot_at(60, 3, 12, b"predecessor recovery");
+        let intended = snapshot_at(60, 4, 13, b"intended recovery");
+        let unexpected = snapshot_at(60, 5, 14, b"unexpected recovery");
+        let predecessor_bytes = predecessor.encode();
+        let intended_bytes = intended.encode();
+        let unexpected_bytes = unexpected.encode();
+        fs::write(&destination, &predecessor_bytes)?;
+        let artifact_paths = std::cell::RefCell::new(None);
+
+        let error = write_atomic_private_with(
+            &destination,
+            intended.instance_id(),
+            &intended_bytes,
+            |stage, destination, backup| {
+                let backup = backup.expect("Windows replacement reserves a backup");
+                artifact_paths.replace(Some((stage.to_path_buf(), backup.to_path_buf())));
+                let receipt = noter_platform::replace_existing(stage, destination, Some(backup))?;
+                fs::write(destination, &unexpected_bytes)?;
+                Ok(receipt)
+            },
+        )
+        .expect_err("post-success destination mismatch must fail closed");
+
+        let (stage, backup) = artifact_paths
+            .into_inner()
+            .expect("the injected replacement should record its artifacts");
+        assert!(
+            error
+                .to_string()
+                .contains("could not be reconciled exactly")
+        );
+        assert_eq!(fs::read(&destination)?, unexpected_bytes);
+        assert!(!stage.exists());
+        assert_eq!(fs::read(&backup)?, predecessor_bytes);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn successful_windows_replace_rejects_an_identical_rebound_destination() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("record.bin");
+        let displaced_destination = directory.path().join("displaced-record.bin");
+        let predecessor = snapshot_at(60, 6, 15, b"predecessor recovery");
+        let intended = snapshot_at(60, 7, 16, b"intended recovery");
+        let predecessor_bytes = predecessor.encode();
+        let intended_bytes = intended.encode();
+        fs::write(&destination, &predecessor_bytes)?;
+        let artifact_paths = std::cell::RefCell::new(None);
+
+        let error = write_atomic_private_with(
+            &destination,
+            intended.instance_id(),
+            &intended_bytes,
+            |stage, destination, backup| {
+                let backup = backup.expect("Windows replacement reserves a backup");
+                artifact_paths.replace(Some((stage.to_path_buf(), backup.to_path_buf())));
+                let receipt = noter_platform::replace_existing(stage, destination, Some(backup))?;
+                fs::rename(destination, &displaced_destination)?;
+                fs::write(destination, &intended_bytes)?;
+                Ok(receipt)
+            },
+        )
+        .expect_err("an identical pathname rebound must fail exact reconciliation");
+
+        let (stage, backup) = artifact_paths
+            .into_inner()
+            .expect("the injected replacement should record its artifacts");
+        assert!(
+            error
+                .to_string()
+                .contains("could not be reconciled exactly")
+        );
+        assert_eq!(fs::read(&destination)?, intended_bytes);
+        assert_eq!(fs::read(&displaced_destination)?, intended_bytes);
+        assert!(!stage.exists());
+        assert_eq!(fs::read(&backup)?, predecessor_bytes);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reconciled_windows_cleanup_deletes_only_the_verified_backup_handle() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("record.bin");
+        let stage = directory.path().join("record.stage");
+        let backup = directory.path().join("record.backup");
+        let displaced_backup = directory.path().join("displaced.backup");
+        let predecessor = snapshot_at(60, 6, 15, b"predecessor recovery").encode();
+        let intended = snapshot_at(60, 7, 16, b"intended recovery").encode();
+        fs::write(&destination, &intended)?;
+        fs::write(&backup, &predecessor)?;
+        let intended = IntendedRecoveryContent::from_observation(
+            inspect_recovery_artifact(&destination)?
+                .expect("the intended destination should be inspectable"),
+        );
+        let expected = inspect_recovery_artifact(&backup)?
+            .expect("the predecessor backup should be inspectable");
+        let cause = io::Error::other("injected successful replacement");
+
+        finalize_reconciled_windows_recovery_with_cleanup_hook(
+            &stage,
+            &destination,
+            &backup,
+            intended,
+            expected,
+            &cause,
+            true,
+            || {
+                fs::rename(&backup, &displaced_backup)?;
+                fs::write(&backup, b"rebound backup")
+            },
+        )
+        .map_err(|failure| failure.error)?;
+
+        assert_eq!(
+            fs::read(&destination)?,
+            snapshot_at(60, 7, 16, b"intended recovery").encode()
+        );
+        assert!(!displaced_backup.exists());
+        assert_eq!(fs::read(&backup)?, b"rebound backup");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reconciled_windows_cleanup_blocks_destination_rewrite() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("record.bin");
+        let stage = directory.path().join("record.stage");
+        let backup = directory.path().join("record.backup");
+        let predecessor = snapshot_at(60, 9, 18, b"predecessor recovery").encode();
+        let intended_bytes = snapshot_at(60, 10, 19, b"intended recovery").encode();
+        let unexpected = snapshot_at(60, 11, 20, b"unexpected recovery").encode();
+        fs::write(&destination, &intended_bytes)?;
+        fs::write(&backup, &predecessor)?;
+        let intended = IntendedRecoveryContent::from_observation(
+            inspect_recovery_artifact(&destination)?
+                .expect("the intended destination should be inspectable"),
+        );
+        let expected = inspect_recovery_artifact(&backup)?
+            .expect("the predecessor backup should be inspectable");
+        let cause = io::Error::other("injected successful replacement");
+
+        finalize_reconciled_windows_recovery_with_cleanup_hook(
+            &stage,
+            &destination,
+            &backup,
+            intended,
+            expected,
+            &cause,
+            true,
+            || {
+                assert!(
+                    fs::write(&destination, &unexpected).is_err(),
+                    "ratification must deny an in-place destination rewrite"
+                );
+                Ok(())
+            },
+        )
+        .map_err(|failure| failure.error)?;
+
+        assert_eq!(fs::read(&destination)?, intended_bytes);
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_retry_refuses_to_accumulate_retained_recovery_artifacts() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("record.bin");
+        let predecessor = snapshot_at(60, 14, 23, b"predecessor recovery");
+        let intended = snapshot_at(60, 15, 24, b"intended recovery");
+        fs::write(&destination, predecessor.encode())?;
+        let stage = exclusive_stage_path(
+            directory.path(),
+            intended.instance_id(),
+            TemporaryArtifactKind::Stage,
+        )?;
+        let backup = exclusive_stage_path(
+            directory.path(),
+            intended.instance_id(),
+            TemporaryArtifactKind::Backup,
+        )?;
+        let cleanup_blocker = std::cell::RefCell::new(None);
+
+        let first = write_atomic_private_with_sync(
+            &destination,
+            intended.instance_id(),
+            &intended.encode(),
+            |stage, destination, backup| {
+                fs::rename(destination, backup.expect("replacement reserves a backup"))?;
+                fs::rename(stage, destination)?;
+                cleanup_blocker.replace(Some(noter_platform::open_for_reconciliation(
+                    backup.expect("replacement reserves a backup"),
+                )?));
+                Err(io::Error::other("injected post-commit cleanup failure"))
+            },
+            |_| panic!("an uncertain replacement must not reach parent sync"),
+        )
+        .expect_err("the blocked exact backup cleanup must fail closed");
+        assert_ne!(first.kind(), io::ErrorKind::ResourceBusy);
+        assert!(!stage.exists());
+        assert!(backup.exists());
+
+        let second = write_atomic_private_with_sync(
+            &destination,
+            intended.instance_id(),
+            &intended.encode(),
+            |_stage, _destination, _backup| {
+                panic!("a retained deterministic slot must stop replacement")
+            },
+            |_| panic!("a retained deterministic slot must stop parent sync"),
+        )
+        .expect_err("a retained backup must gate repeated scheduled retries");
+        assert_eq!(second.kind(), io::ErrorKind::ResourceBusy);
+        let retained: Vec<_> = fs::read_dir(directory.path())?
+            .filter_map(Result::ok)
+            .filter(|entry| keyed_temporary_instance(&entry.path()) == Some(intended.instance_id()))
+            .collect();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(fs::read(&destination)?, intended.encode());
+
+        drop(cleanup_blocker.into_inner());
+        fs::remove_file(backup)?;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reconciled_windows_cleanup_blocks_destination_path_rebind() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("record.bin");
+        let displaced = directory.path().join("displaced.bin");
+        let stage = directory.path().join("record.stage");
+        let backup = directory.path().join("record.backup");
+        let predecessor = snapshot_at(60, 12, 21, b"predecessor recovery").encode();
+        let intended_bytes = snapshot_at(60, 13, 22, b"intended recovery").encode();
+        fs::write(&destination, &intended_bytes)?;
+        fs::write(&backup, &predecessor)?;
+        let intended = IntendedRecoveryContent::from_observation(
+            inspect_recovery_artifact(&destination)?
+                .expect("the intended destination should be inspectable"),
+        );
+        let expected = inspect_recovery_artifact(&backup)?
+            .expect("the predecessor backup should be inspectable");
+        let cause = io::Error::other("injected successful replacement");
+
+        finalize_reconciled_windows_recovery_with_cleanup_hook(
+            &stage,
+            &destination,
+            &backup,
+            intended,
+            expected,
+            &cause,
+            true,
+            || {
+                assert!(
+                    fs::rename(&destination, &displaced).is_err(),
+                    "ratification must deny a destination pathname rebind"
+                );
+                Ok(())
+            },
+        )
+        .map_err(|failure| failure.error)?;
+
+        assert_eq!(fs::read(&destination)?, intended_bytes);
+        assert!(!displaced.exists());
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_stage_cleanup_deletes_only_the_verified_open_object() -> io::Result<()> {
+        let directory = tempdir()?;
+        let stage = directory.path().join("record.stage");
+        let displaced_stage = directory.path().join("displaced.stage");
+        fs::write(&stage, snapshot_at(60, 8, 17, b"verified stage").encode())?;
+        let artifact = open_recovery_artifact_for_cleanup(&stage)?
+            .expect("the recovery stage should be inspectable");
+
+        fs::rename(&stage, &displaced_stage)?;
+        fs::write(&stage, b"rebound stage")?;
+        delete_verified_recovery_artifact(artifact)?;
+
+        assert!(!displaced_stage.exists());
+        assert_eq!(fs::read(&stage)?, b"rebound stage");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn documented_windows_partial_recovery_replace_is_completed_safely() -> io::Result<()> {
+        const ERROR_UNABLE_TO_MOVE_REPLACEMENT_2: i32 = 1_177;
+
+        let dir = tempdir()?;
+        let destination = dir.path().join("record.bin");
+        let predecessor = snapshot_at(61, 1, 10, b"predecessor recovery");
+        let intended = snapshot_at(61, 2, 11, b"intended recovery");
+        let predecessor_bytes = predecessor.encode();
+        let intended_bytes = intended.encode();
+        fs::write(&destination, &predecessor_bytes)?;
+        let artifact_paths = std::cell::RefCell::new(None);
+
+        write_atomic_private_with(
+            &destination,
+            intended.instance_id(),
+            &intended_bytes,
+            |stage, destination, backup| {
+                let backup = backup.expect("Windows replacement reserves a backup");
+                artifact_paths.replace(Some((stage.to_path_buf(), backup.to_path_buf())));
+                fs::rename(destination, backup)?;
+                Err(io::Error::from_raw_os_error(
+                    ERROR_UNABLE_TO_MOVE_REPLACEMENT_2,
+                ))
+            },
+        )?;
+
+        let (stage, backup) = artifact_paths
+            .into_inner()
+            .expect("the injected replacement should record its artifacts");
+        assert_eq!(fs::read(&destination)?, intended_bytes);
+        assert!(matches!(
+            validate_recovery_record(&fs::read(&destination)?),
+            RecoveryStartupDisposition::Offer(_)
+        ));
+        assert!(!stage.exists());
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unexplained_windows_partial_recovery_state_preserves_valid_snapshots() -> io::Result<()> {
+        const ERROR_UNABLE_TO_MOVE_REPLACEMENT_2: i32 = 1_177;
+
+        let dir = tempdir()?;
+        let destination = dir.path().join("record.bin");
+        let predecessor = snapshot_at(62, 1, 10, b"predecessor recovery");
+        let intended = snapshot_at(62, 2, 11, b"intended recovery");
+        let predecessor_bytes = predecessor.encode();
+        let intended_bytes = intended.encode();
+        fs::write(&destination, &predecessor_bytes)?;
+        let artifact_paths = std::cell::RefCell::new(None);
+
+        let error = write_atomic_private_with(
+            &destination,
+            intended.instance_id(),
+            &intended_bytes,
+            |stage, destination, backup| {
+                let backup = backup.expect("Windows replacement reserves a backup");
+                artifact_paths.replace(Some((stage.to_path_buf(), backup.to_path_buf())));
+                fs::remove_file(destination)?;
+                Err(io::Error::from_raw_os_error(
+                    ERROR_UNABLE_TO_MOVE_REPLACEMENT_2,
+                ))
+            },
+        )
+        .expect_err("an unexplained partial replacement must remain an error");
+
+        let (stage, backup) = artifact_paths
+            .into_inner()
+            .expect("the injected replacement should record its artifacts");
+        assert!(error.to_string().contains("were preserved when present"));
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&stage)?, intended_bytes);
+        assert!(matches!(
+            validate_recovery_record(&fs::read(&stage)?),
+            RecoveryStartupDisposition::Offer(_)
+        ));
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unchanged_windows_replace_failure_cleans_only_the_intended_stage() -> io::Result<()> {
+        const ERROR_ACCESS_DENIED: i32 = 5;
+
+        let dir = tempdir()?;
+        let destination = dir.path().join("record.bin");
+        let predecessor = snapshot_at(63, 1, 10, b"predecessor recovery");
+        let intended = snapshot_at(63, 2, 11, b"intended recovery");
+        let predecessor_bytes = predecessor.encode();
+        let intended_bytes = intended.encode();
+        fs::write(&destination, &predecessor_bytes)?;
+        let artifact_paths = std::cell::RefCell::new(None);
+
+        write_atomic_private_with(
+            &destination,
+            intended.instance_id(),
+            &intended_bytes,
+            |stage, _destination, backup| {
+                let backup = backup.expect("Windows replacement reserves a backup");
+                artifact_paths.replace(Some((stage.to_path_buf(), backup.to_path_buf())));
+                Err(io::Error::from_raw_os_error(ERROR_ACCESS_DENIED))
+            },
+        )
+        .expect_err("a proven non-commit must return the replacement error");
+
+        let (stage, backup) = artifact_paths
+            .into_inner()
+            .expect("the injected replacement should record its artifacts");
+        assert_eq!(fs::read(&destination)?, predecessor_bytes);
+        assert!(!stage.exists());
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unexplained_nonpartial_windows_replace_failure_preserves_every_snapshot() -> io::Result<()> {
+        const ERROR_ACCESS_DENIED: i32 = 5;
+
+        let dir = tempdir()?;
+        let destination = dir.path().join("record.bin");
+        let predecessor = snapshot_at(64, 1, 10, b"predecessor recovery");
+        let intended = snapshot_at(64, 2, 11, b"intended recovery");
+        let unexpected = snapshot_at(64, 3, 12, b"unexpected concurrent recovery");
+        let predecessor_bytes = predecessor.encode();
+        let intended_bytes = intended.encode();
+        let unexpected_bytes = unexpected.encode();
+        fs::write(&destination, &predecessor_bytes)?;
+        let artifact_paths = std::cell::RefCell::new(None);
+
+        let error = write_atomic_private_with(
+            &destination,
+            intended.instance_id(),
+            &intended_bytes,
+            |stage, destination, backup| {
+                let backup = backup.expect("Windows replacement reserves a backup");
+                artifact_paths.replace(Some((stage.to_path_buf(), backup.to_path_buf())));
+                fs::rename(destination, backup)?;
+                fs::write(destination, &unexpected_bytes)?;
+                Err(io::Error::from_raw_os_error(ERROR_ACCESS_DENIED))
+            },
+        )
+        .expect_err("an unexplained replacement failure must remain an error");
+
+        let (stage, backup) = artifact_paths
+            .into_inner()
+            .expect("the injected replacement should record its artifacts");
+        assert!(error.to_string().contains("were preserved when present"));
+        for bytes in [
+            fs::read(&destination)?,
+            fs::read(&stage)?,
+            fs::read(&backup)?,
+        ] {
+            assert!(matches!(
+                validate_recovery_record(&bytes),
+                RecoveryStartupDisposition::Offer(_)
+            ));
+        }
+        assert_eq!(fs::read(&destination)?, unexpected_bytes);
+        assert_eq!(fs::read(&stage)?, intended_bytes);
+        assert_eq!(fs::read(&backup)?, predecessor_bytes);
         Ok(())
     }
 
@@ -2235,6 +3619,87 @@ mod tests {
         assert!(quarantine_bound_file(&store, &path, &opened, damaged).is_err());
         assert_eq!(fs::read(&path)?, replacement);
         assert!(fs::read_dir(store.quarantine_dir())?.next().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn quarantine_parent_sync_failure_retains_the_bound_source() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let path = store.records_dir().join("damaged.rec");
+        let damaged = b"damaged recovery bytes";
+        fs::write(&path, damaged)?;
+        let opened = open_recovery_candidate(&path).expect("bind damaged fixture");
+        let quarantine_parent = store.quarantine_dir();
+        let sync_calls = std::cell::RefCell::new(Vec::new());
+
+        let error = quarantine_bound_file_with(
+            &store,
+            &path,
+            &opened,
+            damaged,
+            |candidate| -> io::Result<noter_platform::ParentSyncOutcome> {
+                sync_calls.borrow_mut().push(
+                    candidate
+                        .parent()
+                        .expect("quarantine candidate has a parent")
+                        .to_path_buf(),
+                );
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected quarantine parent sync failure",
+                ))
+            },
+        )
+        .expect_err("source deletion must wait for quarantine parent durability");
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(sync_calls.into_inner(), [quarantine_parent]);
+        assert_eq!(fs::read(&path)?, damaged);
+        let quarantined: Vec<_> =
+            fs::read_dir(store.quarantine_dir())?.collect::<Result<_, _>>()?;
+        assert_eq!(quarantined.len(), 1);
+        assert_eq!(fs::read(quarantined[0].path())?, damaged);
+        Ok(())
+    }
+
+    #[test]
+    fn source_parent_sync_failure_is_a_cleanup_warning_after_quarantine() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let path = store.records_dir().join("damaged.rec");
+        let damaged = b"damaged recovery bytes";
+        fs::write(&path, damaged)?;
+        let opened = open_recovery_candidate(&path).expect("bind damaged fixture");
+        let quarantine_parent = store.quarantine_dir();
+        let source_parent = store.records_dir();
+        let sync_calls = std::cell::RefCell::new(Vec::new());
+
+        let (quarantined, cleanup_error) = quarantine_bound_file_with(
+            &store,
+            &path,
+            &opened,
+            damaged,
+            |candidate| -> io::Result<noter_platform::ParentSyncOutcome> {
+                let parent = candidate
+                    .parent()
+                    .expect("recovery candidate has a parent")
+                    .to_path_buf();
+                sync_calls.borrow_mut().push(parent.clone());
+                if parent == source_parent {
+                    Err(io::Error::other("injected source parent sync failure"))
+                } else {
+                    noter_platform::sync_parent(candidate)
+                }
+            },
+        )?;
+        drop(opened);
+
+        let cleanup_error = cleanup_error.expect("source parent failure must be surfaced");
+        assert_eq!(cleanup_error.kind(), io::ErrorKind::Other);
+        assert_eq!(sync_calls.into_inner(), [quarantine_parent, source_parent]);
+        assert!(!path.exists());
+        assert_eq!(fs::read(&quarantined)?, damaged);
         Ok(())
     }
 
@@ -2558,6 +4023,7 @@ mod tests {
                 .kind(),
             io::ErrorKind::ResourceBusy
         );
+        remove_file_if_present(&store.live_path(snapshot.instance_id()))?;
         assert!(
             store
                 .scan_startup()?
@@ -2565,10 +4031,8 @@ mod tests {
                 .all(|entry| !matches!(entry.disposition(), RecoveryScanDisposition::Offer(_)))
         );
 
-        let release_error = store
-            .release_live_lease(lease)
-            .expect_err("a rebound lease pathname must fail exact release");
-        assert_eq!(release_error.kind(), io::ErrorKind::InvalidData);
+        store.release_live_lease(lease)?;
+        assert!(!store.live_path(snapshot.instance_id()).exists());
         assert!(!store.live_guard_path(snapshot.instance_id()).exists());
         remove_file_if_present(&displaced)?;
         Ok(())
@@ -2623,6 +4087,55 @@ mod tests {
             .expect_err("missing source must fail");
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         Ok(())
+    }
+
+    #[test]
+    fn missing_candidate_is_omitted_from_scan_but_public_quarantine_fails() -> io::Result<()> {
+        let directory = tempdir()?;
+        let store = RecoveryStore::open(directory.path())?;
+        let missing = store.records_dir().join("disappeared.rec");
+
+        assert!(matches!(
+            open_recovery_candidate(&missing),
+            Err(OpenRecoveryCandidateFailure::Missing)
+        ));
+        assert!(store.scan_startup()?.is_empty());
+        assert_eq!(
+            store
+                .quarantine_file(&missing)
+                .expect_err("explicit quarantine must not accept a missing source")
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inaccessible_candidate_preserves_the_original_io_error() {
+        let code = if cfg!(windows) { 5 } else { 13 };
+        let failure = classify_recovery_candidate_io(io::Error::from_raw_os_error(code));
+
+        let OpenRecoveryCandidateFailure::Inaccessible(error) = failure else {
+            panic!("a non-missing access failure must remain inaccessible");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.raw_os_error(), Some(code));
+    }
+
+    #[test]
+    fn startup_metadata_ignores_only_missing_and_preserves_other_io_errors() {
+        let missing = classify_startup_path_metadata(Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "injected disappearance",
+        )))
+        .expect("a metadata disappearance is an ordinary scan race");
+        assert!(missing.is_none());
+
+        let code = if cfg!(windows) { 5 } else { 13 };
+        let error = classify_startup_path_metadata(Err(io::Error::from_raw_os_error(code)))
+            .expect_err("an inaccessible enumerated candidate must fail the scan closed");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.raw_os_error(), Some(code));
     }
 
     #[test]
