@@ -20,11 +20,11 @@ from check_doc_links import (
 
 class TerminalDiagnosticTests(unittest.TestCase):
     def test_escapes_terminal_controls_and_unicode_format_characters(self) -> None:
-        diagnostic = "error: \x00\x1b\x7f\x85\u202e\udcff"
+        diagnostic = "error: \x00\x1b\x7f\x85\u2028\u2029\u202e\udcff"
 
         self.assertEqual(
             terminal_safe_diagnostic(diagnostic),
-            r"error: \x00\x1b\x7f\x85\u202e\udcff",
+            r"error: \x00\x1b\x7f\x85\u2028\u2029\u202e\udcff",
         )
 
     def test_preserves_printable_unicode(self) -> None:

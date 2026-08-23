@@ -7,7 +7,6 @@ import os
 import re
 import stat
 import sys
-import unicodedata
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -132,7 +131,7 @@ def terminal_safe_diagnostic(diagnostic: str) -> str:
 
     rendered: list[str] = []
     for character in diagnostic:
-        if not unicodedata.category(character).startswith("C"):
+        if character.isprintable():
             rendered.append(character)
             continue
 
