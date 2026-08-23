@@ -53,14 +53,14 @@ Commands and results at the implementation commit:
 | --- | --- |
 | `cargo test --locked --workspace --all-targets --all-features` | 705 passed, 0 failed |
 | Python unittest discovery | 164 passed, 1 environment skip |
-| Whole-workspace line coverage | 93.49 percent |
-| Trust-kernel line coverage | 93.53 percent |
+| Whole-workspace line coverage | 93.50 percent |
+| Trust-kernel line coverage | 93.49 percent |
 | Formatting and strict Clippy | Pass |
 | Rustdoc with warnings denied | Pass |
 | RustSec audit | Pass, no advisory warnings |
 | Dependency license and source policy | Pass |
 | Documentation links and release configuration | Pass |
-| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source and visually reviewed; approved input digest `e1166d865703936680fc0f6b0b5cfcbd61f2414cd2615df94529003f4bda2ef5` |
+| Light, Dark, and specialty-theme screenshot validation | Pass, regenerated from exact source and visually reviewed; approved input digest `9a9bffb0e1f9e1878d3ed4c6629e154d8c7bb4bb77ec3d7eea5cb5a72972f855` |
 | `dist plan --tag v0.1.0-alpha.2` | Pass, expected archive, installer, checksum, SBOM, and attestation inventory |
 
 The 705 Rust tests comprise 268 library unit tests, 396 binary unit tests, 15

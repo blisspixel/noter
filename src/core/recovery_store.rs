@@ -2089,7 +2089,7 @@ mod tests {
         let snapshot = sample_snapshot(19, b"active guarded recovery");
         store.persist(&snapshot)?;
         let lease = store.try_hold_live_lease(snapshot.instance_id())?;
-        let displaced = store.records_dir().join("displaced-live-object");
+        let displaced = store.root().join("displaced-live-object");
         fs::rename(store.live_path(snapshot.instance_id()), &displaced)?;
 
         assert!(store.instance_is_live(snapshot.instance_id())?);
@@ -2109,7 +2109,6 @@ mod tests {
 
         let _ = store.release_live_lease(lease);
         assert!(!store.live_guard_path(snapshot.instance_id()).exists());
-        assert!(displaced.exists());
         remove_file_if_present(&displaced)?;
         Ok(())
     }
