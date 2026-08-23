@@ -61,6 +61,9 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Open private recovery storage only once during application construction, and
+  isolate application unit tests from the platform recovery directory so
+  parallel test leases cannot race or inspect a developer's recovery state.
 - Retain a recovery artifact whose canonical or keyed pathname names a different
   instance than its encoded header. Once neither identity is live, startup
   reports the exact mismatch without offering or moving the record, and public

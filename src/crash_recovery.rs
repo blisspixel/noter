@@ -893,6 +893,11 @@ impl CrashRecoverySession {
     }
 
     #[cfg(test)]
+    pub(crate) fn recovery_root_for_test(&self) -> Option<&Path> {
+        self.store.as_ref().map(RecoveryStore::root)
+    }
+
+    #[cfg(test)]
     fn wait_for_persist(&mut self, document: &Document, selection: Selection) {
         let deadline = Instant::now() + Duration::from_secs(2);
         let expected = document.revision();

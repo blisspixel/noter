@@ -590,12 +590,32 @@ pub struct NoterApp {
     external_memory_at_risk: bool,
     last_external_inspect_at: Option<f64>,
     crash_recovery: CrashRecoverySession,
+    #[cfg(test)]
+    test_recovery_root: Option<tempfile::TempDir>,
     #[cfg(feature = "screenshot-qa")]
     screenshot: Option<ScreenshotCapture>,
 }
 
 impl Default for NoterApp {
     fn default() -> Self {
+        #[cfg(test)]
+        {
+            let test_recovery_root =
+                tempfile::tempdir().expect("app tests require an isolated recovery directory");
+            let crash_recovery = CrashRecoverySession::open_at(test_recovery_root.path());
+            let mut app = Self::with_crash_recovery(crash_recovery);
+            app.test_recovery_root = Some(test_recovery_root);
+            app
+        }
+        #[cfg(not(test))]
+        {
+            Self::with_crash_recovery(CrashRecoverySession::open_default())
+        }
+    }
+}
+
+impl NoterApp {
+    fn with_crash_recovery(crash_recovery: CrashRecoverySession) -> Self {
         Self {
             text: String::new(),
             text_ime_composition: None,
@@ -629,14 +649,14 @@ impl Default for NoterApp {
             conflict: ConflictState::default(),
             external_memory_at_risk: false,
             last_external_inspect_at: None,
-            crash_recovery: CrashRecoverySession::open_default(),
+            crash_recovery,
+            #[cfg(test)]
+            test_recovery_root: None,
             #[cfg(feature = "screenshot-qa")]
             screenshot: None,
         }
     }
-}
 
-impl NoterApp {
     fn interactive_text_maximum_for(document: &Document) -> usize {
         document
             .maximum_text_bytes()
@@ -656,17 +676,14 @@ impl NoterApp {
             .unwrap_or_else(|| AppTheme::from_storage(cc.storage));
         selected_theme.apply(&cc.egui_ctx);
 
-        let mut app = Self {
-            theme: selected_theme,
-            text_wrap: TextWrap::from_storage(cc.storage),
-            editor_zoom: EditorZoom::from_storage(cc.storage),
-            updates: if options.show_updates {
-                UpdateStatusState::OpenedByLaunch
-            } else {
-                UpdateStatusState::Closed
-            },
-            crash_recovery: CrashRecoverySession::open_default(),
-            ..Self::default()
+        let mut app = Self::with_crash_recovery(CrashRecoverySession::open_default());
+        app.theme = selected_theme;
+        app.text_wrap = TextWrap::from_storage(cc.storage);
+        app.editor_zoom = EditorZoom::from_storage(cc.storage);
+        app.updates = if options.show_updates {
+            UpdateStatusState::OpenedByLaunch
+        } else {
+            UpdateStatusState::Closed
         };
         if app.crash_recovery.is_unavailable() {
             app.error_msg = Some(RECOVERY_UNAVAILABLE_MESSAGE.to_owned());
@@ -4198,6 +4215,39 @@ mod tests {
     use super::*;
     use noter::core::conflict::ExternalChangeKind;
     use tempfile::tempdir;
+
+    #[test]
+    fn default_test_apps_use_independent_recovery_storage() {
+        let first = NoterApp::default();
+        let second = NoterApp::default();
+
+        assert_eq!(
+            first.crash_recovery.recovery_root_for_test(),
+            first
+                .test_recovery_root
+                .as_ref()
+                .map(tempfile::TempDir::path)
+        );
+        assert_eq!(
+            second.crash_recovery.recovery_root_for_test(),
+            second
+                .test_recovery_root
+                .as_ref()
+                .map(tempfile::TempDir::path)
+        );
+        assert_ne!(
+            first
+                .test_recovery_root
+                .as_ref()
+                .map(tempfile::TempDir::path),
+            second
+                .test_recovery_root
+                .as_ref()
+                .map(tempfile::TempDir::path)
+        );
+        assert!(!first.crash_recovery.is_unavailable());
+        assert!(!second.crash_recovery.is_unavailable());
+    }
 
     fn collect_text_shapes(shape: &egui::Shape, text: &mut Vec<(String, egui::Pos2)>) {
         match shape {
