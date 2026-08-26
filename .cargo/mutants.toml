@@ -21,6 +21,13 @@ exclude_re = [
     # failure surfaces around them are covered by store round-trips.
     "match guard error\\.kind\\(\\) == io::ErrorKind::NotFound.*RecoveryStore::(quarantine_file|scan_startup)",
     "match guard error\\.kind\\(\\) == io::ErrorKind::AlreadyExists.*commit_staged_record",
+    # The legacy delete-on-close fallback runs only when a filesystem rejects
+    # POSIX disposition with ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED, or
+    # ERROR_INVALID_PARAMETER. Every supported test filesystem implements POSIX
+    # disposition, so the first call succeeds and returns before these branches
+    # are reachable. Forcing them needs a filesystem the matrix does not carry.
+    "delete ! in imp::windows_delete_open_file",
+    "replace == with != in imp::windows_delete_open_file",
     "replace == with != in commit_staged_record",
     "replace == with != in RecoveryStore::(quarantine_file|scan_startup)",
 ]

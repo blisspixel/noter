@@ -2608,6 +2608,16 @@ mod imp {
         windows_combine_disjoint_flags(GENERIC_READ, GENERIC_WRITE),
         DELETE,
     );
+    /// Immediate POSIX unlink plus the delete disposition itself.
+    ///
+    /// Combined through the disjoint-flag helper so the constant carries a
+    /// checked assertion rather than a bare bitwise operator, which on disjoint
+    /// bits is indistinguishable from an exclusive or.
+    const WINDOWS_POSIX_DELETE_FLAGS: u32 = windows_combine_disjoint_flags(
+        FILE_DISPOSITION_FLAG_DELETE,
+        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+    );
+
     const WINDOWS_PRIVATE_FILE_SHARE: u32 =
         windows_combine_disjoint_flags(FILE_SHARE_READ, FILE_SHARE_DELETE);
     const WINDOWS_PRIVATE_SECURITY_INFORMATION: u32 =
@@ -3033,7 +3043,7 @@ mod imp {
     #[allow(unsafe_code)]
     pub fn windows_delete_open_file(file: &File) -> io::Result<()> {
         let extended_disposition = FILE_DISPOSITION_INFO_EX {
-            Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+            Flags: WINDOWS_POSIX_DELETE_FLAGS,
         };
         let extended_size = u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>()).map_err(|_| {
             io::Error::new(

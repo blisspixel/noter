@@ -198,13 +198,19 @@ jobs:
           # auto-selected test floor while a failing suite is unwinding.
           # Sixty seconds preserves finite-failure evidence without weakening
           # the job's 90-minute outer bound.
+          #
+          # The exclusion below must name every Unix-gated item, in both cases.
+          # cargo-mutants builds its candidate list by parsing source without
+          # evaluating cfg, so a `#[cfg(unix)]` item still yields candidates
+          # here. Those mutants compile out of the Windows binary, no test can
+          # observe them, and they are reported missed rather than unviable.
           CARGO_INCREMENTAL: 1
         run: >
           cargo mutants -vV --in-place --colors never --workspace
           --minimum-test-timeout 60
           --shard ${{ matrix.shard }}
           --exclude-re
-          '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|[Mm]acos)'
+          '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|[Uu]nix|from_open_parent|linux|[Mm]acos)'
       - name: Run macOS platform mutation tests
         if: runner.os == 'macOS'
         env:
