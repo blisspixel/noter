@@ -920,9 +920,17 @@ mod projected {
             text_to_insert: &str,
             char_limit: usize,
         ) {
-            let current_characters = self.display().chars().count();
-            let available_characters = char_limit.saturating_sub(current_characters);
-            let text_to_insert = logical_prefix(text_to_insert, available_characters);
+            // Counting characters is proportional to the document. An absent
+            // limit cannot clamp anything, so the count must not run on the
+            // ordinary keystroke path. egui's own buffer guards this the same
+            // way; only the bounded find fields set a limit.
+            let text_to_insert = if char_limit == usize::MAX {
+                text_to_insert
+            } else {
+                let current_characters = self.display().chars().count();
+                let available_characters = char_limit.saturating_sub(current_characters);
+                logical_prefix(text_to_insert, available_characters)
+            };
             ccursor.index += self.insert_source_text(text_to_insert, ccursor.index);
         }
 
@@ -1174,11 +1182,15 @@ impl egui::TextBuffer for BoundedTextBuffer<'_> {
         text_to_insert: &str,
         char_limit: usize,
     ) {
-        let cutoff = char_limit.saturating_sub(self.value.chars().count());
-        let text_to_insert = text_to_insert
-            .char_indices()
-            .nth(cutoff)
-            .map_or(text_to_insert, |(index, _)| &text_to_insert[..index]);
+        let text_to_insert = if char_limit == usize::MAX {
+            text_to_insert
+        } else {
+            let cutoff = char_limit.saturating_sub(self.value.chars().count());
+            text_to_insert
+                .char_indices()
+                .nth(cutoff)
+                .map_or(text_to_insert, |(index, _)| &text_to_insert[..index])
+        };
         ccursor.index += self.insert_text(text_to_insert, ccursor.index);
     }
 
@@ -1273,6 +1285,34 @@ mod tests {
         edit::Selection,
         line_endings::{LineEnding, LineEndingInsertionContext, LineEndingProfile},
     };
+
+    /// An absent character limit must not clamp, and a present one must.
+    ///
+    /// The document editor sets no character limit, so the skipped branch is
+    /// the ordinary keystroke path; the bounded find fields do set one, so the
+    /// clamping branch has to keep working exactly as before.
+    #[test]
+    fn a_character_limit_clamps_and_its_absence_costs_nothing() {
+        let mut unbounded = String::from("existing");
+        let mut buffer = BoundedTextBuffer::new(&mut unbounded, 1024);
+        let mut cursor = egui::text::CCursor::new(8);
+        buffer.insert_text_at(&mut cursor, " and more", usize::MAX);
+        assert_eq!(unbounded, "existing and more");
+
+        // A real limit still truncates to the characters that remain.
+        let mut bounded = String::from("abc");
+        let mut buffer = BoundedTextBuffer::new(&mut bounded, 1024);
+        let mut cursor = egui::text::CCursor::new(3);
+        buffer.insert_text_at(&mut cursor, "defgh", 5);
+        assert_eq!(bounded, "abcde", "a present limit must still clamp");
+
+        // A limit already reached admits nothing further.
+        let mut full = String::from("abcde");
+        let mut buffer = BoundedTextBuffer::new(&mut full, 1024);
+        let mut cursor = egui::text::CCursor::new(5);
+        buffer.insert_text_at(&mut cursor, "fgh", 5);
+        assert_eq!(full, "abcde");
+    }
 
     fn sanitize_event(event: egui::Event) -> egui::Event {
         let context = egui::Context::default();
