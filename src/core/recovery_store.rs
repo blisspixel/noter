@@ -3501,6 +3501,41 @@ mod tests {
         Ok(())
     }
 
+    /// A missing artifact is absence; any other failure must stay an error.
+    ///
+    /// Startup review calls this for every candidate path. Collapsing a real
+    /// access failure into "not present" would silently drop a recovery record
+    /// the user still needs, so both sides of the guard are exercised here.
+    #[cfg(windows)]
+    #[test]
+    fn windows_artifact_inspection_separates_absence_from_failure() -> io::Result<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempdir()?;
+
+        // Absent path: reported as no artifact, not as an error.
+        let missing = dir.path().join("not-created.rec");
+        assert!(inspect_windows_recovery_artifact(&missing)?.is_none());
+
+        // Present path: reported as an artifact.
+        let present = dir.path().join("present.rec");
+        fs::write(&present, b"recovery artifact bytes")?;
+        assert!(inspect_windows_recovery_artifact(&present)?.is_some());
+
+        // Present but unopenable: a sharing violation is not absence.
+        let locked = dir.path().join("locked.rec");
+        fs::write(&locked, b"recovery artifact bytes")?;
+        let _exclusive = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked)?;
+        let error = inspect_windows_recovery_artifact(&locked)
+            .expect_err("a denied open must not be reported as a missing artifact");
+        assert_ne!(error.kind(), io::ErrorKind::NotFound);
+
+        Ok(())
+    }
+
     #[cfg(windows)]
     #[test]
     fn unexplained_nonpartial_windows_replace_failure_preserves_every_snapshot() -> io::Result<()> {

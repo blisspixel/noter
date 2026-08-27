@@ -28,6 +28,11 @@ exclude_re = [
     # are reachable. Forcing them needs a filesystem the matrix does not carry.
     "delete ! in imp::windows_delete_open_file",
     "replace == with != in imp::windows_delete_open_file",
+    # Reaching the live-lease fallback requires the handle-bound delete itself
+    # to fail, which no filesystem in the supported matrix does. The facts-match
+    # guard inside it is therefore unreachable from a portable test; the
+    # surrounding success and failure surfaces are covered by store round-trips.
+    "delete ! in delete_claimed_live_path",
     "replace == with != in commit_staged_record",
     "replace == with != in RecoveryStore::(quarantine_file|scan_startup)",
 ]
