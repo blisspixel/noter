@@ -86,7 +86,17 @@ fn main() -> eframe::Result {
     )
 }
 
+/// Writes one command-line message where the launching shell can see it.
+///
+/// Release builds on Windows link as a graphical subsystem so opening a
+/// document never flashes a console window. Such a process inherits no console
+/// at all, so this binds the parent's before writing or the message is lost.
+///
+/// Every caller exits immediately afterwards, which is what makes attaching
+/// safe here: a session that goes on to open a window never binds itself to a
+/// console whose closure would terminate it with unsaved work.
 fn write_line(mut writer: impl std::io::Write, message: &str) {
+    let _ = noter_platform::attach_parent_console();
     let _ = writeln!(writer, "{message}");
 }
 

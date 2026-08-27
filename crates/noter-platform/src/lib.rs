@@ -695,6 +695,36 @@ pub fn sync_parent(destination: &Path) -> io::Result<ParentSyncOutcome> {
     platform_sync_parent(destination)
 }
 
+/// Binds standard output and error to the console that launched the process.
+///
+/// Windows release builds link against the GUI subsystem so opening a document
+/// from Explorer or a file association never flashes a console window. A
+/// process started from a shell therefore inherits no console at all, and
+/// `--version`, `--help`, and argument errors would write to handles that go
+/// nowhere. Attaching the parent's console restores the documented
+/// command-line contract without creating a console for graphical launches.
+///
+/// Streams the shell already redirected keep their existing handles, so
+/// `noter --version > file` still writes to the file.
+///
+/// Returns whether standard output and error can now reach a destination.
+/// Targets other than Windows inherit usable streams and always report `true`.
+#[cfg(windows)]
+#[must_use]
+pub fn attach_parent_console() -> bool {
+    imp::windows_attach_parent_console()
+}
+
+/// Binds standard output and error to the console that launched the process.
+///
+/// Every non-Windows target inherits usable standard streams, so this reports
+/// `true` without touching the process.
+#[cfg(not(windows))]
+#[must_use]
+pub const fn attach_parent_console() -> bool {
+    true
+}
+
 #[cfg(unix)]
 mod imp {
     use std::ffi::OsStr;
@@ -2586,12 +2616,74 @@ mod imp {
         GetFileInformationByHandleEx, MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW,
         SetFileInformationByHandle,
     };
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE,
+        STD_OUTPUT_HANDLE, SetStdHandle,
+    };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     use super::{
         CommitReceipt, FileChangeToken, FileFacts, FileIdentity, IdentityQuality,
         InstallNewOutcome, ParentSyncOutcome, ParentSyncReceipt, ReplaceExistingOutcome,
     };
+
+    /// Reports whether a standard stream already has somewhere to write.
+    ///
+    /// A shell redirection supplies a valid handle before the process starts,
+    /// and that handle must survive attaching a console.
+    #[allow(unsafe_code)]
+    fn windows_std_handle_is_bound(stream: STD_HANDLE) -> bool {
+        // SAFETY: `GetStdHandle` reads one process-global slot and returns its
+        // value. It takes no pointers and allocates nothing.
+        let handle = unsafe { GetStdHandle(stream) };
+        !handle.is_null() && handle != INVALID_HANDLE_VALUE
+    }
+
+    /// Points one unbound standard stream at the freshly attached console.
+    ///
+    /// `AttachConsole` does not rebind standard handles the process already
+    /// owns, so each unbound stream is opened against `CONOUT$` explicitly.
+    #[allow(unsafe_code)]
+    fn windows_bind_console_stream(stream: STD_HANDLE) -> bool {
+        let Ok(console) = OpenOptions::new().read(true).write(true).open("CONOUT$") else {
+            return false;
+        };
+        // SAFETY: `SetStdHandle` stores the handle value in a process-global
+        // slot and copies nothing. The handle must outlive every later write,
+        // so ownership is released only once the store succeeds.
+        let stored = unsafe { SetStdHandle(stream, console.as_raw_handle().cast()) } != 0;
+        if stored {
+            // The standard stream owns this console handle for the process
+            // lifetime; dropping the `File` would close it under later writes.
+            std::mem::forget(console);
+        }
+        stored
+    }
+
+    pub fn windows_attach_parent_console() -> bool {
+        let stdout_bound = windows_std_handle_is_bound(STD_OUTPUT_HANDLE);
+        let stderr_bound = windows_std_handle_is_bound(STD_ERROR_HANDLE);
+        if stdout_bound && stderr_bound {
+            return true;
+        }
+
+        // SAFETY: `AttachConsole` takes a process identifier by value and
+        // reports failure through its return value.
+        // `ATTACH_PARENT_PROCESS` is the documented sentinel for the launching
+        // process, and the call fails harmlessly when it owns no console.
+        #[allow(unsafe_code)]
+        let attached = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } != 0;
+        if !attached {
+            // A graphical launch has no parent console. Reporting the streams
+            // as unusable lets the caller stay silent instead of pretending.
+            return stdout_bound && stderr_bound;
+        }
+
+        // Report what was achieved, not merely that the attach call returned.
+        let stdout_ready = stdout_bound || windows_bind_console_stream(STD_OUTPUT_HANDLE);
+        let stderr_ready = stderr_bound || windows_bind_console_stream(STD_ERROR_HANDLE);
+        stdout_ready && stderr_ready
+    }
 
     const MAX_SID_STRING_UNITS: usize = 256;
     const SYSTEM_SID: &str = "S-1-5-18";
