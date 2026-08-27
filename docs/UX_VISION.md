@@ -27,8 +27,9 @@ patterns rather than toast spam or silent auto-restore:
 
 - **Startup recovery** appears before a normal untitled document: short plain
   language, optional original path label (never full content preview by
-  default), primary action Restore, secondary Discard, and an explicit note that
-  restore does not overwrite the file on disk until Save.
+  default), primary action Restore, Later to keep the private copy without
+  opening it, Discard, and an explicit note that restore does not overwrite the
+  file on disk until Save. Escape is Later, never Discard.
 - **Damaged recovery** uses quarantine language: what failed (checksum, schema,
   truncated), that the original document was not modified, and that the damaged
   record was set aside when possible.

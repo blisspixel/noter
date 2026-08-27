@@ -20,6 +20,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use app::{DocumentView, LaunchOptions, NoterApp};
+use noter::core::file_observation::preflight_regular_file;
 use theme::AppTheme;
 
 const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --theme system|light|dark|green|amber\n  --view text|markdown\n  -h, --help\n  -V, --version\n\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` opens the local update status window and makes no network\nrequest. Option values are case-insensitive.";
@@ -185,13 +186,7 @@ fn parse_launch_request(args: impl IntoIterator<Item = OsString>) -> Result<Laun
 /// Open dialog and from a desktop file association.
 fn check_document_argument(path: &Path) -> Result<(), String> {
     let cannot_open = |reason: &str| format!("cannot open `{}`: {reason}", escaped_cli_path(path));
-    let metadata = std::fs::metadata(path).map_err(|error| cannot_open(&open_failure(&error)))?;
-    if metadata.is_dir() {
-        return Err(cannot_open("path is a directory"));
-    }
-    std::fs::File::open(path)
-        .map(drop)
-        .map_err(|error| cannot_open(&open_failure(&error)))
+    preflight_regular_file(path).map_err(|error| cannot_open(&open_failure(&error)))
 }
 
 /// Describes a filesystem failure without leaking the operating-system code.
@@ -372,6 +367,15 @@ mod tests {
     }
 
     #[test]
+    fn content_validation_remains_deferred_to_the_gui_loader() {
+        let directory = tempfile::tempdir().expect("a temporary directory should be available");
+        let path = directory.path().join("invalid-utf8.txt");
+        std::fs::write(&path, [0xff]).expect("the fixture should be writable");
+
+        assert_eq!(check_document_argument(&path), Ok(()));
+    }
+
+    #[test]
     fn a_missing_file_argument_fails_closed_with_its_path() {
         let directory = tempfile::tempdir().expect("a temporary directory should be available");
         let path = directory.path().join("does-not-exist.md");
@@ -391,6 +395,63 @@ mod tests {
             check_document_argument(directory.path()).expect_err("a directory must be refused");
 
         assert!(error.ends_with(": path is a directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_final_symlink_argument_fails_before_gui_launch() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("a temporary directory should be available");
+        let target = directory.path().join("target.txt");
+        let link = directory.path().join("link.txt");
+        std::fs::write(&target, "target").expect("the target should be writable");
+        symlink(&target, &link).expect("the symlink fixture should be creatable");
+
+        let error = check_document_argument(&link).expect_err("a final symlink must be refused");
+
+        assert!(error.ends_with(": path is a symbolic link or reparse point"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_argument_is_rejected_without_opening_it() {
+        use std::process::Command;
+
+        let directory = tempfile::tempdir().expect("a temporary directory should be available");
+        let path = directory.path().join("notes.pipe");
+        let status = Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("the POSIX mkfifo utility should be available");
+        assert!(status.success(), "the FIFO fixture should be creatable");
+
+        let error = check_document_argument(&path).expect_err("a FIFO must be refused");
+
+        assert!(error.ends_with(": path is not a supported regular file"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_final_symlink_argument_fails_before_gui_launch() {
+        use std::os::windows::fs::symlink_file;
+
+        const ERROR_PRIVILEGE_NOT_HELD: i32 = 1_314;
+
+        let directory = tempfile::tempdir().expect("a temporary directory should be available");
+        let target = directory.path().join("target.txt");
+        let link = directory.path().join("link.txt");
+        std::fs::write(&target, "target").expect("the target should be writable");
+        if let Err(error) = symlink_file(&target, &link) {
+            if error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD) {
+                return;
+            }
+            panic!("the symlink fixture should be creatable: {error}");
+        }
+
+        let error = check_document_argument(&link).expect_err("a final symlink must be refused");
+
+        assert!(error.ends_with(": path is a symbolic link or reparse point"));
     }
 
     #[test]

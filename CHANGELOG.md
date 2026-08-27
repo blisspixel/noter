@@ -1,9 +1,12 @@
 # Changelog
 
 All notable project changes are recorded here. Noter has not published a stable
-release, so current work remains under Unreleased.
+release. Prerelease changes move from Unreleased to a dated version only when
+that candidate is frozen for publication.
 
 ## Unreleased
+
+## 0.1.0-alpha.2 - 2026-08-23
 
 ### Added
 
@@ -22,9 +25,9 @@ release, so current work remains under Unreleased.
   state the FILE and local-only update contract in that block.
 - Add `RecoveryScheduleState::next_persist_delay`, the pure wake-up deadline an
   interface needs to keep the recovery-point objective while it sleeps.
-- Record a partial `0.1.0-alpha.2` correctness matrix at exact-head `85bf83d`
-  mapping dogfood-critical recovery, conflict, clipboard, and navigation rows
-  to automated proof without claiming the version label.
+- Record the `0.1.0-alpha.2` correctness matrix, mapping dogfood-critical
+  recovery, conflict, clipboard, navigation, coverage, security review, and
+  live native recovery evidence to the scoped prerelease decision.
 - Record partial M2 installed-product evidence for a disposable Windows
   PowerShell source install at commit `91ed8d7` with exact-head main CI.
 - Route Markdown active-block word, Home/End, and document keyboard gestures
@@ -35,9 +38,10 @@ release, so current work remains under Unreleased.
 - Add pure UTF-8 caret navigation for character, classic word token, logical
   line step, line home/end, and document endpoints, plus a long-session undo
   history fixture that proves retained history never exceeds configured ceilings.
-- Wire private crash recovery into the application: dirty-session persist under
-  the per-user state directory, startup Restore / Discard, quarantine notices,
-  Save and Discard cleanup, and a visible recovery persist-failure notice.
+- Wire owner-restricted crash recovery into the application: dirty-session
+  persist under the platform-selected per-user state directory, startup Restore
+  / Discard, quarantine notices, Save and Discard cleanup, and a visible recovery
+  persist-failure notice.
 - Add external-change Overwrite Disk Version behind an explicit second
   confirmation; Keep Editing still never rebaselines the trusted disk version.
 - Add Edit menu Cut / Copy / Paste on the shared edit-command path with platform
@@ -49,14 +53,242 @@ release, so current work remains under Unreleased.
   policy, epoch-correlated persist acknowledgements, checksum validation, UTF-8
   character-boundary selection checks, and quarantine reasons that never write a
   user document path.
-- Add durable private recovery storage that stages owner-restricted siblings,
-  installs or replaces instance records atomically, removes displaced stage and
-  backup siblings after success, walks the full records directory, offers at
-  most 32 restores per launch, and reports quarantine relocation failures
-  instead of claiming success.
+- Add durable owner-restricted recovery storage that stages protected siblings,
+  installs or replaces instance records atomically, cleans exact displaced
+  artifacts where supported or retains bounded recovery slots, bounds startup
+  review by entry and aggregate byte budgets, offers at most 32 restores per
+  launch, and reports quarantine relocation failures instead of claiming
+  success.
+- Document that alpha.2 recovery supports only normally permissioned, local,
+  owner-controlled per-user state roots. Group-writable or ACL-shared
+  directories and redirected, synchronized, network, removable, or
+  weak-filesystem state roots remain outside this prerelease boundary.
 
 ### Fixed
 
+- Validate Unix and macOS recovery lease identity and hard-link count before
+  pathname cleanup and ratify the original object's link count afterward. A
+  detected replacement or added hard link fails cleanup. These checks report a
+  detected rebind but do not make pathname unlink atomic against a writer
+  controlling the recovery directory or undo a wrong unlink.
+- Preserve LF, CRLF, CR, and mixed source exactly through Text Mode plus active
+  editing and inactive rendering in Markdown Mode. Logical newlines render,
+  select, and delete atomically; Text Mode and active Markdown source editors
+  copy and cut exact native source. Enter, paste, and IME input follow the
+  nearest whole-document convention within the exact source-byte ceiling.
+- Keep the exact Unix parent directory opened for atomic replacement or
+  exclusive installation in a one-shot commit receipt. General-save durability
+  and cleanup use that held directory instead of reopening a pathname that may
+  have been renamed or rebound. Recovery creates its single keyed stage through
+  the same held parent and consumes that stage with a descriptor-relative rename,
+  so a successful in-boundary commit leaves no recovery sibling to clean.
+  Postcondition checks reject false success if the destination no longer names
+  the stage, but cannot preserve a predecessor already replaced by a writer
+  controlling the directory. Windows retains its explicit file-only durability
+  result.
+- Reconcile every Windows replacement result against the intended recovery
+  bytes and captured predecessor before cleanup. Proven commits remove only
+  the exact verification handles, using immediate unlink semantics when the
+  filesystem supports them; ambiguous outcomes fail closed and preserve the
+  staged content and predecessor needed for recovery. Deterministic per-instance
+  stage and backup slots make later retries return `ResourceBusy` before they
+  can accumulate another pair of artifacts.
+- Ignore only a recovery candidate that disappears between startup enumeration
+  and metadata lookup. Preserve and surface every other metadata I/O error so
+  an inaccessible recovery record cannot be silently omitted from a successful
+  scan.
+- Make quarantine durability explicit: sync the verified quarantine file and
+  its parent before deleting the validated source under the platform cleanup
+  contract, then sync the source parent. Failures retain the original or report
+  the durable quarantine copy instead of claiming cleanup that may not survive a
+  crash.
+- Retry a failed dirty recovery persist after a bounded one-second backoff while
+  retaining the newest revision and epoch. Clock regression reanchors that
+  backoff without creating a zero-delay repaint loop.
+- Bind external-change overwrite confirmation to the exact regular-file
+  observation reviewed. If the disk entry changes before the second
+  confirmation, Noter preserves the newer revision and opens a fresh conflict
+  decision instead of silently rebaselining and overwriting it.
+- Let keyboard and screen-reader users activate inactive formatted Markdown
+  with Enter, Space, or the platform accessibility Click action. Text Mode and
+  active Markdown editing now expose stable, distinct accessible editor names.
+- Reject repository documentation links through every symbolic path component,
+  including links that resolve back inside the checkout, so validation behaves
+  consistently across Git hosts and cannot approve a repository escape.
+- Serialize publication attempts for the same release tag without canceling or
+  replacing a queued run. Pull-request plans and dry runs retain isolated
+  concurrency groups.
+
+- Open private recovery storage only once during application construction, and
+  isolate application unit tests from the platform recovery directory so
+  parallel test leases cannot race or inspect a developer's recovery state.
+- Retain a recovery artifact whose canonical or keyed pathname names a different
+  instance than its encoded header. Once neither identity is live, startup
+  reports the exact mismatch without offering or moving the record, and public
+  quarantine refuses to move it without a single unambiguous dead-instance
+  claim.
+- Replace mutation-sensitive recovery verification and coalescing index loops
+  with structurally finite traversal. Partition the expanded Linux and Windows
+  mutation scopes behind one fail-closed aggregate check so every candidate
+  remains required without exceeding the per-job execution ceiling.
+- Fence recovery persistence before Save deletes a clean record or Discard,
+  Restore, New, or Open retires an instance. Delete both independently locked
+  lease paths through their open handles on Windows. Unix validates identity
+  before pathname unlink and ratifies link count afterward. A detected rebound
+  fails cleanup, but alpha.2 does not claim atomic unlink against a writer
+  controlling the recovery directory.
+- Treat ignored recovery backup cleanup or parent-directory sync as a failed
+  successor transfer, so Restore retains its predecessor until the new record
+  is durably established. Schema v1 metadata can no longer suppress a genuine
+  schema v2 record with forged revision fields.
+- Bind Keep Editing to the exact successfully inspected disk state. A later
+  revision with the same broad conflict category prompts again, and an
+  uninspectable state is never permanently acknowledged. Text, paste, and IME
+  input from the frame that opens the prompt resumes after the decision.
+- Preserve canonical Markdown selection when Enter cancels an unfinished IME
+  pre-edit, leave list markers and emphasis-like text inside code blocks
+  literal, and ignore keyboard auto-repeat for formatting toggles.
+- Keep CJK IME pre-edit text in a transient widget draft in Text and Markdown
+  modes. Composition remains visible but does not enter the document, dirty
+  state, Undo history, or crash recovery until Commit; cancellation restores
+  the authoritative text and selection. An active composition retains its
+  final Commit when another control claims focus in the same frame.
+- Discard deferred editor, Find, and Markdown input whenever New, Open, Reload,
+  or Restore advances the document generation, so queued input cannot replay
+  into replacement text. Recovery-unavailable guidance also preserves a more
+  specific Open or Reload failure already shown to the user.
+- Reschedule crash recovery after Undo and Redo, including dirty-to-dirty
+  history transitions and cleanup when history returns to the saved baseline.
+- Protect a clean in-memory revision immediately when its disk file changes.
+  Native Close and destructive actions now treat it as unsaved, status and the
+  title show Modified, recovery preserves it, and ordinary Save still fails
+  closed against the external revision. Focus-regain inspection runs before
+  same-frame file commands and invalidates any older close authorization.
+- Keep startup recovery memory bounded by retaining metadata and exact open
+  handles rather than document content. Reload and revalidate a selected record
+  under an exclusive instance claim immediately before Restore or Discard, and
+  surface incomplete bounded scans without touching unreviewed records.
+- Add recovery schema v2 causal generations and whole-record integrity while
+  preserving exact schema v1 reads. Coalesce only strict same-instance revision
+  order and proven predecessor links; retain legacy, sibling, identity-conflict,
+  and equal-revision divergent branches as separate offers without trusting wall
+  clocks.
+- Make recovery cleanup ownership-specific. Save removes only canonical and
+  keyed temporary artifacts for its leased instance; Restore and Discard remove
+  only artifacts authorized by revalidated handles under the platform cleanup
+  contract and never sweep another live window's document lineage. Once Restore
+  persists its successor, later cleanup failure leaves the successor durable,
+  opens the recovered document, and surfaces a warning that later successful
+  cleanup cannot erase. Successful external Reload also retires the explicitly
+  discarded private copy, while failed Reload preserves it.
+- Authorize damaged-record quarantine from the exact opened artifact and refuse
+  relocation when validation detects that the pathname changed or its instance
+  is live. Filter irrelevant and live artifacts before charging startup
+  candidate budgets so bounded scans cannot deterministically starve a dead
+  canonical record.
+- Reject a startup argument naming a final symlink, Windows reparse point,
+  directory, FIFO, or other special file through the same no-follow regular-file
+  preflight as the loader. Content validation remains deferred to the GUI.
+- Preserve Find and Go To Line focus across keyboard zoom and fullscreen
+  commands. View-menu zoom actions are disabled at their limits, and Find Next
+  or Find Previous with no query opens Find instead of doing nothing.
+- Correct prerelease integrity guidance to distinguish archive and MSI
+  checksum coverage from attestation-only assets, disclose MSI elevation and
+  system PATH behavior, and put backup, signing, platform-evidence, changelog,
+  and correctness-matrix guidance directly in the release notes. Require
+  successful exact-main CI before creating the verified tag, create or safely
+  refresh one private GitHub draft with the exact workflow artifacts, attest
+  that payload, then apply reviewed notes and publish it. Release artifact
+  downloads now retain their source containers so filename collisions fail
+  closed. The workflow requires every local and global build, assembles exactly
+  the reviewed cargo-dist plan inventory, binds target archives, checksums, and
+  SBOMs to their producer, verifies every checksum sidecar and the unified
+  checksum, and compares the private draft's uploaded names, sizes, states, and
+  GitHub SHA-256 digests to the local attestation payload before attestation and
+  again immediately before publication.
+- Bound Markdown's automatic inline reopening and list, quote, and inline-run
+  Enter transforms before they mutate the active draft. Input at the document
+  ceiling is rejected or UTF-8-truncated without removing an existing suffix.
+- Preserve repeated and interleaved Enter, text, paste, and IME events in
+  Markdown Mode, keep following lines separate, and apply automatic list or
+  quote continuation only when the caret is at or after the complete source
+  marker. Pending inline-marker reopening also stops at the first earlier
+  order-sensitive event.
+- Keep custom word, line, and document navigation behind earlier text, paste,
+  IME, pointer, and accessibility events from the same input frame in both
+  editor modes.
+- Keep Markdown formatting shortcuts behind earlier ordered editor input from
+  the same frame instead of applying them before those bytes.
+- Preserve Find and Replace input order around Enter so navigation and
+  replacement use only text that arrived before the command.
+- Serialize file, edit, view, navigation, formatting, Enter, and Find or Replace
+  commands through one ordered input path. Repeated commands execute once per
+  event, and text, paste, IME, wheel, pointer, touch, and accessibility input
+  cannot be overtaken by a later shortcut from the same frame.
+- Preserve deferred Markdown ownership across frames only while the active
+  editor still owns the sequence. Pointer, touch, Tab, accessibility-focus, and
+  window-focus changes release later input instead of routing it back into a
+  control that lost focus.
+- Give Go To Line exclusive ownership of every input event through Enter,
+  Escape, button or window pointer release, touch completion, or accessibility
+  Click. Only the ordered document-input suffix can resume after a successful
+  navigation or dismissal, so line-field input cannot leak into the document
+  and later text, paste, IME, or key input cannot be lost.
+- Isolate destructive confirmation and recovery dialogs from editor input.
+  Input that opened a blocking prompt is discarded behind it, and deferred
+  editor input is held until an already-open prompt is resolved. Input after
+  the event that actually dismisses the final modal resumes in order with
+  document focus restored. File shortcuts also wait for an active IME commit
+  before deciding which document generation they affect.
+- Associate the visible Find, Replace, and Line number labels with their text
+  inputs in the accessibility tree.
+- Keep a window's recovery lease for its complete lifetime, including after
+  Save, and remove only the recovery record when content becomes clean.
+- Treat recovery lease acquisition and ownership-probe errors as unavailable
+  recovery instead of exposing a potentially live record to another window.
+- Keep recovery worker epochs monotonic across New, Open, Restore, and Discard,
+  and ignore stale UI completions without deleting a newer record.
+- Transfer Restore to a newly leased durable record before deleting the startup
+  copy. Identity, lease, or write failure keeps the original offer and reports
+  the unavailable recovery state instead of leaving restored text only in
+  memory.
+- Rearm dirty-document recovery when Open is cancelled or Open or Reload fails
+  after an explicit Discard decision, so the document left on screen does not
+  remain without a scheduled recovery record.
+- Let the Windows benchmark harness briefly observe a process whose exit raced
+  `TerminateProcess` or the Job Object identifier-list snapshot, avoiding a
+  false cleanup failure after bounded-output termination while sharing the
+  existing absolute process-tree deadline across every captured handle. Invalid
+  or oversized process counts still fail closed.
+- Close simple bold, italic, strikethrough, and inline-code runs before a line
+  break at the end of the run in Markdown Mode. The same markers reopen only
+  when the next character is typed, so the file never stores an empty pair such
+  as `**\n**`.
+- Focus the untitled editor on first launch so typing does not require a click.
+- Report `Unsaved` for a never-saved document instead of labeling it `Saved`.
+- Skip the startup recovery prompt on an explicit file open without deleting
+  the private recovery records. Discard remains an explicit choice.
+- Book a follow-up frame when only the caret moves so the status bar line and
+  column catch up after an idle window.
+- Persist crash-recovery records on a dedicated I/O thread so durable write and
+  `fsync` do not stall typing. Completions stay epoch-tagged; a late write
+  cannot revive a record after Save or Discard.
+- Keep Editing no longer reopens the external-change prompt just because the
+  local document revision moved. A different disk classification still prompts.
+- Escape or Later on the startup recovery offer hides it without deleting the
+  private copy. Restore no longer immediately replaces the recovered document
+  with the next offer.
+- Enter in a Markdown list item or quote continues the marker; Enter on an empty
+  item exits to a paragraph.
+- Alt+Z toggles Word Wrap in Text Mode. Ctrl+Shift+M (Command+Shift+M on macOS)
+  switches Text and Markdown Mode. Both are ignored while Find or Go To Line
+  owns the caret.
+- Enter in the Replace field replaces a selected match, otherwise finds the next
+  match. Opening Find with a selection no longer forces Replace All to Selection
+  scope.
+- A living Noter window holds an exclusive recovery lease so another window
+  cannot Restore or Discard its in-flight private copy. A crash releases the
+  lease so the next launch can offer restore.
 - Update `webbrowser` to 1.2.4 for RUSTSEC-2026-0257, where Unix `BROWSER`
   handling allowed browser argument injection. The dependency reaches Noter
   through `eframe`, and only an explicitly clicked link uses it.
@@ -83,6 +315,23 @@ release, so current work remains under Unreleased.
 
 ### Changed
 
+- Specify the M5 production-editor gate as a one-week measured decision with a
+  rope-authoritative semantic model, bounded visible layout, retained
+  full-document accessibility, real screen-reader and CJK IME evidence, exact
+  latency and memory budgets, and explicit go, conditional-go, and no-go rules.
+- Keep the macOS mutation campaign on executable macOS and shared Unix code.
+  Windows-only receipt and commit mutations remain owned by the sharded Windows
+  campaign instead of appearing as equivalent macOS survivors.
+- Prove both split-CRLF range endpoints and real recovery-lease identity and
+  hard-link transitions directly. Explicit Unix and Windows recovery helper
+  names keep cfg-inactive mutations on the host that can execute them without
+  narrowing either platform's campaign. Assert that descriptor-relative Unix
+  flags are disjoint before combining them, and test the exact creation, open,
+  and name-to-identity policies so valid mutations cannot escape detection.
+- Define the scoped alpha publication gate separately from the complete RC and
+  stable release matrix. Alpha limitations must be recorded and assigned to a
+  later blocking milestone, and critical or high security or data-safety
+  defects can never be deferred.
 - Give the top-level menu names visible space instead of a two-point gap, and
   keep every name clear of the Mode and Theme controls at every expanded width.
 - Give both Mode segments one width sized for the longest label, so the switch
@@ -376,6 +625,10 @@ release, so current work remains under Unreleased.
   decompression operation.
 - Escape control characters in rejected command-line values before writing
   diagnostics to a terminal.
+- Escape every non-printing Unicode code point in repository link-checker
+  diagnostics at the final stderr boundary while preserving ordinary printable
+  multilingual text. This prevents untrusted pull-request paths and filesystem
+  errors from injecting terminal or CI-log controls.
 - Ignore Noter's actual private save and backup recovery siblings, together
   with standard local Python test and coverage caches, so failed-save content
   and generated tooling output cannot be committed accidentally.

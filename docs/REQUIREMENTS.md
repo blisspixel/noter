@@ -1,8 +1,8 @@
 # Noter Product Requirements
 
-**Version:** 0.4
+**Version:** 0.5
 
-**Reviewed:** 2026-07-31
+**Reviewed:** 2026-08-23
 
 **Status:** Ratified contract for the first public-quality release
 
@@ -150,29 +150,77 @@ Feature presence alone is not verification.
 
 - **FR-060 Dirty decision:** New, Open, Reload, Close, and Quit use one
   Save / Discard / Cancel state machine.
-- **FR-061 Window close:** Closing a dirty window cannot complete until Save
-  succeeds, Discard is explicitly confirmed, or the action is cancelled.
-- **FR-062 Recovery location:** Store private recovery records in the
-  per-user application state or local-data directory, never the general
-  temporary directory.
-- **FR-063 Recovery point objective:** After the first edit, persist a valid
-  recovery record after at most 15 seconds of continued editing and normally
-  within 2 seconds of idle time.
+- **FR-061 Window close:** Closing a dirty window, or a window retaining the
+  last in-memory copy of an externally replaced clean revision, cannot complete
+  until Save succeeds, Discard is explicitly confirmed, or the action is
+  cancelled.
+- **FR-062 Recovery location:** Store owner-restricted recovery records in the
+  platform-selected per-user application state or local-data directory, never
+  the general temporary directory. Recovery is available only when the state
+  root and recovery subdirectories are opened without following links and
+  verified as stable, owner-controlled directories with least-permission access.
+- **FR-063 Recovery point objective:** After the first edit or detection that
+  the loaded clean revision was replaced externally, persist a valid recovery
+  record after at most 15 seconds of continued activity and normally within 2
+  seconds of idle time. Undo and Redo reschedule the exact resulting revision
+  and directional selection.
 - **FR-064 Recovery integrity:** Each record has a schema version, random
-  document and instance IDs, revision, checksum, original-path metadata, and
-  atomic manifest update.
+  document and instance IDs, revision, original-path metadata, and integrity
+  protection. Schema v2 also protects causal generation, predecessor, every
+  encoded metadata field, and content with one whole-record checksum. Exact
+  schema v1 reads remain supported.
 - **FR-065 Recovery launch:** On startup, validate records and offer recovery
-  before replacing them with a normal untitled document.
+  before replacing them with a normal untitled document. Startup review has
+  explicit entry, aggregate-byte, offer, quarantine-result, and superseded-copy
+  bounds. It retains metadata and exact handles only, reports incomplete review,
+  and leaves unreviewed records untouched for a later launch.
 - **FR-066 Recovery isolation:** Recovered content opens as dirty and never
   writes the original file until the user invokes Save.
 - **FR-067 Recovery cleanup:** Remove a record only after a successful save or
   explicit discard. Corrupt records are quarantined and explained, not silently
-  deleted.
+  deleted. A living window retains independent locked ownership proofs for its
+  instance after Save and through later edits; loss or rebinding of one proof
+  cannot expose that window's record. Startup ownership uncertainty fails
+  closed without offering Restore or Discard for the affected record. A
+  canonical or keyed recovery pathname's instance and the encoded header
+  instance must agree. Once neither identity is live and the artifact is
+  eligible for startup review, disagreement is surfaced and left untouched
+  because no single instance claim can authorize relocation or deletion. Restore
+  establishes a leased durable successor copy before deleting the offered
+  record; transfer failure
+  keeps the offered record and does not replace the current document. If an
+  Open or Reload continued by Discard does not replace the dirty document,
+  recovery is immediately scheduled again for the document that remains.
+  Same-instance schema-v2 artifacts are ordered only by strict revision, and
+  separate instances are ordered only by a schema-v2 predecessor link with
+  exactly the next generation. Legacy and current schemas never suppress one
+  another by mutable legacy metadata. Incomparable branches remain separate
+  offers. Restore and Discard reload and revalidate an exact open artifact under
+  an exclusive dead-instance claim before acting. Save removes only the current
+  leased instance's canonical and keyed temporary artifacts. Restore and
+  Discard authorize only artifacts represented by validated offer handles, never
+  every record sharing a document ID. For offer-handle cleanup, Windows deletion
+  remains bound to the open handle. Unix cleanup validates identity before and
+  after its portable pathname operation; it reports detected rebinding but does
+  not claim atomic exact unlink against a writer controlling the recovery
+  directory.
+  Cleanup failure keeps a startup Discard record available when it remains on
+  disk, or surfaces a persistent warning. After a successor is durably
+  persisted and its parent-directory durability succeeds, cleanup failure never
+  rolls back or deletes that successor. Record deletion or identity retirement
+  waits for every earlier FIFO persistence request to quiesce.
 - **FR-068 Recovery failure:** A persistence failure is visible and does not
   suppress the classic dirty prompt.
 - **FR-069 External change:** Detect changed, replaced, deleted, or recreated
   files on focus and periodic checks. Never overwrite a detected conflicting
-  revision without a user decision.
+  revision without a user decision. From detection until successful Save, Save
+  As, Reload, overwrite, explicit Discard, or proof that the trusted disk state
+  returned, treat the retained in-memory revision as unsaved for lifecycle,
+  status, title, and crash recovery without rebaselining ordinary Save.
+  Keep Editing acknowledges only the exact successful disk observation shown
+  to the user. A later observation, including an uninspectable state, prompts
+  again. Document input already received in the frame that opens the prompt is
+  deferred until the decision rather than silently discarded.
 
 ### 2.4 Interface and status
 
@@ -311,9 +359,10 @@ The complete release and verification contract is in
 - **NFR-REL-04 Undo fidelity:** Applying edits and their inverse transactions
   restores identical content, selection, and caret state.
 - **NFR-REL-05 Lifecycle safety:** No destructive action can bypass FR-060.
-- **NFR-REL-06 Recovery safety:** Any valid acknowledged edit is either in the
-  current process, a successful save, or a recovery record within the stated
-  recovery point objective.
+- **NFR-REL-06 Recovery safety:** Within the supported recovery-storage contract,
+  and absent external tampering or underlying filesystem loss, any valid
+  acknowledged edit is either in the current process, a successful save, or a
+  recovery record within the stated recovery point objective.
 - **NFR-REL-07 Conflict safety:** A changed file is never silently overwritten by
   a stale in-memory revision.
 
@@ -373,7 +422,9 @@ are deferred until evidence supports a separate viewer or editing mode.
 - **NFR-SEC-02 Local scope:** Read document content only from paths the user
   explicitly opened and versioned recovery records the application created.
 - **NFR-SEC-03 Private state:** Configuration and recovery use least-permission
-  per-user directories. Recovery content is never written to diagnostic logs.
+  per-user directories. Recovery fails closed unless the state root and recovery
+  subdirectories meet FR-062. Recovery content is never written to diagnostic
+  logs.
 - **NFR-SEC-04 Dependencies:** Every direct dependency has a requirement,
   feature, size, license, maintenance, duplicate, and network-capability review.
 - **NFR-SEC-05 Supply chain:** Release workflows use immutable action revisions,

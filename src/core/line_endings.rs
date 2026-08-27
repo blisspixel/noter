@@ -1,6 +1,6 @@
 //! Exact line-ending classification and insertion policy.
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, ops::Range};
 
 use ropey::Rope;
 
@@ -176,6 +176,108 @@ pub enum LineEndingProfile {
     },
 }
 
+/// The document context needed to choose line endings inside one editable range.
+///
+/// The range itself may be rendered through a canonical display projection.
+/// Endings immediately outside it remain available so an insertion at either
+/// edge of a mixed-ending range still follows the nearest source convention.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LineEndingInsertionContext {
+    profile: LineEndingProfile,
+    preceding: Option<LineEnding>,
+    following: Option<LineEnding>,
+}
+
+impl LineEndingInsertionContext {
+    /// Chooses the ending for a newline inserted at a UTF-8 byte offset.
+    ///
+    /// Returns `None` when the offset is outside `editable`, is not a UTF-8
+    /// boundary, or would split an existing CRLF pair.
+    pub fn insertion_at(self, editable: &str, byte_offset: usize) -> Option<LineEnding> {
+        if byte_offset > editable.len()
+            || !editable.is_char_boundary(byte_offset)
+            || splits_crlf(editable, byte_offset)
+        {
+            return None;
+        }
+
+        let preceding = last_line_ending(&editable[..byte_offset]).or(self.preceding);
+        let following = first_line_ending(&editable[byte_offset..]).or(self.following);
+        Some(select_insertion(self.profile, preceding, following))
+    }
+}
+
+/// A newline-normalized insertion that fits an exact source-byte ceiling.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct NormalizedInsertion {
+    text: String,
+    consumed_input_bytes: usize,
+    was_limited: bool,
+}
+
+impl NormalizedInsertion {
+    /// Returns the normalized source text.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Consumes the result and returns the normalized source text.
+    pub fn into_text(self) -> String {
+        self.text
+    }
+
+    /// Returns the accepted UTF-8 prefix length from the original payload.
+    pub const fn consumed_input_bytes(&self) -> usize {
+        self.consumed_input_bytes
+    }
+
+    /// Reports whether the byte ceiling excluded any input.
+    pub const fn was_limited(&self) -> bool {
+        self.was_limited
+    }
+}
+
+/// Normalizes every LF, CRLF, and CR in inserted text to `ending` while
+/// enforcing an exact UTF-8 source-byte ceiling.
+///
+/// Truncation never splits a Unicode scalar or the selected line-ending
+/// sequence. Non-newline source bytes are preserved exactly.
+pub fn normalize_inserted_text(
+    inserted: &str,
+    ending: LineEnding,
+    maximum_bytes: usize,
+) -> NormalizedInsertion {
+    let mut normalized = String::with_capacity(inserted.len().min(maximum_bytes));
+    let mut consumed_input_bytes = 0;
+    let mut characters = inserted.char_indices().peekable();
+    while let Some((input_start, character)) = characters.next() {
+        let is_crlf = character == '\r' && characters.peek().is_some_and(|(_, next)| *next == '\n');
+        if is_crlf {
+            let _ = characters.next();
+        }
+        let input_end = characters
+            .peek()
+            .map_or(inserted.len(), |(offset, _)| *offset);
+        let output = if is_crlf || matches!(character, '\r' | '\n') {
+            ending.as_str()
+        } else {
+            &inserted[input_start..input_end]
+        };
+
+        if output.len() > maximum_bytes.saturating_sub(normalized.len()) {
+            break;
+        }
+        normalized.push_str(output);
+        consumed_input_bytes = input_end;
+    }
+
+    NormalizedInsertion {
+        text: normalized,
+        consumed_input_bytes,
+        was_limited: consumed_input_bytes != inserted.len(),
+    }
+}
+
 impl LineEndingProfile {
     /// Classifies every line-ending sequence in strict UTF-8 text.
     pub fn detect(text: &str) -> Self {
@@ -282,6 +384,41 @@ impl LineEndingProfile {
         }
     }
 
+    /// Captures insertion policy for one UTF-8 source byte range.
+    ///
+    /// Returns `None` for an inverted or out-of-bounds range, a non-UTF-8
+    /// boundary, or a boundary that would split an existing CRLF pair.
+    pub fn insertion_context(
+        self,
+        source: &str,
+        editable_range: Range<usize>,
+    ) -> Option<LineEndingInsertionContext> {
+        if editable_range.start > editable_range.end
+            || editable_range.end > source.len()
+            || !source.is_char_boundary(editable_range.start)
+            || !source.is_char_boundary(editable_range.end)
+            || splits_crlf(source, editable_range.start)
+            || splits_crlf(source, editable_range.end)
+        {
+            return None;
+        }
+
+        Some(LineEndingInsertionContext {
+            profile: self,
+            preceding: last_line_ending(&source[..editable_range.start]),
+            following: first_line_ending(&source[editable_range.end..]),
+        })
+    }
+
+    /// Captures insertion policy when the entire supplied string is editable.
+    pub const fn full_insertion_context(self) -> LineEndingInsertionContext {
+        LineEndingInsertionContext {
+            profile: self,
+            preceding: None,
+            following: None,
+        }
+    }
+
     /// Chooses the ending for a logical newline inserted at a rope character index.
     ///
     /// Mixed documents prefer the nearest preceding ending, then the nearest
@@ -299,42 +436,76 @@ impl LineEndingProfile {
             return None;
         }
 
-        let Self::Mixed { insertion, .. } = self else {
+        if !matches!(self, Self::Mixed { .. }) {
             return Some(self.fallback_insertion());
-        };
+        }
 
         let mut preceding = text.chars_at(char_index);
-        while let Some(character) = preceding.prev() {
+        let preceding = loop {
+            let Some(character) = preceding.prev() else {
+                break None;
+            };
             match character {
                 '\n' => {
-                    return Some(if preceding.prev() == Some('\r') {
+                    break Some(if preceding.prev() == Some('\r') {
                         LineEnding::CrLf
                     } else {
                         LineEnding::Lf
                     });
                 }
-                '\r' => return Some(LineEnding::Cr),
+                '\r' => break Some(LineEnding::Cr),
                 _ => {}
             }
-        }
+        };
 
         let mut following = text.chars_at(char_index);
-        while let Some(character) = following.next() {
+        let following = loop {
+            let Some(character) = following.next() else {
+                break None;
+            };
             match character {
                 '\r' => {
-                    return Some(if following.next() == Some('\n') {
+                    break Some(if following.next() == Some('\n') {
                         LineEnding::CrLf
                     } else {
                         LineEnding::Cr
                     });
                 }
-                '\n' => return Some(LineEnding::Lf),
+                '\n' => break Some(LineEnding::Lf),
                 _ => {}
             }
-        }
+        };
 
-        Some(insertion)
+        Some(select_insertion(self, preceding, following))
     }
+}
+
+const fn select_insertion(
+    profile: LineEndingProfile,
+    preceding: Option<LineEnding>,
+    following: Option<LineEnding>,
+) -> LineEnding {
+    match profile {
+        LineEndingProfile::Mixed { insertion, .. } => match (preceding, following) {
+            (Some(ending), _) | (None, Some(ending)) => ending,
+            (None, None) => insertion,
+        },
+        _ => profile.fallback_insertion(),
+    }
+}
+
+fn first_line_ending(text: &str) -> Option<LineEnding> {
+    logical_lines(text).find_map(LineSegment::ending)
+}
+
+fn last_line_ending(text: &str) -> Option<LineEnding> {
+    logical_lines(text).filter_map(LineSegment::ending).last()
+}
+
+fn splits_crlf(text: &str, byte_offset: usize) -> bool {
+    byte_offset > 0
+        && text.as_bytes().get(byte_offset - 1) == Some(&b'\r')
+        && text.as_bytes().get(byte_offset) == Some(&b'\n')
 }
 
 fn ending_precedes(
@@ -502,5 +673,171 @@ mod tests {
         );
         assert!(logical_lines("").next().is_none());
         assert_eq!(logical_lines("\n").count(), 1);
+    }
+
+    #[test]
+    fn insertion_context_covers_none_uniform_and_mixed_external_neighbors() {
+        for source in ["plain", "one\r\ntwo\r\n"] {
+            let profile = LineEndingProfile::detect(source);
+            let context = profile
+                .insertion_context(source, 0..source.len())
+                .expect("the full source range should be valid");
+            assert_eq!(
+                context.insertion_at(source, source.len()),
+                Some(profile.fallback_insertion())
+            );
+        }
+
+        let source = "left\r\nEDIT\nright\r";
+        let profile = LineEndingProfile::detect(source);
+        let context = profile
+            .insertion_context(source, 6..10)
+            .expect("the editable range should be valid");
+        assert_eq!(context.insertion_at("EDIT", 0), Some(LineEnding::CrLf));
+        assert_eq!(context.insertion_at("EDIT", 4), Some(LineEnding::CrLf));
+
+        let source = "EDIT\rrest\n";
+        let context = LineEndingProfile::detect(source)
+            .insertion_context(source, 0..4)
+            .expect("the leading editable range should be valid");
+        assert_eq!(context.insertion_at("EDIT", 0), Some(LineEnding::Cr));
+
+        let source = "left\r\nA\nB\rright";
+        let context = LineEndingProfile::detect(source)
+            .insertion_context(source, 6..10)
+            .expect("the mixed editable range should be valid");
+        assert_eq!(context.insertion_at("A\nB\r", 2), Some(LineEnding::Lf));
+        assert_eq!(context.insertion_at("A\nB\r", 4), Some(LineEnding::Cr));
+    }
+
+    #[test]
+    fn leading_edit_prefers_the_first_following_ending_over_mixed_fallback() {
+        let source = "EDIT\rrest\nmore\n";
+        let profile = LineEndingProfile::detect(source);
+        assert_eq!(profile.fallback_insertion(), LineEnding::Lf);
+        let context = profile
+            .insertion_context(source, 0..4)
+            .expect("the leading editable range should be valid");
+
+        assert_eq!(context.insertion_at("EDIT", 0), Some(LineEnding::Cr));
+        assert_eq!(context.insertion_at("EDIT", 4), Some(LineEnding::Cr));
+    }
+
+    #[test]
+    fn insertion_context_rejects_invalid_utf8_and_split_crlf_boundaries() {
+        let source = "é\r\ntext";
+        let profile = LineEndingProfile::detect(source);
+
+        assert!(profile.insertion_context(source, 1..source.len()).is_none());
+        assert!(profile.insertion_context(source, 0..3).is_none());
+        assert!(profile.insertion_context(source, 3..source.len()).is_none());
+        assert!(profile.insertion_context(source, source.len()..0).is_none());
+        assert!(
+            profile
+                .insertion_context(source, 0..source.len() + 1)
+                .is_none()
+        );
+
+        let context = profile
+            .insertion_context(source, 0..source.len())
+            .expect("the full source range should be valid");
+        assert_eq!(context.insertion_at(source, 1), None);
+        assert_eq!(context.insertion_at(source, 3), None);
+        assert_eq!(context.insertion_at(source, source.len() + 1), None);
+    }
+
+    #[test]
+    fn inserted_text_normalizes_every_newline_form() {
+        let inserted = "a\nb\r\nc\rd";
+        for (ending, expected) in [
+            (LineEnding::Lf, "a\nb\nc\nd"),
+            (LineEnding::CrLf, "a\r\nb\r\nc\r\nd"),
+            (LineEnding::Cr, "a\rb\rc\rd"),
+        ] {
+            let normalized = normalize_inserted_text(inserted, ending, usize::MAX);
+            assert_eq!(normalized.text(), expected);
+            assert_eq!(normalized.consumed_input_bytes(), inserted.len());
+            assert!(!normalized.was_limited());
+            assert_eq!(normalized.into_text(), expected);
+        }
+    }
+
+    #[test]
+    fn inserted_text_ceiling_never_splits_unicode_or_crlf() {
+        for (maximum, expected, consumed) in [
+            (0, "", 0),
+            (1, "a", 1),
+            (2, "a", 1),
+            (3, "aé", 3),
+            (4, "aé", 3),
+            (5, "aé\r\n", 4),
+            (6, "aé\r\n", 4),
+            (7, "aé\r\n", 4),
+            (8, "aé\r\n字", 7),
+        ] {
+            let normalized = normalize_inserted_text("aé\n字", LineEnding::CrLf, maximum);
+            assert_eq!(normalized.text(), expected);
+            assert_eq!(normalized.consumed_input_bytes(), consumed);
+            assert!(normalized.text().len() <= maximum);
+            assert!(!normalized.text().ends_with('\r'));
+            assert_eq!(normalized.was_limited(), maximum < 8);
+        }
+    }
+
+    #[test]
+    fn inserted_text_consumption_follows_exact_multibyte_boundaries() {
+        for (maximum, expected, consumed, limited) in [
+            (0, "", 0, true),
+            (1, "", 0, true),
+            (2, "é", 2, true),
+            (4, "é", 2, true),
+            (5, "é字", 5, true),
+            (6, "é字x", 6, false),
+        ] {
+            let normalized = normalize_inserted_text("é字x", LineEnding::Lf, maximum);
+            assert_eq!(normalized.text(), expected, "maximum={maximum}");
+            assert_eq!(
+                normalized.consumed_input_bytes(),
+                consumed,
+                "maximum={maximum}"
+            );
+            assert_eq!(normalized.was_limited(), limited, "maximum={maximum}");
+        }
+    }
+
+    #[test]
+    fn bounded_normalization_properties_hold_for_payload_and_ceiling_matrix() {
+        let payloads = ["", "\n", "\r", "\r\n", "é\r\n字\rX\n", "\r\r\n\n"];
+        for payload in payloads {
+            for ending in [LineEnding::Lf, LineEnding::CrLf, LineEnding::Cr] {
+                for maximum in 0..=payload.len().saturating_mul(2).saturating_add(4) {
+                    let normalized = normalize_inserted_text(payload, ending, maximum);
+                    assert!(normalized.text().len() <= maximum);
+                    assert!(normalized.text().is_char_boundary(normalized.text().len()));
+                    assert!(payload.is_char_boundary(normalized.consumed_input_bytes()));
+                    assert!(normalized.consumed_input_bytes() <= payload.len());
+                    assert!(
+                        logical_lines(normalized.text())
+                            .filter_map(LineSegment::ending)
+                            .all(|actual| actual == ending)
+                    );
+                    if !normalized.was_limited() {
+                        assert_eq!(normalized.consumed_input_bytes(), payload.len());
+                        let expected_logical_characters = payload
+                            .replace("\r\n", "\n")
+                            .replace('\r', "\n")
+                            .chars()
+                            .count();
+                        let actual_logical_characters = normalized
+                            .text()
+                            .replace("\r\n", "\n")
+                            .replace('\r', "\n")
+                            .chars()
+                            .count();
+                        assert_eq!(actual_logical_characters, expected_logical_characters);
+                    }
+                }
+            }
+        }
     }
 }

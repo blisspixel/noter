@@ -215,18 +215,24 @@ fn resolve_mac(key: Key, modifiers: Modifiers, extend: bool) -> Option<Navigatio
     None
 }
 
-/// Consumes matching navigation key events for this frame.
+/// Consumes the leading matching navigation key events for this frame.
 ///
 /// Events are removed so `TextEdit` does not also apply them. Every matching
 /// event is returned in order so key-repeat buffers still advance the caret
-/// one step per event.
+/// one step per event. Consumption stops at the first order-sensitive editor
+/// event so custom navigation never moves ahead of earlier text or pointer
+/// input retained for `TextEdit`.
 pub fn consume_navigation_gestures(
     ui: &egui::Ui,
     platform: KeyboardPlatform,
 ) -> Vec<NavigationGesture> {
     let mut resolved = Vec::new();
     ui.input_mut(|input| {
+        let mut blocked = false;
         input.events.retain(|event| {
+            if blocked {
+                return true;
+            }
             let egui::Event::Key {
                 key,
                 pressed: true,
@@ -234,15 +240,72 @@ pub fn consume_navigation_gestures(
                 ..
             } = event
             else {
+                blocked = editor_event_orders_input(event);
                 return true;
             };
-            resolve_navigation_gesture(*key, *modifiers, platform).is_none_or(|gesture| {
-                resolved.push(gesture);
-                false
-            })
+            resolve_navigation_gesture(*key, *modifiers, platform).map_or_else(
+                || {
+                    blocked = true;
+                    true
+                },
+                |gesture| {
+                    resolved.push(gesture);
+                    false
+                },
+            )
         });
     });
     resolved
+}
+
+pub const fn editor_event_orders_input(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Copy
+            | egui::Event::Cut
+            | egui::Event::Paste(_)
+            | egui::Event::Text(_)
+            | egui::Event::Key { pressed: true, .. }
+            | egui::Event::PointerButton { .. }
+            | egui::Event::MouseWheel { .. }
+            | egui::Event::Zoom(_)
+            | egui::Event::Ime(_)
+            | egui::Event::Touch { .. }
+            | egui::Event::AccessKitActionRequest(_)
+    )
+}
+
+pub const fn editor_event_may_change_focus(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key {
+            key: egui::Key::Tab,
+            pressed: true,
+            ..
+        } | egui::Event::PointerButton { .. }
+            | egui::Event::Touch { .. }
+            | egui::Event::AccessKitActionRequest(_)
+            | egui::Event::WindowFocused(false)
+    )
+}
+
+pub const fn modal_event_may_complete_action(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key {
+            key: egui::Key::Escape | egui::Key::Enter | egui::Key::Space,
+            pressed: true,
+            ..
+        } | egui::Event::PointerButton { pressed: false, .. }
+            | egui::Event::Touch {
+                phase: egui::TouchPhase::End | egui::TouchPhase::Cancel,
+                ..
+            }
+            | egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Click,
+                ..
+            })
+    )
 }
 
 #[cfg(test)]
@@ -321,6 +384,77 @@ mod tests {
         assert!(
             resolve_navigation_gesture(Key::ArrowRight, shift(), KeyboardPlatform::Mac).is_none()
         );
+    }
+
+    #[test]
+    fn navigation_consumption_preserves_interleaved_editor_event_order() {
+        let navigation = egui::Event::Key {
+            key: Key::ArrowRight,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: ctrl(),
+        };
+
+        let context = egui::Context::default();
+        let mut text_first = egui::RawInput::default();
+        text_first
+            .events
+            .extend([egui::Event::Text("x".to_owned()), navigation.clone()]);
+        let _ = context.run_ui(text_first, |ui| {
+            assert!(consume_navigation_gestures(ui, KeyboardPlatform::WindowsLike).is_empty());
+            assert_eq!(ui.input(|input| input.events.len()), 2);
+        });
+
+        let context = egui::Context::default();
+        let mut navigation_first = egui::RawInput::default();
+        navigation_first
+            .events
+            .extend([navigation, egui::Event::Text("x".to_owned())]);
+        let _ = context.run_ui(navigation_first, |ui| {
+            assert_eq!(
+                consume_navigation_gestures(ui, KeyboardPlatform::WindowsLike).len(),
+                1
+            );
+            assert_eq!(
+                ui.input(|input| input.events.clone()),
+                [egui::Event::Text("x".to_owned())]
+            );
+        });
+    }
+
+    #[test]
+    fn modal_completion_candidates_cover_keyboard_pointer_and_accessibility() {
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        for event in [key(Key::Escape), key(Key::Enter), key(Key::Space)] {
+            assert!(modal_event_may_complete_action(&event));
+        }
+
+        assert!(modal_event_may_complete_action(
+            &egui::Event::PointerButton {
+                pos: egui::Pos2::ZERO,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }
+        ));
+        assert!(modal_event_may_complete_action(
+            &egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Click,
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: egui::accesskit::NodeId(1),
+                data: None,
+            })
+        ));
+        assert!(!modal_event_may_complete_action(&egui::Event::Text(
+            "still owned by the modal".to_owned()
+        )));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 # Noter Technical Design
 
-**Version:** 0.3
+**Version:** 0.4
 
-**Reviewed:** 2026-08-04
+**Reviewed:** 2026-08-23
 
 **Status:** Active architecture contract
 
@@ -68,6 +68,16 @@ The current development checkpoint has:
 - one pure lifecycle reducer used by dirty New, Open, Reload, Close, and Quit,
   with Save, Discard, and Cancel effects shared by menu and native-close paths
   and correlated to the exact document revision that authorized them;
+- owner-restricted versioned crash recovery within the supported local,
+  owner-controlled state root, with bounded scheduling, whole-record integrity,
+  causal lineage, two independent instance leases, exact startup claims,
+  durable successor transfer, and a fenced background persistence worker;
+- exact external-change decisions with Keep Editing bound to one successful
+  observation and overwrite bound to a second confirmation of that same disk
+  state;
+- one ordered command path for file, edit, navigation, formatting, Find,
+  Replace, pointer, accessibility, clipboard, and IME events, with blocking
+  decisions isolating document input;
 - current local Rust tests and whole-workspace and trust-kernel coverage above
   their respective 80 and 90 percent gates, with volatile measurements kept in
   the dedicated evidence records rather than duplicated here;
@@ -80,22 +90,21 @@ The current development checkpoint has:
   of 970 Linux, 939 Windows, and 47 macOS candidates with no miss, timeout, or
   recognized infrastructure failure.
 
-The latest verified implementation checkpoint passes all nine required jobs in
-exact-commit run
-[30737535516](https://github.com/blisspixel/noter/actions/runs/30737535516)
-for commit `76594b89c1967546893cef73569041fa148573a9`. A reproducible local
-trust-kernel benchmark baseline now exists; the manual
-metadata and weaker-filesystem evidence named by ADR-003, and later M5 GUI and
-input benchmarks remain open. The edit foundation still requires complete
-navigation and clipboard policy, long-session fixtures, and cross-platform
-evidence. Pure recovery scheduling and private recovery storage exist; app
-wiring, overwrite-with-second-confirm, accessibility evidence, and release
-performance evidence also remain open. M1 through M4 therefore remain In
-Progress even where their current implementation slices are substantial.
+The current correctness-alpha implementation and its exact measurements are
+recorded in
+[ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md). Recovery wiring,
+overwrite second-confirmation, clipboard commands, caret navigation,
+long-session history, and cross-platform automated suites are present. The
+remaining M1 through M4 gaps are named filesystem environments, recovery
+namespace binding, installed and packaged product exercises, native
+window-manager interaction, and interactive non-Windows GUI evidence. M5 still
+owns the production editor, real IME and screen-reader matrices, 50 MiB
+performance, and final display behavior.
 
-The local test and coverage measurements above describe the current source
-checkpoint, not hosted release evidence. The M1 paragraph identifies the latest
-immutable commit whose complete hosted matrix is verified.
+Volatile counts and run identifiers stay in dedicated evidence records rather
+than this architecture contract. Historical M1 paragraphs retain their own
+exact verified checkpoints so later implementation does not rewrite earlier
+evidence.
 
 ## 2. Architectural principles
 
@@ -370,6 +379,7 @@ Filesystem operations are injected:
 ```rust
 trait Storage {
     type Temporary;
+    type ParentSync;
 
     fn inspect(&mut self, path: &Path, stage: SaveStage)
         -> Result<TargetState, StorageError>;
@@ -391,8 +401,8 @@ trait Storage {
         temp: Self::Temporary,
         destination: &Path,
         expected: TargetState,
-    ) -> ReplaceOutcome<Self::Temporary>;
-    fn sync_parent(&mut self, destination: &Path) -> DurabilityOutcome;
+    ) -> ReplaceOutcome<Self::Temporary, Self::ParentSync>;
+    fn sync_parent(&mut self, receipt: Self::ParentSync) -> DurabilityOutcome;
     fn discard(&mut self, temp: Self::Temporary) -> Result<(), StorageError>;
 }
 ```
@@ -434,17 +444,30 @@ never infers commit state from a generic I/O error.
     on an exact match, restrict that same open displaced object to owner-only
     access before retaining it, then sync again.
 11. Reconcile platform results whose documented failure may have side effects.
-12. Sync the parent directory where the platform provides a meaningful operation.
+12. Consume the one-shot parent receipt returned by the commit and sync that
+    exact directory where the platform provides a meaningful operation.
 13. Report the exact outcome and either clean by handle or retain the artifact
     with an explicit warning.
 
 On Windows, the adapter uses `ReplaceFileW` with a random same-volume backup and
 no ignore-merge flags for existing destinations. It uses `MoveFileExW` with
 only `MOVEFILE_WRITE_THROUGH` for absent destinations, so it cannot replace or
-copy across volumes accidentally. On Unix, it opens the sibling parent and uses
-an atomic exchange for existing-file replacement. The displaced destination
-remains at the temporary path after its identity, fingerprint, length, and link
-count are checked. The exchange can legitimately change that inode's `ctime`,
+copy across volumes accidentally. On Unix, general document replacement opens
+the sibling parent, uses that descriptor for the atomic commit, and retains the
+same descriptor in a non-cloneable receipt together with the committed temporary
+basename through post-commit verification and cleanup. Recovery persistence is
+specialized: it binds the parent before creating the single deterministic keyed
+stage, creates through that descriptor where supported, and on macOS ratifies
+the ACL-aware path creation against the held parent. It then consumes the stage
+with a descriptor-relative rename. Success leaves no displaced recovery
+temporary to clean, and the original parent descriptor is synchronized
+directly. A pre-commit failure retains the one keyed stage for inspection and
+later attempts fail with `ResourceBusy`, so failures cannot grow an unbounded
+set of artifacts. A renamed or rebound parent pathname therefore cannot redirect
+either the commit or the durability barrier. For general saves,
+the displaced destination remains at the temporary path after its identity,
+fingerprint, length, and link count are checked. The exchange can legitimately
+change that inode's `ctime`,
 so the post-exchange observation ratifies the new token without treating it as
 the source of metadata to apply. The displaced file's stable metadata payload
 must still equal the immutable snapshot captured and revalidated before commit.
@@ -459,8 +482,11 @@ and removal guidance. Absent-file installation uses `RENAME_NOREPLACE` where
 available. Its no-overwrite hard-link fallback also retains the temporary name
 with the same actionable warning instead of unlinking by pathname. Windows
 cleanup opens the verified object without write sharing, then marks that exact
-handle for deletion. Unix synchronizes the opened parent; Windows reports
-file-only durability because it exposes no equivalent directory barrier here.
+handle for deletion. It requests immediate POSIX unlink semantics first and
+falls back to delete-on-close only when the filesystem explicitly rejects that
+operation. Unix synchronizes the receipt's opened parent. Windows consumes the
+same typed receipt but reports file-only durability because it exposes no
+equivalent directory barrier here.
 
 Save outcomes are explicit:
 
@@ -541,6 +567,10 @@ links, reparse points, directories, and special files before content is read.
 The second pathname handle uses the same primitive, so matching identities are
 evidence about two no-follow opens rather than two independently followed link
 targets.
+Command-line document preflight uses the same no-follow regular-entry policy.
+It rejects links, reparse points, directories, FIFOs, and other special entries
+before any potentially blocking ordinary open, while leaving UTF-8 and content-
+size validation to the GUI loader.
 Read-only files are not made writable implicitly. New Unix files remain
 owner-only at mode 0600. Because mode alone does not suppress macOS inherited
 ACL entries, macOS requests a zero-entry `no_inherit` ACL and mode 0600 in one
@@ -590,9 +620,12 @@ undefined.
 ### 7.1 One destructive-action state machine
 
 `New`, `Open`, `Reload`, and `Quit` produce a `DestructiveIntent`; native Close
-maps to Quit. If the document is dirty, the pure application state emits
-`PromptDirty`. Save success continues the original intent, Discard continues
-after explicit confirmation, and Cancel returns to editing.
+maps to Quit. If document bytes are dirty, or external replacement makes the
+loaded in-memory revision the last retained copy, the pure application state
+emits `PromptDirty`. Save success continues the original intent, Discard
+continues after explicit confirmation, and Cancel returns to editing. External
+retention is tracked separately from content dirty state so it cannot weaken
+the trusted save-conflict baseline.
 
 The current `LifecycleState::reduce` implementation has explicit Idle,
 Prompting, Saving, and Closing phases. Prompting and Saving retain both the
@@ -612,12 +645,21 @@ the trusted save expectation and saves.
 
 Dialogs cannot directly mutate document state. They emit commands to the same
 dispatcher used by keyboard shortcuts and menus. Repeated close events are
-idempotent while a decision is open.
+idempotent while a decision is open. Discard advances recovery before the
+selected action runs. If an Open dialog is cancelled, or Open or Reload fails,
+the still-dirty document is immediately registered with the fresh recovery
+identity and its next persistence wake-up is scheduled.
 
 ### 7.2 Recovery storage
 
-Recovery uses a private subdirectory of the per-user application data root
-(never the general temporary directory). Preferences may use eframe storage
+Recovery uses an owner-restricted subdirectory of the per-user application data
+root (never the general temporary directory). Alpha.2 supports recovery only
+when that platform-selected path resolves to a normally permissioned, local,
+owner-controlled per-user directory. Group-writable or ACL-shared directories
+and redirected, synchronized, network, removable, or weak-filesystem state roots
+are outside that prerelease boundary. Alpha.2 restricts individual recovery
+files but does not yet verify or bind the enclosing recovery-directory namespace;
+M4-H1 closes that gap before beta.1. Preferences may use eframe storage
 (`app.ron`); recovery records do not. The library modules are
 `core::recovery` (pure schedule and integrity) and `core::recovery_store`
 (durable private files). The binary adapter `crash_recovery` opens
@@ -632,6 +674,8 @@ magic (NOTERREC)
 schema_version
 document_id
 instance_id
+lineage_generation
+predecessor_instance
 revision
 created_at
 updated_at
@@ -639,15 +683,29 @@ original_path_metadata
 bom and encoding tags
 selection (UTF-8 body offsets on character boundaries)
 content_length
-content_checksum (BLAKE3-256)
+whole_record_checksum (BLAKE3-256 in schema v2)
 content_bytes (serialized body including optional UTF-8 BOM)
 ```
 
-Records stage through exclusive private creation, file sync, and atomic
-install or replace. Unix exchange leaves the previous destination on the stage
-path; that displaced file is removed after a successful replace so recovery
-siblings do not accumulate silently. Windows replacement backups of superseded
-recovery content are removed after success.
+Within the supported owner-controlled namespace, records stage through exclusive
+private creation, file sync, atomic install or replace, exact cleanup where
+supported, and a containing-directory sync. Unix
+recovery binds the sibling parent before stage creation, creates or ratifies the
+single deterministic stage through that descriptor, and consumes it with a
+descriptor-relative rename. The held stage identity is checked before and after
+the rename. That postcondition rejects false success when the destination no
+longer names the staged object, but it cannot make replacement atomic against a
+writer controlling the directory or restore a predecessor that writer caused to
+be replaced. Such a writer is outside the alpha.2 recovery boundary. No
+successful in-boundary Unix recovery commit needs a displaced-file cleanup. A
+failed attempt retains at most that one stage and later attempts return
+`ResourceBusy` until startup review or explicit owned-artifact cleanup.
+Windows reserves one deterministic stage and one deterministic backup per
+instance. Replacement reconciliation holds the exact destination handle while
+verified stage and backup handles are cleaned. Any failure retains only those
+slots, and later retries return `ResourceBusy` before creating another artifact.
+Cleanup or parent-sync failure is a failed transfer and keeps any predecessor
+record available.
 
 The pure scheduler uses a 2-second idle debounce and a 15-second maximum
 interval while dirty. Persist requests carry a session epoch. Save success and
@@ -657,22 +715,90 @@ schedules an immediate persist rather than disabling the recovery-point
 objective. A recovery write failure is a visible warning and never permits
 silent close.
 
-Startup walks the entire records directory. Valid records are offered (at most
-32 per launch); surplus valid records remain for a later session. Corrupt or
-unsupported records are quarantined; quarantine relocation failures are
-reported on the scan entry and leave the damaged file in place rather than
-claiming success. Restored content always opens dirty and never writes the
+Each process holds two independently named and locked sibling objects for the
+complete lifetime of its current recovery instance. Save removes only the
+content record, not those leases, so later unsaved edits under the same identity
+remain hidden from other living windows. A single pathname rebind cannot hide a
+live owner because either locked object proves liveness. On Windows, release
+deletes both locked objects through their open handles before dropping either
+lock. Unix release validates file identity before pathname unlink and ratifies
+the original object's link count afterward. A detected rebind fails cleanup, but
+those checks cannot make unlink atomic against a writer controlling the
+directory or undo a wrong unlink. New, Open,
+Restore, and Discard advance the scheduler epoch and publish it to the worker
+gate before releasing the prior lease. Save and every identity transition then
+send a FIFO fence and wait until every earlier persistence request has
+quiesced before deleting a record or releasing ownership. Lease acquisition or
+ownership-probe errors make recovery unavailable for that session or startup
+scan. Unknown ownership never exposes Restore or Discard. Stale UI
+acknowledgements are inert so they cannot delete a newer worker result.
+
+Restore claims and revalidates the exact offered artifact, reserves a successor
+identity and exclusive lease, writes the recovered bytes as the next causal
+generation, and only then attempts old-record cleanup. A crash before successor
+persistence leaves the original offer. Once successor persistence succeeds,
+cleanup is one-way best effort: a failure keeps at least the successor, still
+opens the recovered document, and surfaces a warning.
+
+Startup enumerates at most 1,024 raw directory entries, examines at most 256
+eligible non-live recovery candidates, and reads at most 128 MiB of encoded
+records. Stale live markers are removed only under an exclusive claim and the
+platform-specific deletion rules above so later bounded launches make progress
+through crash residue. It validates one complete
+record at a time, then retains only metadata and exact open handles. At most 32
+maximal offers, 32 quarantine results, and 16 superseded handles per offer are
+retained. Reaching any bound is visible and leaves unreviewed artifacts
+unchanged. A candidate that disappears between enumeration and metadata lookup
+is an ordinary `NotFound` race and is skipped. Every other metadata I/O error is
+returned unchanged so an inaccessible record cannot be silently omitted from a
+successful scan. Strict revision order between two whole-record-authenticated
+schema-v2 records and schema-v2 direct predecessor links are the only
+coalescing relations. Wall time is display metadata, not cross-instance
+authority. Legacy records never suppress schema-v2 records by mutable header
+fields. Legacy records, sibling successors, separate roots, identity conflicts,
+and equal-revision divergent records remain separate offers.
+
+The instance encoded in a canonical or keyed recovery pathname must agree with
+the minimally readable header identity before validation can produce an offer
+or quarantine can acquire authority. While either named instance is live,
+startup leaves the artifact unreported and untouched. Once both identities are
+eligible for startup review, disagreement remains visible and still leaves the
+artifact untouched because choosing either identity would let one instance
+authorize movement of another instance's bytes.
+
+Every offered Restore or Discard acquires the dead instance's exclusive lease,
+checks the open handle before and after a bounded read, reopens the pathname
+without following links, and requires the same object and complete validated
+metadata. Save removes only its own canonical record and keyed temporary names.
+Restore and Discard authorize only artifacts represented by exact scan-produced
+handles and use the platform-specific deletion rules above, with the primary
+artifact last. They never delete by document ID. Corrupt or unsupported records
+are quarantined; quarantine relocation failures leave the damaged file in place
+and are reported. Restored content always opens dirty and never writes the
 original user path until Save.
 
 ### 7.3 External changes
 
 `FileObservation` combines platform file identity, length, modified time, and a
 content fingerprint. Focus regain and a bounded focused timer inspect metadata.
-A changed observation triggers a full confirmation before reload or overwrite.
+A changed observation immediately marks the in-memory revision as retained
+unsaved state and schedules private recovery, even when its bytes still match
+the loaded baseline. The mark protects native Close and every destructive
+intent without authorizing overwrite. It remains until successful Save, Save
+As, Reload, overwrite, explicit Discard, or proof that the trusted disk state
+returned. A changed observation triggers a full confirmation before reload or
+overwrite.
+
+Keep Editing retains the exact successful `TargetState` behind that prompt. It
+suppresses only the same observed state; a later disk version or uninspectable
+result prompts again even when its broad conflict classification is unchanged.
+If focus-regain inspection opens the modal in an input frame, document Text,
+Paste, pressed-Key, and IME events from that frame are deferred and replayed in
+order only after the prompt is resolved.
 
 The conflict UI initially offers:
 
-- Reload Disk Version, guarded by the dirty decision state machine;
+- Reload Disk Version, an explicit discard of the retained in-memory version;
 - Keep Editing, which does not authorize overwrite;
 - Save As;
 - Overwrite Disk Version only behind an explicit second confirmation showing
@@ -733,6 +859,49 @@ A one-week vertical slice must demonstrate:
 - search and styled-source ranges;
 - deterministic frame-time instrumentation.
 
+The slice uses one `Rope` as the only complete-text authority. The current
+framework `String` may remain only as the bounded correctness adapter outside
+the slice. Editor APIs use distinct byte, character, logical-line, UTF-16, and
+visual-row index types so a valid offset from one coordinate space cannot be
+passed silently to another. An incremental line-ending index preserves exact
+CR, LF, and CRLF source while exposing one accessible hard break for each
+terminator. A content revision identifies every edit; saved-state equality may
+be confirmed in the background, but the document remains conservatively dirty
+until exact equality is proved.
+
+An `EditorSemanticModel` owns directional selection, grapheme and word movement,
+hard-line and paragraph boundaries, source-to-accessible position mapping, IME
+composition state, and stable semantic run identities. Keyboard input,
+accessibility actions, recovery, search, and rendering must query this model
+instead of independently reimplementing positions or Unicode boundaries.
+
+Layout sits behind a backend-neutral adapter. Parley is evaluated first and
+`cosmic-text` second; no backend is accepted until measured in the application.
+The renderer shapes visible logical or wrapped rows plus bounded overscan and
+stores a bounded glyph atlas and row cache. Cache keys include document
+generation, content revision, persistent line identity, width, font, scale,
+wrap policy, and theme. A pathological single line must not allocate or shape
+the complete line on an ordinary frame.
+
+One bounded analysis worker uses a synchronous queue with latest-wins
+replacement. Requests and results carry document generation and content
+revision, stale results are ignored, and cancellation is checked between rope
+chunks. Literal search reports progressive matches from rope chunks. Recovery
+streams a cheap rope snapshot on the worker and never first creates a complete
+document `Vec` on the UI thread. Opening, external observation, and save remain
+correlated effects and move off the UI thread only after the editor gate proves
+that their completion ordering remains exact.
+
+The accessibility prototype is a retained editor subtree attached to the normal
+egui application tree. It exposes one stable multiline text input and
+full-document `TextRun` semantics with persistent IDs. Text and boundary data
+remain available for offscreen native ranges; optional bounds and character
+geometry are published only for visible rows plus overscan. Scrolling changes
+geometry, not text identities. `SetTextSelection`, `ReplaceSelectedText`, focus,
+and child-run `ScrollIntoView` route directly to the semantic model, reject stale
+or foreign IDs, update the authoritative directional selection once, and reveal
+the focus endpoint. A viewport-only tree does not satisfy the contract.
+
 The slice must pass correctness tests, 1 MiB interaction budgets, one real CJK
 IME, NVDA or another real screen reader, and show a measured route to 50 MiB.
 Failure means retaining the correctness adapter with reduced performance claims
@@ -761,10 +930,12 @@ viewport moves.
 
 The editor accessibility node exposes:
 
-- editable text value or bounded text runs;
+- one stable multiline editable-text role and name;
+- complete semantic text runs with stable identities, including offscreen text;
+- visible-row geometry plus bounded overscan without dropping offscreen text;
 - caret and selection;
 - line and character navigation;
-- replace-selection and set-selection actions;
+- replace-selection, set-selection, focus, and scroll-into-view actions;
 - read-only, modified, and validation state;
 - find, recovery, error, and conflict announcements.
 
@@ -941,12 +1112,33 @@ Text Mode schedules no Markdown work.
 
 ## 13. Performance and concurrency
 
-Noter uses bounded worker threads and message passing, not a general async
-runtime, unless later evidence justifies one. Work items carry cancellation and
-revision tokens. The current block-focused Markdown slice parses synchronously;
-moving that work behind revision-tagged background parsing is an M6 requirement.
-At that milestone, the render thread must not wait for disk sync, full-file
-search, recovery serialization, or Markdown parsing.
+Noter does not try to occupy every core on a 6- or 16-core machine. A notepad's
+critical path is one caret and one document. Spreading that path across a thread
+pool would add scheduling noise, battery cost, and races without making typing
+faster. Extra cores are used only to keep that path free.
+
+The process is therefore:
+
+- **One UI / render thread.** All input, layout, and egui painting stay here.
+  The GPU already does the actual raster work off this core.
+- **One recovery I/O worker.** Snapshot capture (an in-memory copy of the current
+  revision) stays on the UI thread. Durable write and `fsync` run on a dedicated
+  `noter-recovery` thread. Completions are epoch-tagged so a late write cannot
+  revive a record after Save or Discard. The UI polls a 16 ms timer while a
+  persist is in flight instead of blocking the frame.
+- **No general async runtime.** Bounded worker threads and message passing,
+  unless later evidence justifies `tokio` or similar. Work items carry
+  cancellation and revision tokens.
+- **Not used:** rayon over the document, blake3's multithreaded hasher, or a
+  pool sized to hardware concurrency. Interactive files are capped at 8 MiB
+  until M5; hashing and edits on that size are cheaper than thread-handoff.
+
+The current block-focused Markdown slice still parses synchronously. Moving
+parse, diagnostics, and full-file search behind revision-tagged background
+workers is an M6 requirement. At that milestone the render thread must not wait
+for disk sync, full-file search, recovery serialization, or Markdown parsing.
+M5 may add a layout/search worker only after the production editor gate proves
+it is required.
 
 The benchmark corpus contains:
 
@@ -1202,6 +1394,12 @@ clearly accepted residual risk before release.
   an explicit deterministic mixed-EOL insertion policy.
 - **ADR-003:** durable replacement uses an injected adapter, platform commit
   semantics, identity revalidation, and explicit durability outcomes.
+- **ADR-004, pending:** the M5 production editor uses a rope-authoritative
+  semantic model, bounded visible layout, and retained full-document
+  accessibility only if the one-week gate meets every correctness, IME,
+  accessibility, memory, and latency requirement. The gate records Parley,
+  `cosmic-text`, any isolated egui or AccessKit extension, and alternate GUI
+  stacks as measured alternatives rather than assumptions.
 
 ADR-002 and ADR-003 are accepted. ADR-003 implementation verification remains
 in progress until its named platform matrix is green. No custom editor

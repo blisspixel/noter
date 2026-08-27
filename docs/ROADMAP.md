@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-08-15
+**Updated:** 2026-08-23
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -22,8 +22,8 @@ criteria and evidence land on one immutable green commit.
 
 | Version | Product meaning | Primary milestones | Status |
 | --- | --- | --- | --- |
-| `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1–M4 and M6 partial | Current crate version |
-| `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups | Finish M4 recovery wiring; M3 clipboard/navigation; remaining M1/M2 evidence; conflict overwrite confirm | **Next** |
+| `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1–M4 and M6 partial | Prior crate checkpoint |
+| `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups on supported local state roots | Recovery, clipboard, overwrite confirm, first-contact honesty, and alpha evidence | **Release candidate** |
 | `0.1.0-beta.1` | Production editor path: measured performance, IME, accessibility | M5 feasibility gate and production editor; continuous Markdown editing foundation | After alpha.2 |
 | `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.1 |
 | `0.1.0` | First public-quality release | Every v0.1 requirement in REQUIREMENTS has evidence | After successful RC dogfood |
@@ -33,6 +33,11 @@ criteria and evidence land on one immutable green commit.
 documentation artifact exist on the same green commit. Local implementation is
 not verification.
 
+Alpha.2 recovery support is limited to a normally permissioned, local,
+owner-controlled per-user state root. Group-writable or ACL-shared directories
+and redirected, synchronized, network, removable, or weak-filesystem state roots
+remain outside this prerelease boundary.
+
 ## Order of operations
 
 Work proceeds in this dependency order. Later items do not start until earlier
@@ -41,50 +46,64 @@ does not expand unsafe UI surface.
 
 ### Toward `0.1.0-alpha.2` (correctness alpha)
 
-1. **Done:** Wire M4 recovery into the application — schedule dirty persist,
+1. **Done:** Wire M4 recovery into the application: schedule dirty persist,
    startup Restore / Discard / quarantine notice, delete on Save or Discard,
    visible persist failure.
-2. **Done:** Complete external-change overwrite — second confirmation before
+2. **Done:** Complete external-change overwrite: second confirmation before
    replacing a detected disk revision; Keep Editing still never rebaselines.
-3. **Done:** Finish M3 clipboard command path — Edit-menu Cut / Copy / Paste
+3. **Done:** Finish M3 clipboard command path: Edit-menu Cut / Copy / Paste
    share one path with platform shortcuts and `EditTransaction` intent.
-4. **Done in tree:** M3 navigation and long-session gaps — pure caret policy,
+4. **Done in tree:** M3 navigation and long-session gaps: pure caret policy,
    long-session history fixture, Text Mode and Markdown active-block platform
    keyboard policy. Cross-platform manual keyboard evidence remains.
-5. **Done:** first-contact cost and command-line honesty — an idle window sleeps
+5. **Done:** first-contact cost and command-line honesty: an idle window sleeps
    instead of holding a core, an unopenable startup path fails closed on the
    command line, and `noter update` names its own window. Idle cost is measured
    on Windows only; the other supported platforms remain open evidence.
-6. **Partial:** remaining M1 filesystem fixtures as environments allow — macOS,
+6. **Partial:** remaining M1 filesystem fixtures as environments allow: macOS,
    SMB, cloud-sync, removable, weak FS, second-identity, crash-persistence.
-   Does not block dogfood on platforms already covered. Evidence:
+   This deferral covers document I/O evidence and does not extend recovery-state
+   support to those environments. It does not block dogfood on platforms already
+   covered. Evidence:
    [M1_FILESYSTEM_EVIDENCE.md](M1_FILESYSTEM_EVIDENCE.md).
-7. **Partial:** M2 installed-product evidence — disposable Windows source
+7. **Partial:** M2 installed-product evidence: disposable Windows source
    install recorded; interactive About GUI and packaged installers remain open.
    Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
-8. **Partial gate:** [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md)
-   scores the dogfood rows at exact-head `85bf83d`. Live GUI force-kill timing
-   and interactive non-Windows smoke remain open before the version label.
+8. **Release gate in progress:**
+   [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) records the
+   current implementation commit, local gates, and a 2026-08-23 Windows live
+   GUI pass covering exact empty dirty recovery persistence, force-kill,
+   restart offer, exact restored editor text, successor transfer, explicit
+   discard, and clean dual-lease removal.
+   Interactive non-Windows GUI smoke is explicitly deferred to beta.1 because
+   this release host has no interactive non-Windows desktop. Alpha.2 remains a
+   prerelease, and exact-head hosted Windows, Linux, and macOS CI is still
+   required before its tag.
 
 ### Toward `0.1.0-beta.1`
 
-9. **Execute the M5 editor feasibility gate** — rope-backed or proven bounded
-   path, IME, AccessKit, display scale, 50 MiB corpus route.
-10. **Expand Markdown to continuous whole-document editing** on the production
+9. **Complete M4-H1 recovery namespace binding:** verify and retain the state and
+   recovery directory identities and access policy, route operations through
+   held directory handles, reject unsupported roots before writing recovery
+   content, and close the Unix pathname-operation contract with native race
+   fixtures and an ADR.
+10. **Execute the M5 editor feasibility gate**: rope-backed or proven bounded
+    path, IME, AccessKit, display scale, 50 MiB corpus route.
+11. **Expand Markdown to continuous whole-document editing** on the production
     editor foundation (still source-backed; no proprietary model).
 
 ### Toward `0.1.0-rc.1` and `0.1.0`
 
-11. **Complete M6 quality engine** — conformance, diagnostics, Format Document
+12. **Complete M6 quality engine**: conformance, diagnostics, Format Document
     with diff and semantic equivalence, async revision-tagged parse.
-12. **Complete M7 distribution** — signed/attested artifacts where credentials
+13. **Complete M7 distribution**: signed/attested artifacts where credentials
     exist, clean-machine install/upgrade/uninstall, updater policy.
-13. **RC dogfood** — minimum 14-day multi-person, multi-platform use without
+14. **RC dogfood**: minimum 14-day multi-person, multi-platform use without
     data loss; then publish `0.1.0`.
 
 ### After `0.1.0`
 
-14. Only ratified post-release work. Non-goals in REQUIREMENTS stay out unless
+15. Only ratified post-release work. Non-goals in REQUIREMENTS stay out unless
     product decision and a new roadmap entry promote them.
 
 ## Milestone status
@@ -96,32 +115,54 @@ does not expand unsafe UI surface.
 | M2 | Usable prototype shell, themes, and update entry points | In progress |
 | M3 | Editing transactions, undo, search, and text commands | In progress |
 | M4 | Lifecycle, recovery, and external-change handling | In progress |
-| M5 | Production editor, accessibility, and performance | Planned |
+| M5 | Production editor, accessibility, and performance | Gate specified; next after alpha.2 |
 | M6 | Native Markdown editor and quality engine | In progress |
 | M7 | Cross-platform distribution and first public-quality release | Planned |
 
-## Next checkpoint: `0.1.0-alpha.2` correctness alpha
+## Current checkpoint: `0.1.0-alpha.2` correctness alpha
 
-The next product checkpoint is a dogfoodable correctness alpha, not a relabeling
-of incomplete work. Kill-process recovery, clipboard parity, conflict overwrite
-confirmation, and the remaining trust evidence are required. M5 through M7
-remain first-release work after that checkpoint.
+The current product checkpoint is a dogfoodable correctness alpha, not a claim
+of public-release completeness. Kill-process recovery, clipboard parity,
+conflict overwrite confirmation, and the alpha trust evidence are included when
+the state root meets the supported local, owner-controlled boundary above. M4-H1
+namespace binding and M5 through M7 remain first-release work after this
+checkpoint.
 
 The current tree already has deterministic Undo coalescing, bounded Find and
 Replace, the pure lifecycle reducer, external-change Reload / Keep Editing /
 Save As / overwrite second-confirm, Markdown document-wide and cross-block
 selection, pure recovery scheduling with epoch-correlated persist, versioned
-recovery records, a private durable recovery store, application wiring that
+recovery records, an owner-restricted durable recovery store within the alpha.2
+state-root boundary, application wiring that
 schedules dirty persist, offers startup Restore / Discard, deletes on Save or
 Discard, and shows persist failure, and Edit-menu Cut / Copy / Paste on the
 shared edit-command path, pure caret navigation for character, word, line home
 and end, and document units, a long-session undo history bound fixture, and
 platform keyboard policy that routes word / Home-End / document gestures
-through that pure path in Text Mode and the Markdown active block. A partial
-alpha.2 correctness matrix at exact-head `85bf83d` is recorded in
-[ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md). Remaining work
-before the version label is live GUI force-kill recovery timing, interactive
-non-Windows smoke, and optional additional M1/M2 environments.
+through that pure path in Text Mode and the Markdown active block. Recovery
+record cleanup now preserves the process-lifetime live lease, ownership errors
+fail closed, identity changes keep worker epochs monotonic, and stale UI
+completions cannot delete newer records. Each identity now has two independent
+fact-bound lease paths, cleanup and identity rotation wait behind a FIFO worker
+fence, and schema v1 metadata cannot suppress authenticated schema v2 state.
+Unix persistence binds the parent directory, consumes its exact open stage with
+a descriptor-relative rename, and ratifies the consumed identity after commit.
+Windows uses deterministic per-instance stage and backup slots, exact
+destination and predecessor reconciliation, and handle-bound cleanup.
+External Keep Editing is bound to one exact successful observation rather than
+a broad conflict class. Text Mode and active or inactive Markdown now project
+LF, CRLF, CR, and mixed source as logical rows without rewriting untouched
+terminators. Text Mode and the active Markdown source editor keep selection and
+clipboard operations bound to exact source offsets, while Enter, paste, and IME
+input in either active editor preserve exact source-byte ceilings. Markdown
+automatic Enter and inline
+reopening are preflighted against the active source budget so an oversized
+operation cannot remove an existing suffix. The alpha.2 correctness record in
+[ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) includes the live
+Windows force-kill and restore result. Interactive non-Windows GUI smoke is
+deferred to beta.1 with the limitation stated in the release evidence. Optional
+additional M1 and M2 environments remain valuable but do not block this
+careful prerelease dogfood checkpoint.
 
 ## Product boundaries
 
@@ -190,6 +231,39 @@ candidates across two required shards, and 47 macOS candidates, with no miss or
 timeout. The infrastructure validator reports no recognized tool, compiler,
 linker, process, or storage failure hidden as unviable. These scopes overlap and
 are not claimed as a newly deduplicated cross-platform union.
+
+The alpha.2 recovery expansion now enumerates 1,650 Linux-filtered, 1,606
+Windows-filtered, and 47 macOS-specific candidates. Failed exact-head run
+[32612492063](https://github.com/blisspixel/noter/actions/runs/32612492063)
+is retained as negative evidence: the former single Linux job and two Windows
+jobs exceeded 90 minutes, and their partial reports exposed genuine recovery
+proof gaps. The repair removes mutable-progress timeout shapes, adds exact
+parser, identity, lease, quarantine, and omission assertions, and partitions
+Linux three ways and Windows six ways behind one fail-closed `mutation-gate`.
+The configured source and filter scope is not narrowed; structural repairs
+remove mutation sites rather than excluding them. A complete exact-head hosted
+pass remains required before alpha.2 can be tagged.
+
+Exact-head run
+[32641128954](https://github.com/blisspixel/noter/actions/runs/32641128954)
+then passed all ordinary Windows, Linux, and macOS suites, both coverage gates,
+the corrected macOS campaign, and Linux shard 1. Linux shards 0 and 2 exposed
+one missing start-side CRLF boundary assertion, one missing real-file
+lease-fact assertion, and cfg-inactive Windows helpers selected under generic
+names. Commit `cc7c8ca` adds both behavioral proofs and names the Unix and
+Windows helpers explicitly so each platform campaign owns only code it can
+execute. The final exact-head hosted mutation pass remains the publication gate.
+
+Commit `c56d3fd` also makes the Windows benchmark harness retry a transiently
+partial Job Object identifier snapshot under its existing absolute cleanup
+deadline while invalid or oversized counts still fail closed. Exact security
+scan `8d960079-7db3-47eb-87f0-2b4fedc83845` then found one low-severity raw
+terminal-control path in repository link diagnostics. Commits `fd28af8` and
+`27b9fe7` close the complete representation family at the stderr boundary,
+including Unicode line and paragraph separators. Descendant closure scans
+`37f04fa4-8385-4e1c-98f1-0151e839db1c` and
+`8e0162d9-f6c1-4140-84f9-19f90a026317` have complete coverage and zero
+findings.
 
 The schema-v2 reproducible benchmark harness is implemented at commit
 `580f164`. A 30-sample Windows reference from that clean detached commit records
@@ -408,7 +482,8 @@ cross-platform manual evidence remain open.
 
 ## M4: Lifecycle, Recovery, and Conflicts
 
-**Outcome:** no destructive action or crash silently discards acknowledged work.
+**Outcome:** within the supported storage contract, no destructive action or
+crash silently discards acknowledged work.
 
 ### Scope
 
@@ -454,17 +529,54 @@ rebaselines the expectation, so ordinary Save still fails closed through the
 durable save protocol. Ordinary Save is paused only while the prompt is visible.
 Pure recovery scheduling (2 s idle / 15 s max, epoch-correlated persist so
 late writes cannot revive recovery after Save or Discard), versioned record
-encode/validate with UTF-8 boundary selection checks, and private durable
-recovery storage (atomic install/replace, quarantine with reported failures,
-full directory walk with a 32-offer cap) are implemented in the library.
+encode/validate with UTF-8 boundary selection checks, and owner-restricted
+durable recovery storage within the alpha.2 state-root boundary (atomic
+install/replace, quarantine with reported failures, full directory walk with a
+32-offer cap) are implemented in the library.
 Application wiring (startup offer UI, idle persist effects, state-directory
 path resolution) and overwrite-with-second-confirm are implemented. The pure
 schedule also reports the deadline of its next due persist, so an interface that
 sleeps between frames still wakes to meet the recovery-point objective instead of
-silently extending it to the next unrelated repaint. Live
-GUI force-kill recovery timing and the remaining interactive matrix rows in
-[ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) remain open
-before the `0.1.0-alpha.2` label.
+silently extending it to the next unrelated repaint. Durable recovery write and
+`fsync` run on a dedicated `noter-recovery` worker rather than the render
+thread; the UI only captures a revision snapshot and applies epoch-tagged
+completions. A living window holds an exclusive lease on its instance for the
+entire identity lifetime, including across Save, so another Noter process
+cannot Restore or Discard that in-flight copy. Lease acquisition and probe
+errors fail closed, and a crash releases the lease. Undo and Redo reschedule
+the exact resulting recovery snapshot. Clean in-memory text becomes protected
+unsaved state as soon as external divergence is detected, so native Close and
+destructive commands cannot discard the last retained copy. Startup scans
+are bounded by entry and aggregate-byte budgets, retain metadata and exact open
+handles instead of document content, and use schema-v2 causal predecessor links
+rather than wall time. Save deletes only owned keyed artifacts; Restore and
+Discard authorize only records represented by revalidated handles and use the
+platform-specific cleanup contract in DESIGN. A durable restore successor is
+never rolled back because later cleanup failed. Command-line preflight now
+rejects final links, reparse points, directories, FIFOs, and special files
+without a potentially blocking following open. A live Windows GUI test
+proved idle persistence, force-kill, startup Restore, exact recovered editor
+text, and explicit-discard cleanup. Interactive non-Windows GUI recovery and
+navigation remain a beta.1 gate and are not claimed by the alpha.2 prerelease.
+
+### M4-H1: Recovery namespace binding
+
+**Status:** Planned and required before beta.1.
+
+Open or create the platform state root, recovery root, records directory, and
+quarantine directory without following links. Verify stable directory identity,
+owner or SID, mode, ACL or DACL, and supported local-filesystem semantics, then
+retain directory handles for the session and route creation, scan, sync, rename,
+quarantine, and cleanup through them. Reject an unsafe or unverifiable root
+before writing recovery content.
+
+The Unix cleanup ADR must either provide a genuinely object-bound retirement
+strategy or retain and safely neutralize the exact opened object instead of
+claiming atomic pathname unlink. Native Windows, Linux, and macOS fixtures must
+cover group or ACL sharing, ancestor rebind, commit and cleanup final-window
+swaps, redirected roots, and explicit weak or remote filesystem rejection.
+M4-H1 passes only when every supported platform either rejects the unsafe root
+before writing recovery bytes or passes the applicable adversarial fixtures.
 
 ### Exit criteria
 
@@ -473,7 +585,7 @@ before the `0.1.0-alpha.2` label.
 - Recovery meets the documented recovery-point objective.
 - Recovery never writes the original file without an explicit Save.
 - Cross-instance and external-change scenarios preserve every recoverable
-  revision.
+  revision within the supported storage contract.
 
 ## M5: Production Editor, Accessibility, and Performance
 
@@ -509,6 +621,71 @@ The current bundled Inter configuration retains egui's complete default
 fallback chain, including its emoji fonts, so pasted Unicode remains intact.
 The current renderer's emoji output is monochrome and is not accepted as final
 cross-platform appearance evidence. No spell-check provider is implemented.
+
+Research completed on 2026-08-23 makes the next decision narrower. The current
+egui `TextEdit` remains the correctness adapter, but stock egui 0.35 with
+AccessKit 0.24 is a provisional no-go for the 50 MiB production path. It shapes
+and exposes complete wrapped content, rebuilds the enabled accessibility tree,
+uses visual-row-derived text-run identities, and does not route every offscreen
+text-run action back to the outer editor. Viewport-only semantics are not an
+acceptable workaround because native text providers must expose and navigate
+the complete document.
+
+The research is anchored in the tagged
+[egui 0.35 text-accessibility implementation](https://github.com/emilk/egui/blob/0.35.0/crates/egui/src/text_selection/accesskit_text.rs),
+the [AccessKit architecture](https://github.com/AccessKit/accesskit), and the
+native text-provider contracts for
+[Windows UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-implementingtextandtextrange),
+[macOS accessibility](https://developer.apple.com/documentation/AppKit/NSAccessibilityProtocol),
+and [AT-SPI](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/iface.Text.html).
+
+The first candidate is therefore a rope-authoritative editor with a
+backend-neutral visible-layout adapter. Parley is the first shaping candidate;
+`cosmic-text` is the fallback candidate. Neither is accepted by research alone.
+The gate must prove shaping, bidi, hit testing, IME, retained accessibility, and
+the published performance budgets in the actual application.
+
+### One-week feasibility gate
+
+1. **Day 1, baseline and corpora:** freeze 1 MiB and 50 MiB representative,
+   many-short-line, pathological-long-line, mixed-EOL, Unicode, bidi, and
+   Markdown corpora. Measure the current adapter with platform accessibility
+   inactive and active, including node count, allocation, frame time, and
+   offscreen navigation failures.
+2. **Day 2, semantic core:** make a rope the sole complete-text authority in the
+   slice; add typed byte, character, line, UTF-16, and visual-row positions;
+   maintain exact line-ending and hard-line indexes; and differentially test
+   edits, directional selection, Unicode boundaries, and source-to-accessible
+   position mapping against the existing transaction model.
+3. **Day 3, bounded layout and accessibility:** lay out only visible rows plus
+   bounded overscan, route work through one latest-wins revision-tagged worker,
+   and prototype a retained AccessKit editor subtree with stable run identities,
+   full-document semantic text, visible-only geometry, set-selection,
+   replace-selection, focus, and child-run scroll-into-view actions.
+4. **Day 4, native input:** run NVDA, VoiceOver, and Orca smoke matrices plus one
+   real CJK IME. Cover dead keys, emoji, combining marks, mixed bidi, wrapped and
+   unwrapped text, 125 to 200 percent scaling, selection events, read-all, and
+   offscreen range selection that visibly reveals the same text.
+5. **Day 5, adversarial measurement and decision:** run at least 30 release-build
+   samples where a percentile is claimed, record complete corpus and hardware
+   details, and accept, conditionally accept, or reject ADR-004 with a bounded
+   next implementation.
+
+### Gate decision
+
+- **Go:** every correctness, native accessibility, IME, and performance gate
+  passes. In particular, no ordinary frame copies or reshapes the complete
+  document; 50 MiB reaches its first editable frame at p95 at most 2 seconds;
+  input reaches paint at p95 at most 16.7 ms and p99 at most 33 ms; warm scroll
+  is p99 at most 16.7 ms; first literal search is p95 at most 800 ms; RSS is at
+  most 350 MiB; and an offscreen native text range can be selected and revealed.
+- **Conditional go:** the same user-visible gates pass, but a small isolated
+  upstream-quality egui or AccessKit extension is required. The decision record
+  must bound maintenance and name the upstream path.
+- **No-go:** success requires viewport-only accessibility, complete tree or
+  document reconstruction per frame, omitted bidi or IME behavior, weakened
+  budgets, or separate handwritten native editor semantics per platform. Stop
+  M6 surface expansion and evaluate another GUI or text stack explicitly.
 
 ### Exit criteria
 
@@ -655,8 +832,8 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 
 ## Immediate backlog (maps to version train)
 
-Ordered for `0.1.0-alpha.2` first. Completed historical items stay listed only
-when they document evidence links.
+The alpha.2 correctness work is complete pending immutable exact-head CI and
+publication. The next implementation gate is beta.1 editor feasibility.
 
 1. **Done:** Markdown keyboard navigation parity with Text Mode; pure word /
    Home-End / document policy and long-session history fixture.
@@ -669,10 +846,11 @@ when they document evidence links.
 4. **Partial evidence:** disposable Windows source install and related unit
    paths. Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
    Interactive About GUI, theme GUI relaunch, and packaged installers remain.
-5. **Partial:** [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) at
-   exact-head `85bf83d`; finish live GUI force-kill recovery and interactive
-   non-Windows smoke, then tag `0.1.0-alpha.2` only on that green commit.
-6. **Then `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
+5. **Alpha.2 release evidence:** keep
+   [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) paired with the
+   immutable implementation commit, then tag only after the final evidence head
+   and protected-main head both pass exact-head CI.
+6. **Next, `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
    production editor contract is stable.
 7. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC

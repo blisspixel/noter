@@ -6,6 +6,7 @@ examine_globs = ["src/core/*.rs", "crates/noter-platform/src/*.rs"]
 # API flag occupies a disjoint bit.
 exclude_re = [
     "imp::.*unsupported",
+    "replace \\| with \\^ in imp::unix_open_existing_no_follow",
     "replace \\| with \\^ in imp::windows_(create_private_new_file|open_existing_no_follow|open_for_cleanup|reduced_identity)",
     "replace \\| with \\^ in imp::macos_private_creation::OwnedFileSecurity::create",
     # Single-variant encoding tag is schema padding; the only legal value is 0.
@@ -20,6 +21,18 @@ exclude_re = [
     # failure surfaces around them are covered by store round-trips.
     "match guard error\\.kind\\(\\) == io::ErrorKind::NotFound.*RecoveryStore::(quarantine_file|scan_startup)",
     "match guard error\\.kind\\(\\) == io::ErrorKind::AlreadyExists.*commit_staged_record",
+    # The legacy delete-on-close fallback runs only when a filesystem rejects
+    # POSIX disposition with ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED, or
+    # ERROR_INVALID_PARAMETER. Every supported test filesystem implements POSIX
+    # disposition, so the first call succeeds and returns before these branches
+    # are reachable. Forcing them needs a filesystem the matrix does not carry.
+    "delete ! in imp::windows_delete_open_file",
+    "replace == with != in imp::windows_delete_open_file",
+    # Reaching the live-lease fallback requires the handle-bound delete itself
+    # to fail, which no filesystem in the supported matrix does. The facts-match
+    # guard inside it is therefore unreachable from a portable test; the
+    # surrounding success and failure surfaces are covered by store round-trips.
+    "delete ! in delete_claimed_live_path",
     "replace == with != in commit_staged_record",
     "replace == with != in RecoveryStore::(quarantine_file|scan_startup)",
 ]

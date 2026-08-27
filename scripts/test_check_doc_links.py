@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import tempfile
@@ -9,10 +10,53 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from check_doc_links import MAX_MARKDOWN_BYTES, missing_links
+from check_doc_links import (
+    MAX_MARKDOWN_BYTES,
+    main,
+    missing_links,
+    terminal_safe_diagnostic,
+)
+
+
+class TerminalDiagnosticTests(unittest.TestCase):
+    def test_escapes_terminal_controls_and_unicode_format_characters(self) -> None:
+        diagnostic = "error: \x00\x1b\x7f\x85\u2028\u2029\u202e\udcff"
+
+        self.assertEqual(
+            terminal_safe_diagnostic(diagnostic),
+            r"error: \x00\x1b\x7f\x85\u2028\u2029\u202e\udcff",
+        )
+
+    def test_preserves_printable_unicode(self) -> None:
+        self.assertEqual(
+            terminal_safe_diagnostic("guide: caf\u00e9, \u6771\u4eac, \u2713"),
+            "guide: caf\u00e9, \u6771\u4eac, \u2713",
+        )
+
+    def test_main_neutralizes_complete_diagnostics_before_stderr(self) -> None:
+        stderr = io.StringIO()
+        with (
+            patch("check_doc_links.missing_links", return_value=["bad\x1b[2Jtarget"]),
+            patch("sys.stderr", stderr),
+        ):
+            result = main()
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stderr.getvalue(), r"bad\x1b[2Jtarget" + "\n")
+        self.assertNotIn("\x1b", stderr.getvalue())
 
 
 class MarkdownInputTests(unittest.TestCase):
+    def create_symlink_or_skip(
+        self, target: Path, link: Path, *, target_is_directory: bool = False
+    ) -> None:
+        """Create a native symlink or skip when the host forbids the fixture."""
+
+        try:
+            os.symlink(target, link, target_is_directory=target_is_directory)
+        except OSError as error:
+            self.skipTest(f"symbolic links are unavailable: {error}")
+
     def test_checks_regular_markdown_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -92,6 +136,52 @@ class MarkdownInputTests(unittest.TestCase):
             self.assertEqual(
                 diagnostics,
                 ["linked.md: symbolic Markdown links are not allowed"],
+            )
+
+    def test_rejects_a_file_symlink_target_outside_the_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repository"
+            root.mkdir()
+            outside = root.parent / "outside.txt"
+            outside.write_text("outside\n", encoding="utf-8")
+            self.create_symlink_or_skip(outside, root / "linked.txt")
+            (root / "README.md").write_text("[outside](linked.txt)\n", encoding="utf-8")
+
+            self.assertEqual(
+                missing_links(root),
+                ["README.md:1: local link leaves repository: linked.txt"],
+            )
+
+    def test_rejects_a_directory_symlink_target_outside_the_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repository"
+            root.mkdir()
+            outside = root.parent / "outside"
+            outside.mkdir()
+            (outside / "guide.txt").write_text("outside\n", encoding="utf-8")
+            self.create_symlink_or_skip(
+                outside, root / "docs", target_is_directory=True
+            )
+            (root / "README.md").write_text(
+                "[outside](docs/guide.txt)\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                missing_links(root),
+                ["README.md:1: local link leaves repository: docs/guide.txt"],
+            )
+
+    def test_rejects_an_in_repository_symlink_target_consistently(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.txt"
+            target.write_text("inside\n", encoding="utf-8")
+            self.create_symlink_or_skip(target, root / "linked.txt")
+            (root / "README.md").write_text("[inside](linked.txt)\n", encoding="utf-8")
+
+            self.assertEqual(
+                missing_links(root),
+                ["README.md:1: local link uses a symbolic path: linked.txt"],
             )
 
     def test_checks_local_heading_fragments(self) -> None:

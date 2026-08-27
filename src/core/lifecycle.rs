@@ -443,6 +443,23 @@ mod tests {
     }
 
     #[test]
+    fn newly_retained_state_revokes_same_revision_close_authorization() {
+        let mut state = LifecycleState::default();
+        assert_eq!(
+            state.reduce(request(false, DestructiveIntent::Quit)),
+            LifecycleEffect::Continue(DestructiveIntent::Quit)
+        );
+        assert!(state.close_authorized(INITIAL));
+
+        assert_eq!(
+            state.reduce(request(true, DestructiveIntent::Quit)),
+            LifecycleEffect::PromptDirty(DestructiveIntent::Quit)
+        );
+        assert!(!state.close_authorized(INITIAL));
+        assert_eq!(state.pending_intent(), Some(DestructiveIntent::Quit));
+    }
+
+    #[test]
     fn clean_requests_continue_and_only_quit_enters_closing_phase() {
         for intent in [
             DestructiveIntent::New,

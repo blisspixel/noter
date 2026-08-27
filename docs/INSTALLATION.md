@@ -1,14 +1,32 @@
 # Installation and Updates
 
-**Reviewed:** 2026-08-15
+**Reviewed:** 2026-08-22
 
-**Current availability:** Source installation is supported for development and
-evaluation. Noter has not published a signed binary release, native package, or
-self-updating release channel. The cross-platform distribution workflow is
-prepared for dry runs, but preparation is not release approval. See the
+**Current availability:** The `0.1.0-alpha.2` release candidate is prepared for
+careful evaluation with backups. Its release page is created only after the
+protected-main publication workflow succeeds. Published artifacts include
+platform archives, a Windows MSI, checksums, SBOMs, and GitHub build provenance.
+Windows and macOS artifacts are not yet platform-signed, and no self-updating
+release channel exists. Source installation remains supported. See the
 [release process](RELEASING.md).
 
-## Prerequisites
+## Prerelease artifacts
+
+The publication location is the
+[GitHub release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-alpha.2).
+If that page is not present, publication has not completed and the source path
+below remains the available route. After publication, download an asset before
+executing it and verify its GitHub attestation. Published SHA-256 sidecars and
+the unified checksum list cover the source archive, platform archives, and
+Windows MSI, but not installer scripts, the Homebrew formula, SBOMs, or the
+distribution manifest. For the strongest alpha path, manually download an
+archive and verify both its checksum and attestation before extraction. Inspect
+any installer script before use and never pipe a remote installer into a shell.
+The Windows MSI is an unsigned per-machine evaluation package. It requires
+elevation, installs under Program Files, and offers a system PATH entry; it is
+not a supported stable installer.
+
+## Source prerequisites
 
 Install the following before using the source installer:
 
@@ -20,7 +38,7 @@ The repository pins Rust in `rust-toolchain.toml`. Rustup and Cargo may download
 that toolchain and locked dependencies from their configured sources during the
 first build.
 
-## Quick install
+## Source install
 
 Windows PowerShell:
 
@@ -185,10 +203,20 @@ under the following directory:
 
 Inspect that directory before deleting it.
 
-Private crash recovery uses a subdirectory of that state root
+Owner-restricted crash-recovery files use a subdirectory of that state root
 (`recovery/records` for active instance records and `recovery/quarantine` for
 damaged files). Dirty editing sessions persist recovery copies there; Save and
-explicit Discard remove the owned record. Uninstall and cleanup distinguish:
+explicit Discard remove the owned record.
+
+Alpha.2 recovery is supported only when the selected state path resolves to a
+normally permissioned, local, owner-controlled per-user directory. The
+prerelease does not yet verify or bind the enclosing state and recovery
+directories. If `%APPDATA%`, `XDG_DATA_HOME`, or the platform application-support
+path is group-writable, ACL-shared, redirected, synchronized, network-hosted,
+removable, or on a weak filesystem, recovery is unverified. Keep important work
+saved and backed up, and do not rely on recovery from that state root.
+
+Uninstall and cleanup distinguish:
 
 | Kind | Location | Safe to delete when |
 | --- | --- | --- |
@@ -222,9 +250,9 @@ root. Use that same root for future updates and uninstallation.
 ## Current update actions
 
 `Help > Check for Updates` and `noter update` open the same local status dialog.
-The current dialog explains that no verified release exists and can open the
-GitHub releases page only after an explicit user action. It does not query an
-API, download an artifact, or replace the application.
+The current dialog explains that Noter does not check in the background and can
+open the GitHub releases page only after an explicit user action. It does not
+query an API, download an artifact, or replace the application.
 
 A session started by `noter update` names its window `Update status - Noter`
 until the status is closed, so the command is not mistaken for a blank editor.

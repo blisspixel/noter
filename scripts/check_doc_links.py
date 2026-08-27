@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import re
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -115,10 +115,41 @@ def normalized_path(path: Path) -> Path:
     return Path(os.path.abspath(path))
 
 
+def first_symlink_component(root: Path, destination: Path) -> Path | None:
+    """Return the first symlink below a lexical repository root, if any."""
+
+    current = root
+    for component in destination.relative_to(root).parts:
+        current /= component
+        if stat.S_ISLNK(current.lstat().st_mode):
+            return current
+    return None
+
+
+def terminal_safe_diagnostic(diagnostic: str) -> str:
+    """Render non-printing Unicode code points as visible terminal-safe escapes."""
+
+    rendered: list[str] = []
+    for character in diagnostic:
+        if character.isprintable():
+            rendered.append(character)
+            continue
+
+        code_point = ord(character)
+        if code_point <= 0xFF:
+            rendered.append(f"\\x{code_point:02x}")
+        elif code_point <= 0xFFFF:
+            rendered.append(f"\\u{code_point:04x}")
+        else:
+            rendered.append(f"\\U{code_point:08x}")
+    return "".join(rendered)
+
+
 def missing_links(root: Path) -> list[str]:
     """Return diagnostics for missing local inline-link paths and fragments."""
     diagnostics: list[str] = []
     repository_root = normalized_path(root)
+    resolved_repository_root = repository_root.resolve(strict=True)
     contents: dict[Path, str] = {}
 
     for document in markdown_files(root):
@@ -173,6 +204,40 @@ def missing_links(root: Path) -> list[str]:
                     diagnostics.append(f"{relative}:{line_number}: missing {target}")
                     continue
 
+                try:
+                    resolved_destination = destination.resolve(strict=True)
+                    resolved_destination.relative_to(resolved_repository_root)
+                except ValueError:
+                    diagnostics.append(
+                        f"{relative}:{line_number}: local link leaves repository: {target}"
+                    )
+                    continue
+                except (OSError, RuntimeError) as error:
+                    diagnostics.append(
+                        f"{relative}:{line_number}: local link cannot be resolved: "
+                        f"{target}: {error}"
+                    )
+                    continue
+
+                # Repository links must behave identically on hosts where Git
+                # checks symlinks out as links or as plain target-text files.
+                # Reject every symlink component, including links that happen to
+                # resolve inside the repository, instead of validating one host's
+                # checkout representation and publishing a different result.
+                try:
+                    symlink = first_symlink_component(repository_root, destination)
+                except OSError as error:
+                    diagnostics.append(
+                        f"{relative}:{line_number}: local link cannot be inspected: "
+                        f"{target}: {error}"
+                    )
+                    continue
+                if symlink is not None:
+                    diagnostics.append(
+                        f"{relative}:{line_number}: local link uses a symbolic path: {target}"
+                    )
+                    continue
+
                 fragment = unquote(parsed.fragment)
                 if (
                     fragment
@@ -193,7 +258,10 @@ def main() -> int:
     root = Path(__file__).resolve().parent.parent
     diagnostics = missing_links(root)
     if diagnostics:
-        print("\n".join(diagnostics), file=sys.stderr)
+        print(
+            "\n".join(terminal_safe_diagnostic(item) for item in diagnostics),
+            file=sys.stderr,
+        )
         return 1
 
     print("All local Markdown link targets exist.")

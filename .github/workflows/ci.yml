@@ -126,22 +126,45 @@ jobs:
           path: lcov.info
 
   mutation:
+    name: mutation-${{ matrix.scope }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Three Linux shards retain the complete deterministic candidate
+          # partition with margin beneath the 90-minute fail-closed ceiling.
           - os: ubuntu-latest
-            scope: linux-common
-          # Both Windows shards are required. cargo-mutants partitions the
-          # filtered candidate list deterministically after generation.
+            scope: linux-0-of-3
+            shard: 0/3
+          - os: ubuntu-latest
+            scope: linux-1-of-3
+            shard: 1/3
+          - os: ubuntu-latest
+            scope: linux-2-of-3
+            shard: 2/3
+          # Six Windows shards retain the complete deterministic candidate
+          # partition with enough margin beneath the 90-minute fail-closed
+          # ceiling. One aggregate check remains stable if the partition grows.
           - os: windows-latest
-            scope: windows-shard-0
-            shard: 0/2
+            scope: windows-0-of-6
+            shard: 0/6
           - os: windows-latest
-            scope: windows-shard-1
-            shard: 1/2
+            scope: windows-1-of-6
+            shard: 1/6
+          - os: windows-latest
+            scope: windows-2-of-6
+            shard: 2/6
+          - os: windows-latest
+            scope: windows-3-of-6
+            shard: 3/6
+          - os: windows-latest
+            scope: windows-4-of-6
+            shard: 4/6
+          - os: windows-latest
+            scope: windows-5-of-6
+            shard: 5/6
           - os: macos-latest
-            scope: macos-platform
+            scope: macos
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -165,6 +188,7 @@ jobs:
           CARGO_INCREMENTAL: 1
         run: >
           cargo mutants -vV --in-place --colors never --workspace
+          --shard ${{ matrix.shard }}
           --exclude-re
           '(is_final_link|reconcile_existing_failure|replacement_backup_path|is_documented_partial_replacement|finalize_unexpected_displaced_destination|TemporaryFile::discard|TemporaryFile::preserve_artifact|Drop for TemporaryFile|closed_temporary_matches_intended|remove_verified_backup|[Ww]indows|[Mm]acos)'
       - name: Run Windows trust-kernel mutation tests
@@ -174,13 +198,19 @@ jobs:
           # auto-selected test floor while a failing suite is unwinding.
           # Sixty seconds preserves finite-failure evidence without weakening
           # the job's 90-minute outer bound.
+          #
+          # The exclusion below must name every Unix-gated item, in both cases.
+          # cargo-mutants builds its candidate list by parsing source without
+          # evaluating cfg, so a `#[cfg(unix)]` item still yields candidates
+          # here. Those mutants compile out of the Windows binary, no test can
+          # observe them, and they are reported missed rather than unviable.
           CARGO_INCREMENTAL: 1
         run: >
           cargo mutants -vV --in-place --colors never --workspace
           --minimum-test-timeout 60
           --shard ${{ matrix.shard }}
           --exclude-re
-          '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|unix|linux|[Mm]acos)'
+          '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|[Uu]nix|from_open_parent|linux|[Mm]acos)'
       - name: Run macOS platform mutation tests
         if: runner.os == 'macOS'
         env:
@@ -190,6 +220,8 @@ jobs:
           # Keep the complete workspace test scope and incremental rebuilds, but
           # cap codegen units so every repeated linker invocation is bounded.
           # The ordinary macOS test job retains its normal debug profile.
+          # Windows shards own Windows-only commit receipt mutations; selecting
+          # them on macOS produces equivalent, non-executable mutants.
           # When the infrastructure gate still sees a linker flake hidden as
           # unviable with zero missed mutants, retry the macOS scope once.
           CARGO_BUILD_JOBS: 1
@@ -201,7 +233,8 @@ jobs:
           run_macos_mutants() {
             cargo mutants -vV --in-place --colors never --workspace \
               -p noter-platform \
-              --re '[Mm]acos'
+              --re '([Mm]acos|CommitReceipt|ParentSyncReceipt|unix_(replace_existing|install_new|with_sibling_parent))' \
+              --exclude-re '([Ww]indows|ParentSyncReceipt::unsupported)'
           }
           run_macos_mutants
           if python scripts/check_mutation_infrastructure.py mutants.out; then
@@ -221,6 +254,23 @@ jobs:
         with:
           name: mutation-results-${{ matrix.scope }}
           path: mutants.out
+          if-no-files-found: error
+
+  mutation-gate:
+    name: mutation-gate
+    needs: mutation
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every mutation partition to pass
+        env:
+          MUTATION_MATRIX_RESULT: ${{ needs.mutation.result }}
+        run: |
+          if [ "$MUTATION_MATRIX_RESULT" != success ]; then
+            echo "Mutation matrix result: $MUTATION_MATRIX_RESULT" >&2
+            exit 1
+          fi
 
   docs:
     runs-on: ubuntu-latest

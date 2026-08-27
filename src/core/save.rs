@@ -364,20 +364,23 @@ impl From<StorageError> for TemporaryCreationFailure {
 }
 
 /// Verified destination facts and commit cleanup status after replacement.
+#[must_use = "a committed replacement receipt carries its one-shot parent barrier"]
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ReplaceReceipt {
+pub struct ReplaceReceipt<P = ()> {
     observation: FileObservation,
     cleanup_warnings: Vec<StorageError>,
     durability_warnings: Vec<StorageError>,
+    parent_sync: P,
 }
 
-impl ReplaceReceipt {
+impl ReplaceReceipt<()> {
     /// Creates a verified replacement receipt without a cleanup warning.
     pub const fn new(observation: FileObservation) -> Self {
         Self {
             observation,
             cleanup_warnings: Vec::new(),
             durability_warnings: Vec::new(),
+            parent_sync: (),
         }
     }
 
@@ -390,6 +393,7 @@ impl ReplaceReceipt {
             observation,
             cleanup_warnings: vec![cleanup_warning],
             durability_warnings: Vec::new(),
+            parent_sync: (),
         }
     }
 
@@ -403,6 +407,24 @@ impl ReplaceReceipt {
             observation,
             cleanup_warnings,
             durability_warnings,
+            parent_sync: (),
+        }
+    }
+}
+
+impl<P> ReplaceReceipt<P> {
+    /// Creates a verified replacement receipt with its exact parent barrier.
+    pub const fn with_parent_sync(
+        observation: FileObservation,
+        cleanup_warnings: Vec<StorageError>,
+        durability_warnings: Vec<StorageError>,
+        parent_sync: P,
+    ) -> Self {
+        Self {
+            observation,
+            cleanup_warnings,
+            durability_warnings,
+            parent_sync,
         }
     }
 
@@ -421,20 +443,21 @@ impl ReplaceReceipt {
         &self.durability_warnings
     }
 
-    fn into_parts(self) -> (FileObservation, Vec<StorageError>, Vec<StorageError>) {
+    pub(crate) fn into_parts(self) -> (FileObservation, Vec<StorageError>, Vec<StorageError>, P) {
         (
             self.observation,
             self.cleanup_warnings,
             self.durability_warnings,
+            self.parent_sync,
         )
     }
 }
 
 /// Result of the commit-point platform operation.
 #[derive(Debug)]
-pub enum ReplaceOutcome<T> {
+pub enum ReplaceOutcome<T, P = ()> {
     /// The new bytes are the destination and were verified.
-    Committed(ReplaceReceipt),
+    Committed(ReplaceReceipt<P>),
     /// The destination changed before the commit point.
     Conflict {
         /// Still-private temporary file.
@@ -565,6 +588,9 @@ pub trait Storage {
     /// Adapter-owned private temporary file.
     type Temporary;
 
+    /// One-shot token for the exact parent used by a successful commit.
+    type ParentSync;
+
     /// Inspects the final path without following an unsafe final link.
     ///
     /// # Errors
@@ -625,10 +651,10 @@ pub trait Storage {
         temporary: Self::Temporary,
         destination: &Path,
         expected: TargetState,
-    ) -> ReplaceOutcome<Self::Temporary>;
+    ) -> ReplaceOutcome<Self::Temporary, Self::ParentSync>;
 
     /// Performs the post-commit directory or platform persistence barrier.
-    fn sync_parent(&mut self, destination: &Path) -> DurabilityOutcome;
+    fn sync_parent(&mut self, parent_sync: Self::ParentSync) -> DurabilityOutcome;
 
     /// Explicitly removes an uncommitted temporary file.
     ///
@@ -702,9 +728,10 @@ pub fn save_snapshot<S: Storage>(storage: &mut S, snapshot: &SaveSnapshot) -> Sa
 
     match storage.replace(temporary, snapshot.target(), revalidated) {
         ReplaceOutcome::Committed(receipt) => {
-            let (observation, cleanup_warnings, mut durability_warnings) = receipt.into_parts();
+            let (observation, cleanup_warnings, mut durability_warnings, parent_sync) =
+                receipt.into_parts();
             let file_barrier_failed = !durability_warnings.is_empty();
-            let durability = match storage.sync_parent(snapshot.target()) {
+            let durability = match storage.sync_parent(parent_sync) {
                 DurabilityOutcome::Achieved(durability) if !file_barrier_failed => durability,
                 DurabilityOutcome::Achieved(_) => Durability::BestEffort,
                 DurabilityOutcome::Warning { achieved, error } => {
@@ -795,6 +822,8 @@ mod tests {
         durability: DurabilityOutcome,
         calls: Vec<SaveStage>,
         next_identity: u128,
+        parent_sync_token: u64,
+        consumed_parent_sync_token: Option<u64>,
     }
 
     impl FakeStorage {
@@ -811,6 +840,8 @@ mod tests {
                 durability: DurabilityOutcome::Achieved(Durability::FileAndDirectorySynced),
                 calls: Vec::new(),
                 next_identity: 2,
+                parent_sync_token: 41,
+                consumed_parent_sync_token: None,
             }
         }
 
@@ -860,6 +891,7 @@ mod tests {
 
     impl Storage for FakeStorage {
         type Temporary = FakeTemporary;
+        type ParentSync = u64;
 
         fn inspect(&mut self, _path: &Path, stage: SaveStage) -> Result<TargetState, StorageError> {
             self.enter(stage)?;
@@ -919,7 +951,7 @@ mod tests {
             temporary: Self::Temporary,
             _destination: &Path,
             expected: TargetState,
-        ) -> ReplaceOutcome<Self::Temporary> {
+        ) -> ReplaceOutcome<Self::Temporary, Self::ParentSync> {
             if let Err(error) = self.enter(SaveStage::Replace) {
                 return ReplaceOutcome::NotCommitted { temporary, error };
             }
@@ -953,31 +985,40 @@ mod tests {
             let observation = self.replace_destination(temporary.bytes);
             match self.replacement_warning {
                 ReplacementWarning::Durability => {
-                    ReplaceOutcome::Committed(ReplaceReceipt::with_warnings(
+                    ReplaceOutcome::Committed(ReplaceReceipt::with_parent_sync(
                         observation,
                         Vec::new(),
                         vec![StorageError::new(
                             SaveStage::SyncFile,
                             "injected post-commit file barrier failure",
                         )],
+                        self.parent_sync_token,
                     ))
                 }
                 ReplacementWarning::Cleanup => {
-                    ReplaceOutcome::Committed(ReplaceReceipt::with_cleanup_warning(
+                    ReplaceOutcome::Committed(ReplaceReceipt::with_parent_sync(
                         observation,
-                        StorageError::new(
+                        vec![StorageError::new(
                             SaveStage::Cleanup,
                             "injected post-commit cleanup failure",
-                        ),
+                        )],
+                        Vec::new(),
+                        self.parent_sync_token,
                     ))
                 }
                 ReplacementWarning::None => {
-                    ReplaceOutcome::Committed(ReplaceReceipt::new(observation))
+                    ReplaceOutcome::Committed(ReplaceReceipt::with_parent_sync(
+                        observation,
+                        Vec::new(),
+                        Vec::new(),
+                        self.parent_sync_token,
+                    ))
                 }
             }
         }
 
-        fn sync_parent(&mut self, _destination: &Path) -> DurabilityOutcome {
+        fn sync_parent(&mut self, parent_sync: Self::ParentSync) -> DurabilityOutcome {
+            self.consumed_parent_sync_token = Some(parent_sync);
             if let Err(error) = self.enter(SaveStage::SyncParent) {
                 return DurabilityOutcome::Warning {
                     achieved: Durability::FileSynced,
@@ -1053,6 +1094,7 @@ mod tests {
                 SaveStage::SyncParent,
             ]
         );
+        assert_eq!(storage.consumed_parent_sync_token, Some(41));
     }
 
     #[test]

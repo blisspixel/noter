@@ -17,6 +17,49 @@ const MAX_STABILITY_ATTEMPTS: usize = 3;
 const MAX_SUPPORTED_FILE_BYTES: u64 = MAX_DOCUMENT_BYTES as u64;
 const FILE_TOO_LARGE_MESSAGE: &str = "file exceeds the supported 64 MiB document limit";
 
+/// Verifies that a document path currently names an openable regular file
+/// without following a final link or reading its content.
+///
+/// This is the lightweight command-line preflight. Strict UTF-8, document-size,
+/// and stable-content validation remain the responsibility of
+/// [`read_regular_file`] when the GUI opens the document.
+///
+/// # Errors
+///
+/// Returns an I/O error for a missing or unreadable entry, a final symbolic
+/// link or Windows reparse point, a directory, or any other non-regular file.
+pub fn preflight_regular_file(path: &Path) -> io::Result<()> {
+    let entry = fs::symlink_metadata(path)?;
+    if let Some(state) = non_regular_state(&entry) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            non_regular_preflight_message(state),
+        ));
+    }
+
+    let file = noter_platform::open_existing_no_follow(path)?;
+    let opened = file.metadata()?;
+    if !handle_metadata_is_regular(opened.is_file(), is_final_link(&opened)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path is not a supported regular file",
+        ));
+    }
+    Ok(())
+}
+
+const fn non_regular_preflight_message(state: TargetState) -> &'static str {
+    match state {
+        TargetState::Special(SpecialFileKind::SymbolicLink) => {
+            "path is a symbolic link or reparse point"
+        }
+        TargetState::Special(SpecialFileKind::Directory) => "path is a directory",
+        TargetState::Special(SpecialFileKind::Other)
+        | TargetState::Missing
+        | TargetState::Regular(_) => "path is not a supported regular file",
+    }
+}
+
 /// Inspects a final path without following a final link or accepting a torn read.
 ///
 /// A regular file is read from an open handle. Identity, length, hard-link

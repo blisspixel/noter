@@ -1,6 +1,212 @@
 use std::{any::TypeId, cell::RefCell, ops::Range};
 
 use eframe::egui;
+use noter::core::line_endings::{LineEndingInsertionContext, normalize_inserted_text};
+
+/// The authoritative action implied by the focused editor's IME events for
+/// this frame. A composing value belongs only to the widget's transient buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImeFrameState {
+    None,
+    Composing,
+    Committed,
+    Cancelled,
+}
+
+/// Focus to restore after an active composition consumes its final Commit.
+pub struct ImeCommitFocusRestore {
+    displaced: Option<egui::Id>,
+}
+
+impl ImeCommitFocusRestore {
+    pub fn restore(self, ui: &egui::Ui, editor_id: egui::Id) {
+        ui.memory_mut(|memory| {
+            if let Some(displaced) = self.displaced {
+                memory.request_focus(displaced);
+            } else {
+                memory.surrender_focus(editor_id);
+            }
+        });
+    }
+}
+
+/// Lets an already-active composition consume a final nonempty Commit even
+/// when another control claimed focus earlier in the same UI frame. The new
+/// focus owner is restored immediately after the editor processes the event.
+pub fn retain_active_ime_commit_focus(
+    ui: &egui::Ui,
+    editor_id: egui::Id,
+    composition_was_active: bool,
+) -> Option<ImeCommitFocusRestore> {
+    if !composition_was_active || ui.memory(|memory| memory.has_focus(editor_id)) {
+        return None;
+    }
+    let has_commit = ui.input(|input| {
+        input.events.iter().any(|event| {
+            matches!(event, egui::Event::Ime(egui::ImeEvent::Commit(text)) if !text.is_empty())
+        })
+    });
+    if !has_commit {
+        return None;
+    }
+    let displaced = ui.memory(egui::Memory::focused);
+    ui.memory_mut(|memory| memory.request_focus(editor_id));
+    Some(ImeCommitFocusRestore { displaced })
+}
+
+/// Removes an active composition's final Commit until the document editor is
+/// rendered. Events before the Commit remain in place; only later events are
+/// returned for the caller to defer so event order is preserved.
+pub fn isolate_active_ime_commit(
+    ui: &egui::Ui,
+    composition_was_active: bool,
+) -> Option<(egui::Event, Vec<egui::Event>)> {
+    if !composition_was_active {
+        return None;
+    }
+    ui.input_mut(|input| {
+        let position = input.events.iter().position(|event| {
+            matches!(event, egui::Event::Ime(egui::ImeEvent::Commit(text)) if !text.is_empty())
+        })?;
+        let deferred = input.events.split_off(position + 1);
+        let commit = input
+            .events
+            .pop()
+            .expect("the located IME commit must still be present");
+        Some((commit, deferred))
+    })
+}
+
+/// Keeps a completed composition and any following input in separate frames.
+/// This lets callers publish the commit before a second composition begins.
+pub fn take_events_after_ime_terminal(
+    ui: &egui::Ui,
+    owns_events: bool,
+    composition_was_active: bool,
+) -> Vec<egui::Event> {
+    if !owns_events {
+        return Vec::new();
+    }
+    ui.input_mut(|input| {
+        deduplicate_adjacent_newline_commits(&mut input.events);
+        let mut composing = composition_was_active;
+        let terminal = input.events.iter().position(|event| match event {
+            egui::Event::Ime(egui::ImeEvent::Preedit { text, .. })
+                if text != "\n" && text != "\r" =>
+            {
+                if text.is_empty() {
+                    let was_composing = composing;
+                    composing = false;
+                    was_composing
+                } else {
+                    composing = true;
+                    false
+                }
+            }
+            egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                let is_terminal = !text.is_empty() || composing;
+                composing = false;
+                is_terminal
+            }
+            _ => false,
+        });
+        terminal
+            .filter(|position| position + 1 < input.events.len())
+            .map_or_else(Vec::new, |position| input.events.split_off(position + 1))
+    })
+}
+
+fn deduplicate_adjacent_newline_commits(events: &mut [egui::Event]) {
+    for enter in 0..events.len() {
+        if !is_plain_enter_press(&events[enter]) {
+            continue;
+        }
+        let paired_commit = enter
+            .checked_sub(1)
+            .filter(|&index| is_newline_commit(&events[index]))
+            .or_else(|| {
+                let index = enter + 1;
+                (index < events.len() && is_newline_commit(&events[index])).then_some(index)
+            });
+        if let Some(index) = paired_commit
+            && let egui::Event::Ime(egui::ImeEvent::Commit(text)) = &mut events[index]
+        {
+            // Native integrations can emit adjacent Enter and newline Commit
+            // events for one action. Empty only that one matched terminal so
+            // additional commits remain ordered user input.
+            text.clear();
+        }
+    }
+}
+
+fn is_newline_commit(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Ime(egui::ImeEvent::Commit(text)) if is_single_logical_newline(text)
+    )
+}
+
+/// Mirrors egui 0.35's `TextEdit` IME lifecycle without exposing its private
+/// cursor-purpose state. Empty preedit/commit payloads only cancel an active
+/// composition. Projected editors adapt newline-only commits before the widget
+/// so every supported payload form completes exactly one logical insertion.
+pub fn focused_ime_frame_state(
+    ui: &egui::Ui,
+    id: egui::Id,
+    composition_was_active: bool,
+) -> ImeFrameState {
+    if !ui.memory(|memory| memory.has_focus(id)) {
+        return if composition_was_active {
+            ImeFrameState::Cancelled
+        } else {
+            ImeFrameState::None
+        };
+    }
+
+    ui.input(|input| {
+        let enter_pressed = input.events.iter().any(is_plain_enter_press);
+        let mut composing = composition_was_active;
+        let mut terminal = ImeFrameState::None;
+        for event in &input.events {
+            match event {
+                egui::Event::Ime(egui::ImeEvent::Preedit { text, .. })
+                    if text != "\n" && text != "\r" =>
+                {
+                    if text.is_empty() {
+                        if composing {
+                            composing = false;
+                            terminal = ImeFrameState::Cancelled;
+                        }
+                    } else {
+                        composing = true;
+                        terminal = ImeFrameState::Composing;
+                    }
+                }
+                egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                    if text.is_empty() {
+                        if composing {
+                            composing = false;
+                            terminal = if enter_pressed {
+                                ImeFrameState::Committed
+                            } else {
+                                ImeFrameState::Cancelled
+                            };
+                        }
+                    } else {
+                        composing = false;
+                        terminal = ImeFrameState::Committed;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if composing {
+            ImeFrameState::Composing
+        } else {
+            terminal
+        }
+    })
+}
 
 /// Truncates a string to an exact UTF-8 byte ceiling without splitting a
 /// scalar value.
@@ -91,6 +297,168 @@ pub fn sanitize_bounded_text_events(
     })
 }
 
+/// Bounds text-bearing events for a projected editor against exact source bytes.
+///
+/// Display selections are mapped back to source before calculating replacement
+/// capacity. Newline expansion is measured using the insertion convention that
+/// the projected buffer will apply at the pre-edit source position.
+pub fn sanitize_projected_text_events(
+    ui: &egui::Ui,
+    id: egui::Id,
+    current_source: &str,
+    maximum: usize,
+    insertion_context: LineEndingInsertionContext,
+) -> bool {
+    if !ui.memory(|memory| memory.has_focus(id)) {
+        return false;
+    }
+    let has_text_payload = ui.input(|input| {
+        input.events.iter().any(|event| {
+            matches!(event, egui::Event::Paste(_) | egui::Event::Text(_))
+                || matches!(
+                    event,
+                    egui::Event::Ime(egui::ImeEvent::Preedit { .. } | egui::ImeEvent::Commit(_))
+                )
+        })
+    });
+    if !has_text_payload {
+        return false;
+    }
+
+    let selection = egui::TextEdit::load_state(ui.ctx(), id)
+        .and_then(|state| state.cursor.char_range())
+        .and_then(|range| display_selection_to_source(current_source, range))
+        .unwrap_or_else(|| noter::core::edit::Selection::caret(current_source.len()));
+    let selected = selection.ordered_range();
+    let selected_bytes = selected.end() - selected.start();
+    let retained = current_source.len().saturating_sub(selected_bytes);
+    let Some(ending) = insertion_context.insertion_at(current_source, selected.start()) else {
+        return false;
+    };
+    let mut remaining = maximum.saturating_sub(retained);
+
+    ui.input_mut(|input| {
+        let mut clamped = false;
+        let pointer_drag_may_change_selection = input.pointer.primary_down()
+            && input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::PointerMoved(_)));
+        let pointer_button_may_change_selection = input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::PointerButton { .. }));
+        let mut selection_budget_may_be_stale =
+            pointer_drag_may_change_selection || pointer_button_may_change_selection;
+        for event in &mut input.events {
+            match event {
+                egui::Event::Paste(text) | egui::Event::Text(text) => {
+                    let normalized = normalize_inserted_text(text, ending, remaining);
+                    let consumed = normalized.consumed_input_bytes();
+                    let was_limited = normalized.was_limited();
+                    remaining = remaining.saturating_sub(normalized.text().len());
+                    canonicalize_projected_payload(text, consumed);
+                    clamped |= was_limited;
+                }
+                egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                    let is_newline_only = is_single_logical_newline(text);
+                    let normalized = normalize_inserted_text(text, ending, remaining);
+                    let consumed = normalized.consumed_input_bytes();
+                    let was_limited = normalized.was_limited();
+                    remaining = remaining.saturating_sub(normalized.text().len());
+                    if is_newline_only {
+                        text.clear();
+                        if normalized.text().is_empty() {
+                            // An active composition must observe a rejected
+                            // terminal as cancellation, not publish its
+                            // transient pre-edit draft as a committed edit.
+                        } else {
+                            // egui 0.35 ignores sole LF and CR IME commits.
+                            // Keep a two-scalar logical-newline sentinel through
+                            // its event guard after exact normalization accepts
+                            // the complete logical newline.
+                            text.push_str("\r\n");
+                        }
+                    } else {
+                        canonicalize_projected_payload(text, consumed);
+                    }
+                    clamped |= was_limited;
+                }
+                egui::Event::Ime(egui::ImeEvent::Preedit {
+                    text,
+                    active_range_chars,
+                }) => {
+                    let normalized = normalize_inserted_text(text, ending, remaining);
+                    let consumed = normalized.consumed_input_bytes();
+                    let was_limited = normalized.was_limited();
+                    let projected_active_range = active_range_chars.as_ref().and_then(|range| {
+                        project_payload_character_range(&text[..consumed], range.clone())
+                    });
+                    canonicalize_projected_payload(text, consumed);
+                    if was_limited || selection_budget_may_be_stale {
+                        *active_range_chars = None;
+                    } else {
+                        *active_range_chars = projected_active_range;
+                    }
+                    clamped |= was_limited;
+                }
+                event => {
+                    selection_budget_may_be_stale |= event_may_change_selection_or_text(event);
+                }
+            }
+        }
+        clamped
+    })
+}
+
+fn is_single_logical_newline(text: &str) -> bool {
+    matches!(text, "\n" | "\r" | "\r\n")
+}
+
+fn is_plain_enter_press(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            pressed: true,
+            modifiers,
+            ..
+        } if *modifiers == egui::Modifiers::NONE
+    )
+}
+
+fn canonicalize_projected_payload(text: &mut String, accepted_bytes: usize) {
+    if text[..accepted_bytes].contains('\r') {
+        let canonical = SourceDisplayProjection::new(&text[..accepted_bytes]);
+        canonical.display().clone_into(text);
+    } else if accepted_bytes < text.len() {
+        text.truncate(accepted_bytes);
+    }
+}
+
+fn project_payload_character_range(
+    payload: &str,
+    character_range: Range<usize>,
+) -> Option<Range<usize>> {
+    if character_range.start > character_range.end || character_range.end > payload.chars().count()
+    {
+        return None;
+    }
+    if !payload.contains('\r') {
+        return Some(character_range);
+    }
+
+    let source_bytes = byte_range_from_char_range(
+        payload,
+        egui::text::CharIndex(character_range.start)..egui::text::CharIndex(character_range.end),
+    );
+    let projected = SourceDisplayProjection::new(payload).selection_to_display(
+        noter::core::edit::Selection::new(source_bytes.start, source_bytes.end),
+    )?;
+    let [start, end] = projected.sorted_cursors();
+    Some(usize::from(start.index)..usize::from(end.index))
+}
+
 const fn event_may_change_selection_or_text(event: &egui::Event) -> bool {
     match event {
         egui::Event::Cut | egui::Event::AccessKitActionRequest(_) => true,
@@ -131,6 +499,605 @@ const fn event_may_change_selection_or_text(event: &egui::Event) -> bool {
         _ => false,
     }
 }
+
+mod projected {
+    use std::{any::TypeId, cell::RefCell, ops::Range};
+
+    use eframe::egui;
+    use noter::core::{
+        edit::Selection,
+        line_endings::{LineEnding, LineEndingInsertionContext, normalize_inserted_text},
+    };
+
+    use super::{byte_range_from_char_range, utf8_prefix};
+
+    /// A canonical LF display of source that retains exact source byte mappings.
+    ///
+    /// CRLF projects to one LF display character and bare CR projects to LF.
+    /// Every other Unicode scalar is preserved exactly.
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    pub struct SourceDisplayProjection {
+        display: String,
+        source_length: usize,
+        collapsed_source_ends: Vec<usize>,
+    }
+
+    /// Reusable canonical display storage for an unchanged source generation.
+    ///
+    /// A cache returned by [`ProjectedTextBuffer::into_cache`] is valid only
+    /// while the caller knows the source has not changed outside a projected
+    /// buffer. Passing `None` to [`ProjectedTextBuffer::new_reusing`] rebuilds
+    /// the exact projection.
+    #[derive(Debug)]
+    pub struct ProjectedTextCache {
+        projection: Option<SourceDisplayProjection>,
+    }
+
+    #[cfg(test)]
+    impl ProjectedTextCache {
+        pub(crate) fn storage_identity(&self) -> Option<(*const u8, *const usize, usize)> {
+            self.projection.as_ref().map(|projection| {
+                (
+                    projection.display.as_ptr(),
+                    projection.collapsed_source_ends.as_ptr(),
+                    projection.collapsed_source_ends.len(),
+                )
+            })
+        }
+    }
+
+    impl SourceDisplayProjection {
+        /// Builds a canonical display and its exact boundary mapping.
+        pub fn new(source: &str) -> Self {
+            let mut display = String::with_capacity(source.len());
+            let mut collapsed_source_ends = Vec::new();
+            let mut source_offset = 0;
+            while source_offset < source.len() {
+                let bytes = source.as_bytes();
+                if bytes[source_offset] == b'\r' {
+                    display.push('\n');
+                    if bytes.get(source_offset + 1) == Some(&b'\n') {
+                        source_offset += 2;
+                        collapsed_source_ends.push(source_offset);
+                    } else {
+                        source_offset += 1;
+                    }
+                } else {
+                    let character_length = source[source_offset..]
+                        .chars()
+                        .next()
+                        .map_or(source.len() - source_offset, char::len_utf8);
+                    display.push_str(&source[source_offset..source_offset + character_length]);
+                    source_offset += character_length;
+                }
+            }
+
+            Self {
+                display,
+                source_length: source.len(),
+                collapsed_source_ends,
+            }
+        }
+
+        /// Returns the canonical LF text presented to `TextEdit`.
+        pub fn display(&self) -> &str {
+            &self.display
+        }
+
+        /// Maps one canonical display character boundary to its exact source byte boundary.
+        pub fn display_char_to_source_byte(
+            &self,
+            display_index: egui::text::CharIndex,
+        ) -> Option<usize> {
+            let display_byte = byte_index_at_char(&self.display, display_index)?;
+            let collapsed = self.collapsed_count_at_display_byte(display_byte);
+            Some(display_byte + collapsed)
+        }
+
+        /// Maps one exact source byte boundary to a canonical display character boundary.
+        ///
+        /// A byte offset between CR and LF is not a valid boundary and returns `None`.
+        pub fn source_byte_to_display_char(
+            &self,
+            source_byte: usize,
+        ) -> Option<egui::text::CharIndex> {
+            if source_byte > self.source_length || self.is_crlf_midpoint(source_byte) {
+                return None;
+            }
+            let collapsed = self
+                .collapsed_source_ends
+                .partition_point(|&end| end <= source_byte);
+            let display_byte = source_byte.checked_sub(collapsed)?;
+            self.display
+                .is_char_boundary(display_byte)
+                .then(|| egui::text::CharIndex(self.display[..display_byte].chars().count()))
+        }
+
+        /// Converts a directional display selection to exact source byte offsets.
+        pub fn selection_to_source(&self, range: egui::text::CCursorRange) -> Option<Selection> {
+            let anchor = self.display_char_to_source_byte(range.secondary.index)?;
+            let active = self.display_char_to_source_byte(range.primary.index)?;
+            Some(Selection::new(anchor, active))
+        }
+
+        /// Converts a directional source selection to canonical display cursors.
+        ///
+        /// A caret between CR and LF snaps before the pair. A nonempty selection
+        /// expands outward so selecting either byte selects the displayed newline.
+        pub fn selection_to_display(
+            &self,
+            selection: Selection,
+        ) -> Option<egui::text::CCursorRange> {
+            let anchor = self.canonical_source_endpoint(selection, selection.anchor())?;
+            let active = self.canonical_source_endpoint(selection, selection.active())?;
+            Some(egui::text::CCursorRange {
+                primary: egui::text::CCursor::new(self.source_byte_to_display_char(active)?),
+                secondary: egui::text::CCursor::new(self.source_byte_to_display_char(anchor)?),
+                h_pos: None,
+            })
+        }
+
+        fn canonical_source_endpoint(
+            &self,
+            selection: Selection,
+            endpoint: usize,
+        ) -> Option<usize> {
+            if endpoint > self.source_length {
+                return None;
+            }
+            let Ok(pair_index) = self
+                .collapsed_source_ends
+                .binary_search(&endpoint.saturating_add(1))
+            else {
+                return self.source_byte_to_display_char(endpoint).map(|_| endpoint);
+            };
+            let pair_end = self.collapsed_source_ends[pair_index];
+            if selection.anchor() == selection.active()
+                || endpoint == selection.ordered_range().start()
+            {
+                Some(pair_end - 2)
+            } else {
+                Some(pair_end)
+            }
+        }
+
+        fn is_crlf_midpoint(&self, source_byte: usize) -> bool {
+            self.collapsed_source_ends
+                .binary_search(&source_byte.saturating_add(1))
+                .is_ok()
+        }
+
+        fn collapsed_count_at_display_byte(&self, display_byte: usize) -> usize {
+            let mut start = 0;
+            let mut end = self.collapsed_source_ends.len();
+            while start < end {
+                let midpoint = start + (end - start) / 2;
+                let collapsed_display_end = self.collapsed_source_ends[midpoint] - (midpoint + 1);
+                if collapsed_display_end <= display_byte {
+                    start = midpoint + 1;
+                } else {
+                    end = midpoint;
+                }
+            }
+            start
+        }
+    }
+
+    /// Maps a canonical display selection without allocating for LF-only text.
+    pub fn display_selection_to_source(
+        source: &str,
+        range: egui::text::CCursorRange,
+    ) -> Option<Selection> {
+        if source.contains('\r') {
+            SourceDisplayProjection::new(source).selection_to_source(range)
+        } else {
+            let anchor = byte_index_at_char(source, range.secondary.index)?;
+            let active = byte_index_at_char(source, range.primary.index)?;
+            Some(Selection::new(anchor, active))
+        }
+    }
+
+    /// Maps an exact source selection without allocating for LF-only text.
+    pub fn source_selection_to_display(
+        source: &str,
+        selection: Selection,
+    ) -> Option<egui::text::CCursorRange> {
+        if source.contains('\r') {
+            SourceDisplayProjection::new(source).selection_to_display(selection)
+        } else {
+            let cursor = |byte: usize| {
+                (byte <= source.len() && source.is_char_boundary(byte))
+                    .then(|| egui::text::CCursor::new(source[..byte].chars().count()))
+            };
+            Some(egui::text::CCursorRange {
+                primary: cursor(selection.active())?,
+                secondary: cursor(selection.anchor())?,
+                h_pos: None,
+            })
+        }
+    }
+
+    /// A bounded `TextEdit` buffer backed by exact, non-normalized source text.
+    ///
+    /// The widget sees canonical LF text. Mutations are mapped back to source,
+    /// inserted newlines follow the supplied document context, and untouched line
+    /// endings retain their original bytes.
+    pub struct ProjectedTextBuffer<'a> {
+        source: &'a mut String,
+        projection: Option<SourceDisplayProjection>,
+        insertion_context: LineEndingInsertionContext,
+        maximum: usize,
+        was_limited: bool,
+        recent_deletion: RefCell<Option<ProjectedRecentDeletion>>,
+    }
+
+    impl<'a> ProjectedTextBuffer<'a> {
+        /// Creates a projected buffer with an exact source-byte ceiling.
+        pub fn new(
+            source: &'a mut String,
+            maximum: usize,
+            insertion_context: LineEndingInsertionContext,
+        ) -> Self {
+            Self::new_reusing(source, maximum, insertion_context, None)
+        }
+
+        /// Creates a projected buffer, reusing an unchanged source projection.
+        pub fn new_reusing(
+            source: &'a mut String,
+            maximum: usize,
+            insertion_context: LineEndingInsertionContext,
+            cache: Option<ProjectedTextCache>,
+        ) -> Self {
+            let was_limited = truncate_source_to_byte_limit(source, maximum);
+            let projection = if was_limited {
+                projection_for_source(source)
+            } else {
+                cache.map_or_else(
+                    || projection_for_source(source),
+                    |cache| match (source.contains('\r'), cache.projection) {
+                        (true, Some(projection)) => Some(projection),
+                        (false, None) => None,
+                        _ => projection_for_source(source),
+                    },
+                )
+            };
+            Self {
+                source,
+                projection,
+                insertion_context,
+                maximum,
+                was_limited,
+                recent_deletion: RefCell::new(None),
+            }
+        }
+
+        /// Reports whether the source-byte ceiling excluded any content.
+        pub const fn was_limited(&self) -> bool {
+            self.was_limited
+        }
+
+        /// Returns the current projection for reuse with unchanged source.
+        pub fn into_cache(self) -> ProjectedTextCache {
+            ProjectedTextCache {
+                projection: self.projection,
+            }
+        }
+
+        /// Converts a directional display selection to exact source byte offsets.
+        pub fn selection_to_source(&self, range: egui::text::CCursorRange) -> Option<Selection> {
+            self.projection.as_ref().map_or_else(
+                || display_selection_to_source(self.source, range),
+                |projection| projection.selection_to_source(range),
+            )
+        }
+
+        /// Converts a directional source selection to canonical display cursors.
+        pub fn selection_to_display(
+            &self,
+            selection: Selection,
+        ) -> Option<egui::text::CCursorRange> {
+            self.projection.as_ref().map_or_else(
+                || source_selection_to_display(self.source, selection),
+                |projection| projection.selection_to_display(selection),
+            )
+        }
+
+        fn rebuild_projection(&mut self) {
+            self.projection = projection_for_source(self.source);
+        }
+
+        fn display(&self) -> &str {
+            self.projection
+                .as_ref()
+                .map_or(self.source.as_str(), SourceDisplayProjection::display)
+        }
+
+        fn display_char_to_source_byte(
+            &self,
+            display_index: egui::text::CharIndex,
+        ) -> Option<usize> {
+            self.projection.as_ref().map_or_else(
+                || byte_index_at_char(self.source, display_index),
+                |projection| projection.display_char_to_source_byte(display_index),
+            )
+        }
+
+        fn source_byte_to_display_char(&self, source_byte: usize) -> Option<egui::text::CharIndex> {
+            self.projection.as_ref().map_or_else(
+                || {
+                    (source_byte <= self.source.len() && self.source.is_char_boundary(source_byte))
+                        .then(|| egui::text::CharIndex(self.source[..source_byte].chars().count()))
+                },
+                |projection| projection.source_byte_to_display_char(source_byte),
+            )
+        }
+
+        fn insert_source_text(
+            &mut self,
+            text: &str,
+            display_index: egui::text::CharIndex,
+        ) -> usize {
+            let Some(source_byte) = self.display_char_to_source_byte(display_index) else {
+                return 0;
+            };
+            let recent_deletion = self.recent_deletion.borrow_mut().take();
+            let ending = recent_deletion
+                .as_ref()
+                .filter(|deletion| deletion.display_start == display_index)
+                .map_or_else(
+                    || {
+                        self.insertion_context
+                            .insertion_at(self.source, source_byte)
+                            .expect("a projected boundary cannot split source CRLF")
+                    },
+                    |deletion| deletion.ending,
+                );
+            let remaining = self.maximum.saturating_sub(self.source.len());
+            let normalized = normalize_inserted_text(text, ending, remaining);
+            self.was_limited |= normalized.was_limited();
+
+            if !text.is_empty()
+                && normalized.text().is_empty()
+                && let Some(deletion) = recent_deletion
+                && deletion.display_start == display_index
+                && let Some(removed) = deletion.removed
+            {
+                self.source.insert_str(deletion.source_start, &removed);
+                self.rebuild_projection();
+                return 0;
+            }
+
+            let inserted_source_length = normalized.text().len();
+            self.source.insert_str(source_byte, normalized.text());
+            self.rebuild_projection();
+            let display_end = self
+                .source_byte_to_display_char(source_byte + inserted_source_length)
+                .expect("normalized insertion must end on a projected boundary");
+            usize::from(display_end).saturating_sub(usize::from(display_index))
+        }
+    }
+
+    struct ProjectedTextBufferType;
+
+    struct ProjectedRecentDeletion {
+        display_start: egui::text::CharIndex,
+        source_start: usize,
+        removed: Option<String>,
+        ending: LineEnding,
+    }
+
+    impl egui::TextBuffer for ProjectedTextBuffer<'_> {
+        fn is_mutable(&self) -> bool {
+            true
+        }
+
+        fn as_str(&self) -> &str {
+            self.recent_deletion.borrow_mut().take();
+            self.display()
+        }
+
+        fn insert_text(&mut self, text: &str, char_index: egui::text::CharIndex) -> usize {
+            self.insert_source_text(text, char_index)
+        }
+
+        fn delete_char_range(&mut self, char_range: Range<egui::text::CharIndex>) {
+            self.recent_deletion.borrow_mut().take();
+            let start = char_range.start.min(char_range.end);
+            let end = char_range.start.max(char_range.end);
+            let Some(source_start) = self.display_char_to_source_byte(start) else {
+                return;
+            };
+            let Some(source_end) = self.display_char_to_source_byte(end) else {
+                return;
+            };
+            self.source.drain(source_start..source_end);
+            self.rebuild_projection();
+        }
+
+        fn insert_text_at(
+            &mut self,
+            ccursor: &mut egui::text::CCursor,
+            text_to_insert: &str,
+            char_limit: usize,
+        ) {
+            let current_characters = self.display().chars().count();
+            let available_characters = char_limit.saturating_sub(current_characters);
+            let text_to_insert = logical_prefix(text_to_insert, available_characters);
+            ccursor.index += self.insert_source_text(text_to_insert, ccursor.index);
+        }
+
+        fn delete_selected(
+            &mut self,
+            cursor_range: &egui::text::CCursorRange,
+        ) -> egui::text::CCursor {
+            let [start, end] = cursor_range.sorted_cursors();
+            let Some(source_start) = self.display_char_to_source_byte(start.index) else {
+                return start;
+            };
+            let Some(source_end) = self.display_char_to_source_byte(end.index) else {
+                return start;
+            };
+            let ending = self
+                .insertion_context
+                .insertion_at(self.source, source_start)
+                .expect("a projected boundary cannot split source CRLF");
+            let removed_length = source_end - source_start;
+            let removed = (1..=4)
+                .contains(&removed_length)
+                .then(|| self.source[source_start..source_end].to_owned());
+            self.source.drain(source_start..source_end);
+            self.rebuild_projection();
+            *self.recent_deletion.borrow_mut() = Some(ProjectedRecentDeletion {
+                display_start: start.index,
+                source_start,
+                removed,
+                ending,
+            });
+            egui::text::CCursor {
+                index: start.index,
+                prefer_next_row: true,
+            }
+        }
+
+        fn clear(&mut self) {
+            self.recent_deletion.borrow_mut().take();
+            self.source.clear();
+            self.rebuild_projection();
+        }
+
+        fn replace_with(&mut self, text: &str) {
+            self.recent_deletion.borrow_mut().take();
+            let canonical_replacement = text
+                .contains('\r')
+                .then(|| SourceDisplayProjection::new(text));
+            let text = canonical_replacement
+                .as_ref()
+                .map_or(text, SourceDisplayProjection::display);
+            let current = self.display();
+            let prefix_characters = common_prefix_characters(current, text);
+            let maximum_suffix = current
+                .chars()
+                .count()
+                .min(text.chars().count())
+                .saturating_sub(prefix_characters);
+            let suffix_characters = common_suffix_characters(current, text, maximum_suffix);
+            let current_end = current.chars().count() - suffix_characters;
+            let replacement_end = text.chars().count() - suffix_characters;
+            let source_start = self
+                .display_char_to_source_byte(egui::text::CharIndex(prefix_characters))
+                .expect("a common display prefix must end at a source boundary");
+            let source_end = self
+                .display_char_to_source_byte(egui::text::CharIndex(current_end))
+                .expect("a common display suffix must start at a source boundary");
+            let replacement_bytes = byte_range_from_char_range(
+                text,
+                egui::text::CharIndex(prefix_characters)..egui::text::CharIndex(replacement_end),
+            );
+            let retained = self
+                .source
+                .len()
+                .saturating_sub(source_end.saturating_sub(source_start));
+            let ending = self
+                .insertion_context
+                .insertion_at(self.source, source_start)
+                .expect("a projected boundary cannot split source CRLF");
+            self.source.replace_range(source_start..source_end, "");
+            let normalized = normalize_inserted_text(
+                &text[replacement_bytes],
+                ending,
+                self.maximum.saturating_sub(retained),
+            );
+            self.was_limited |= normalized.was_limited();
+            self.source.insert_str(source_start, normalized.text());
+            self.rebuild_projection();
+        }
+
+        fn take(&mut self) -> String {
+            self.recent_deletion.borrow_mut().take();
+            let display = self.display().to_owned();
+            self.source.clear();
+            self.rebuild_projection();
+            display
+        }
+
+        fn type_id(&self) -> TypeId {
+            TypeId::of::<ProjectedTextBufferType>()
+        }
+    }
+
+    fn projection_for_source(source: &str) -> Option<SourceDisplayProjection> {
+        source
+            .contains('\r')
+            .then(|| SourceDisplayProjection::new(source))
+    }
+
+    fn truncate_source_to_byte_limit(source: &mut String, maximum: usize) -> bool {
+        if source.len() <= maximum {
+            return false;
+        }
+        let mut boundary = utf8_prefix(source, maximum).len();
+        if boundary > 0
+            && source.as_bytes()[boundary - 1] == b'\r'
+            && source.as_bytes().get(boundary) == Some(&b'\n')
+        {
+            boundary -= 1;
+        }
+        source.truncate(boundary);
+        true
+    }
+
+    fn byte_index_at_char(source: &str, character: egui::text::CharIndex) -> Option<usize> {
+        let character = usize::from(character);
+        if character == source.chars().count() {
+            return Some(source.len());
+        }
+        source.char_indices().nth(character).map(|(byte, _)| byte)
+    }
+
+    fn logical_prefix(source: &str, maximum_characters: usize) -> &str {
+        if maximum_characters == usize::MAX {
+            return source;
+        }
+        let mut offset = 0;
+        let mut characters = 0;
+        while offset < source.len() && characters < maximum_characters {
+            if source.as_bytes()[offset] == b'\r'
+                && source.as_bytes().get(offset + 1) == Some(&b'\n')
+            {
+                offset += 2;
+            } else {
+                offset += source[offset..]
+                    .chars()
+                    .next()
+                    .expect("an in-range UTF-8 offset must contain a scalar")
+                    .len_utf8();
+            }
+            characters += 1;
+        }
+        &source[..offset]
+    }
+
+    fn common_prefix_characters(left: &str, right: &str) -> usize {
+        left.chars()
+            .zip(right.chars())
+            .take_while(|(left, right)| left == right)
+            .count()
+    }
+
+    fn common_suffix_characters(left: &str, right: &str, maximum: usize) -> usize {
+        left.chars()
+            .rev()
+            .zip(right.chars().rev())
+            .take(maximum)
+            .take_while(|(left, right)| left == right)
+            .count()
+    }
+}
+
+pub use projected::{
+    ProjectedTextBuffer, ProjectedTextCache, SourceDisplayProjection, display_selection_to_source,
+    source_selection_to_display,
+};
 
 /// A `TextEdit` buffer that applies an exact UTF-8 byte ceiling at every
 /// mutation. Enforcing the limit here covers text, paste, IME, Enter, Tab, and
@@ -292,8 +1259,20 @@ fn byte_range_from_char_range(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::ops::Range;
+
+    use super::{
+        BoundedTextBuffer, ImeFrameState, ProjectedTextBuffer, SourceDisplayProjection,
+        event_may_change_selection_or_text, focused_ime_frame_state, isolate_active_ime_commit,
+        sanitize_bounded_text_events, sanitize_projected_text_events,
+        take_events_after_ime_terminal, utf8_prefix,
+    };
+    use eframe::egui;
     use egui::TextBuffer as _;
+    use noter::core::{
+        edit::Selection,
+        line_endings::{LineEnding, LineEndingInsertionContext, LineEndingProfile},
+    };
 
     fn sanitize_event(event: egui::Event) -> egui::Event {
         let context = egui::Context::default();
@@ -309,6 +1288,53 @@ mod tests {
         });
 
         sanitized.expect("the sanitized event should remain available to TextEdit")
+    }
+
+    #[test]
+    fn ime_terminal_defers_the_next_composition_without_reordering() {
+        let context = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        let commit = egui::Event::Ime(egui::ImeEvent::Commit("漢".to_owned()));
+        let preedit = egui::Event::Ime(egui::ImeEvent::Preedit {
+            text: "次".to_owned(),
+            active_range_chars: Some(0..1),
+        });
+        let text = egui::Event::Text("tail".to_owned());
+        input
+            .events
+            .extend([commit.clone(), preedit.clone(), text.clone()]);
+
+        let mut retained = Vec::new();
+        let mut deferred = Vec::new();
+        let _ = context.run_ui(input, |ui| {
+            deferred = take_events_after_ime_terminal(ui, true, false);
+            retained = ui.input(|input| input.events.clone());
+        });
+
+        assert_eq!(retained, [commit]);
+        assert_eq!(deferred, [preedit, text]);
+    }
+
+    #[test]
+    fn isolated_ime_commit_keeps_prefix_and_defers_only_suffix() {
+        let context = egui::Context::default();
+        let before = egui::Event::Text("before".to_owned());
+        let commit = egui::Event::Ime(egui::ImeEvent::Commit("committed".to_owned()));
+        let after = egui::Event::Text("after".to_owned());
+        let mut input = egui::RawInput::default();
+        input
+            .events
+            .extend([before.clone(), commit.clone(), after.clone()]);
+        let mut isolated = None;
+        let mut retained = Vec::new();
+
+        let _ = context.run_ui(input, |ui| {
+            isolated = isolate_active_ime_commit(ui, true);
+            retained = ui.input(|input| input.events.clone());
+        });
+
+        assert_eq!(retained, [before]);
+        assert_eq!(isolated, Some((commit, vec![after])));
     }
 
     fn key(key: egui::Key) -> egui::Event {
@@ -663,6 +1689,766 @@ mod tests {
             assert_eq!(value, expected);
             assert!(!was_limited);
         }
+    }
+
+    fn context_for(source: &str) -> LineEndingInsertionContext {
+        LineEndingProfile::detect(source)
+            .insertion_context(source, 0..source.len())
+            .expect("the full source must be a valid editable range")
+    }
+
+    fn run_serialized_projected_newlines(
+        ending: LineEnding,
+        composition_active: bool,
+        events: Vec<egui::Event>,
+    ) -> String {
+        let context = egui::Context::default();
+        let id = egui::Id::new("serialized-projected-newline-matrix");
+        let mut source = format!("a{}b", ending.as_str());
+        let insertion_context = context_for(&source);
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            let mut buffer = ProjectedTextBuffer::new(&mut source, 64, insertion_context);
+            ui.add(egui::TextEdit::multiline(&mut buffer).id(id));
+        });
+        let mut state = egui::TextEdit::load_state(&context, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(if composition_active {
+            egui::text::CCursorRange::two(egui::text::CCursor::new(2), egui::text::CCursor::new(3))
+        } else {
+            egui::text::CCursorRange::one(egui::text::CCursor::new(3))
+        }));
+        egui::TextEdit::store_state(&context, id, state);
+        context.memory_mut(|memory| memory.request_focus(id));
+
+        if composition_active {
+            let preedit = egui::RawInput {
+                events: vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                    text: "x".to_owned(),
+                    active_range_chars: None,
+                })],
+                ..Default::default()
+            };
+            let _ = context.run_ui(preedit, |ui| {
+                assert!(take_events_after_ime_terminal(ui, true, false).is_empty());
+                assert!(!sanitize_projected_text_events(
+                    ui,
+                    id,
+                    &source,
+                    64,
+                    insertion_context,
+                ));
+                let mut buffer = ProjectedTextBuffer::new(&mut source, 64, insertion_context);
+                ui.add(egui::TextEdit::multiline(&mut buffer).id(id));
+            });
+            assert_eq!(source, format!("a{}x", ending.as_str()));
+        }
+
+        let mut queued = events;
+        let mut active = composition_active;
+        for _ in 0..4 {
+            if queued.is_empty() {
+                break;
+            }
+            let input = egui::RawInput {
+                events: std::mem::take(&mut queued),
+                ..Default::default()
+            };
+            let mut deferred = Vec::new();
+            let _ = context.run_ui(input, |ui| {
+                deferred = take_events_after_ime_terminal(ui, true, active);
+                assert!(!sanitize_projected_text_events(
+                    ui,
+                    id,
+                    &source,
+                    64,
+                    insertion_context,
+                ));
+                let mut buffer = ProjectedTextBuffer::new(&mut source, 64, insertion_context);
+                ui.add(egui::TextEdit::multiline(&mut buffer).id(id));
+            });
+            queued = deferred;
+            active = false;
+        }
+        assert!(queued.is_empty(), "the bounded event queue must drain");
+        source
+    }
+
+    fn sanitize_projected_preedit(
+        active_range_chars: Range<usize>,
+    ) -> (String, Option<Range<usize>>) {
+        let source = "x\r\n";
+        let context = egui::Context::default();
+        let id = egui::Id::new("projected-preedit-sanitizer-test");
+        context.memory_mut(|memory| memory.request_focus(id));
+        let mut state = egui::TextEdit::load_state(&context, id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(0),
+            )));
+        egui::TextEdit::store_state(&context, id, state);
+        let input = egui::RawInput {
+            events: vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                text: "a\r\nbc".to_owned(),
+                active_range_chars: Some(active_range_chars),
+            })],
+            ..Default::default()
+        };
+        let mut sanitized = None;
+
+        let _ = context.run_ui(input, |ui| {
+            let insertion_context = context_for(source);
+            assert!(!sanitize_projected_text_events(
+                ui,
+                id,
+                source,
+                64,
+                insertion_context,
+            ));
+            sanitized = ui.input(|input| input.events.first().cloned());
+        });
+
+        let Some(egui::Event::Ime(egui::ImeEvent::Preedit {
+            text,
+            active_range_chars,
+        })) = sanitized
+        else {
+            panic!("the projected preedit should remain available")
+        };
+        (text, active_range_chars)
+    }
+
+    #[test]
+    fn projection_canonicalizes_crlf_and_cr_with_exact_boundary_mapping() {
+        let projection = SourceDisplayProjection::new("a\r\né\rb\n");
+        assert_eq!(projection.display(), "a\né\nb\n");
+
+        for (display_character, source_byte) in [0, 1, 3, 5, 6, 7, 8].into_iter().enumerate() {
+            let display_character = egui::text::CharIndex(display_character);
+            assert_eq!(
+                projection.display_char_to_source_byte(display_character),
+                Some(source_byte)
+            );
+            assert_eq!(
+                projection.source_byte_to_display_char(source_byte),
+                Some(display_character)
+            );
+        }
+        assert_eq!(projection.source_byte_to_display_char(2), None);
+        assert_eq!(projection.source_byte_to_display_char(4), None);
+        assert_eq!(
+            projection.display_char_to_source_byte(egui::text::CharIndex(7)),
+            None
+        );
+    }
+
+    #[test]
+    fn projected_sanitizer_maps_crlf_ime_ranges_before_across_and_after_newline() {
+        for (original, expected) in [(0..1, 0..1), (1..3, 1..2), (3..5, 2..4)] {
+            let (text, active_range) = sanitize_projected_preedit(original.clone());
+            assert_eq!(text, "a\nbc", "{original:?}");
+            assert_eq!(active_range, Some(expected), "{original:?}");
+        }
+    }
+
+    #[test]
+    fn projected_text_edit_accepts_mapped_crlf_ime_ranges_without_invalid_cursors() {
+        for (original, expected) in [(0..1, 0..1), (1..3, 1..2), (3..5, 2..4)] {
+            let context = egui::Context::default();
+            let id = egui::Id::new(("projected-preedit-widget-test", original.start));
+            let mut source = "x\r\n".to_owned();
+            let insertion_context = context_for(&source);
+            let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                let mut buffer = ProjectedTextBuffer::new(&mut source, 64, insertion_context);
+                ui.add(egui::TextEdit::multiline(&mut buffer).id(id));
+            });
+            let mut state = egui::TextEdit::load_state(&context, id).unwrap_or_default();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(0),
+                )));
+            egui::TextEdit::store_state(&context, id, state);
+            context.memory_mut(|memory| memory.request_focus(id));
+            let input = egui::RawInput {
+                events: vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                    text: "a\r\nbc".to_owned(),
+                    active_range_chars: Some(original.clone()),
+                })],
+                ..Default::default()
+            };
+            let mut sanitized_range = None;
+
+            let output = context.run_ui(input, |ui| {
+                assert!(!sanitize_projected_text_events(
+                    ui,
+                    id,
+                    &source,
+                    64,
+                    insertion_context,
+                ));
+                sanitized_range = ui.input(|input| match &input.events[0] {
+                    egui::Event::Ime(egui::ImeEvent::Preedit {
+                        text,
+                        active_range_chars,
+                    }) => {
+                        assert_eq!(text, "a\nbc");
+                        active_range_chars.clone()
+                    }
+                    _ => panic!("the IME event should remain a preedit"),
+                });
+                let mut buffer = ProjectedTextBuffer::new(&mut source, 64, insertion_context);
+                ui.add(egui::TextEdit::multiline(&mut buffer).id(id));
+            });
+
+            assert_eq!(sanitized_range, Some(expected), "{original:?}");
+            assert_eq!(source, "a\r\nbcx\r\n", "{original:?}");
+            assert!(!output.shapes.is_empty(), "{original:?}");
+            let state = egui::TextEdit::load_state(&context, id)
+                .expect("the projected editor should persist cursor state");
+            assert_eq!(
+                state
+                    .cursor
+                    .char_range()
+                    .map(|range| range.as_sorted_char_range()),
+                Some(egui::text::CharIndex(0)..egui::text::CharIndex(4)),
+                "{original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn projected_text_edit_inserts_each_newline_only_ime_commit_exactly_once() {
+        for (source, expected) in [
+            ("a\nb", "a\n\nb"),
+            ("a\r\nb", "a\r\n\r\nb"),
+            ("a\rb", "a\r\rb"),
+        ] {
+            for payload in ["\n", "\r", "\r\n"] {
+                let context = egui::Context::default();
+                let id = egui::Id::new(("newline-only-ime-commit", source, payload));
+                let mut actual = source.to_owned();
+                let insertion_context = context_for(&actual);
+                let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                    let mut buffer = ProjectedTextBuffer::new(&mut actual, 64, insertion_context);
+                    ui.add(egui::TextEdit::multiline(&mut buffer).id(id));
+                });
+                let mut state = egui::TextEdit::load_state(&context, id).unwrap_or_default();
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::one(
+                        egui::text::CCursor::new(1),
+                    )));
+                egui::TextEdit::store_state(&context, id, state);
+                context.memory_mut(|memory| memory.request_focus(id));
+                let input = egui::RawInput {
+                    events: vec![egui::Event::Ime(egui::ImeEvent::Commit(payload.to_owned()))],
+                    ..Default::default()
+                };
+
+                let _ = context.run_ui(input, |ui| {
+                    assert!(!sanitize_projected_text_events(
+                        ui,
+                        id,
+                        &actual,
+                        64,
+                        insertion_context,
+                    ));
+                    assert!(matches!(
+                        ui.input(|input| input.events.first().cloned()),
+                        Some(egui::Event::Ime(egui::ImeEvent::Commit(text))) if text == "\r\n"
+                    ));
+                    let mut buffer = ProjectedTextBuffer::new(&mut actual, 64, insertion_context);
+                    ui.add(egui::TextEdit::multiline(&mut buffer).id(id));
+                });
+
+                assert_eq!(actual, expected, "source {source:?}, payload {payload:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn projected_sanitizer_cancels_a_newline_terminal_rejected_by_crlf_ceiling() {
+        let context = egui::Context::default();
+        let id = egui::Id::new("rejected-newline-ime-terminal");
+        let source = "a\r\nb";
+        let insertion_context = context_for(source);
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            let mut draft = source.to_owned();
+            let mut buffer = ProjectedTextBuffer::new(&mut draft, source.len(), insertion_context);
+            ui.add(egui::TextEdit::multiline(&mut buffer).id(id));
+        });
+        let mut state = egui::TextEdit::load_state(&context, id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(source.chars().count()),
+            )));
+        egui::TextEdit::store_state(&context, id, state);
+        context.memory_mut(|memory| memory.request_focus(id));
+        let input = egui::RawInput {
+            events: vec![egui::Event::Ime(egui::ImeEvent::Commit("\n".to_owned()))],
+            ..Default::default()
+        };
+
+        let _ = context.run_ui(input, |ui| {
+            assert_eq!(
+                focused_ime_frame_state(ui, id, true),
+                ImeFrameState::Committed
+            );
+            assert!(sanitize_projected_text_events(
+                ui,
+                id,
+                source,
+                source.len(),
+                insertion_context,
+            ));
+            assert!(matches!(
+                ui.input(|input| input.events.first().cloned()),
+                Some(egui::Event::Ime(egui::ImeEvent::Commit(text))) if text.is_empty()
+            ));
+            assert_eq!(
+                focused_ime_frame_state(ui, id, true),
+                ImeFrameState::Cancelled
+            );
+        });
+    }
+
+    #[test]
+    fn projected_text_edit_deduplicates_enter_with_a_newline_ime_commit() {
+        for payload in ["\n", "\r", "\r\n"] {
+            for events in [
+                vec![
+                    key(egui::Key::Enter),
+                    egui::Event::Ime(egui::ImeEvent::Commit(payload.to_owned())),
+                ],
+                vec![
+                    egui::Event::Ime(egui::ImeEvent::Commit(payload.to_owned())),
+                    key(egui::Key::Enter),
+                ],
+            ] {
+                let context = egui::Context::default();
+                let id = egui::Id::new(("deduplicated-newline-ime-commit", payload, events.len()));
+                let mut source = "a\r\nb".to_owned();
+                let insertion_context = context_for(&source);
+                let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                    let mut buffer = ProjectedTextBuffer::new(&mut source, 64, insertion_context);
+                    ui.add(egui::TextEdit::multiline(&mut buffer).id(id));
+                });
+                let mut state = egui::TextEdit::load_state(&context, id).unwrap_or_default();
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::one(
+                        egui::text::CCursor::new(1),
+                    )));
+                egui::TextEdit::store_state(&context, id, state);
+                context.memory_mut(|memory| memory.request_focus(id));
+                let input = egui::RawInput {
+                    events,
+                    ..Default::default()
+                };
+
+                let _ = context.run_ui(input, |ui| {
+                    assert!(take_events_after_ime_terminal(ui, true, false).is_empty());
+                    assert!(!sanitize_projected_text_events(
+                        ui,
+                        id,
+                        &source,
+                        64,
+                        insertion_context,
+                    ));
+                    let mut buffer = ProjectedTextBuffer::new(&mut source, 64, insertion_context);
+                    ui.add(egui::TextEdit::multiline(&mut buffer).id(id));
+                });
+
+                assert_eq!(source, "a\r\n\r\nb", "payload {payload:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn projected_newline_deduplication_preserves_unmatched_ordered_actions() {
+        let commit = || egui::Event::Ime(egui::ImeEvent::Commit("\n".to_owned()));
+        for ending in [LineEnding::Lf, LineEnding::CrLf, LineEnding::Cr] {
+            for composition_active in [false, true] {
+                for events in [
+                    vec![commit(), commit(), key(egui::Key::Enter)],
+                    vec![key(egui::Key::Enter), commit(), commit()],
+                    vec![commit(), key(egui::Key::Enter), key(egui::Key::Enter)],
+                    vec![key(egui::Key::Enter), key(egui::Key::Enter), commit()],
+                ] {
+                    let actual = run_serialized_projected_newlines(
+                        ending,
+                        composition_active,
+                        events.clone(),
+                    );
+                    let expected = if composition_active {
+                        format!("a{0}{0}{0}", ending.as_str())
+                    } else {
+                        format!("a{0}b{0}{0}", ending.as_str())
+                    };
+                    assert_eq!(
+                        actual, expected,
+                        "{ending:?} active={composition_active} events={events:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn projected_cache_reuses_large_crlf_and_cr_storage_and_lf_needs_none() {
+        const LARGE_SOURCE_BYTES: usize = 8 << 20;
+
+        for ending in ["\r\n", "\r"] {
+            let mut source = ending.repeat(LARGE_SOURCE_BYTES / ending.len());
+            let insertion_context = context_for(&source);
+            let buffer =
+                ProjectedTextBuffer::new(&mut source, LARGE_SOURCE_BYTES, insertion_context);
+            let cache = buffer.into_cache();
+            let first_storage = cache
+                .storage_identity()
+                .expect("CR source should own canonical display storage");
+            assert_eq!(
+                first_storage.2,
+                LARGE_SOURCE_BYTES / 2 * usize::from(ending == "\r\n")
+            );
+
+            let buffer = ProjectedTextBuffer::new_reusing(
+                &mut source,
+                LARGE_SOURCE_BYTES,
+                insertion_context,
+                Some(cache),
+            );
+            let cache = buffer.into_cache();
+            assert_eq!(cache.storage_identity(), Some(first_storage));
+        }
+
+        let mut source = "x".repeat(LARGE_SOURCE_BYTES);
+        let source_storage = source.as_ptr();
+        let insertion_context = context_for(&source);
+        let buffer = ProjectedTextBuffer::new(&mut source, LARGE_SOURCE_BYTES, insertion_context);
+        assert_eq!(buffer.as_str().as_ptr(), source_storage);
+        let cache = buffer.into_cache();
+        assert_eq!(cache.storage_identity(), None);
+    }
+
+    #[test]
+    fn projection_preserves_selection_direction_and_canonicalizes_crlf_midpoints() {
+        let projection = SourceDisplayProjection::new("a\r\né");
+        let display = egui::text::CCursorRange {
+            primary: egui::text::CCursor::new(1),
+            secondary: egui::text::CCursor::new(3),
+            h_pos: None,
+        };
+        assert_eq!(
+            projection.selection_to_source(display),
+            Some(Selection::new(5, 1))
+        );
+
+        let caret = projection
+            .selection_to_display(Selection::caret(2))
+            .expect("a CRLF midpoint caret should snap deterministically");
+        assert_eq!(caret.primary.index, egui::text::CharIndex(1));
+        assert_eq!(caret.secondary.index, egui::text::CharIndex(1));
+
+        let forward = projection
+            .selection_to_display(Selection::new(1, 2))
+            .expect("a partial CRLF selection should expand outward");
+        assert_eq!(forward.secondary.index, egui::text::CharIndex(1));
+        assert_eq!(forward.primary.index, egui::text::CharIndex(2));
+
+        let reverse = projection
+            .selection_to_display(Selection::new(5, 2))
+            .expect("a reverse selection should retain its direction");
+        assert_eq!(reverse.secondary.index, egui::text::CharIndex(3));
+        assert_eq!(reverse.primary.index, egui::text::CharIndex(1));
+    }
+
+    #[test]
+    fn projected_buffer_exposes_directional_selection_mapping() {
+        let mut source = "a\r\né".to_owned();
+        let context = context_for(&source);
+        let buffer = ProjectedTextBuffer::new(&mut source, 16, context);
+        assert_eq!(buffer.as_str(), "a\né");
+
+        let display = egui::text::CCursorRange {
+            primary: egui::text::CCursor::new(1),
+            secondary: egui::text::CCursor::new(3),
+            h_pos: None,
+        };
+        let source_selection = buffer
+            .selection_to_source(display)
+            .expect("display boundaries should map to source");
+        assert_eq!(source_selection, Selection::new(5, 1));
+        assert_eq!(
+            buffer
+                .selection_to_display(source_selection)
+                .expect("source boundaries should map to display"),
+            display
+        );
+    }
+
+    #[test]
+    fn projected_buffer_deletes_crlf_atomically_in_both_directions() {
+        let initial = "a\r\nb";
+        let context = context_for(initial);
+
+        let mut backward = initial.to_owned();
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut backward, 16, context);
+            let cursor = buffer.delete_previous_char(egui::text::CCursor::new(2));
+            assert_eq!(cursor.index, egui::text::CharIndex(1));
+            assert_eq!(buffer.as_str(), "ab");
+        }
+        assert_eq!(backward, "ab");
+
+        let mut forward = initial.to_owned();
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut forward, 16, context);
+            let cursor = buffer.delete_next_char(egui::text::CCursor::new(1));
+            assert_eq!(cursor.index, egui::text::CharIndex(1));
+            assert_eq!(buffer.as_str(), "ab");
+        }
+        assert_eq!(forward, "ab");
+    }
+
+    #[test]
+    fn projected_buffer_uses_internal_and_external_mixed_ending_context() {
+        let outer = "left\r\nEDIT\nright\r";
+        let external_context = LineEndingProfile::detect(outer)
+            .insertion_context(outer, 6..10)
+            .expect("the block range should be valid");
+        let mut block = "EDIT".to_owned();
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut block, 32, external_context);
+            assert_eq!(
+                buffer.insert_text("\nX\r\n", egui::text::CharIndex::ZERO),
+                3
+            );
+        }
+        assert_eq!(block, "\r\nX\r\nEDIT");
+
+        let mut source = "a\r\nb\nc\r".to_owned();
+        let context = context_for(&source);
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut source, 64, context);
+            assert_eq!(buffer.insert_text("\n", egui::text::CharIndex(3)), 1);
+        }
+        assert_eq!(source, "a\r\nb\r\n\nc\r");
+    }
+
+    #[test]
+    fn projected_buffer_enforces_source_bytes_and_never_splits_crlf_or_unicode() {
+        let crlf_profile = LineEndingProfile::Uniform {
+            ending: LineEnding::CrLf,
+            count: 1,
+        };
+        let mut source = "a".to_owned();
+        let context = crlf_profile
+            .insertion_context(&source, 0..source.len())
+            .expect("the full source should be valid");
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut source, 2, context);
+            assert_eq!(buffer.insert_text("\n", egui::text::CharIndex(1)), 0);
+            assert!(buffer.was_limited());
+        }
+        assert_eq!(source, "a");
+
+        let mut source = "a".to_owned();
+        let context = crlf_profile
+            .insertion_context(&source, 0..source.len())
+            .expect("the full source should be valid");
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut source, 5, context);
+            assert_eq!(buffer.insert_text("\né", egui::text::CharIndex(1)), 2);
+            assert_eq!(buffer.insert_text("字", egui::text::CharIndex(3)), 0);
+            assert!(buffer.was_limited());
+        }
+        assert_eq!(source, "a\r\né");
+
+        let mut split = "a\r\nb".to_owned();
+        let context = context_for(&split);
+        {
+            let buffer = ProjectedTextBuffer::new(&mut split, 2, context);
+            assert!(buffer.was_limited());
+        }
+        assert_eq!(split, "a");
+    }
+
+    #[test]
+    fn rejected_projected_replacement_restores_the_deleted_source() {
+        let mut source = "ax".to_owned();
+        let context = context_for(&source);
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut source, 2, context);
+            let selection = egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(1),
+            );
+            let mut cursor = buffer.delete_selected(&selection);
+            buffer.insert_text_at(&mut cursor, "é", usize::MAX);
+            assert_eq!(buffer.as_str(), "ax");
+            assert!(buffer.was_limited());
+        }
+        assert_eq!(source, "ax");
+    }
+
+    #[test]
+    fn minimal_diff_replacement_preserves_unrelated_line_ending_bytes() {
+        let mut source = "head\r\nold\nkeep\rtail".to_owned();
+        let context = context_for(&source);
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut source, 64, context);
+            buffer.replace_with("head\nnew\nline\nkeep\ntail");
+            assert_eq!(buffer.as_str(), "head\nnew\nline\nkeep\ntail");
+        }
+        assert_eq!(source, "head\r\nnew\r\nline\nkeep\rtail");
+    }
+
+    #[test]
+    fn projected_trait_replacement_canonicalizes_every_raw_newline_form() {
+        for replacement in ["a\nb", "a\r\nb", "a\rb"] {
+            let mut source = "old\r\nvalue".to_owned();
+            let context = context_for(&source);
+            {
+                let mut buffer = ProjectedTextBuffer::new(&mut source, 64, context);
+                buffer.replace_with(replacement);
+                assert_eq!(buffer.as_str(), "a\nb", "{replacement:?}");
+                assert!(!buffer.was_limited(), "{replacement:?}");
+            }
+            assert_eq!(source, "a\r\nb", "{replacement:?}");
+        }
+
+        let mut source = "a\r\nb".to_owned();
+        let context = context_for(&source);
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut source, 64, context);
+            buffer.replace_with("a\r\nb");
+            assert_eq!(buffer.as_str(), "a\nb");
+        }
+        assert_eq!(source, "a\r\nb");
+    }
+
+    #[test]
+    fn projected_trait_clear_take_and_bounded_rejection_preserve_contracts() {
+        let mut source = "a\r\nb".to_owned();
+        let context = context_for(&source);
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut source, 64, context);
+            assert_eq!(buffer.take(), "a\nb");
+            assert_eq!(buffer.as_str(), "");
+            buffer.replace_with("x\r\ny");
+            buffer.clear();
+            assert_eq!(buffer.as_str(), "");
+        }
+        assert!(source.is_empty());
+
+        let profile = LineEndingProfile::Uniform {
+            ending: LineEnding::CrLf,
+            count: 1,
+        };
+        let mut source = "ab".to_owned();
+        let context = profile
+            .insertion_context(&source, 0..source.len())
+            .expect("the fixture should provide CRLF insertion policy");
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut source, 2, context);
+            buffer.replace_with("a\r\nb");
+            assert_eq!(buffer.as_str(), "ab");
+            assert!(buffer.was_limited());
+        }
+        assert_eq!(source, "ab");
+    }
+
+    #[test]
+    fn replacements_capture_mixed_ending_policy_before_removing_the_selection() {
+        let initial = "gone\r\nkept\nfar\r";
+        let expected = "X\r\nYkept\nfar\r";
+        let context = context_for(initial);
+
+        let mut event_replacement = initial.to_owned();
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut event_replacement, 64, context);
+            let selection = egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(5),
+            );
+            let mut cursor = buffer.delete_selected(&selection);
+            buffer.insert_text_at(&mut cursor, "X\nY", usize::MAX);
+        }
+        assert_eq!(event_replacement, expected);
+
+        let mut direct_replacement = initial.to_owned();
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut direct_replacement, 64, context);
+            buffer.replace_with("X\nYkept\nfar\n");
+        }
+        assert_eq!(direct_replacement, expected);
+    }
+
+    #[test]
+    fn projected_deletion_matrix_removes_only_the_exact_mapped_source_range() {
+        for initial in [
+            "",
+            "a",
+            "a\nb",
+            "a\r\nb",
+            "\r\n\r\n",
+            "a\rb",
+            "é\r\n字\rX\n",
+        ] {
+            let projection = SourceDisplayProjection::new(initial);
+            let display_characters = projection.display().chars().count();
+            for start in 0..=display_characters {
+                for end in start..=display_characters {
+                    let expected_start = projection
+                        .display_char_to_source_byte(egui::text::CharIndex(start))
+                        .expect("a display boundary should map to source");
+                    let expected_end = projection
+                        .display_char_to_source_byte(egui::text::CharIndex(end))
+                        .expect("a display boundary should map to source");
+                    assert_eq!(
+                        projection.source_byte_to_display_char(expected_start),
+                        Some(egui::text::CharIndex(start))
+                    );
+                    assert_eq!(
+                        projection.source_byte_to_display_char(expected_end),
+                        Some(egui::text::CharIndex(end))
+                    );
+                    let mut expected = initial.to_owned();
+                    expected.replace_range(expected_start..expected_end, "");
+
+                    let mut actual = initial.to_owned();
+                    let context = context_for(&actual);
+                    {
+                        let mut buffer = ProjectedTextBuffer::new(&mut actual, 64, context);
+                        buffer.delete_char_range(
+                            egui::text::CharIndex(start)..egui::text::CharIndex(end),
+                        );
+                    }
+                    assert_eq!(actual, expected, "range {start}..{end} in {initial:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn projected_insert_text_at_counts_crlf_payload_as_one_display_character() {
+        let profile = LineEndingProfile::Uniform {
+            ending: LineEnding::CrLf,
+            count: 1,
+        };
+        let mut source = String::new();
+        let context = profile
+            .insertion_context(&source, 0..0)
+            .expect("the empty source should be valid");
+        {
+            let mut buffer = ProjectedTextBuffer::new(&mut source, 16, context);
+            let mut cursor = egui::text::CCursor::new(0);
+            buffer.insert_text_at(&mut cursor, "\r\nX", 1);
+            assert_eq!(cursor.index, egui::text::CharIndex(1));
+        }
+        assert_eq!(source, "\r\n");
     }
 
     #[test]

@@ -472,8 +472,32 @@ impl RandomSource for OsRandom {
 #[derive(Default, Debug)]
 pub struct FilesystemStorage;
 
+/// Opaque one-shot parent barrier produced by a filesystem commit.
+#[must_use = "consume this token to classify the commit's parent durability"]
+#[derive(Debug)]
+pub struct FilesystemParentSync(FilesystemParentSyncKind);
+
+#[derive(Debug)]
+enum FilesystemParentSyncKind {
+    Bound(noter_platform::ParentSyncReceipt),
+    ReconciledWithoutReceipt,
+}
+
+type FilesystemReplaceOutcome = ReplaceOutcome<TemporaryFile, FilesystemParentSync>;
+
+impl FilesystemParentSync {
+    const fn bound(receipt: noter_platform::ParentSyncReceipt) -> Self {
+        Self(FilesystemParentSyncKind::Bound(receipt))
+    }
+
+    const fn reconciled_without_receipt() -> Self {
+        Self(FilesystemParentSyncKind::ReconciledWithoutReceipt)
+    }
+}
+
 impl Storage for FilesystemStorage {
     type Temporary = TemporaryFile;
+    type ParentSync = FilesystemParentSync;
 
     fn inspect(&mut self, path: &Path, stage: SaveStage) -> Result<TargetState, StorageError> {
         inspect_target(path, stage)
@@ -593,7 +617,7 @@ impl Storage for FilesystemStorage {
         temporary: Self::Temporary,
         destination: &Path,
         expected: TargetState,
-    ) -> ReplaceOutcome<Self::Temporary> {
+    ) -> ReplaceOutcome<Self::Temporary, Self::ParentSync> {
         match temporary.path_still_identifies_file() {
             Ok(true) => {}
             Ok(false) => {
@@ -642,8 +666,20 @@ impl Storage for FilesystemStorage {
         }
     }
 
-    fn sync_parent(&mut self, destination: &Path) -> DurabilityOutcome {
-        match noter_platform::sync_parent(destination) {
+    fn sync_parent(&mut self, parent_sync: Self::ParentSync) -> DurabilityOutcome {
+        let FilesystemParentSyncKind::Bound(parent_sync) = parent_sync.0 else {
+            #[cfg(windows)]
+            return DurabilityOutcome::Achieved(Durability::FileSynced);
+            #[cfg(not(windows))]
+            return DurabilityOutcome::Warning {
+                achieved: Durability::FileSynced,
+                error: StorageError::new(
+                    SaveStage::SyncParent,
+                    "the commit was reconciled without its exact parent-directory receipt",
+                ),
+            };
+        };
+        match parent_sync.sync() {
             Ok(noter_platform::ParentSyncOutcome::Synced) => {
                 DurabilityOutcome::Achieved(Durability::FileAndDirectorySynced)
             }
@@ -680,7 +716,7 @@ fn replace_existing_file(
     temporary: TemporaryFile,
     destination: &Path,
     expected: FileObservation,
-) -> ReplaceOutcome<TemporaryFile> {
+) -> FilesystemReplaceOutcome {
     replace_existing_file_with(
         temporary,
         destination,
@@ -697,8 +733,10 @@ fn replace_existing_file_with(
         &Path,
         &Path,
         Option<&Path>,
-    ) -> io::Result<noter_platform::ReplaceExistingOutcome>,
-) -> ReplaceOutcome<TemporaryFile> {
+    ) -> io::Result<
+        noter_platform::CommitReceipt<noter_platform::ReplaceExistingOutcome>,
+    >,
+) -> FilesystemReplaceOutcome {
     let backup = match replacement_backup_path(destination) {
         Ok(backup) => backup,
         Err(error) => {
@@ -739,20 +777,39 @@ fn replace_existing_file_with(
     }
 
     match replace(temporary.path(), destination, backup.as_deref()) {
-        Ok(noter_platform::ReplaceExistingOutcome::Clean) => finalize_commit(
-            temporary,
-            destination,
-            backup.map(|path| (path, expected)),
-            Vec::new(),
-        ),
-        Ok(noter_platform::ReplaceExistingOutcome::DisplacedDestination) => {
-            #[cfg(unix)]
-            {
-                finalize_unix_displaced_destination(temporary, destination, expected, backup)
-            }
-            #[cfg(not(unix))]
-            {
-                finalize_unexpected_displaced_destination(temporary, destination, expected, backup)
+        Ok(receipt) => {
+            let (outcome, parent_sync) = receipt.into_parts();
+            let parent_sync = FilesystemParentSync::bound(parent_sync);
+            match outcome {
+                noter_platform::ReplaceExistingOutcome::Clean => finalize_commit(
+                    temporary,
+                    destination,
+                    backup.map(|path| (path, expected)),
+                    Vec::new(),
+                    parent_sync,
+                ),
+                noter_platform::ReplaceExistingOutcome::DisplacedDestination => {
+                    #[cfg(unix)]
+                    {
+                        finalize_unix_displaced_destination(
+                            temporary,
+                            destination,
+                            expected,
+                            backup,
+                            parent_sync,
+                        )
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        finalize_unexpected_displaced_destination(
+                            temporary,
+                            destination,
+                            expected,
+                            backup,
+                            parent_sync,
+                        )
+                    }
+                }
             }
         }
         Err(error) => reconcile_existing_failure(temporary, destination, expected, backup, &error),
@@ -841,7 +898,8 @@ fn finalize_unix_displaced_destination(
     destination: &Path,
     expected: FileObservation,
     backup: Option<PathBuf>,
-) -> ReplaceOutcome<TemporaryFile> {
+    parent_sync: FilesystemParentSync,
+) -> FilesystemReplaceOutcome {
     let mut cleanup_warnings = Vec::new();
     let mut durability_warnings = Vec::new();
     match open_verified_cleanup_candidate(temporary.path(), SaveStage::ApplyMetadata) {
@@ -907,6 +965,7 @@ fn finalize_unix_displaced_destination(
         backup.map(|path| (path, expected)),
         cleanup_warnings,
         durability_warnings,
+        parent_sync,
     )
 }
 
@@ -916,7 +975,8 @@ fn finalize_unexpected_displaced_destination(
     destination: &Path,
     expected: FileObservation,
     backup: Option<PathBuf>,
-) -> ReplaceOutcome<TemporaryFile> {
+    parent_sync: FilesystemParentSync,
+) -> FilesystemReplaceOutcome {
     finalize_commit_with_cleanup(
         temporary,
         destination,
@@ -924,12 +984,22 @@ fn finalize_unexpected_displaced_destination(
         backup.map(|path| (path, expected)),
         Vec::new(),
         Vec::new(),
+        parent_sync,
     )
 }
 
-fn install_new_file(temporary: TemporaryFile, destination: &Path) -> ReplaceOutcome<TemporaryFile> {
+fn install_new_file(temporary: TemporaryFile, destination: &Path) -> FilesystemReplaceOutcome {
     match noter_platform::install_new(temporary.path(), destination) {
-        Ok(outcome) => finalize_installed_file(temporary, destination, &outcome, None),
+        Ok(receipt) => {
+            let (outcome, parent_sync) = receipt.into_parts();
+            finalize_installed_file(
+                temporary,
+                destination,
+                &outcome,
+                None,
+                FilesystemParentSync::bound(parent_sync),
+            )
+        }
         Err(error) => reconcile_new_failure(temporary, destination, &error),
     }
 }
@@ -939,10 +1009,11 @@ fn finalize_installed_file(
     destination: &Path,
     outcome: &noter_platform::InstallNewOutcome,
     backup: Option<(PathBuf, FileObservation)>,
-) -> ReplaceOutcome<TemporaryFile> {
+    parent_sync: FilesystemParentSync,
+) -> FilesystemReplaceOutcome {
     match outcome {
         noter_platform::InstallNewOutcome::Clean => {
-            finalize_commit(temporary, destination, backup, Vec::new())
+            finalize_commit(temporary, destination, backup, Vec::new(), parent_sync)
         }
         noter_platform::InstallNewOutcome::CommittedWithRetainedTemporary => {
             finalize_commit_with_cleanup(
@@ -952,6 +1023,7 @@ fn finalize_installed_file(
                 backup,
                 Vec::new(),
                 Vec::new(),
+                parent_sync,
             )
         }
     }
@@ -961,7 +1033,7 @@ fn reconcile_new_failure(
     temporary: TemporaryFile,
     destination: &Path,
     platform_error: &io::Error,
-) -> ReplaceOutcome<TemporaryFile> {
+) -> FilesystemReplaceOutcome {
     let actual = match inspect_target(destination, SaveStage::Reconcile) {
         Ok(actual) => actual,
         Err(error) => return unknown_with_preserved_temporary(temporary, error, None),
@@ -972,7 +1044,13 @@ fn reconcile_new_failure(
             Ok(true)
         )
     {
-        return finalize_commit(temporary, destination, None, Vec::new());
+        return finalize_commit(
+            temporary,
+            destination,
+            None,
+            Vec::new(),
+            FilesystemParentSync::reconciled_without_receipt(),
+        );
     }
 
     match temporary.path_still_identifies_file() {
@@ -1011,7 +1089,7 @@ fn reconcile_existing_failure(
     expected: FileObservation,
     backup: Option<PathBuf>,
     platform_error: &io::Error,
-) -> ReplaceOutcome<TemporaryFile> {
+) -> FilesystemReplaceOutcome {
     let actual = match inspect_target(destination, SaveStage::Reconcile) {
         Ok(actual) => actual,
         Err(error) => {
@@ -1029,6 +1107,7 @@ fn reconcile_existing_failure(
             destination,
             backup.map(|path| (path, expected)),
             Vec::new(),
+            FilesystemParentSync::reconciled_without_receipt(),
         );
     }
 
@@ -1043,12 +1122,14 @@ fn reconcile_existing_failure(
         );
         if state_is_completable {
             match noter_platform::install_new(temporary.path(), destination) {
-                Ok(outcome) => {
+                Ok(receipt) => {
+                    let (outcome, parent_sync) = receipt.into_parts();
                     return finalize_installed_file(
                         temporary,
                         destination,
                         &outcome,
                         backup.map(|path| (path, expected)),
+                        FilesystemParentSync::bound(parent_sync),
                     );
                 }
                 Err(_finish_error) => {
@@ -1110,7 +1191,8 @@ fn finalize_commit(
     destination: &Path,
     backup: Option<(PathBuf, FileObservation)>,
     cleanup_warnings: Vec<StorageError>,
-) -> ReplaceOutcome<TemporaryFile> {
+    parent_sync: FilesystemParentSync,
+) -> FilesystemReplaceOutcome {
     finalize_commit_with_cleanup(
         temporary,
         destination,
@@ -1118,6 +1200,7 @@ fn finalize_commit(
         backup,
         cleanup_warnings,
         Vec::new(),
+        parent_sync,
     )
 }
 
@@ -1135,7 +1218,8 @@ fn finalize_commit_with_cleanup(
     backup: Option<(PathBuf, FileObservation)>,
     mut cleanup_warnings: Vec<StorageError>,
     durability_warnings: Vec<StorageError>,
-) -> ReplaceOutcome<TemporaryFile> {
+    parent_sync: FilesystemParentSync,
+) -> FilesystemReplaceOutcome {
     let observation = match inspect_target(destination, SaveStage::Reconcile) {
         Ok(TargetState::Regular(observation)) => {
             match temporary.committed_observation_matches(observation) {
@@ -1216,10 +1300,11 @@ fn finalize_commit_with_cleanup(
         cleanup_warnings.push(error);
     }
 
-    ReplaceOutcome::Committed(ReplaceReceipt::with_warnings(
+    ReplaceOutcome::Committed(ReplaceReceipt::with_parent_sync(
         observation,
         cleanup_warnings,
         durability_warnings,
+        parent_sync,
     ))
 }
 
@@ -1249,11 +1334,11 @@ fn path_artifact_label(path: &Path, fallback: &str) -> String {
     )
 }
 
-fn unknown_with_preserved_temporary(
+fn unknown_with_preserved_temporary<P>(
     mut temporary: TemporaryFile,
     error: StorageError,
     backup: Option<&Path>,
-) -> ReplaceOutcome<TemporaryFile> {
+) -> ReplaceOutcome<TemporaryFile, P> {
     let temporary_label = artifact_label(&temporary);
     let backup_label = backup.map(|path| path_artifact_label(path, "a replacement backup"));
     let candidates = backup_label.map_or_else(
@@ -2167,7 +2252,13 @@ mod tests {
         let temporary = prepared_temporary(&destination, b"mine")?;
         let temporary_path = temporary.path().to_path_buf();
 
-        let outcome = finalize_commit(temporary, &destination, None, Vec::new());
+        let outcome = finalize_commit(
+            temporary,
+            &destination,
+            None,
+            Vec::new(),
+            FilesystemParentSync::reconciled_without_receipt(),
+        );
 
         assert!(matches!(outcome, ReplaceOutcome::CommitStateUnknown { .. }));
         assert_eq!(fs::read(&temporary_path)?, b"mine");
@@ -2183,7 +2274,13 @@ mod tests {
         let temporary = prepared_temporary(&destination, b"mine")?;
         let temporary_path = temporary.path().to_path_buf();
 
-        let outcome = finalize_commit(temporary, &destination, None, Vec::new());
+        let outcome = finalize_commit(
+            temporary,
+            &destination,
+            None,
+            Vec::new(),
+            FilesystemParentSync::reconciled_without_receipt(),
+        );
 
         let ReplaceOutcome::CommitStateUnknown {
             recovery_artifact, ..
@@ -2225,6 +2322,7 @@ mod tests {
             &destination,
             Some((backup.clone(), expected)),
             Vec::new(),
+            FilesystemParentSync::reconciled_without_receipt(),
         );
         let ReplaceOutcome::CommitStateUnknown {
             recovery_artifact, ..
@@ -2371,7 +2469,13 @@ mod tests {
         fs::remove_file(&temporary_path)?;
         fs::write(&temporary_path, b"replacement to preserve")?;
 
-        let outcome = finalize_commit(temporary, &destination, None, Vec::new());
+        let outcome = finalize_commit(
+            temporary,
+            &destination,
+            None,
+            Vec::new(),
+            FilesystemParentSync::reconciled_without_receipt(),
+        );
 
         let ReplaceOutcome::Committed(receipt) = outcome else {
             panic!("matching committed destination must reconcile as committed");
@@ -2434,6 +2538,7 @@ mod tests {
             &destination,
             &noter_platform::InstallNewOutcome::CommittedWithRetainedTemporary,
             None,
+            FilesystemParentSync::reconciled_without_receipt(),
         );
         let ReplaceOutcome::Committed(receipt) = outcome else {
             panic!("the retained hard-link destination must remain committed");
@@ -2476,6 +2581,7 @@ mod tests {
             None,
             Vec::new(),
             Vec::new(),
+            FilesystemParentSync::reconciled_without_receipt(),
         );
 
         let ReplaceOutcome::Committed(receipt) = outcome else {
@@ -2523,6 +2629,7 @@ mod tests {
             None,
             Vec::new(),
             Vec::new(),
+            FilesystemParentSync::reconciled_without_receipt(),
         );
 
         let ReplaceOutcome::Committed(receipt) = outcome else {
@@ -2910,14 +3017,14 @@ mod tests {
         observation
     }
 
-    fn discard_not_committed(outcome: ReplaceOutcome<TemporaryFile>) -> io::Result<()> {
+    fn discard_not_committed<P>(outcome: ReplaceOutcome<TemporaryFile, P>) -> io::Result<()> {
         let ReplaceOutcome::NotCommitted { temporary, .. } = outcome else {
             panic!("expected a proven not-committed outcome");
         };
         cleanup_fixture(temporary)
     }
 
-    fn discard_conflict(outcome: ReplaceOutcome<TemporaryFile>) -> io::Result<()> {
+    fn discard_conflict<P>(outcome: ReplaceOutcome<TemporaryFile, P>) -> io::Result<()> {
         let ReplaceOutcome::Conflict { temporary, .. } = outcome else {
             panic!("expected a conflict outcome");
         };
@@ -3033,6 +3140,38 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn unix_filesystem_storage_syncs_commit_parent_after_path_rebind() -> io::Result<()> {
+        let directory = tempdir()?;
+        let active = directory.path().join("active");
+        let moved = directory.path().join("moved");
+        fs::create_dir(&active)?;
+        let destination = active.join("note.txt");
+        let temporary = prepared_temporary(&destination, b"committed revision")?;
+        let mut storage = FilesystemStorage;
+
+        let outcome = storage.replace(temporary, &destination, TargetState::Missing);
+        let ReplaceOutcome::Committed(receipt) = outcome else {
+            panic!("the absent destination should commit exclusively");
+        };
+        let (_observation, _cleanup, _durability, parent_sync) = receipt.into_parts();
+        fs::rename(&active, &moved)?;
+        fs::create_dir(&active)?;
+        fs::write(active.join("note.txt"), b"rebound directory bytes")?;
+
+        assert_eq!(
+            storage.sync_parent(parent_sync),
+            DurabilityOutcome::Achieved(Durability::FileAndDirectorySynced)
+        );
+        assert_eq!(fs::read(moved.join("note.txt"))?, b"committed revision");
+        assert_eq!(
+            fs::read(active.join("note.txt"))?,
+            b"rebound directory bytes"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn metadata_source_status_has_an_exact_truth_table() {
         assert_eq!(
             metadata_source_status(false, false),
@@ -3117,12 +3256,20 @@ mod tests {
         let mut changed_permissions = fs::metadata(&destination)?.permissions();
         changed_permissions.set_mode(0o600);
         fs::set_permissions(&destination, changed_permissions)?;
+        let (replace_outcome, parent_sync) =
+            noter_platform::replace_existing(temporary.path(), &destination, None)?.into_parts();
         assert_eq!(
-            noter_platform::replace_existing(temporary.path(), &destination, None)?,
+            replace_outcome,
             noter_platform::ReplaceExistingOutcome::DisplacedDestination
         );
 
-        let outcome = finalize_unix_displaced_destination(temporary, &destination, expected, None);
+        let outcome = finalize_unix_displaced_destination(
+            temporary,
+            &destination,
+            expected,
+            None,
+            FilesystemParentSync::bound(parent_sync),
+        );
         let ReplaceOutcome::Committed(receipt) = outcome else {
             panic!("the content exchange remains committed after a metadata race");
         };
@@ -3154,13 +3301,21 @@ mod tests {
             .apply_metadata(&mut temporary, &destination, Some(&expected))
             .expect("precommit metadata capture should succeed");
 
+        let (replace_outcome, parent_sync) =
+            noter_platform::replace_existing(temporary.path(), &destination, None)?.into_parts();
         assert_eq!(
-            noter_platform::replace_existing(temporary.path(), &destination, None)?,
+            replace_outcome,
             noter_platform::ReplaceExistingOutcome::DisplacedDestination
         );
         temporary.close_handle();
 
-        let outcome = finalize_unix_displaced_destination(temporary, &destination, expected, None);
+        let outcome = finalize_unix_displaced_destination(
+            temporary,
+            &destination,
+            expected,
+            None,
+            FilesystemParentSync::bound(parent_sync),
+        );
         let ReplaceOutcome::Committed(receipt) = outcome else {
             panic!("the exchanged destination remains committed after a barrier failure");
         };

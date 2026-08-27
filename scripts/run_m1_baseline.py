@@ -33,6 +33,7 @@ MAXIMUM_COMMAND_OUTPUT_BYTES = 16 * MIB
 WINDOWS_CREATE_SUSPENDED = 0x00000004
 WINDOWS_JOB_TERMINATION_TIMEOUT_SECONDS = 30.0
 WINDOWS_JOB_POLL_INTERVAL_SECONDS = 0.01
+WINDOWS_PROCESS_TERMINATION_GRACE_SECONDS = 1.0
 WINDOWS_MAXIMUM_JOB_PROCESSES = 4_096
 SUPPORTED_TARGETS = (
     "aarch64-apple-darwin",
@@ -47,11 +48,15 @@ SEARCH_MARKERS = {
 }
 
 
-def _validate_windows_process_list_counts(assigned: int, returned: int) -> int:
-    """Return a complete bounded Job Object process-list length."""
-    if assigned != returned or returned > WINDOWS_MAXIMUM_JOB_PROCESSES:
+def _validate_windows_process_list_counts(assigned: int, returned: int) -> int | None:
+    """Return a complete bounded process count, or None for a changing list."""
+    if (
+        assigned > WINDOWS_MAXIMUM_JOB_PROCESSES
+        or returned > assigned
+        or returned > WINDOWS_MAXIMUM_JOB_PROCESSES
+    ):
         raise RuntimeError("Windows command process list is incomplete or invalid")
-    return returned
+    return returned if assigned == returned else None
 
 
 ADVERSARIAL_QUERY = ("a" * 63) + "b"
@@ -739,6 +744,11 @@ class _WindowsProcessJob:
             information.number_of_assigned_processes,
             information.number_of_process_ids_in_list,
         )
+        if process_count is None:
+            # A process can exit after Job Object accounting observes it but
+            # before the identifier list is filled. Do not act on the partial
+            # snapshot. The caller retries under its existing absolute deadline.
+            return information.number_of_assigned_processes, []
 
         process_query_limited_information = 0x1000
         process_terminate = 0x0001
@@ -792,14 +802,25 @@ class _WindowsProcessJob:
                 )
         return first_error
 
-    def _terminate_process_handles(self, handles: list[int]) -> None:
+    def _terminate_process_handles(self, handles: list[int], deadline: float) -> None:
         wait_object_0 = 0
+        wait_failed = 0xFFFFFFFF
         for process_handle in handles:
             if self._kernel32.TerminateProcess(process_handle, 1):
                 continue
             error = self._ctypes.get_last_error()
-            if self._kernel32.WaitForSingleObject(process_handle, 0) == wait_object_0:
+            remaining = max(0.0, deadline - time.monotonic())
+            grace_ms = math.ceil(
+                min(WINDOWS_PROCESS_TERMINATION_GRACE_SECONDS, remaining) * 1_000
+            )
+            wait_result = self._kernel32.WaitForSingleObject(process_handle, grace_ms)
+            if wait_result == wait_object_0:
                 continue
+            if wait_result == wait_failed:
+                raise OSError(
+                    self._ctypes.get_last_error(),
+                    "WaitForSingleObject after TerminateProcess failed",
+                )
             raise OSError(error, "TerminateProcess failed")
 
     def _wait_for_process_handles(self, handles: list[int], deadline: float) -> None:
@@ -840,7 +861,7 @@ class _WindowsProcessJob:
                     if not batch:
                         continue
                     unsettled_handles = batch
-                    self._terminate_process_handles(batch)
+                    self._terminate_process_handles(batch, deadline)
                     self._wait_for_process_handles(batch, deadline)
                     close_failure = self._close_process_handles(batch)
                     unsettled_handles = []

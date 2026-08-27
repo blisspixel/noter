@@ -29,7 +29,8 @@ dossier.
 - **Local by default.** A compiled desktop app with a native window and GPU
   renderer. No WebView, no browser engine, no JavaScript runtime inside the
   editor, no remote content fetch while you write. An idle window sleeps instead
-  of spending your battery on a render loop.
+  of spending your battery on a render loop (measured on Windows; other
+  platforms remain open evidence).
 - **One document, full attention.** Classic single-file focus instead of a
   workspace that wants to become a platform.
 - **Two exact views of the same source.** Text Mode shows every character.
@@ -61,9 +62,16 @@ filters over a generic dark capture.
 
 ## Install
 
-Signed binary releases are not published yet. The current installer builds the
-locked source checkout with the Rust toolchain pinned by the repository.
-Install [Git](https://git-scm.com/) and
+The publication location for the current correctness alpha is the
+[v0.1.0-alpha.2 release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-alpha.2).
+That page is created only after the protected-main release workflow succeeds.
+If it is present, it includes platform archives, a Windows MSI, checksums,
+SBOMs, and GitHub build provenance. The artifacts are not yet Windows or macOS
+code-signed. This is an alpha for careful dogfood with backups, not the only
+copy of important work.
+
+You can also build the locked source checkout with the Rust toolchain pinned by
+the repository. Install [Git](https://git-scm.com/) and
 [Rust through rustup](https://rustup.rs/), then run the commands for your
 platform.
 
@@ -100,12 +108,15 @@ Today the source build provides exact-source Text Mode, source-backed Markdown
 Mode, Undo and Redo, Find and Replace, Go To Line, wrap, zoom, five themes, and
 defensive local saves for ordinary UTF-8 `.txt` and `.md` files.
 
-The current crate version is `0.1.0-alpha.1`. Noter is still an engineering
-alpha. Private crash recovery is now scheduled and restored in the application
-for dirty sessions (see the roadmap for remaining alpha.2 gates). Continuous
-Markdown editing, accessibility matrices, remaining filesystem evidence, and
-binary distribution remain open. Use it with backups rather than as the only
-copy of important work.
+The current version is `0.1.0-alpha.2`, the correctness alpha. Owner-restricted
+crash-recovery files, explicit external-change decisions, clipboard commands,
+keyboard navigation, and first-contact behavior are ready for careful local
+dogfood with backups when Noter's state directory is a normally permissioned,
+local, owner-controlled per-user directory. Group-writable or ACL-shared
+directories and redirected, synchronized, network, removable, or weak-filesystem
+state roots remain outside alpha.2 recovery support. Continuous Markdown
+editing, accessibility matrices, remaining filesystem evidence, and
+public-quality distribution remain open.
 
 The privacy stance above is product law for every release, including alpha. What
 is still unfinished is reliability, completeness, and packaging, not a planned

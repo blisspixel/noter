@@ -1,11 +1,10 @@
 # Playtest Brief
 
-**Updated:** 2026-08-16
+**Updated:** 2026-08-22
 
-**Build under test:** `main` at commit `23e8c23` or later. `noter --version`
-still prints `noter 0.1.0-alpha.1`, unchanged from the previous round, because
-the roadmap only allows the `0.1.0-alpha.2` label once its gates land on one
-green commit. **Identify the build by commit, not by version string.**
+**Build under test:** the current release-candidate checkout prints
+`noter 0.1.0-alpha.2`. The label is published only from its final protected-main
+commit. **Identify an unpublished build by commit, not only by version string.**
 
 This brief exists so a round is spent on unknowns instead of re-deriving what is
 already known. It records what changed since the last round, what is deliberately
@@ -29,39 +28,50 @@ books its own repaint from the recovery schedule, so a sleeping window cannot
 silently lengthen the recovery-point objective; and `webbrowser` moved to 1.2.4
 for RUSTSEC-2026-0257.
 
+A later first-contact pass closed these additional defects:
+
+| Finding | Disposition |
+| --- | --- |
+| Bold (and italic, strike, inline code) collapsed on Enter at the end of a run | **Fixed.** Enter closes the run on the current line. Markers reopen only when the next character arrives. Empty `**\n**` pairs are never written. Mid-run Enter that stays a legal CommonMark span is unchanged. |
+| First untitled frame did not focus the editor | **Fixed.** Launch without a file puts the caret in the document so the first keystroke is the first character. |
+| Untitled status said `Saved` | **Fixed.** Never-saved documents report `Unsaved`. `Saved` is only after a successful commit to a path. |
+| Opening a file discarded private recovery records | **Fixed.** Explicit path launches skip the restore prompt without deleting records. A later untitled launch can still offer restore. Discard remains an explicit choice. |
+| Keep Editing re-prompted every inspect after local typing | **Fixed.** The prompt returns only when the disk classification changes. |
+| Recovery offer had no Cancel; Escape did nothing | **Fixed.** Later or Escape hides the offer and keeps the private copy. |
+| Enter in a list or quote dropped the marker | **Fixed.** `- ` and `> ` continue; an empty item exits. |
+| Mode and Wrap were pointer-only | **Fixed.** Ctrl/Cmd+Shift+M switches Mode; Alt+Z toggles wrap in Text Mode. |
+| Replace-field Enter did nothing | **Fixed.** Enter replaces a selected match, otherwise Find Next. |
+| A second window could Discard another window's live recovery | **Fixed.** A living window holds an exclusive lease on its recovery instance. |
+
 The full command-line contract, including every exit status, is in
 [INSTALLATION.md](INSTALLATION.md).
 
 ## Known open, please do not re-report
 
-- **Bold does not survive Enter in Markdown Mode.** With the caret at the end of
-  an emphasized run, a line break strands the closing delimiter. CommonMark
-  refuses a closer that directly follows a break, so the formatting collapses and
-  the raw markers appear. Confirmed: `**a\nb**` stays bold, `**a\n**` does not.
-  The fix requires the reopened markers to be written only when the next
-  character arrives, so no empty marker pair is ever left in the file. Scheduled,
-  not shipped.
 - **Idle cost is measured on Windows only.** The previous round ran on Linux
   X11. A repeat measurement there is genuinely useful and is recorded as open M2
   evidence in the [roadmap](ROADMAP.md).
-- **No signed binary release exists.** Installation builds the locked source
-  checkout. This is stated in the root README and remains M7 work.
+- **Prerelease artifacts are unsigned.** The alpha.2 publication plan provides
+  archives, checksums, SBOMs, provenance, and a Windows MSI, but Windows and
+  macOS platform signing remains M7 work. Keep backups and verify downloaded
+  files after the release page is present.
 - **Files above 8 MiB are refused** before the editor mirrors them. This is
   deliberate containment, not the final limit; the measured large-file path is
   M5 work.
 
 ## Where the untested surface is
 
-The previous round could not drive the GUI, so the command-line face is now well
-covered and the application itself is barely covered. The unknowns are here:
+The 2026-08-22 Windows recovery exercise drove the live editor, force-killed the
+process after a private record appeared, restored the exact observed editor
+value after restart, and exited through explicit discard with no record or lease
+left. The remaining interactive unknowns are here:
 
 - the Mode control, and whether switching views leaves bytes byte-identical;
 - typing, Undo and Redo, and whether long editing sessions stay bounded;
 - Save, Save As, and the external-change prompts (Reload, Keep Editing, Save As,
   and overwrite second confirmation);
 - Find, Replace, Replace All scope, and Go To Line;
-- crash recovery: kill the process with unsaved changes and check the startup
-  Restore and Discard offer, including its timing;
+- crash recovery on interactive macOS, Linux X11, and Linux Wayland sessions;
 - the five themes as painted pixels, at display scales other than 100 percent;
 - keyboard-only operation, and screen-reader semantics.
 

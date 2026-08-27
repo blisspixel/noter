@@ -7,8 +7,10 @@ import unittest
 from check_release_config import (
     REPOSITORY_ROOT,
     read_regular_file,
+    validate_ci_mutation_topology,
     validate_license_inventory,
     validate_manifest,
+    validate_release_artifact_validator,
     validate_repository,
     validate_sbom_generator,
     validate_wix,
@@ -42,6 +44,9 @@ class ReleaseConfigurationTests(unittest.TestCase):
         cls.sbom_generator = read_regular_file(
             REPOSITORY_ROOT / "scripts/generate_release_sboms.py"
         ).decode("utf-8")
+        cls.release_artifact_validator = read_regular_file(
+            REPOSITORY_ROOT / "scripts/check_release_artifacts.py"
+        )
 
     def test_repository_configuration_is_consistent(self) -> None:
         self.assertEqual(validate_repository(), [])
@@ -190,6 +195,47 @@ class ReleaseConfigurationTests(unittest.TestCase):
 
         self.assertIn("missing bounded macOS mutation codegen units", errors)
 
+    def test_mutation_topology_requires_complete_partitions_and_a_strict_gate(
+        self,
+    ) -> None:
+        self.assertEqual(validate_ci_mutation_topology(self.ci_workflow), [])
+        mutations = {
+            "mixed denominator": (
+                self.ci_workflow.replace(
+                    "            shard: 5/6", "            shard: 5/5"
+                ),
+                "CI mutation partitions are incomplete, reordered, or inconsistent",
+            ),
+            "missing shard application": (
+                self.ci_workflow.replace(
+                    "          --shard ${{ matrix.shard }}\n",
+                    "",
+                    1,
+                ),
+                "CI mutation workers do not apply both declared shard partitions",
+            ),
+            "worker bypass": (
+                self.ci_workflow.replace(
+                    "    timeout-minutes: 90\n",
+                    "    continue-on-error: true\n    timeout-minutes: 90\n",
+                    1,
+                ),
+                "CI mutation workers must fail closed",
+            ),
+            "skipped failure gate": (
+                self.ci_workflow.replace("    if: ${{ always() }}\n", "", 1),
+                "missing always-evaluated mutation gate",
+            ),
+            "missing artifact failure": (
+                self.ci_workflow.replace("          if-no-files-found: error\n", "", 1),
+                "missing required mutation artifacts",
+            ),
+        }
+        for description, (changed, expected_error) in mutations.items():
+            with self.subTest(description):
+                self.assertNotEqual(changed, self.ci_workflow)
+                self.assertIn(expected_error, validate_ci_mutation_topology(changed))
+
     def test_rejects_a_floating_release_tool(self) -> None:
         changed = self.workflow.replace(
             "releases/download/v0.7.5", "releases/latest/download", 1
@@ -247,6 +293,46 @@ class ReleaseConfigurationTests(unittest.TestCase):
         errors = validate_workflow(changed)
         self.assertTrue(any("pre-host" in error for error in errors))
 
+    def test_rejects_release_concurrency_policy_bypasses(self) -> None:
+        mutations = {
+            "missing policy": self.workflow.replace(
+                "concurrency:\n"
+                "  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag != 'dry-run' && inputs.tag || github.run_id }}\n"
+                "  queue: max\n"
+                "  cancel-in-progress: false\n\n",
+                "",
+                1,
+            ),
+            "shared dry runs": self.workflow.replace(
+                "inputs.tag != 'dry-run' && inputs.tag || github.run_id",
+                "inputs.tag || github.run_id",
+                1,
+            ),
+            "single pending run": self.workflow.replace(
+                "  queue: max",
+                "  queue: single",
+                1,
+            ),
+            "missing pending queue": self.workflow.replace(
+                "  queue: max\n",
+                "",
+                1,
+            ),
+            "canceled publication": self.workflow.replace(
+                "  cancel-in-progress: false",
+                "  cancel-in-progress: true",
+                1,
+            ),
+        }
+
+        for description, changed in mutations.items():
+            with self.subTest(description):
+                self.assertNotEqual(changed, self.workflow)
+                self.assertIn(
+                    "publishing tags must queue without cancellation while PR plans and dry runs stay isolated",
+                    validate_workflow(changed),
+                )
+
     def test_rejects_singular_sbom_output(self) -> None:
         changed = self.workflow.replace(
             "steps.cargo-dist.outputs.paths",
@@ -287,6 +373,32 @@ class ReleaseConfigurationTests(unittest.TestCase):
         self.assertIn(
             "missing initial exact main-tip publication gate",
             validate_workflow(changed),
+        )
+
+    def test_rejects_publication_without_exact_main_ci_success(self) -> None:
+        changed = self.workflow.replace(
+            '.conclusion == "success"', '.conclusion == "failure"', 1
+        )
+
+        errors = validate_workflow(changed)
+
+        self.assertIn("missing successful exact-main CI requirement", errors)
+        self.assertIn(
+            "exact-main CI success must be enforced before release-tag creation",
+            errors,
+        )
+
+    def test_rejects_ci_gate_for_a_different_revision(self) -> None:
+        changed = self.workflow.replace(
+            '-f head_sha="$GITHUB_SHA"', '-f head_sha="$RELEASE_COMMIT"', 1
+        )
+
+        errors = validate_workflow(changed)
+
+        self.assertIn("missing immutable CI revision selection", errors)
+        self.assertIn(
+            "exact-main CI success must be enforced before release-tag creation",
+            errors,
         )
 
     def test_rejects_publication_if_main_advances_after_hosting(self) -> None:
@@ -359,8 +471,205 @@ class ReleaseConfigurationTests(unittest.TestCase):
         changed = changed[:host_end] + gate_step + changed[host_end:]
 
         self.assertIn(
-            "immutable release target step must immediately precede hosting",
+            "validated hosting artifacts and immutable target must precede hosting",
             validate_workflow(changed),
+        )
+
+    def test_rejects_attestation_moved_before_the_draft_upload(self) -> None:
+        marker = "      - name: Attest"
+        start = self.workflow.index(marker)
+        end = self.workflow.index("      - ", start + len(marker))
+        attest_step = self.workflow[start:end]
+        changed = self.workflow[:start] + self.workflow[end:]
+        host_start = changed.index("      - id: host")
+        changed = changed[:host_start] + attest_step + changed[host_start:]
+
+        self.assertIn(
+            "artifact assembly, draft upload, remote verification, attestation, and publication steps must remain ordered",
+            validate_workflow(changed),
+        )
+
+    def test_rejects_skipped_required_release_builds(self) -> None:
+        changed = self.workflow.replace(
+            "needs.build-local-artifacts.result == 'success' && needs.build-global-artifacts.result == 'success'",
+            "(needs.build-local-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success')",
+            1,
+        )
+
+        self.assertIn(
+            "missing required successful local and global release builds",
+            validate_workflow(changed),
+        )
+
+    def test_rejects_collision_prone_artifact_downloads(self) -> None:
+        changed = self.workflow.replace(
+            "merge-multiple: false", "merge-multiple: true", 1
+        )
+        errors = validate_workflow(changed)
+        self.assertIn(
+            "release workflow contains collision-prone release artifact merge", errors
+        )
+        self.assertIn(
+            "every multi-artifact download must preserve source directories", errors
+        )
+
+    def test_rejects_remote_asset_verification_after_attestation(self) -> None:
+        remote_marker = "      - name: Verify GitHub Draft Release Assets"
+        remote_start = self.workflow.index(remote_marker)
+        remote_end = self.workflow.index("      - ", remote_start + len(remote_marker))
+        remote_step = self.workflow[remote_start:remote_end]
+        changed = self.workflow[:remote_start] + self.workflow[remote_end:]
+        attestation_start = changed.index("      - name: Attest")
+        attestation_end = changed.index("      - ", attestation_start + 1)
+        changed = changed[:attestation_end] + remote_step + changed[attestation_end:]
+
+        errors = validate_workflow(changed)
+        self.assertIn(
+            "artifact assembly, draft upload, remote verification, attestation, and publication steps must remain ordered",
+            errors,
+        )
+        self.assertIn(
+            "publication payload, remote draft, and attestation gates must be adjacent",
+            errors,
+        )
+
+    def test_rejects_remote_asset_digest_readback_bypass(self) -> None:
+        changed = self.workflow.replace(
+            '--release-json "$RUNNER_TEMP/release.json" \\',
+            '--release-json "$RUNNER_TEMP/local.json" \\',
+            1,
+        )
+
+        self.assertIn(
+            "remote draft assets must be read back and verified before attestation",
+            validate_workflow(changed),
+        )
+
+    def test_rejects_final_tip_check_moved_away_from_publication(self) -> None:
+        marker = "          git fetch --no-tags --depth=1 origin main\n"
+        start = self.workflow.rindex(marker)
+        check_end = self.workflow.index(
+            '          gh release edit "$RELEASE_TAG"', start
+        )
+        checks = self.workflow[start:check_end]
+        changed = self.workflow[:start] + self.workflow[check_end:]
+        notes_start = changed.index(
+            "          {\n", changed.index("Finalize GitHub Release")
+        )
+        changed = changed[:notes_start] + checks + changed[notes_start:]
+
+        self.assertIn(
+            "final main, tag, and remote-asset checks must immediately precede publication",
+            validate_workflow(changed),
+        )
+
+    def test_rejects_final_remote_asset_check_moved_away_from_publication(self) -> None:
+        marker = "          gh api --method GET \\\n"
+        start = self.workflow.rindex(marker)
+        check_end = self.workflow.index(
+            '          gh release edit "$RELEASE_TAG"', start
+        )
+        checks = self.workflow[start:check_end]
+        changed = self.workflow[:start] + self.workflow[check_end:]
+        notes_start = changed.index(
+            "          {\n", changed.index("Finalize GitHub Release")
+        )
+        changed = changed[:notes_start] + checks + changed[notes_start:]
+
+        self.assertIn(
+            "final main, tag, and remote-asset checks must immediately precede publication",
+            validate_workflow(changed),
+        )
+
+    def test_rejects_unreviewed_release_artifact_validator_changes(self) -> None:
+        changed = self.release_artifact_validator.replace(
+            b'asset.get("digest") != digest', b'asset.get("digest") == digest', 1
+        )
+        errors = validate_release_artifact_validator(changed)
+        self.assertIn(
+            "release artifact validator differs from its reviewed source", errors
+        )
+        self.assertIn("missing remote SHA-256 digest verification", errors)
+
+    def test_rejects_cargo_dist_publication_before_attestation(self) -> None:
+        changed = self.workflow.replace(
+            "--steps=create --steps=upload --output-format=json",
+            "--steps=create --steps=upload --steps=release --output-format=json",
+            1,
+        )
+
+        errors = validate_workflow(changed)
+        self.assertIn(
+            "release workflow contains pre-attestation cargo-dist publication", errors
+        )
+        self.assertIn("missing draft-only host upload stages", errors)
+
+    def test_rejects_duplicate_github_release_creation(self) -> None:
+        changed = self.workflow.replace(
+            'gh release edit "$RELEASE_TAG"',
+            'gh release create "$RELEASE_TAG"',
+            1,
+        )
+
+        errors = validate_workflow(changed)
+        self.assertIn("draft release creation must appear exactly once", errors)
+        self.assertIn(
+            "final publication must edit and publish the attested draft release", errors
+        )
+
+    def test_rejects_a_public_release_before_attestation(self) -> None:
+        changed = self.workflow.replace(
+            "--verify-tag --prerelease --draft \\",
+            "--verify-tag --prerelease \\",
+            1,
+        )
+
+        self.assertIn(
+            "draft creation must upload exact artifacts to one verified prerelease draft",
+            validate_workflow(changed),
+        )
+
+    def test_rejects_draft_creation_without_exact_artifacts(self) -> None:
+        changed = self.workflow.replace(
+            "            artifacts/*; then", "            ; then", 1
+        )
+
+        self.assertIn(
+            "draft creation must upload exact artifacts to one verified prerelease draft",
+            validate_workflow(changed),
+        )
+
+    def test_rejects_unverified_existing_draft_retry(self) -> None:
+        changed = self.workflow.replace(
+            '[ "$draft" != "true" ]', '[ "$draft" = "true" ]', 1
+        )
+
+        self.assertIn(
+            "draft retry must verify and replace only the exact private prerelease payload",
+            validate_workflow(changed),
+        )
+
+    def test_rejects_tag_creation_not_bound_to_the_dispatch_sha(self) -> None:
+        changed = self.workflow.replace(
+            '-f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA"',
+            '-f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"',
+            1,
+        )
+
+        errors = validate_workflow(changed)
+        self.assertIn("missing release-tag commit binding", errors)
+        self.assertIn(
+            "exact release tag must be atomically created in the immutable-target step",
+            errors,
+        )
+
+    def test_rejects_a_draft_that_is_never_published(self) -> None:
+        changed = self.workflow.replace("--draft=false", "--draft", 1)
+
+        errors = validate_workflow(changed)
+        self.assertIn("missing explicit post-attestation release publication", errors)
+        self.assertIn(
+            "final publication must edit and publish the attested draft release", errors
         )
 
     def test_rejects_host_job_execution_context_bypasses(self) -> None:
@@ -457,10 +766,10 @@ class ReleaseConfigurationTests(unittest.TestCase):
     def test_rejects_release_tag_guards_preserved_only_in_comments(self) -> None:
         initial_guard = "\n".join(
             [
-                '            if [ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$GITHUB_SHA" ]; then',
-                '              echo "The release tag already points to a different commit." >&2',
-                "              exit 2",
-                "            fi",
+                '          if [ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$GITHUB_SHA" ]; then',
+                '            echo "The release tag does not identify the exact release candidate." >&2',
+                "            exit 2",
+                "          fi",
             ]
         )
         final_guard = "\n".join(
@@ -474,7 +783,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         marker = 'git rev-parse "$RELEASE_TAG^{commit}"'
         changed = self.workflow.replace(
             initial_guard,
-            f"            # Marker only: {marker}",
+            f"          # Marker only: {marker}",
             1,
         ).replace(
             final_guard,
@@ -489,9 +798,15 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
 
     def test_rejects_target_hints_without_verified_tag_creation(self) -> None:
-        changed = self.workflow.replace("--verify-tag", '--target "$RELEASE_COMMIT"', 1)
+        changed = self.workflow.replace(
+            'gh release edit "$RELEASE_TAG" --verify-tag',
+            'gh release edit "$RELEASE_TAG" --target "$RELEASE_COMMIT"',
+            1,
+        )
         errors = validate_workflow(changed)
-        self.assertIn("missing verified-tag release creation", errors)
+        self.assertIn(
+            "final publication must edit and publish the attested draft release", errors
+        )
         self.assertIn(
             "release workflow contains target-commit hint for a possibly existing tag",
             errors,
@@ -600,7 +915,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
 
     def test_rejects_an_msi_without_a_monotonic_package_sequence(self) -> None:
-        changed = self.wix.replace(b"Version='0.0.1'", b"Version='$(var.Version)'", 1)
+        changed = self.wix.replace(b"Version='0.0.2'", b"Version='$(var.Version)'", 1)
         self.assertIn(
             "MSI package version differs from its monotonic release sequence",
             validate_wix(changed),

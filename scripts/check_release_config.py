@@ -36,14 +36,17 @@ PINNED_RELEASE_TOOL_DIGESTS = {
 }
 PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 REVIEWED_RELEASE_WORKFLOW_SHA256 = (
-    "88acb9efe083ade4f378a230f35128374cf989fb54b72f8e373432e975ff0d67"
+    "3c69845bb770ee84b564c4e3836b7540eb4a9ec3639e3783b487bb0aab680f6a"
 )
-REVIEWED_WIX_SHA256 = "777e3bbc058b30611dc274390eb44059a97375c2ca49cf2af910bc386e2cfada"
+REVIEWED_WIX_SHA256 = "90d3892cab5d6b450a76a5f1b1596a061306f2bddcac2908c7e59a99a00fa6be"
 REVIEWED_CI_WORKFLOW_SHA256 = (
-    "a780e39abf437619c0eec44b27d9269712e1191504df7c1a8b0c17fdebb384bc"
+    "dba2f48ec8a73d3f65d126b90767f46273028b9d7aa1df1656e16d2d68915499"
 )
 REVIEWED_CI_TEST_JOB_SHA256 = (
     "7abb1436d4c1bbcd14c106d5bf60812866df7265966156226d7353561f2ad785"
+)
+REVIEWED_RELEASE_ARTIFACT_VALIDATOR_SHA256 = (
+    "7546de6da84329822f0c4437fe003acff76454bc7b3e6146ddf207b852d39a7c"
 )
 WIX_NAMESPACE = {"wix": "http://schemas.microsoft.com/wix/2006/wi"}
 WIX_XML_COMMENT = re.compile(rb"<!--.*?-->", flags=re.DOTALL)
@@ -126,13 +129,33 @@ def _executable_shell_lines(script: str | None) -> tuple[str, ...]:
     )
 
 
+def _top_level_mapping(text: str, name: str) -> tuple[str, ...] | None:
+    """Return one top-level YAML mapping without accepting duplicate keys."""
+
+    lines = text.splitlines()
+    marker = f"{name}:"
+    starts = [index for index, line in enumerate(lines) if line == marker]
+    if len(starts) != 1:
+        return None
+    start = starts[0]
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index] and not lines[index][0].isspace()
+        ),
+        len(lines),
+    )
+    return tuple(lines[start:end])
+
+
 def validate_manifest(text: str) -> list[str]:
     """Validate cargo-dist and MSI metadata that must remain stable."""
 
     errors: list[str] = []
     requirements = {
         'cargo-dist-version = "0.32.0"': "pinned cargo-dist version",
-        'version = "0.1.0-alpha.1"': "prerelease package version",
+        'version = "0.1.0-alpha.2"': "prerelease package version",
         'installers = ["shell", "powershell", "homebrew", "msi"]': (
             "cross-platform installer set"
         ),
@@ -210,12 +233,30 @@ def validate_workflow(text: str) -> list[str]:
     header = text[:jobs_marker]
     pre_host = text[:host_marker]
     host = text[host_marker:]
+    expected_concurrency = (
+        "concurrency:",
+        "  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag != 'dry-run' && inputs.tag || github.run_id }}",
+        "  queue: max",
+        "  cancel-in-progress: false",
+    )
+    if _top_level_mapping(header, "concurrency") != expected_concurrency:
+        errors.append(
+            "publishing tags must queue without cancellation while PR plans and dry runs stay isolated"
+        )
     immutable_target_script = _literal_run_step(
         host, "Validate immutable release target", errors
     )
-    publication_script = _literal_run_step(host, "Create GitHub Release", errors)
+    publication_script = _literal_run_step(host, "Finalize GitHub Release", errors)
+    draft_script = _literal_run_step(
+        host, "Create or refresh GitHub Draft Release", errors
+    )
+    remote_asset_script = _literal_run_step(
+        host, "Verify GitHub Draft Release Assets", errors
+    )
     immutable_target_lines = _executable_shell_lines(immutable_target_script)
     publication_lines = _executable_shell_lines(publication_script)
+    draft_lines = _executable_shell_lines(draft_script)
+    remote_asset_lines = _executable_shell_lines(remote_asset_script)
     host_step_headers = [
         line for line in host.splitlines() if line.startswith("      - ")
     ]
@@ -232,19 +273,77 @@ def validate_workflow(text: str) -> list[str]:
     publication_headers = [
         index
         for index, header in enumerate(host_step_headers)
-        if header == "      - name: Create GitHub Release"
+        if header == "      - name: Finalize GitHub Release"
+    ]
+    attestation_headers = [
+        index
+        for index, header in enumerate(host_step_headers)
+        if header == "      - name: Attest"
+    ]
+    draft_headers = [
+        index
+        for index, header in enumerate(host_step_headers)
+        if header == "      - name: Create or refresh GitHub Draft Release"
+    ]
+    hosting_artifact_headers = [
+        index
+        for index, header in enumerate(host_step_headers)
+        if header == "      - name: Validate and assemble hosting artifacts"
+    ]
+    publication_artifact_headers = [
+        index
+        for index, header in enumerate(host_step_headers)
+        if header == "      - name: Validate and assemble publication artifacts"
+    ]
+    remote_asset_headers = [
+        index
+        for index, header in enumerate(host_step_headers)
+        if header == "      - name: Verify GitHub Draft Release Assets"
     ]
     if (
         len(hosting_headers) != 1
+        or len(hosting_artifact_headers) != 1
         or len(immutable_headers) != 1
+        or hosting_artifact_headers[0] >= immutable_headers[0]
         or immutable_headers[0] + 1 != hosting_headers[0]
     ):
-        errors.append("immutable release target step must immediately precede hosting")
+        errors.append(
+            "validated hosting artifacts and immutable target must precede hosting"
+        )
     if (
         len(publication_headers) != 1
         or publication_headers[0] != len(host_step_headers) - 1
     ):
         errors.append("publication step must be the final host step")
+    if (
+        len(hosting_headers) != 1
+        or len(draft_headers) != 1
+        or len(publication_artifact_headers) != 1
+        or len(remote_asset_headers) != 1
+        or len(attestation_headers) != 1
+        or len(publication_headers) != 1
+        or not hosting_headers[0]
+        < publication_artifact_headers[0]
+        < draft_headers[0]
+        < remote_asset_headers[0]
+        < attestation_headers[0]
+        < publication_headers[0]
+    ):
+        errors.append(
+            "artifact assembly, draft upload, remote verification, attestation, and publication steps must remain ordered"
+        )
+    if (
+        len(publication_artifact_headers) != 1
+        or len(draft_headers) != 1
+        or publication_artifact_headers[0] + 1 != draft_headers[0]
+        or len(remote_asset_headers) != 1
+        or draft_headers[0] + 1 != remote_asset_headers[0]
+        or len(attestation_headers) != 1
+        or remote_asset_headers[0] + 1 != attestation_headers[0]
+    ):
+        errors.append(
+            "publication payload, remote draft, and attestation gates must be adjacent"
+        )
     require_text(
         header,
         'permissions:\n  "contents": "read"',
@@ -259,9 +358,22 @@ def validate_workflow(text: str) -> list[str]:
         errors.append("the GitHub token must appear only once in the host job")
     for expected, description in {
         '"attestations": "write"': "host attestation permission",
+        '"actions": "read"': "host workflow-read permission",
         '"contents": "write"': "host release permission",
         '"id-token": "write"': "host OIDC permission",
-        "--steps=create --steps=upload --steps=release": "host publication stages",
+        "--steps=create --steps=upload --output-format=json": (
+            "draft-only host upload stages"
+        ),
+        "needs.build-local-artifacts.result == 'success' && needs.build-global-artifacts.result == 'success'": (
+            "required successful local and global release builds"
+        ),
+        "scripts/check_release_artifacts.py prepare": (
+            "release artifact inventory validator"
+        ),
+        "--stage global": "validated local build payload",
+        "--stage host": "validated hosting payload",
+        "--stage publish": "validated publication payload",
+        "merge-multiple: false": "collision-preserving artifact downloads",
         "steps.cargo-dist.outputs.paths": "manifest-driven artifact upload output",
         "artifacts/*.tar.gz": "source-archive attestation subject",
         "wix3141rtm/wix314-binaries.zip": "pinned WiX Toolset archive",
@@ -291,6 +403,11 @@ def validate_workflow(text: str) -> list[str]:
         '[ "$GITHUB_SHA" != "$(git rev-parse origin/main)" ]': (
             "initial exact main-tip publication gate"
         ),
+        '"repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs"': (
+            "exact-main CI run inspection"
+        ),
+        '-f head_sha="$GITHUB_SHA"': "immutable CI revision selection",
+        '.conclusion == "success"': "successful exact-main CI requirement",
         '[ "$RELEASE_COMMIT" != "$(git rev-parse origin/main)" ]': (
             "final exact main-tip publication gate"
         ),
@@ -300,10 +417,20 @@ def validate_workflow(text: str) -> list[str]:
         'gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs"': (
             "atomic release-tag creation"
         ),
-        '-f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"': (
+        '-f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA"': (
             "release-tag commit binding"
         ),
-        "--verify-tag": "verified-tag release creation",
+        "--verify-tag": "verified-tag release finalization",
+        'gh release edit "$RELEASE_TAG"': "cargo-dist release finalization",
+        'gh release create "$RELEASE_TAG"': "verified draft release creation",
+        'gh release upload "$RELEASE_TAG" artifacts/*': ("verified draft retry upload"),
+        "scripts/check_release_artifacts.py verify-remote": (
+            "remote draft asset digest verification"
+        ),
+        '--release-json "$RUNNER_TEMP/release.json"': (
+            "fresh remote draft inventory input"
+        ),
+        "--draft=false": "explicit post-attestation release publication",
         "gh attestation verify PATH_TO_DOWNLOADED_ASSET": (
             "attestation-first release guidance"
         ),
@@ -328,6 +455,8 @@ def validate_workflow(text: str) -> list[str]:
         "cargo-auditable-installer.ps1": (
             "unverified Windows cargo-auditable installer"
         ),
+        "--steps=release": "pre-attestation cargo-dist publication",
+        "merge-multiple: true": "collision-prone release artifact merge",
     }
     for token, description in forbidden.items():
         if token in text:
@@ -346,12 +475,50 @@ def validate_workflow(text: str) -> list[str]:
         errors.append("initial main-tip gate must appear exactly once")
     if text.count('[ "$RELEASE_COMMIT" != "$(git rev-parse origin/main)" ]') != 1:
         errors.append("final main-tip gate must appear exactly once")
+    if text.count("merge-multiple: false") != 3:
+        errors.append("every multi-artifact download must preserve source directories")
+    if text.count("if-no-files-found: error") != 5:
+        errors.append(
+            "every release artifact upload must fail when its payload is absent"
+        )
     if (
         'if [ "$GITHUB_SHA" != "$(git rev-parse origin/main)" ]; then'
         not in immutable_target_lines
     ):
         errors.append(
             "initial exact main-tip publication gate must be executable in its host step"
+        )
+    if not (
+        any(
+            line.startswith(
+                'ci_runs="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs"'
+            )
+            for line in immutable_target_lines
+        )
+        and '-f head_sha="$GITHUB_SHA" -f per_page=100)"' in immutable_target_lines
+        and any(
+            ".head_sha == $sha" in line
+            and '.head_branch == "main"' in line
+            and '.event == "push"' in line
+            and '.status == "completed"' in line
+            and '.conclusion == "success"' in line
+            for line in immutable_target_lines
+        )
+        and 'if [ "$successful_ci" -lt 1 ]; then' in immutable_target_lines
+    ):
+        errors.append(
+            "exact-main CI success must be enforced before release-tag creation"
+        )
+    if not (
+        any(
+            line.startswith('gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs"')
+            for line in immutable_target_lines
+        )
+        and '-f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" >/dev/null'
+        in immutable_target_lines
+    ):
+        errors.append(
+            "exact release tag must be atomically created in the immutable-target step"
         )
     if (
         'if [ "$RELEASE_COMMIT" != "$(git rev-parse origin/main)" ]; then'
@@ -369,6 +536,116 @@ def validate_workflow(text: str) -> list[str]:
         errors.append(
             "release tag binding checks must be executable in their host steps"
         )
+    final_release_indexes = [
+        index
+        for index, line in enumerate(publication_lines)
+        if line.startswith('gh release edit "$RELEASE_TAG" ')
+    ]
+    final_remote_verification = (
+        "gh api --method GET \\",
+        '"repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \\',
+        '> "$RUNNER_TEMP/final-release.json"',
+        "python3 scripts/check_release_artifacts.py verify-remote \\",
+        "--artifact-root artifacts \\",
+        '--release-json "$RUNNER_TEMP/final-release.json" \\',
+        '--expected-tag "$RELEASE_TAG"',
+    )
+    if (
+        len(final_release_indexes) != 1
+        or final_release_indexes[0] < len(final_remote_verification)
+        or publication_lines[
+            final_release_indexes[0]
+            - len(final_remote_verification) : final_release_indexes[0]
+        ]
+        != final_remote_verification
+        or not any(
+            line == "git fetch --no-tags --depth=1 origin main"
+            for line in publication_lines[: final_release_indexes[0]]
+        )
+    ):
+        errors.append(
+            "final main, tag, and remote-asset checks must immediately precede publication"
+        )
+    draft_creation_lines = [
+        line
+        for line in draft_lines
+        if line.startswith('if ! gh release create "$RELEASE_TAG" ')
+    ]
+    if (
+        len(draft_creation_lines) != 1
+        or "--verify-tag" not in draft_creation_lines[0]
+        or "--prerelease" not in draft_creation_lines[0]
+        or "--draft" not in draft_creation_lines[0]
+        or "artifacts/*; then" not in draft_lines
+    ):
+        errors.append(
+            "draft creation must upload exact artifacts to one verified prerelease draft"
+        )
+    if text.count('gh release create "$RELEASE_TAG"') != 1:
+        errors.append("draft release creation must appear exactly once")
+    if not (
+        'release_json="$(gh api --method GET '
+        '"repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"'
+        in draft_lines
+        and 'if [ "$draft" != "true" ] || [ "$prerelease" != "true" ] || [ "$tag_name" != "$RELEASE_TAG" ]; then'
+        in draft_lines
+        and "done < <(printf '%s' \"$release_json\" | jq -r '.assets[].id')"
+        in draft_lines
+        and any(
+            line.startswith(
+                'gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"'
+            )
+            for line in draft_lines
+        )
+        and 'gh release upload "$RELEASE_TAG" artifacts/*' in draft_lines
+    ):
+        errors.append(
+            "draft retry must verify and replace only the exact private prerelease payload"
+        )
+    if not (
+        any(line.startswith("gh api --method GET \\") for line in remote_asset_lines)
+        and '"repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \\'
+        in remote_asset_lines
+        and '> "$RUNNER_TEMP/release.json"' in remote_asset_lines
+        and "python3 scripts/check_release_artifacts.py verify-remote \\"
+        in remote_asset_lines
+        and "--artifact-root artifacts \\" in remote_asset_lines
+        and '--release-json "$RUNNER_TEMP/release.json" \\' in remote_asset_lines
+        and '--expected-tag "$RELEASE_TAG"' in remote_asset_lines
+    ):
+        errors.append(
+            "remote draft assets must be read back and verified before attestation"
+        )
+    if text.count("scripts/check_release_artifacts.py verify-remote") != 2:
+        errors.append(
+            "remote draft assets must be verified before attestation and publication"
+        )
+    final_release_lines = [
+        line
+        for line in publication_lines
+        if line.startswith('gh release edit "$RELEASE_TAG" ')
+    ]
+    if (
+        len(final_release_lines) != 1
+        or "--verify-tag" not in final_release_lines[0]
+        or "--prerelease" not in final_release_lines[0]
+        or "--draft=false" not in final_release_lines[0]
+    ):
+        errors.append(
+            "final publication must edit and publish the attested draft release"
+        )
+    if not (
+        any(
+            line.startswith(
+                'published_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"'
+            )
+            for line in publication_lines
+        )
+        and 'jq -r \'.draft\')" != "false"' in publication_script
+        and 'jq -r \'.prerelease\')" != "true"' in publication_script
+        and 'jq -r \'.tag_name\')" != "$RELEASE_TAG"' in publication_script
+    ):
+        errors.append("published prerelease state must be read back and verified")
     for digest in PINNED_RELEASE_TOOL_DIGESTS:
         require_text(text, digest, f"pinned release-tool digest {digest[:12]}", errors)
 
@@ -412,6 +689,49 @@ def validate_sbom_generator(text: str) -> list[str]:
         errors.append("SBOM generator must not invoke a command shell")
     if re.search(r"\b(?:curl|wget)\b", text):
         errors.append("SBOM generator must not fetch remote content")
+    return errors
+
+
+def validate_release_artifact_validator(contents: bytes) -> list[str]:
+    """Bind the helper that enforces the release payload and remote digest boundary."""
+
+    errors: list[str] = []
+    if sha256(contents).hexdigest() != REVIEWED_RELEASE_ARTIFACT_VALIDATOR_SHA256:
+        errors.append("release artifact validator differs from its reviewed source")
+    try:
+        text = contents.decode("utf-8")
+    except UnicodeDecodeError:
+        return ["release artifact validator must be UTF-8"]
+    for expected, description in {
+        "RELEASE_ARTIFACT_KINDS": "independent required release inventory",
+        "LOCAL_RELEASE_ARTIFACTS": "required local build inventory",
+        "LOCAL_RELEASE_ARTIFACT_TARGETS": "target-specific artifact ownership",
+        "GLOBAL_RELEASE_ARTIFACTS": "global artifact ownership",
+        "workflow artifact filename collision detected": (
+            "cross-container collision rejection"
+        ),
+        'asset.get("state") != "uploaded"': "remote upload-state verification",
+        'asset.get("size") != size': "remote asset-size verification",
+        'asset.get("digest") != digest': "remote SHA-256 digest verification",
+        "required global artifact build did not succeed": (
+            "fail-closed global build result"
+        ),
+        "downloaded build payload differs from the release plan": (
+            "exact hosting inventory verification"
+        ),
+        "publication payload differs from the release plan and host manifest": (
+            "exact publication inventory verification"
+        ),
+        "release checksum does not match its artifact": (
+            "artifact-sidecar checksum verification"
+        ),
+        "unified release checksum differs from the verified sidecars": (
+            "unified checksum verification"
+        ),
+    }.items():
+        require_text(text, expected, description, errors)
+    if "subprocess" in text or "shell=True" in text:
+        errors.append("release artifact validator must not invoke subprocesses")
     return errors
 
 
@@ -492,9 +812,9 @@ def validate_wix(contents: bytes) -> list[str]:
         errors.append(
             "MSI product and package identities must rotate per release build"
         )
-    if product.get("Version") != "0.0.1":
+    if product.get("Version") != "0.0.2":
         errors.append("MSI package version differs from its monotonic release sequence")
-    if display_version.get("Value") != "0.1.0-alpha.1":
+    if display_version.get("Value") != "0.1.0-alpha.2":
         errors.append("MSI display version differs from the Noter package version")
     if major_upgrade.get("AllowSameVersionUpgrades") is not None:
         errors.append("MSI must not permit ambiguous same-version upgrades")
@@ -549,6 +869,7 @@ def validate_license_inventory(
     """Validate the checked-in third-party license generation contract."""
 
     errors: list[str] = []
+    errors.extend(validate_ci_mutation_topology(ci_workflow))
     if sha256(ci_workflow.encode("utf-8")).hexdigest() != REVIEWED_CI_WORKFLOW_SHA256:
         errors.append("CI workflow differs from its reviewed source")
     test_job_marker = ci_workflow.find("\n  test:\n")
@@ -566,15 +887,15 @@ def validate_license_inventory(
                 "CI test job differs from its reviewed cross-platform program"
             )
     for text, expected, description in [
-        (manifest, 'version = "0.1.0-alpha.1"', "root prerelease version"),
+        (manifest, 'version = "0.1.0-alpha.2"', "root prerelease version"),
         (
             manifest,
-            'noter-platform = { version = "=0.1.0-alpha.1"',
+            'noter-platform = { version = "=0.1.0-alpha.2"',
             "path dependency prerelease version",
         ),
         (
             platform_manifest,
-            'version = "0.1.0-alpha.1"',
+            'version = "0.1.0-alpha.2"',
             "platform crate prerelease version",
         ),
         (about_config, "ignore-dev-dependencies = true", "runtime-only inventory"),
@@ -676,6 +997,75 @@ def validate_license_inventory(
     return errors
 
 
+def validate_ci_mutation_topology(ci_workflow: str) -> list[str]:
+    """Validate complete sharding behind one fail-closed mutation gate."""
+
+    errors: list[str] = []
+    mutation_marker = ci_workflow.find("\n  mutation:\n")
+    gate_marker = ci_workflow.find("\n  mutation-gate:\n")
+    docs_marker = ci_workflow.find("\n  docs:\n")
+    if (
+        mutation_marker < 0
+        or gate_marker <= mutation_marker
+        or docs_marker <= gate_marker
+    ):
+        return ["CI is missing its ordered mutation workers, gate, or docs boundary"]
+
+    workers = ci_workflow[mutation_marker:gate_marker]
+    gate = ci_workflow[gate_marker:docs_marker]
+    matrix_rows = re.findall(
+        r"^          - os: ([^\n]+)\n"
+        r"            scope: ([^\n]+)"
+        r"(?:\n            shard: ([^\n]+))?",
+        workers,
+        flags=re.MULTILINE,
+    )
+    expected_rows = [
+        ("ubuntu-latest", "linux-0-of-3", "0/3"),
+        ("ubuntu-latest", "linux-1-of-3", "1/3"),
+        ("ubuntu-latest", "linux-2-of-3", "2/3"),
+        ("windows-latest", "windows-0-of-6", "0/6"),
+        ("windows-latest", "windows-1-of-6", "1/6"),
+        ("windows-latest", "windows-2-of-6", "2/6"),
+        ("windows-latest", "windows-3-of-6", "3/6"),
+        ("windows-latest", "windows-4-of-6", "4/6"),
+        ("windows-latest", "windows-5-of-6", "5/6"),
+        ("macos-latest", "macos", ""),
+    ]
+    if matrix_rows != expected_rows:
+        errors.append(
+            "CI mutation partitions are incomplete, reordered, or inconsistent"
+        )
+    if workers.count("--shard ${{ matrix.shard }}") != 2:
+        errors.append("CI mutation workers do not apply both declared shard partitions")
+    if "continue-on-error:" in workers:
+        errors.append("CI mutation workers must fail closed")
+    for expected, description in [
+        ("    name: mutation-${{ matrix.scope }}", "stable mutation worker names"),
+        ("    timeout-minutes: 90", "bounded mutation worker time"),
+        ("          if-no-files-found: error", "required mutation artifacts"),
+    ]:
+        require_text(workers, expected, description, errors)
+
+    for expected, description in [
+        ("    name: mutation-gate", "stable mutation gate name"),
+        ("    needs: mutation", "mutation gate dependency"),
+        ("    if: ${{ always() }}", "always-evaluated mutation gate"),
+        (
+            "MUTATION_MATRIX_RESULT: ${{ needs.mutation.result }}",
+            "exact mutation matrix result",
+        ),
+        (
+            'if [ "$MUTATION_MATRIX_RESULT" != success ]; then',
+            "fail-closed mutation matrix result check",
+        ),
+    ]:
+        require_text(gate, expected, description, errors)
+    if "continue-on-error:" in gate:
+        errors.append("CI mutation gate must fail closed")
+    return errors
+
+
 def render_license_rtf(license_text: str) -> bytes:
     """Render the repository license into the deterministic MSI sidecar format."""
 
@@ -717,6 +1107,9 @@ def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
         sbom_generator = read_regular_file(
             root / "scripts/generate_release_sboms.py"
         ).decode("utf-8")
+        release_artifact_validator = read_regular_file(
+            root / "scripts/check_release_artifacts.py"
+        )
         read_regular_file(root / "assets/fonts/Inter-OFL.txt")
     except (OSError, UnicodeError, ValueError) as error:
         return [str(error)]
@@ -724,6 +1117,7 @@ def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
     errors = validate_manifest(manifest)
     errors.extend(validate_workflow(workflow))
     errors.extend(validate_sbom_generator(sbom_generator))
+    errors.extend(validate_release_artifact_validator(release_artifact_validator))
     errors.extend(validate_wix(wix))
     errors.extend(
         validate_license_inventory(
