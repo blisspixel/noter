@@ -142,27 +142,39 @@ jobs:
           - os: ubuntu-latest
             scope: linux-2-of-3
             shard: 2/3
-          # Six Windows shards retain the complete deterministic candidate
+          # Eight Windows shards retain the complete deterministic candidate
           # partition with enough margin beneath the 90-minute fail-closed
           # ceiling. One aggregate check remains stable if the partition grows.
+          #
+          # Six shards no longer fit. Windows is the slowest runner and its
+          # widest shard reached 80 of the 90 minutes on the commit before this
+          # one, so the next few candidates added to the partition cancelled it
+          # at the ceiling instead of reporting a result. Eight shards restore
+          # the margin without narrowing the configured scope.
           - os: windows-latest
-            scope: windows-0-of-6
-            shard: 0/6
+            scope: windows-0-of-8
+            shard: 0/8
           - os: windows-latest
-            scope: windows-1-of-6
-            shard: 1/6
+            scope: windows-1-of-8
+            shard: 1/8
           - os: windows-latest
-            scope: windows-2-of-6
-            shard: 2/6
+            scope: windows-2-of-8
+            shard: 2/8
           - os: windows-latest
-            scope: windows-3-of-6
-            shard: 3/6
+            scope: windows-3-of-8
+            shard: 3/8
           - os: windows-latest
-            scope: windows-4-of-6
-            shard: 4/6
+            scope: windows-4-of-8
+            shard: 4/8
           - os: windows-latest
-            scope: windows-5-of-6
-            shard: 5/6
+            scope: windows-5-of-8
+            shard: 5/8
+          - os: windows-latest
+            scope: windows-6-of-8
+            shard: 6/8
+          - os: windows-latest
+            scope: windows-7-of-8
+            shard: 7/8
           - os: macos-latest
             scope: macos
     runs-on: ${{ matrix.os }}

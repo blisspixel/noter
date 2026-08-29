@@ -35,6 +35,19 @@ exclude_re = [
     "delete ! in delete_claimed_live_path",
     "replace == with != in commit_staged_record",
     "replace == with != in RecoveryStore::(quarantine_file|scan_startup)",
+    # Console attachment. The decisions belong to windows_raw_handle_is_bound
+    # and windows_console_streams_ready, which are pure and proved exhaustively;
+    # what stays here is an unsafe call sequence a portable test cannot force.
+    # Reaching it needs a process that owns no console, and exercising it means
+    # opening CONOUT$ and calling SetStdHandle, which rewrite process-global
+    # standard-handle slots and would corrupt the parallel harness running the
+    # test. Both mutants below that survive a bound-stream environment return
+    # the value the real code already returns there, so they are equivalent
+    # rather than untested: a test asserts the `false` side of each.
+    # Installed-binary evidence is recorded in docs/M2_INSTALLED_EVIDENCE.md.
+    "replace (imp::(unix|windows)_)?attach_parent_console -> bool with true",
+    "windows_bind_console_stream",
+    "in imp::windows_attach_parent_console",
 ]
 all_features = true
 test_workspace = true
