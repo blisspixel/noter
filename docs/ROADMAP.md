@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-08-23
+**Updated:** 2026-08-29
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -23,7 +23,7 @@ criteria and evidence land on one immutable green commit.
 | Version | Product meaning | Primary milestones | Status |
 | --- | --- | --- | --- |
 | `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1–M4 and M6 partial | Prior crate checkpoint |
-| `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups on supported local state roots | Recovery, clipboard, overwrite confirm, first-contact honesty, and alpha evidence | **Release candidate** |
+| `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups on supported local state roots | Recovery, clipboard, overwrite confirm, first-contact honesty, and alpha evidence | **Published 2026-08-29** |
 | `0.1.0-beta.1` | Production editor path: measured performance, IME, accessibility | M5 feasibility gate and production editor; continuous Markdown editing foundation | After alpha.2 |
 | `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.1 |
 | `0.1.0` | First public-quality release | Every v0.1 requirement in REQUIREMENTS has evidence | After successful RC dogfood |
@@ -69,16 +69,18 @@ does not expand unsafe UI surface.
 7. **Partial:** M2 installed-product evidence: disposable Windows source
    install recorded; interactive About GUI and packaged installers remain open.
    Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
-8. **Release gate in progress:**
+8. **Done:** release gate.
    [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) records the
-   current implementation commit, local gates, and a 2026-08-23 Windows live
+   implementation commit, local gates, and a 2026-08-23 Windows live
    GUI pass covering exact empty dirty recovery persistence, force-kill,
    restart offer, exact restored editor text, successor transfer, explicit
    discard, and clean dual-lease removal.
    Interactive non-Windows GUI smoke is explicitly deferred to beta.1 because
    this release host has no interactive non-Windows desktop. Alpha.2 remains a
-   prerelease, and exact-head hosted Windows, Linux, and macOS CI is still
-   required before its tag.
+   prerelease. Exact-head hosted Windows, Linux, and macOS CI passed on
+   `dbb419f`, and `v0.1.0-alpha.2` was published from that exact protected-main
+   tip on 2026-08-29 with archives, a Windows MSI, checksums, four
+   target-specific SBOMs, and GitHub build provenance for every asset.
 
 ### Toward `0.1.0-beta.1`
 
@@ -832,8 +834,8 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 
 ## Immediate backlog (maps to version train)
 
-The alpha.2 correctness work is complete pending immutable exact-head CI and
-publication. The next implementation gate is beta.1 editor feasibility.
+The alpha.2 correctness work is complete and published. The next
+implementation gate is beta.1 editor feasibility.
 
 1. **Done:** Markdown keyboard navigation parity with Text Mode; pure word /
    Home-End / document policy and long-session history fixture.
@@ -846,10 +848,10 @@ publication. The next implementation gate is beta.1 editor feasibility.
 4. **Partial evidence:** disposable Windows source install and related unit
    paths. Evidence: [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md).
    Interactive About GUI, theme GUI relaunch, and packaged installers remain.
-5. **Alpha.2 release evidence:** keep
-   [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) paired with the
-   immutable implementation commit, then tag only after the final evidence head
-   and protected-main head both pass exact-head CI.
+5. **Done:** alpha.2 release evidence and publication.
+   [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) stays paired
+   with the immutable implementation commit, and `v0.1.0-alpha.2` was tagged at
+   the protected-main head `dbb419f` after that exact commit passed CI.
 6. **Next, `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
    production editor contract is stable.
