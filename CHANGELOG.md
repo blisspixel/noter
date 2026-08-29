@@ -355,6 +355,10 @@ that candidate is frozen for publication.
 
 ### Changed
 
+- Publish `v0.1.0-alpha.2` as the first Noter release. It is a prerelease for
+  careful dogfood with backups, built from the exact protected-`main` tip after
+  that commit passed hosted Windows, Linux, and macOS CI. Every asset carries
+  GitHub build provenance; the artifacts are not Windows or macOS code-signed.
 - Separate the Windows console-attachment decisions from the unsafe calls that
   produce them, so the policy is proved rather than asserted. The bound-handle
   predicate and the per-stream readiness decision are pure and covered

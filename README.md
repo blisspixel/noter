@@ -62,13 +62,14 @@ filters over a generic dark capture.
 
 ## Install
 
-The publication location for the current correctness alpha is the
+The current correctness alpha is published as the
 [v0.1.0-alpha.2 release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-alpha.2).
-That page is created only after the protected-main release workflow succeeds.
-If it is present, it includes platform archives, a Windows MSI, checksums,
-SBOMs, and GitHub build provenance. The artifacts are not yet Windows or macOS
-code-signed. This is an alpha for careful dogfood with backups, not the only
-copy of important work.
+It includes platform archives for Windows, Linux, and both macOS
+architectures, a Windows MSI, checksums, target-specific SBOMs, and GitHub
+build provenance for every asset. The artifacts are not Windows or macOS
+code-signed. Download an asset before running it, and verify its provenance
+with `gh attestation verify FILE --repo blisspixel/noter`. This is an alpha for
+careful dogfood with backups, not the only copy of important work.
 
 You can also build the locked source checkout with the Rust toolchain pinned by
 the repository. Install [Git](https://git-scm.com/) and
