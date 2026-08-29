@@ -6,7 +6,7 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
-## 0.1.0-alpha.2 - 2026-08-23
+## 0.1.0-alpha.2 - 2026-08-29
 
 ### Added
 
@@ -66,6 +66,13 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Stop counting the whole document before every insertion. Both bounded text
+  buffers computed a character clamp from a full character count, but the
+  document editor sets no character limit, so that scan ran on every keystroke,
+  tab, newline, and input-method commit to derive a bound that could never
+  apply. The count now runs only when a limit is set, matching the guard egui's
+  own buffer uses. The bounded find and replacement fields do set a limit, so
+  their clamping is unchanged.
 - Print command-line output from Windows release builds. Release builds link
   against the graphical subsystem so opening a document never flashes a console
   window, but a process started from a shell then inherits no console at all,
