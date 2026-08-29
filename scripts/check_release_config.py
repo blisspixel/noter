@@ -40,7 +40,7 @@ REVIEWED_RELEASE_WORKFLOW_SHA256 = (
 )
 REVIEWED_WIX_SHA256 = "90d3892cab5d6b450a76a5f1b1596a061306f2bddcac2908c7e59a99a00fa6be"
 REVIEWED_CI_WORKFLOW_SHA256 = (
-    "dba2f48ec8a73d3f65d126b90767f46273028b9d7aa1df1656e16d2d68915499"
+    "4dcac19a085b03d619e669bf1d9eb232d26715cd7927b4410ee3eafa3dc7c77c"
 )
 REVIEWED_CI_TEST_JOB_SHA256 = (
     "7abb1436d4c1bbcd14c106d5bf60812866df7265966156226d7353561f2ad785"
@@ -1024,12 +1024,14 @@ def validate_ci_mutation_topology(ci_workflow: str) -> list[str]:
         ("ubuntu-latest", "linux-0-of-3", "0/3"),
         ("ubuntu-latest", "linux-1-of-3", "1/3"),
         ("ubuntu-latest", "linux-2-of-3", "2/3"),
-        ("windows-latest", "windows-0-of-6", "0/6"),
-        ("windows-latest", "windows-1-of-6", "1/6"),
-        ("windows-latest", "windows-2-of-6", "2/6"),
-        ("windows-latest", "windows-3-of-6", "3/6"),
-        ("windows-latest", "windows-4-of-6", "4/6"),
-        ("windows-latest", "windows-5-of-6", "5/6"),
+        ("windows-latest", "windows-0-of-8", "0/8"),
+        ("windows-latest", "windows-1-of-8", "1/8"),
+        ("windows-latest", "windows-2-of-8", "2/8"),
+        ("windows-latest", "windows-3-of-8", "3/8"),
+        ("windows-latest", "windows-4-of-8", "4/8"),
+        ("windows-latest", "windows-5-of-8", "5/8"),
+        ("windows-latest", "windows-6-of-8", "6/8"),
+        ("windows-latest", "windows-7-of-8", "7/8"),
         ("macos-latest", "macos", ""),
     ]
     if matrix_rows != expected_rows:

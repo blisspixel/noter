@@ -15,6 +15,7 @@ use std::path::PathBuf;
 #[cfg(unix)]
 use imp::{
     unix_apply_required_metadata as platform_apply_required_metadata,
+    unix_attach_parent_console as platform_attach_parent_console,
     unix_capture_required_metadata as platform_capture_required_metadata,
     unix_delete_open_file as platform_delete_open_file, unix_file_facts as platform_file_facts,
     unix_install_new as platform_install_new,
@@ -32,6 +33,7 @@ use imp::macos_create_private_new_file as platform_create_private_new_file;
 use imp::unix_create_private_new_file as platform_create_private_new_file;
 #[cfg(not(any(unix, windows)))]
 use imp::{
+    unsupported_attach_parent_console as platform_attach_parent_console,
     unsupported_create_private_new_file as platform_create_private_new_file,
     unsupported_delete_open_file as platform_delete_open_file,
     unsupported_file_facts as platform_file_facts, unsupported_install_new as platform_install_new,
@@ -42,6 +44,7 @@ use imp::{
 };
 #[cfg(windows)]
 use imp::{
+    windows_attach_parent_console as platform_attach_parent_console,
     windows_create_private_new_file as platform_create_private_new_file,
     windows_delete_open_file as platform_delete_open_file,
     windows_file_facts as platform_file_facts, windows_install_new as platform_install_new,
@@ -693,6 +696,29 @@ pub fn sync_file(file: &File) -> io::Result<()> {
 /// Returns an operating-system error when a supported directory barrier fails.
 pub fn sync_parent(destination: &Path) -> io::Result<ParentSyncOutcome> {
     platform_sync_parent(destination)
+}
+
+/// Binds standard output and error to the console that launched the process.
+///
+/// Windows release builds link against the GUI subsystem so opening a document
+/// from Explorer or a file association never flashes a console window. A
+/// process started from a shell therefore inherits no console at all, and
+/// `--version`, `--help`, and argument errors would write to handles that go
+/// nowhere. Attaching the parent's console restores the documented
+/// command-line contract without creating a console for graphical launches.
+///
+/// Streams the shell already redirected keep their existing handles, so
+/// `noter --version > file` still writes to the file.
+///
+/// Returns whether standard output and error can now reach a destination.
+/// Targets other than Windows inherit usable streams and always report `true`.
+// Only the non-Windows implementations are constant. Windows must run an
+// unsafe call sequence here, so this stays one ordinary signature rather than
+// a `const fn` that half the supported targets could not offer.
+#[allow(clippy::missing_const_for_fn)]
+#[must_use]
+pub fn attach_parent_console() -> bool {
+    platform_attach_parent_console()
 }
 
 #[cfg(unix)]
@@ -1417,6 +1443,14 @@ mod imp {
     pub fn unix_sync_parent(destination: &Path) -> io::Result<ParentSyncOutcome> {
         File::open(unix_normalized_parent(destination))?.sync_all()?;
         Ok(ParentSyncOutcome::Synced)
+    }
+
+    /// Reports that standard output and error already reach a destination.
+    ///
+    /// Unix has no detached-console subsystem: a process inherits its parent's
+    /// standard streams, so there is nothing to attach and nothing can fail.
+    pub const fn unix_attach_parent_console() -> bool {
+        true
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2565,8 +2599,8 @@ mod imp {
 
     use windows_sys::Win32::Foundation::{
         ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER,
-        ERROR_NOT_SUPPORTED, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE,
-        LocalFree,
+        ERROR_NOT_SUPPORTED, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE,
+        INVALID_HANDLE_VALUE, LocalFree,
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
@@ -2586,12 +2620,123 @@ mod imp {
         GetFileInformationByHandleEx, MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW,
         SetFileInformationByHandle,
     };
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE,
+        STD_OUTPUT_HANDLE, SetStdHandle,
+    };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     use super::{
         CommitReceipt, FileChangeToken, FileFacts, FileIdentity, IdentityQuality,
         InstallNewOutcome, ParentSyncOutcome, ParentSyncReceipt, ReplaceExistingOutcome,
     };
+
+    /// Reports whether one raw standard-stream handle has a destination.
+    ///
+    /// A shell redirection supplies a valid handle before the process starts,
+    /// and that handle must survive attaching a console. `GetStdHandle`
+    /// reports an unset slot as null and a rejected identifier as
+    /// `INVALID_HANDLE_VALUE`, so both mean the stream reaches nothing.
+    ///
+    /// This is pure over the value the operating system returns, so the whole
+    /// predicate is proved by ordinary tests instead of by arranging a process
+    /// that owns no console.
+    fn windows_raw_handle_is_bound(handle: HANDLE) -> bool {
+        !handle.is_null() && handle != INVALID_HANDLE_VALUE
+    }
+
+    /// What the attach path has observed about one output stream.
+    ///
+    /// `bound` means the shell already gave the stream a destination, and
+    /// `stored` means this process pointed it at the console it attached.
+    #[derive(Clone, Copy)]
+    struct WindowsConsoleStream {
+        bound: bool,
+        stored: bool,
+    }
+
+    impl WindowsConsoleStream {
+        /// Reports whether this stream can reach a destination.
+        const fn is_ready(self) -> bool {
+            self.bound || self.stored
+        }
+    }
+
+    /// Decides whether both standard streams can now reach a destination.
+    ///
+    /// Keeping this decision separate from the calls that produce the facts is
+    /// what makes it provable: the exhaustive test below covers every
+    /// combination, while the sequencing below it holds no policy of its own.
+    const fn windows_console_streams_ready(
+        stdout: WindowsConsoleStream,
+        stderr: WindowsConsoleStream,
+    ) -> bool {
+        stdout.is_ready() && stderr.is_ready()
+    }
+
+    /// Reports whether a standard stream already has somewhere to write.
+    #[allow(unsafe_code)]
+    fn windows_std_handle_is_bound(stream: STD_HANDLE) -> bool {
+        // SAFETY: `GetStdHandle` reads one process-global slot and returns its
+        // value. It takes no pointers and allocates nothing.
+        windows_raw_handle_is_bound(unsafe { GetStdHandle(stream) })
+    }
+
+    /// Points one unbound standard stream at the freshly attached console.
+    ///
+    /// `AttachConsole` does not rebind standard handles the process already
+    /// owns, so each unbound stream is opened against `CONOUT$` explicitly.
+    #[allow(unsafe_code)]
+    fn windows_bind_console_stream(stream: STD_HANDLE) -> bool {
+        let Ok(console) = OpenOptions::new().read(true).write(true).open("CONOUT$") else {
+            return false;
+        };
+        // SAFETY: `SetStdHandle` stores the handle value in a process-global
+        // slot and copies nothing. The handle must outlive every later write,
+        // so ownership is released only once the store succeeds.
+        let stored = unsafe { SetStdHandle(stream, console.as_raw_handle().cast()) } != 0;
+        if stored {
+            // The standard stream owns this console handle for the process
+            // lifetime; dropping the `File` would close it under later writes.
+            std::mem::forget(console);
+        }
+        stored
+    }
+
+    /// Binds the launching shell's console to this process's output streams.
+    ///
+    /// This is the unsafe call sequence for the policy above and decides
+    /// nothing itself. Both observations and both bindings are handed to
+    /// [`windows_console_streams_ready`], which owns the outcome.
+    pub fn windows_attach_parent_console() -> bool {
+        let mut stdout = WindowsConsoleStream {
+            bound: windows_std_handle_is_bound(STD_OUTPUT_HANDLE),
+            stored: false,
+        };
+        let mut stderr = WindowsConsoleStream {
+            bound: windows_std_handle_is_bound(STD_ERROR_HANDLE),
+            stored: false,
+        };
+        if windows_console_streams_ready(stdout, stderr) {
+            // The shell redirected both streams, so attaching a console would
+            // add a window this process never writes to.
+            return true;
+        }
+
+        // SAFETY: `AttachConsole` takes a process identifier by value and
+        // reports failure through its return value.
+        // `ATTACH_PARENT_PROCESS` is the documented sentinel for the launching
+        // process, and the call fails harmlessly when it owns no console.
+        #[allow(unsafe_code)]
+        let attached = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } != 0;
+
+        // A graphical launch has no parent console, so nothing is stored and
+        // the policy reports the streams as unusable. That lets the caller
+        // stay silent instead of pretending the message was delivered.
+        stdout.stored = attached && !stdout.bound && windows_bind_console_stream(STD_OUTPUT_HANDLE);
+        stderr.stored = attached && !stderr.bound && windows_bind_console_stream(STD_ERROR_HANDLE);
+        windows_console_streams_ready(stdout, stderr)
+    }
 
     const MAX_SID_STRING_UNITS: usize = 256;
     const SYSTEM_SID: &str = "S-1-5-18";
@@ -3300,18 +3445,115 @@ mod imp {
 
         use super::{
             DELETE, FILE_SHARE_DELETE, FILE_SHARE_READ, GENERIC_READ, GENERIC_WRITE,
-            IdentityQuality, LocalFree, SYSTEM_SID, WINDOWS_PRIVATE_FILE_ACCESS,
-            WINDOWS_PRIVATE_FILE_SHARE, WINDOWS_PRIVATE_SECURITY_INFORMATION,
-            WindowsLocalWideString, WindowsSecurityDescriptor, windows_combine_disjoint_flags,
-            windows_create_new_file_with_security, windows_create_private_new_file,
-            windows_delete_open_file, windows_descriptor_dacl_sddl, windows_extended_information,
+            INVALID_HANDLE_VALUE, IdentityQuality, LocalFree, STD_ERROR_HANDLE, STD_HANDLE,
+            STD_OUTPUT_HANDLE, SYSTEM_SID, WINDOWS_PRIVATE_FILE_ACCESS, WINDOWS_PRIVATE_FILE_SHARE,
+            WINDOWS_PRIVATE_SECURITY_INFORMATION, WindowsConsoleStream, WindowsLocalWideString,
+            WindowsSecurityDescriptor, windows_combine_disjoint_flags,
+            windows_console_streams_ready, windows_create_new_file_with_security,
+            windows_create_private_new_file, windows_delete_open_file,
+            windows_descriptor_dacl_sddl, windows_extended_information,
             windows_finalize_private_creation, windows_identity_from_information,
             windows_open_existing_no_follow, windows_open_for_cleanup,
             windows_open_for_reconciliation, windows_private_security_policy,
-            windows_private_security_policy_for_sid, windows_security_descriptor_from_sddl,
-            windows_sid_string, windows_token_user_buffer_length,
-            windows_validate_token_user_returned_length, windows_verify_private_file_security,
+            windows_private_security_policy_for_sid, windows_raw_handle_is_bound,
+            windows_security_descriptor_from_sddl, windows_sid_string, windows_std_handle_is_bound,
+            windows_token_user_buffer_length, windows_validate_token_user_returned_length,
+            windows_verify_private_file_security,
         };
+
+        /// `GetStdHandle` rejects any identifier outside the three documented
+        /// standard streams, which is how the bound-handle predicate is
+        /// exercised against a real failure without disturbing this process's
+        /// own output.
+        const UNRECOGNIZED_STD_HANDLE: STD_HANDLE = 0;
+
+        #[test]
+        fn raw_handle_is_bound_only_for_a_usable_handle() {
+            assert!(!windows_raw_handle_is_bound(std::ptr::null_mut()));
+            assert!(!windows_raw_handle_is_bound(INVALID_HANDLE_VALUE));
+            // Never dereferenced; the predicate only compares the value.
+            assert!(windows_raw_handle_is_bound(
+                std::ptr::without_provenance_mut(4)
+            ));
+        }
+
+        #[test]
+        fn std_handle_is_bound_reports_the_operating_system_answer() {
+            // The test harness runs with standard output connected to Cargo.
+            assert!(windows_std_handle_is_bound(STD_OUTPUT_HANDLE));
+            assert!(windows_std_handle_is_bound(STD_ERROR_HANDLE));
+            assert!(!windows_std_handle_is_bound(UNRECOGNIZED_STD_HANDLE));
+        }
+
+        const fn stream(bound: bool, stored: bool) -> WindowsConsoleStream {
+            WindowsConsoleStream { bound, stored }
+        }
+
+        #[test]
+        fn a_stream_is_ready_when_it_was_redirected_or_stored() {
+            assert!(!stream(false, false).is_ready());
+            assert!(stream(true, false).is_ready());
+            assert!(stream(false, true).is_ready());
+            assert!(stream(true, true).is_ready());
+        }
+
+        #[test]
+        fn console_streams_are_ready_only_when_both_can_reach_a_destination() {
+            for stdout_bound in [false, true] {
+                for stderr_bound in [false, true] {
+                    for stdout_stored in [false, true] {
+                        for stderr_stored in [false, true] {
+                            let expected =
+                                (stdout_bound || stdout_stored) && (stderr_bound || stderr_stored);
+                            assert_eq!(
+                                windows_console_streams_ready(
+                                    stream(stdout_bound, stdout_stored),
+                                    stream(stderr_bound, stderr_stored),
+                                ),
+                                expected,
+                                "stdout_bound={stdout_bound} stderr_bound={stderr_bound} \
+                                 stdout_stored={stdout_stored} stderr_stored={stderr_stored}"
+                            );
+                        }
+                    }
+                }
+            }
+
+            // The exact decisions the attach sequence depends on, named so a
+            // weakened operator cannot pass by matching the loop's own formula.
+            // Both already redirected: attach nothing and report success.
+            assert!(windows_console_streams_ready(
+                stream(true, false),
+                stream(true, false)
+            ));
+            // One redirected and the other never stored: not deliverable.
+            assert!(!windows_console_streams_ready(
+                stream(true, false),
+                stream(false, false)
+            ));
+            assert!(!windows_console_streams_ready(
+                stream(false, false),
+                stream(true, false)
+            ));
+            // A stream the console supplied counts exactly like a redirected one.
+            assert!(windows_console_streams_ready(
+                stream(true, false),
+                stream(false, true)
+            ));
+            assert!(windows_console_streams_ready(
+                stream(false, true),
+                stream(false, true)
+            ));
+            // Storing only one of the two is still a lost message.
+            assert!(!windows_console_streams_ready(
+                stream(false, true),
+                stream(false, false)
+            ));
+            assert!(!windows_console_streams_ready(
+                stream(false, false),
+                stream(false, true)
+            ));
+        }
 
         #[test]
         fn token_user_buffer_lengths_have_exact_boundaries() -> io::Result<()> {
@@ -3853,6 +4095,14 @@ mod imp {
         unsupported_error("parent synchronization")
     }
 
+    /// Reports that standard output and error already reach a destination.
+    ///
+    /// An unsupported target still inherits its parent's standard streams, so
+    /// a command-line message is delivered without attaching anything.
+    pub const fn unsupported_attach_parent_console() -> bool {
+        true
+    }
+
     fn unsupported_error<T>(operation: &str) -> io::Result<T> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -3881,7 +4131,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     use super::sync_file;
     use super::{
-        FileChangeToken, FileIdentity, IdentityQuality, combine_disjoint_flag_bits, file_facts,
+        FileChangeToken, FileIdentity, IdentityQuality, attach_parent_console,
+        combine_disjoint_flag_bits, file_facts,
     };
     #[cfg(unix)]
     use super::{
@@ -3899,6 +4150,15 @@ mod tests {
         retained_private_creation_error, retained_private_creation_error_with_cleanup,
         retained_private_file_cleanup_cause, retained_private_file_creation_cause,
     };
+
+    #[test]
+    fn attaching_a_console_reports_already_bound_streams_as_usable() {
+        // The test harness inherits standard output and error from Cargo, so
+        // both streams already reach a destination on every supported
+        // platform. Nothing is attached and the call must still report that a
+        // command-line message can be delivered.
+        assert!(attach_parent_console());
+    }
 
     #[test]
     fn change_token_components_are_exposed_exactly() {

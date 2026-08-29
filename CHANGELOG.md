@@ -6,7 +6,7 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
-## 0.1.0-alpha.2 - 2026-08-23
+## 0.1.0-alpha.2 - 2026-08-29
 
 ### Added
 
@@ -66,6 +66,25 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Stop counting the whole document before every insertion. Both bounded text
+  buffers computed a character clamp from a full character count, but the
+  document editor sets no character limit, so that scan ran on every keystroke,
+  tab, newline, and input-method commit to derive a bound that could never
+  apply. The count now runs only when a limit is set, matching the guard egui's
+  own buffer uses. The bounded find and replacement fields do set a limit, so
+  their clamping is unchanged.
+- Print command-line output from Windows release builds. Release builds link
+  against the graphical subsystem so opening a document never flashes a console
+  window, but a process started from a shell then inherits no console at all,
+  so `noter --version`, `noter --help`, an unknown option, and an unopenable
+  startup path all set their exit code while printing nothing. The launching
+  shell's console is now bound before the message is written. A stream the
+  shell already redirected keeps its own handle, so `noter --version > file` is
+  unchanged, and a graphical launch attaches nothing. Only the four paths that
+  exit immediately attach a console; a session that goes on to open a window
+  never ties its lifetime to one. Recorded in
+  [M2_INSTALLED_EVIDENCE.md](docs/M2_INSTALLED_EVIDENCE.md) against a release
+  binary, with a control run of the previous build that printed nothing.
 - Validate Unix and macOS recovery lease identity and hard-link count before
   pathname cleanup and ratify the original object's link count afterward. A
   detected replacement or added hard link fails cleanup. These checks report a
@@ -315,6 +334,21 @@ that candidate is frozen for publication.
 
 ### Changed
 
+- Separate the Windows console-attachment decisions from the unsafe calls that
+  produce them, so the policy is proved rather than asserted. The bound-handle
+  predicate and the per-stream readiness decision are pure and covered
+  exhaustively, including the refusal an unrecognized standard-stream
+  identifier produces. `attach_parent_console` is one wrapper over a
+  platform-selected implementation, matching the dispatch every other operation
+  in `noter-platform` already uses, so its two same-named target variants no
+  longer report each other as untested code. The remaining unsafe call sequence
+  is excluded from mutation with its reason recorded: reaching it needs a
+  process that owns no console, and exercising it rewrites process-global
+  standard-handle slots that the parallel test harness is using.
+- Widen the Windows mutation partition from six shards to eight. Windows is the
+  slowest runner and its widest shard reached 80 of its 90 minutes, so further
+  candidates cancelled it at the ceiling instead of reporting a result. The
+  configured source and filter scope is unchanged; only the partition is wider.
 - Specify the M5 production-editor gate as a one-week measured decision with a
   rope-authoritative semantic model, bounded visible layout, retained
   full-document accessibility, real screen-reader and CJK IME evidence, exact
