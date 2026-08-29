@@ -51,21 +51,23 @@ RELEASE_ARTIFACT_KINDS = {
     "noter-x86_64-unknown-linux-gnu.tar.xz": "executable-zip",
     "noter-x86_64-unknown-linux-gnu.tar.xz.sha256": "checksum",
 }
+# Only the artifacts a target's own runner can produce belong here. The
+# target-specific SBOMs are named for a target but are not built by one: dist
+# models `extra-artifacts` as a single global step, and
+# `scripts/generate_release_sboms.py` emits all four in one invocation on the
+# global runner, which is the only job that installs cargo-cyclonedx. They are
+# therefore validated as global artifacts, out of the global container.
 LOCAL_RELEASE_ARTIFACT_TARGETS = {
     "noter-aarch64-apple-darwin.tar.xz": "aarch64-apple-darwin",
     "noter-aarch64-apple-darwin.tar.xz.sha256": "aarch64-apple-darwin",
-    "noter_aarch64-apple-darwin.cdx.xml": "aarch64-apple-darwin",
     "noter-x86_64-apple-darwin.tar.xz": "x86_64-apple-darwin",
     "noter-x86_64-apple-darwin.tar.xz.sha256": "x86_64-apple-darwin",
-    "noter_x86_64-apple-darwin.cdx.xml": "x86_64-apple-darwin",
     "noter-x86_64-pc-windows-msvc.zip": "x86_64-pc-windows-msvc",
     "noter-x86_64-pc-windows-msvc.zip.sha256": "x86_64-pc-windows-msvc",
     "noter-x86_64-pc-windows-msvc.msi": "x86_64-pc-windows-msvc",
     "noter-x86_64-pc-windows-msvc.msi.sha256": "x86_64-pc-windows-msvc",
-    "noter_x86_64-pc-windows-msvc.cdx.xml": "x86_64-pc-windows-msvc",
     "noter-x86_64-unknown-linux-gnu.tar.xz": "x86_64-unknown-linux-gnu",
     "noter-x86_64-unknown-linux-gnu.tar.xz.sha256": "x86_64-unknown-linux-gnu",
-    "noter_x86_64-unknown-linux-gnu.cdx.xml": "x86_64-unknown-linux-gnu",
 }
 LOCAL_RELEASE_ARTIFACTS = set(LOCAL_RELEASE_ARTIFACT_TARGETS)
 GLOBAL_RELEASE_ARTIFACTS = set(RELEASE_ARTIFACT_KINDS) - LOCAL_RELEASE_ARTIFACTS
