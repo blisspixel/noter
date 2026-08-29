@@ -512,12 +512,18 @@ jobs:
       - name: Create or refresh GitHub Draft Release
         env:
           RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
+        # A draft release is not addressable by tag. GitHub associates a
+        # release with its tag only at publication, so
+        # `GET /releases/tags/{tag}` answers 404 for every draft, including
+        # this one. The release list does return drafts to a token with push
+        # access, so each draft-stage readback filters that list by exact tag
+        # and fails closed unless it matches exactly one release.
         run: |
           printf '%s\n' "Draft release. Publication remains blocked until artifact attestations complete." > "$RUNNER_TEMP/draft-notes.txt"
           if ! gh release create "$RELEASE_TAG" --verify-tag --prerelease --draft \
             --title "Noter ${RELEASE_TAG#v}" --notes-file "$RUNNER_TEMP/draft-notes.txt" \
             artifacts/*; then
-            release_json="$(gh api --method GET "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+            release_json="$(gh api --method GET --paginate --slurp "repos/$GITHUB_REPOSITORY/releases" | jq -c --arg tag "$RELEASE_TAG" '[.[][] | select(.tag_name == $tag)] | if length == 1 then .[0] else error("expected exactly one release for the release tag") end')"
             draft="$(printf '%s' "$release_json" | jq -r '.draft')"
             prerelease="$(printf '%s' "$release_json" | jq -r '.prerelease')"
             tag_name="$(printf '%s' "$release_json" | jq -r '.tag_name')"
@@ -534,9 +540,12 @@ jobs:
         env:
           RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
         run: |
-          gh api --method GET \
-            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-            > "$RUNNER_TEMP/release.json"
+          gh api --method GET --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/releases" \
+            | jq --arg tag "$RELEASE_TAG" '[.[][] | select(.tag_name == $tag)]' \
+            > "$RUNNER_TEMP/release-matches.json"
+          test "$(jq 'length' "$RUNNER_TEMP/release-matches.json")" = 1
+          jq '.[0]' "$RUNNER_TEMP/release-matches.json" > "$RUNNER_TEMP/release.json"
           python3 scripts/check_release_artifacts.py verify-remote \
             --artifact-root artifacts \
             --release-json "$RUNNER_TEMP/release.json" \
@@ -589,8 +598,12 @@ jobs:
             echo "The release tag does not identify the built commit." >&2
             exit 2
           fi
-          gh api --method GET \
-            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+          gh api --method GET --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/releases" \
+            | jq --arg tag "$RELEASE_TAG" '[.[][] | select(.tag_name == $tag)]' \
+            > "$RUNNER_TEMP/final-release-matches.json"
+          test "$(jq 'length' "$RUNNER_TEMP/final-release-matches.json")" = 1
+          jq '.[0]' "$RUNNER_TEMP/final-release-matches.json" \
             > "$RUNNER_TEMP/final-release.json"
           python3 scripts/check_release_artifacts.py verify-remote \
             --artifact-root artifacts \

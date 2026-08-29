@@ -36,7 +36,7 @@ PINNED_RELEASE_TOOL_DIGESTS = {
 }
 PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 REVIEWED_RELEASE_WORKFLOW_SHA256 = (
-    "3c69845bb770ee84b564c4e3836b7540eb4a9ec3639e3783b487bb0aab680f6a"
+    "d13c6aca54ae69148259df91f681c3b497fcd2aad96dc4b0807d89e3b5b680f1"
 )
 REVIEWED_WIX_SHA256 = "90d3892cab5d6b450a76a5f1b1596a061306f2bddcac2908c7e59a99a00fa6be"
 REVIEWED_CI_WORKFLOW_SHA256 = (
@@ -541,9 +541,16 @@ def validate_workflow(text: str) -> list[str]:
         for index, line in enumerate(publication_lines)
         if line.startswith('gh release edit "$RELEASE_TAG" ')
     ]
+    # The release is still a draft here, so it is resolved out of the release
+    # list by exact tag rather than the by-tag endpoint, which answers 404 for
+    # drafts. The length check keeps an ambiguous match failing closed.
     final_remote_verification = (
-        "gh api --method GET \\",
-        '"repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \\',
+        "gh api --method GET --paginate --slurp \\",
+        '"repos/$GITHUB_REPOSITORY/releases" \\',
+        "| jq --arg tag \"$RELEASE_TAG\" '[.[][] | select(.tag_name == $tag)]' \\",
+        '> "$RUNNER_TEMP/final-release-matches.json"',
+        'test "$(jq \'length\' "$RUNNER_TEMP/final-release-matches.json")" = 1',
+        "jq '.[0]' \"$RUNNER_TEMP/final-release-matches.json\" \\",
         '> "$RUNNER_TEMP/final-release.json"',
         "python3 scripts/check_release_artifacts.py verify-remote \\",
         "--artifact-root artifacts \\",
@@ -584,8 +591,12 @@ def validate_workflow(text: str) -> list[str]:
     if text.count('gh release create "$RELEASE_TAG"') != 1:
         errors.append("draft release creation must appear exactly once")
     if not (
-        'release_json="$(gh api --method GET '
-        '"repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"'
+        # A draft is not addressable by tag, so the retry resolves it out of the
+        # release list and fails closed unless exactly one release matches.
+        'release_json="$(gh api --method GET --paginate --slurp '
+        '"repos/$GITHUB_REPOSITORY/releases" | jq -c --arg tag "$RELEASE_TAG" '
+        "'[.[][] | select(.tag_name == $tag)] | if length == 1 then .[0] else "
+        'error("expected exactly one release for the release tag") end\')"'
         in draft_lines
         and 'if [ "$draft" != "true" ] || [ "$prerelease" != "true" ] || [ "$tag_name" != "$RELEASE_TAG" ]; then'
         in draft_lines
@@ -603,10 +614,22 @@ def validate_workflow(text: str) -> list[str]:
             "draft retry must verify and replace only the exact private prerelease payload"
         )
     if not (
-        any(line.startswith("gh api --method GET \\") for line in remote_asset_lines)
-        and '"repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \\'
+        any(
+            line.startswith("gh api --method GET --paginate --slurp \\")
+            for line in remote_asset_lines
+        )
+        # The draft is resolved out of the release list by exact tag, because
+        # the by-tag endpoint answers 404 while a release is still a draft.
+        and '"repos/$GITHUB_REPOSITORY/releases" \\' in remote_asset_lines
+        and "| jq --arg tag \"$RELEASE_TAG\" '[.[][] | select(.tag_name == $tag)]' \\"
         in remote_asset_lines
-        and '> "$RUNNER_TEMP/release.json"' in remote_asset_lines
+        and '> "$RUNNER_TEMP/release-matches.json"' in remote_asset_lines
+        # An absent or ambiguous match must fail closed instead of verifying
+        # some other release's assets.
+        and 'test "$(jq \'length\' "$RUNNER_TEMP/release-matches.json")" = 1'
+        in remote_asset_lines
+        and 'jq \'.[0]\' "$RUNNER_TEMP/release-matches.json" > "$RUNNER_TEMP/release.json"'
+        in remote_asset_lines
         and "python3 scripts/check_release_artifacts.py verify-remote \\"
         in remote_asset_lines
         and "--artifact-root artifacts \\" in remote_asset_lines

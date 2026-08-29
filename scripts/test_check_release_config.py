@@ -564,7 +564,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
 
     def test_rejects_final_remote_asset_check_moved_away_from_publication(self) -> None:
-        marker = "          gh api --method GET \\\n"
+        marker = "          gh api --method GET --paginate --slurp \\\n"
         start = self.workflow.rindex(marker)
         check_end = self.workflow.index(
             '          gh release edit "$RELEASE_TAG"', start
