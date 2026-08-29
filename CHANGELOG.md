@@ -66,6 +66,16 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Validate the four target-specific SBOMs as global release artifacts. They are
+  named for a target but are not built by one: `dist` models `extra-artifacts`
+  as a single global step, and `scripts/generate_release_sboms.py` emits all
+  four in one invocation on the global runner, which is the only job that
+  installs cargo-cyclonedx. The release artifact validator required each one
+  from its own target's build container, so the first publication attempt
+  failed while assembling local artifacts, before any release existed. No
+  publication path is weakened: the SBOMs are still required, still bound to the
+  reviewed 20-file inventory, and now checked against the container that
+  actually produces them.
 - Stop counting the whole document before every insertion. Both bounded text
   buffers computed a character clamp from a full character count, but the
   document editor sets no character limit, so that scan ran on every keystroke,

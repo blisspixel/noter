@@ -171,7 +171,6 @@ class ReleaseArtifactTests(unittest.TestCase):
             cases = (
                 "noter-aarch64-apple-darwin.tar.xz",
                 "noter-aarch64-apple-darwin.tar.xz.sha256",
-                "noter_aarch64-apple-darwin.cdx.xml",
             )
             for name in cases:
                 with self.subTest(name=name):
@@ -190,6 +189,37 @@ class ReleaseArtifactTests(unittest.TestCase):
                             inputs, root / f"distrib-{name}", "global"
                         )
                     destination.replace(source)
+
+    def test_requires_every_target_sbom_from_the_global_build(self) -> None:
+        """The named-per-target SBOMs are produced once, on the global runner.
+
+        `dist` models `extra-artifacts` as a single global step, so a local
+        build cannot supply them and the global container must.
+        """
+
+        for target in artifacts.RELEASE_TARGETS:
+            name = f"noter_{target}.cdx.xml"
+            self.assertIn(name, artifacts.GLOBAL_RELEASE_ARTIFACTS)
+            self.assertNotIn(name, artifacts.LOCAL_RELEASE_ARTIFACTS)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = root / "inputs"
+            create_downloads(inputs)
+            missing = (
+                inputs
+                / artifacts.GLOBAL_CONTAINER
+                / "noter_aarch64-apple-darwin.cdx.xml"
+            )
+            missing.unlink()
+
+            with self.assertRaisesRegex(
+                artifacts.ReleaseArtifactError,
+                "missing from its global build",
+            ):
+                artifacts.prepare_artifacts(
+                    inputs, root / "distrib", "host", "v0.1.0-alpha.2", "success"
+                )
 
     def test_rejects_a_global_artifact_in_a_local_build(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
