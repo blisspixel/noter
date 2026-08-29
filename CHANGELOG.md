@@ -66,6 +66,17 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Read the release draft back out of the release list instead of by tag. A
+  draft is not addressable by its tag: GitHub associates a release with its tag
+  only at publication, so `GET /releases/tags/{tag}` answers 404 for every
+  draft. Three publication steps used that endpoint while the release was still
+  a draft, including the retry path meant to recover a previous attempt, so the
+  first run that got as far as uploading assets could neither verify nor retry
+  them. Each draft-stage readback now filters the release list by exact tag and
+  fails closed unless exactly one release matches. Every existing check is
+  retained: the draft must still be a private prerelease at the expected tag,
+  and every asset's name, upload state, size, and server-side SHA-256 must still
+  match the local payload before attestation and publication.
 - Validate the four target-specific SBOMs as global release artifacts. They are
   named for a target but are not built by one: `dist` models `extra-artifacts`
   as a single global step, and `scripts/generate_release_sboms.py` emits all
