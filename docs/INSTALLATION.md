@@ -214,6 +214,15 @@ path is group-writable, ACL-shared, redirected, synchronized, network-hosted,
 removable, or on a weak filesystem, recovery is unverified. Keep important work
 saved and backed up, and do not rely on recovery from that state root.
 
+The current unreleased Windows build begins M4-H1 by validating the fixed NTFS
+directory chain, rejecting reparse and cross-volume components, retaining its
+directory handles, rejecting state ACLs with unprivileged mutation rights, and
+hardening the recovery subtree to a protected inheritable user-and-SYSTEM DACL
+before writing recovery bytes. This foundation does not yet route record
+operations through directory handles or prove that a fixed local profile is not
+synchronized or redirected. Linux and macOS namespace binding also remains
+open, so this is not yet the beta recovery contract.
+
 Uninstall and cleanup distinguish:
 
 | Kind | Location | Safe to delete when |

@@ -9,8 +9,12 @@
 use std::fs::{self, File, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::sync::Arc;
 
 use getrandom::fill as fill_random;
+#[cfg(windows)]
+use noter_platform::WindowsRecoveryNamespace;
 #[cfg(any(windows, test))]
 use noter_platform::{CommitReceipt, ReplaceExistingOutcome};
 
@@ -27,6 +31,9 @@ pub const RECOVERY_RECORDS_DIR: &str = "records";
 
 /// Subdirectory that holds quarantined corrupt or unsupported records.
 pub const RECOVERY_QUARANTINE_DIR: &str = "quarantine";
+
+/// Private recovery root beneath the platform-selected application state root.
+pub const RECOVERY_STATE_SUBDIR: &str = "recovery";
 
 /// Maximum number of restore offers presented from one startup scan.
 ///
@@ -278,24 +285,67 @@ impl IntoIterator for RecoveryStartupScan {
     }
 }
 
-/// Private recovery directory layout under a caller-supplied root.
-#[derive(Clone, Debug)]
+/// Private recovery directory layout beneath a platform state root.
+#[derive(Clone)]
 pub struct RecoveryStore {
     root: PathBuf,
+    #[cfg(windows)]
+    _namespace_guard: Arc<WindowsRecoveryNamespace>,
+}
+
+fn recovery_directory_error_is_missing(kind: io::ErrorKind) -> bool {
+    kind == io::ErrorKind::NotFound
 }
 
 impl RecoveryStore {
-    /// Opens or creates the recovery layout under `root`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when the root or required subdirectories cannot be
-    /// created.
-    pub fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
+    #[cfg(test)]
+    fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
         let root = root.into();
+        #[cfg(windows)]
+        {
+            Self::open_in_state(root.join("state"))
+        }
+        #[cfg(not(windows))]
+        {
+            Self::open_unbound_on_unix(root)
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn open_unbound_on_unix(root: PathBuf) -> io::Result<Self> {
         fs::create_dir_all(root.join(RECOVERY_RECORDS_DIR))?;
         fs::create_dir_all(root.join(RECOVERY_QUARANTINE_DIR))?;
         Ok(Self { root })
+    }
+
+    /// Opens the production recovery layout beneath a platform state root.
+    ///
+    /// Windows validates and retains the state, recovery, records, and
+    /// quarantine directory namespace before recovery content can be written.
+    /// Other platforms retain the existing path-based implementation until
+    /// their M4-H1 namespace adapters are complete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the state path is unsafe or unsupported, or
+    /// when the recovery layout cannot be created.
+    pub fn open_in_state(state_root: impl Into<PathBuf>) -> io::Result<Self> {
+        let state_root = state_root.into();
+        #[cfg(windows)]
+        {
+            let namespace = WindowsRecoveryNamespace::open_or_create(
+                &state_root,
+                std::ffi::OsStr::new(RECOVERY_STATE_SUBDIR),
+            )?;
+            Ok(Self {
+                root: state_root.join(RECOVERY_STATE_SUBDIR),
+                _namespace_guard: Arc::new(namespace),
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            Self::open_unbound_on_unix(state_root.join(RECOVERY_STATE_SUBDIR))
+        }
     }
 
     /// Returns the recovery root directory.
@@ -434,10 +484,12 @@ impl RecoveryStore {
         let records = self.records_dir();
         let dir = match fs::read_dir(&records) {
             Ok(dir) => dir,
-            Err(error) => match error.kind() {
-                io::ErrorKind::NotFound => return first_error.map_or(Ok(()), Err),
-                _ => return Err(first_error.unwrap_or(error)),
-            },
+            Err(error) => {
+                if recovery_directory_error_is_missing(error.kind()) {
+                    return first_error.map_or(Ok(()), Err);
+                }
+                return Err(first_error.unwrap_or(error));
+            }
         };
         for (index, next) in dir.enumerate() {
             if index == MAX_OWNED_RECOVERY_CLEANUP_FILES {
@@ -589,10 +641,12 @@ impl RecoveryStore {
         let records = self.records_dir();
         let dir = match fs::read_dir(&records) {
             Ok(dir) => dir,
-            Err(error) => match error.kind() {
-                io::ErrorKind::NotFound => return Ok(scan),
-                _ => return Err(error),
-            },
+            Err(error) => {
+                if recovery_directory_error_is_missing(error.kind()) {
+                    return Ok(scan);
+                }
+                return Err(error);
+            }
         };
         for (raw_index, next) in dir.enumerate() {
             if raw_index == MAX_STARTUP_RECOVERY_DIRECTORY_ENTRIES {
@@ -2436,6 +2490,31 @@ mod tests {
         offer
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn state_bound_store_clones_and_peers_retain_the_namespace() -> io::Result<()> {
+        let parent = tempdir()?;
+        let state = parent.path().join("state");
+        let moved = parent.path().join("moved-state");
+        let first = RecoveryStore::open_in_state(&state)?;
+        let cloned = first.clone();
+        let peer = RecoveryStore::open_in_state(&state)?;
+
+        assert!(fs::rename(&state, &moved).is_err());
+        drop(peer);
+        drop(first);
+        assert!(
+            fs::rename(&state, &moved).is_err(),
+            "the final clone must retain every namespace handle"
+        );
+
+        drop(cloned);
+        fs::rename(&state, &moved)?;
+        assert!(!state.exists());
+        assert!(moved.is_dir());
+        Ok(())
+    }
+
     fn load_offer(
         store: &RecoveryStore,
         entry: &RecoveryScanEntry,
@@ -2519,6 +2598,15 @@ mod tests {
             ..RecoveryStartupScan::default()
         };
         assert!(quarantine_only.has_omissions());
+    }
+
+    #[test]
+    fn recovery_directory_missing_classification_is_exact() {
+        assert!(recovery_directory_error_is_missing(io::ErrorKind::NotFound));
+        assert!(!recovery_directory_error_is_missing(
+            io::ErrorKind::PermissionDenied
+        ));
+        assert!(!recovery_directory_error_is_missing(io::ErrorKind::Other));
     }
 
     #[test]
@@ -4640,6 +4728,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn missing_records_directory_scans_as_empty() -> io::Result<()> {
         let dir = tempdir()?;
@@ -4654,6 +4743,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn owned_cleanup_rejects_a_non_directory_records_path() -> io::Result<()> {
         let dir = tempdir()?;
@@ -4670,6 +4760,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn quarantine_error_is_reported_when_move_fails() -> io::Result<()> {
         // A valid quarantine failure leaves remains_in_records true and a message.

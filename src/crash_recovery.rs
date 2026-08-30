@@ -26,14 +26,38 @@ use noter::core::recovery::{
     RecoveryScheduleState, RecoverySnapshot, RecoverySnapshotParts, RecoveryWallTime,
     ValidatedRecoveryMetadata,
 };
+#[cfg(test)]
+use noter::core::recovery_store::RECOVERY_STATE_SUBDIR;
 use noter::core::recovery_store::{
     RecoveryInstanceClaim, RecoveryLiveLease, RecoveryOffer, RecoveryScanDisposition,
     RecoveryStartupScan, RecoveryStore,
 };
 use noter::core::revision::Revision;
 
-/// Subdirectory of the eframe state root used for crash-recovery files.
-pub const RECOVERY_STATE_SUBDIR: &str = "recovery";
+#[cfg(test)]
+const RECOVERY_TEST_STATE_SUBDIR: &str = "state";
+
+#[cfg(test)]
+pub fn recovery_store_root_for_test(root: &Path) -> PathBuf {
+    root.join(RECOVERY_TEST_STATE_SUBDIR)
+        .join(RECOVERY_STATE_SUBDIR)
+}
+
+#[cfg(test)]
+pub trait RecoveryStoreTestExt {
+    fn open(root: impl Into<PathBuf>) -> std::io::Result<Self>
+    where
+        Self: Sized;
+}
+
+#[cfg(test)]
+impl RecoveryStoreTestExt for RecoveryStore {
+    fn open(root: impl Into<PathBuf>) -> std::io::Result<Self> {
+        let root = root.into();
+        fs::create_dir_all(&root)?;
+        Self::open_in_state(root.join(RECOVERY_TEST_STATE_SUBDIR))
+    }
+}
 
 /// Application id shared with eframe persistence (`app.ron`).
 pub const NOTER_APP_ID: &str = "Noter";
@@ -97,6 +121,7 @@ pub fn noter_state_directory() -> Option<PathBuf> {
 }
 
 /// Returns the private recovery root under the state directory.
+#[cfg(test)]
 #[must_use]
 pub fn recovery_root_from_state(state_dir: impl AsRef<Path>) -> PathBuf {
     state_dir.as_ref().join(RECOVERY_STATE_SUBDIR)
@@ -169,19 +194,27 @@ impl CrashRecoverySession {
     /// When the state directory or store cannot open, the session stays usable
     /// but does not persist recovery files (`unavailable` is true).
     pub fn open_default() -> Self {
-        noter_state_directory().map_or_else(Self::unavailable, |state| {
-            Self::open_at(recovery_root_from_state(state))
-        })
+        noter_state_directory().map_or_else(Self::unavailable, Self::open_in_state)
+    }
+
+    /// Opens a recovery session beneath an explicit platform state root.
+    pub fn open_in_state(state_root: impl Into<PathBuf>) -> Self {
+        Self::from_store_result(RecoveryStore::open_in_state(state_root))
     }
 
     /// Opens a recovery session under an explicit recovery root (tests).
+    #[cfg(test)]
     pub fn open_at(recovery_root: impl Into<PathBuf>) -> Self {
+        Self::from_store_result(RecoveryStore::open(recovery_root))
+    }
+
+    fn from_store_result(store: std::io::Result<RecoveryStore>) -> Self {
         let mut session = Self::blank();
         if session.unavailable {
             // Identity construction failed; never attach a store with weak IDs.
             return session;
         }
-        match RecoveryStore::open(recovery_root) {
+        match store {
             Ok(store) => {
                 session.attach_persist_worker();
                 session.store = Some(store);
@@ -1149,6 +1182,23 @@ mod tests {
         assert_eq!(
             root,
             PathBuf::from("/tmp/state").join(RECOVERY_STATE_SUBDIR)
+        );
+    }
+
+    #[test]
+    fn explicit_state_root_owns_the_recovery_layout() {
+        let directory = tempdir().expect("tempdir");
+        let state_root = directory.path().join("state");
+        let store = RecoveryStore::open_in_state(&state_root).expect("state-bound store");
+
+        assert_eq!(store.root(), recovery_root_from_state(&state_root));
+        assert_eq!(
+            store.records_dir(),
+            recovery_root_from_state(&state_root).join("records")
+        );
+        assert_eq!(
+            store.quarantine_dir(),
+            recovery_root_from_state(&state_root).join("quarantine")
         );
     }
 

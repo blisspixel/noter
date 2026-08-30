@@ -667,6 +667,20 @@ M4-H1 closes that gap before beta.1. Preferences may use eframe storage
 startup Restore / Discard offers, and surfaces persist failures without writing
 user document paths.
 
+The first M4-H1 Windows slice now validates and retains the complete drive-root
+through quarantine directory chain before production recovery opens. It accepts
+only a drive-rooted fixed NTFS path with non-reparse, same-volume directories
+and stable preferred identities. The state directory must belong to the current
+user; SYSTEM and Administrators may mutate it, while every other principal is
+limited to read and execute access. Noter's recovery, records, and quarantine
+directories are created or tightened through retained handles to an exact
+protected inheritable user-and-SYSTEM DACL. Every held directory denies delete
+sharing for the namespace lifetime. Record enumeration, creation, replacement,
+quarantine, and cleanup are still pathname-based, and fixed-drive classification
+does not prove that a profile is not synchronized or redirected. M4-H1 remains
+in progress until those Windows gaps and the Unix namespace and retirement
+contracts close with native evidence.
+
 Each dirty session owns one versioned record:
 
 ```text
