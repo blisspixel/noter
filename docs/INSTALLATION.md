@@ -1,11 +1,10 @@
 # Installation and Updates
 
-**Reviewed:** 2026-08-22
+**Reviewed:** 2026-08-30
 
-**Current availability:** The `0.1.0-alpha.2` release candidate is prepared for
-careful evaluation with backups. Its release page is created only after the
-protected-main publication workflow succeeds. Published artifacts include
-platform archives, a Windows MSI, checksums, SBOMs, and GitHub build provenance.
+**Current availability:** The published `0.1.0-alpha.2` correctness alpha is
+available for careful evaluation with backups. Its artifacts include platform
+archives, a Windows MSI, checksums, SBOMs, and GitHub build provenance.
 Windows and macOS artifacts are not yet platform-signed, and no self-updating
 release channel exists. Source installation remains supported. See the
 [release process](RELEASING.md).
@@ -14,9 +13,8 @@ release channel exists. Source installation remains supported. See the
 
 The publication location is the
 [GitHub release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-alpha.2).
-If that page is not present, publication has not completed and the source path
-below remains the available route. After publication, download an asset before
-executing it and verify its GitHub attestation. Published SHA-256 sidecars and
+Download an asset before executing it and verify its GitHub attestation.
+Published SHA-256 sidecars and
 the unified checksum list cover the source archive, platform archives, and
 Windows MSI, but not installer scripts, the Homebrew formula, SBOMs, or the
 distribution manifest. For the strongest alpha path, manually download an

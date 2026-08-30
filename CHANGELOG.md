@@ -6,6 +6,12 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+### Changed
+
+- Correct the post-alpha roadmap sequence so recovery namespace binding remains
+  the explicit safety prerequisite before the beta editor feasibility gate, and
+  update installation and playtest guidance for the published alpha.2 release.
+
 ## 0.1.0-alpha.2 - 2026-08-29
 
 ### Added

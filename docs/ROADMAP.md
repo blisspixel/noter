@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-08-29
+**Updated:** 2026-08-30
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -234,19 +234,18 @@ timeout. The infrastructure validator reports no recognized tool, compiler,
 linker, process, or storage failure hidden as unviable. These scopes overlap and
 are not claimed as a newly deduplicated cross-platform union.
 
-The alpha.2 recovery expansion now enumerates 1,650 Linux-filtered, 1,606
+The alpha.2 recovery expansion enumerated 1,650 Linux-filtered, 1,606
 Windows-filtered, and 47 macOS-specific candidates. Failed exact-head run
 [32612492063](https://github.com/blisspixel/noter/actions/runs/32612492063)
-is retained as negative evidence: the former single Linux job and two Windows
+is retained as historical negative evidence: the former single Linux job and two Windows
 jobs exceeded 90 minutes, and their partial reports exposed genuine recovery
 proof gaps. The repair removes mutable-progress timeout shapes, adds exact
 parser, identity, lease, quarantine, and omission assertions, and partitions
 Linux three ways and Windows six ways behind one fail-closed `mutation-gate`.
 The configured source and filter scope is not narrowed; structural repairs
-remove mutation sites rather than excluding them. A complete exact-head hosted
-pass remains required before alpha.2 can be tagged.
+remove mutation sites rather than excluding them.
 
-Exact-head run
+Intermediate exact-head run
 [32641128954](https://github.com/blisspixel/noter/actions/runs/32641128954)
 then passed all ordinary Windows, Linux, and macOS suites, both coverage gates,
 the corrected macOS campaign, and Linux shard 1. Linux shards 0 and 2 exposed
@@ -254,7 +253,10 @@ one missing start-side CRLF boundary assertion, one missing real-file
 lease-fact assertion, and cfg-inactive Windows helpers selected under generic
 names. Commit `cc7c8ca` adds both behavioral proofs and names the Unix and
 Windows helpers explicitly so each platform campaign owns only code it can
-execute. The final exact-head hosted mutation pass remains the publication gate.
+execute. The settled implementation later passed the complete protected-main
+CI and mutation gate at exact tag commit `dbb419f` in
+[run 33251845950](https://github.com/blisspixel/noter/actions/runs/33251845950)
+before publication.
 
 Commit `c56d3fd` also makes the Windows benchmark harness retry a transiently
 partial Job Object identifier snapshot under its existing absolute cleanup
@@ -834,8 +836,9 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 
 ## Immediate backlog (maps to version train)
 
-The alpha.2 correctness work is complete and published. The next
-implementation gate is beta.1 editor feasibility.
+The alpha.2 correctness work is complete and published. M4-H1 recovery
+namespace binding is the next safety prerequisite. The beta.1 editor feasibility
+gate follows it.
 
 1. **Done:** Markdown keyboard navigation parity with Text Mode; pure word /
    Home-End / document policy and long-session history fixture.
@@ -852,10 +855,14 @@ implementation gate is beta.1 editor feasibility.
    [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) stays paired
    with the immutable implementation commit, and `v0.1.0-alpha.2` was tagged at
    the protected-main head `dbb419f` after that exact commit passed CI.
-6. **Next, `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
+6. **Next, before `0.1.0-beta.1`:** M4-H1 recovery namespace binding. Hold and
+   verify every recovery directory through a no-follow handle, reject unsafe or
+   unsupported state roots before writing recovery content, close the Unix
+   cleanup contract, and record native adversarial fixtures.
+7. **Then, `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
    production editor contract is stable.
-7. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
+8. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
    dogfood, public release.
 
 ### Completed foundations (historical)
