@@ -1,10 +1,11 @@
 # Playtest Brief
 
-**Updated:** 2026-08-22
+**Updated:** 2026-08-30
 
-**Build under test:** the current release-candidate checkout prints
-`noter 0.1.0-alpha.2`. The label is published only from its final protected-main
-commit. **Identify an unpublished build by commit, not only by version string.**
+**Build under test:** the published correctness alpha prints
+`noter 0.1.0-alpha.2`. Its immutable release tag is `v0.1.0-alpha.2` at commit
+`dbb419f`. **Identify any later unpublished build by commit, not only by version
+string.**
 
 This brief exists so a round is spent on unknowns instead of re-deriving what is
 already known. It records what changed since the last round, what is deliberately
@@ -51,10 +52,10 @@ The full command-line contract, including every exit status, is in
 - **Idle cost is measured on Windows only.** The previous round ran on Linux
   X11. A repeat measurement there is genuinely useful and is recorded as open M2
   evidence in the [roadmap](ROADMAP.md).
-- **Prerelease artifacts are unsigned.** The alpha.2 publication plan provides
+- **Prerelease artifacts are unsigned.** The published alpha.2 release provides
   archives, checksums, SBOMs, provenance, and a Windows MSI, but Windows and
   macOS platform signing remains M7 work. Keep backups and verify downloaded
-  files after the release page is present.
+  files before use.
 - **Files above 8 MiB are refused** before the editor mirrors them. This is
   deliberate containment, not the final limit; the measured large-file path is
   M5 work.
