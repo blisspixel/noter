@@ -6,6 +6,16 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+### Added
+
+- Add the first Windows M4-H1 recovery namespace foundation. Production
+  recovery now validates an absolute fixed-drive NTFS state path, rejects
+  reparse and cross-volume directory components, verifies stable preferred
+  directory identities, retains the complete ancestor and recovery handle
+  chain without delete sharing, and hardens the owned recovery directories to
+  a protected inheritable user-and-SYSTEM DACL before writing recovery bytes.
+  Record operations remain pathname-based, so M4-H1 is still in progress.
+
 ### Changed
 
 - Correct the post-alpha roadmap sequence so recovery namespace binding remains

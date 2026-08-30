@@ -33,6 +33,8 @@ use crate::crash_recovery::{
     CrashRecoverySession, RECOVERY_CLEANUP_FAILURE_MESSAGE, RECOVERY_PERSIST_FAILURE_MESSAGE,
     RECOVERY_UNAVAILABLE_MESSAGE,
 };
+#[cfg(test)]
+use crate::crash_recovery::{RecoveryStoreTestExt, recovery_store_root_for_test};
 use crate::editor_settings::{
     EditorZoom, PointerZoomAccumulator, TextWrap, WORD_WRAP_STORAGE_KEY, ZOOM_STORAGE_KEY,
     apply_editor_zoom,
@@ -4543,14 +4545,16 @@ mod tests {
             first
                 .test_recovery_root
                 .as_ref()
-                .map(tempfile::TempDir::path)
+                .map(|root| recovery_store_root_for_test(root.path()))
+                .as_deref()
         );
         assert_eq!(
             second.crash_recovery.recovery_root_for_test(),
             second
                 .test_recovery_root
                 .as_ref()
-                .map(tempfile::TempDir::path)
+                .map(|root| recovery_store_root_for_test(root.path()))
+                .as_deref()
         );
         assert_ne!(
             first
@@ -10990,7 +10994,7 @@ mod tests {
         );
         app.crash_recovery
             .force_due_persist_for_test(&app.document, app.selection);
-        let records_dir = recovery_path.join("records");
+        let records_dir = recovery_store_root_for_test(&recovery_path).join("records");
         let record_path = fs::read_dir(&records_dir)?
             .filter_map(Result::ok)
             .map(|entry| entry.path())

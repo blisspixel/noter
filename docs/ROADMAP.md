@@ -16,13 +16,13 @@ mutation, benchmark, and release records.
 
 ## Version train
 
-Crate version numbers mark product checkpoints. Milestone labels (M0–M7) name
+Crate version numbers mark product checkpoints. Milestone labels (M0 through M7) name
 workstreams inside those checkpoints. A version is only claimed when its exit
 criteria and evidence land on one immutable green commit.
 
 | Version | Product meaning | Primary milestones | Status |
 | --- | --- | --- | --- |
-| `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1–M4 and M6 partial | Prior crate checkpoint |
+| `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1 through M4 and M6 partial | Prior crate checkpoint |
 | `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups on supported local state roots | Recovery, clipboard, overwrite confirm, first-contact honesty, and alpha evidence | **Published 2026-08-29** |
 | `0.1.0-beta.1` | Production editor path: measured performance, IME, accessibility | M5 feasibility gate and production editor; continuous Markdown editing foundation | After alpha.2 |
 | `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.1 |
@@ -565,7 +565,7 @@ navigation remain a beta.1 gate and are not claimed by the alpha.2 prerelease.
 
 ### M4-H1: Recovery namespace binding
 
-**Status:** Planned and required before beta.1.
+**Status:** In progress and required before beta.1.
 
 Open or create the platform state root, recovery root, records directory, and
 quarantine directory without following links. Verify stable directory identity,
@@ -573,6 +573,15 @@ owner or SID, mode, ACL or DACL, and supported local-filesystem semantics, then
 retain directory handles for the session and route creation, scan, sync, rename,
 quarantine, and cleanup through them. Reject an unsafe or unverifiable root
 before writing recovery content.
+
+The first Windows foundation validates the drive-rooted state path on fixed
+NTFS, rejects reparse and cross-volume directory components, verifies stable
+preferred identities, retains every traversed and recovery-directory handle
+without delete sharing, rejects state DACLs that grant unprivileged mutation,
+and applies an exact protected inheritable user-and-SYSTEM DACL to the owned
+recovery subtree. It intentionally does not claim handle-relative record
+operations, redirected or synchronized-root detection, Unix namespace binding,
+or exact Unix retirement. Those gaps keep M4-H1 in progress.
 
 The Unix cleanup ADR must either provide a genuinely object-bound retirement
 strategy or retain and safely neutralize the exact opened object instead of
@@ -855,10 +864,10 @@ gate follows it.
    [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) stays paired
    with the immutable implementation commit, and `v0.1.0-alpha.2` was tagged at
    the protected-main head `dbb419f` after that exact commit passed CI.
-6. **Next, before `0.1.0-beta.1`:** M4-H1 recovery namespace binding. Hold and
-   verify every recovery directory through a no-follow handle, reject unsafe or
-   unsupported state roots before writing recovery content, close the Unix
-   cleanup contract, and record native adversarial fixtures.
+6. **In progress, before `0.1.0-beta.1`:** M4-H1 recovery namespace binding.
+   Complete handle-relative Windows record operations and redirected-root
+   classification, add the Linux and macOS namespace adapters, close the Unix
+   cleanup contract, and record every native adversarial fixture.
 7. **Then, `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
    production editor contract is stable.

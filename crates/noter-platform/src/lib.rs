@@ -12,6 +12,14 @@ use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
 
+#[cfg(windows)]
+mod windows_recovery_namespace;
+
+#[cfg(windows)]
+pub use windows_recovery_namespace::{
+    WindowsDirectoryIdentity, WindowsRecoveryEntryName, WindowsRecoveryNamespace,
+};
+
 #[cfg(unix)]
 use imp::{
     unix_apply_required_metadata as platform_apply_required_metadata,
@@ -54,7 +62,7 @@ use imp::{
     windows_sync_parent as platform_sync_parent,
 };
 
-#[cfg(any(unix, test))]
+#[cfg(any(unix, windows, test))]
 const fn combine_disjoint_flag_bits(left: u32, right: u32) -> u32 {
     assert!(
         left & right == 0,
@@ -2599,26 +2607,32 @@ mod imp {
 
     use windows_sys::Win32::Foundation::{
         ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER,
-        ERROR_NOT_SUPPORTED, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE,
+        ERROR_NOT_SUPPORTED, ERROR_SUCCESS, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE, HANDLE,
         INVALID_HANDLE_VALUE, LocalFree,
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
         ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
-        SE_FILE_OBJECT,
+        SE_FILE_OBJECT, SetSecurityInfo,
     };
     use windows_sys::Win32::Security::{
-        DACL_SECURITY_INFORMATION, GetTokenInformation, OWNER_SECURITY_INFORMATION,
+        ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
+        DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetLengthSid,
+        GetSecurityDescriptorDacl, GetTokenInformation, IsValidAcl, IsValidSecurityDescriptor,
+        IsValidSid, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
         PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     };
+    #[cfg(test)]
+    use windows_sys::Win32::Storage::FileSystem::WRITE_DAC;
     use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL,
-        FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
-        FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileBasicInfo,
-        FileDispositionInfo, FileDispositionInfoEx, FileIdInfo, GetFileInformationByHandle,
-        GetFileInformationByHandleEx, MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW,
-        SetFileInformationByHandle,
+        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE,
+        FILE_ATTRIBUTE_NORMAL, FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE,
+        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
+        FILE_EXECUTE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_READ_ATTRIBUTES,
+        FILE_READ_DATA, FILE_READ_EA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FileBasicInfo, FileDispositionInfo, FileDispositionInfoEx, FileIdInfo,
+        GetFileInformationByHandle, GetFileInformationByHandleEx, MOVEFILE_WRITE_THROUGH,
+        MoveFileExW, READ_CONTROL, ReplaceFileW, SYNCHRONIZE, SetFileInformationByHandle,
     };
     use windows_sys::Win32::System::Console::{
         ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE,
@@ -2740,6 +2754,141 @@ mod imp {
 
     const MAX_SID_STRING_UNITS: usize = 256;
     const SYSTEM_SID: &str = "S-1-5-18";
+    const BUILTIN_ADMINISTRATORS_SID: &str = "S-1-5-32-544";
+    const ACCESS_ALLOWED_ACE_KIND: u8 = 0;
+    const ACCESS_DENIED_ACE_KIND: u8 = 1;
+    const MAX_STATE_DIRECTORY_ACES: u32 = 4_096;
+    const WINDOWS_MAX_SID_SUBAUTHORITIES: usize = 15;
+    const WINDOWS_SID_HEADER_SIZE: usize = 8;
+    const WINDOWS_SID_SUBAUTHORITY_SIZE: usize = size_of::<u32>();
+    const ACCESS_ALLOWED_SID_OFFSET: usize = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
+    const WINDOWS_STATE_NON_OWNER_READ_ACCESS: u32 = windows_combine_disjoint_flags(
+        windows_combine_disjoint_flags(
+            windows_combine_disjoint_flags(FILE_READ_DATA, FILE_READ_EA),
+            windows_combine_disjoint_flags(FILE_EXECUTE, FILE_READ_ATTRIBUTES),
+        ),
+        windows_combine_disjoint_flags(
+            windows_combine_disjoint_flags(READ_CONTROL, SYNCHRONIZE),
+            windows_combine_disjoint_flags(GENERIC_READ, GENERIC_EXECUTE),
+        ),
+    );
+
+    const fn windows_state_access_is_read_only(mask: u32) -> bool {
+        mask & !WINDOWS_STATE_NON_OWNER_READ_ACCESS == 0
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum WindowsStateAceKind {
+        Denied,
+        Allowed,
+    }
+
+    fn windows_private_directory_security_matches(
+        actual_owner: &str,
+        actual_dacl: &str,
+        expected_owner: &str,
+        expected_dacl: &str,
+    ) -> bool {
+        actual_owner == expected_owner && actual_dacl == expected_dacl
+    }
+
+    const fn windows_directory_security_components_are_valid(
+        descriptor_is_valid: bool,
+        dacl_is_valid: bool,
+    ) -> bool {
+        descriptor_is_valid && dacl_is_valid
+    }
+
+    fn windows_validate_state_acl_bounds(
+        ace_count: u32,
+        bytes_in_use: u32,
+        minimum_size: u32,
+        declared_size: u32,
+    ) -> io::Result<()> {
+        if ace_count > MAX_STATE_DIRECTORY_ACES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "state directory access-control list exceeded its ACE budget",
+            ));
+        }
+        if bytes_in_use < minimum_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "state directory access-control list is smaller than its header",
+            ));
+        }
+        if bytes_in_use > declared_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "state directory access-control list exceeded its declared size",
+            ));
+        }
+        Ok(())
+    }
+
+    fn windows_classify_state_ace(ace_type: u8, ace_size: u16) -> io::Result<WindowsStateAceKind> {
+        match ace_type {
+            ACCESS_DENIED_ACE_KIND => Ok(WindowsStateAceKind::Denied),
+            ACCESS_ALLOWED_ACE_KIND => {
+                if usize::from(ace_size) < ACCESS_ALLOWED_SID_OFFSET + WINDOWS_SID_HEADER_SIZE {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Windows returned an undersized access-control entry",
+                    ));
+                }
+                Ok(WindowsStateAceKind::Allowed)
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "state directory has an unsupported access-control entry",
+            )),
+        }
+    }
+
+    fn windows_state_sid_length_within_ace(
+        ace_size: u16,
+        subauthority_count: u8,
+    ) -> io::Result<usize> {
+        let subauthority_count = usize::from(subauthority_count);
+        if subauthority_count > WINDOWS_MAX_SID_SUBAUTHORITIES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "state directory access-control entry contains an oversized SID",
+            ));
+        }
+        let sid_length = WINDOWS_SID_HEADER_SIZE
+            .checked_add(
+                subauthority_count
+                    .checked_mul(WINDOWS_SID_SUBAUTHORITY_SIZE)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "state directory SID length overflowed",
+                        )
+                    })?,
+            )
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "state directory SID length overflowed",
+                )
+            })?;
+        let sid_capacity = usize::from(ace_size)
+            .checked_sub(ACCESS_ALLOWED_SID_OFFSET)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "state directory access-control entry ended before its SID",
+                )
+            })?;
+        if sid_length > sid_capacity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "state directory SID extends beyond its access-control entry",
+            ));
+        }
+        Ok(sid_length)
+    }
 
     const fn windows_combine_disjoint_flags(left: u32, right: u32) -> u32 {
         assert!(
@@ -2834,6 +2983,378 @@ mod imp {
     fn windows_private_security_policy() -> io::Result<WindowsPrivateSecurityPolicy> {
         let owner_sid = windows_current_process_user_sid()?;
         windows_private_security_policy_for_sid(owner_sid)
+    }
+
+    #[allow(unsafe_code)]
+    pub fn windows_create_private_directory(path: &Path) -> io::Result<()> {
+        let policy = windows_private_directory_security_policy()?;
+        let path = windows_wide_path(path)?;
+        let descriptor = windows_security_descriptor_from_sddl(&policy.descriptor_sddl)?;
+        let attributes_length = u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SECURITY_ATTRIBUTES size does not fit the Windows API parameter",
+            )
+        })?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: attributes_length,
+            lpSecurityDescriptor: descriptor.raw,
+            bInheritHandle: 0,
+        };
+
+        // SAFETY: the path and security descriptor are NUL-terminated and
+        // remain live for the call. The descriptor carries a protected
+        // owner-and-SYSTEM DACL whose object and container inheritance applies
+        // least privilege to ordinary children as a defensive fallback.
+        if unsafe { CreateDirectoryW(path.as_ptr(), &raw const attributes) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    pub fn windows_verify_private_directory_security(file: &File) -> io::Result<()> {
+        let policy = windows_private_directory_security_policy()?;
+        let (descriptor, owner_sid, _) = windows_directory_security(file)?;
+        let dacl_sddl = windows_descriptor_dacl_sddl(descriptor.raw)?;
+        let normalized_dacl = dacl_sddl.replacen("D:PAI", "D:P", 1);
+        if !windows_private_directory_security_matches(
+            &owner_sid,
+            &normalized_dacl,
+            &policy.owner_sid,
+            &policy.dacl_sddl,
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory does not expose the required explicit user owner and protected inheritable user-and-SYSTEM DACL",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn windows_verify_owner_controlled_state_directory(file: &File) -> io::Result<()> {
+        let expected_owner = windows_current_process_user_sid()?;
+        let (descriptor, owner_sid, dacl) = windows_directory_security(file)?;
+        if owner_sid != expected_owner {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "state directory is not owned by the current user",
+            ));
+        }
+        windows_verify_non_owner_aces_are_read_only(dacl, &expected_owner)?;
+        drop(descriptor);
+        Ok(())
+    }
+
+    #[allow(unsafe_code)]
+    pub fn windows_tighten_private_directory_security(file: &File) -> io::Result<()> {
+        let policy = windows_private_directory_security_policy()?;
+        let descriptor = windows_security_descriptor_from_sddl(&policy.descriptor_sddl)?;
+        let mut dacl_present = 0;
+        let mut dacl_defaulted = 0;
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        // SAFETY: the descriptor is live, all outputs point to writable local
+        // storage, and the returned ACL remains owned by the descriptor.
+        if unsafe {
+            GetSecurityDescriptorDacl(
+                descriptor.raw,
+                &raw mut dacl_present,
+                &raw mut dacl,
+                &raw mut dacl_defaulted,
+            )
+        } == 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "private directory policy DACL lookup failed",
+            ));
+        }
+        if dacl_present == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "private directory policy did not mark its DACL present",
+            ));
+        }
+        if dacl.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "private directory policy contained a null DACL",
+            ));
+        }
+        let security_information = windows_combine_disjoint_flags(
+            DACL_SECURITY_INFORMATION,
+            PROTECTED_DACL_SECURITY_INFORMATION,
+        );
+        // SAFETY: the retained directory handle was opened with WRITE_DAC,
+        // `dacl` remains live with `descriptor`, and unrequested owner, group,
+        // and SACL pointers are null.
+        let status = unsafe {
+            SetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                security_information,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null(),
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(status.cast_signed()));
+        }
+        windows_verify_private_directory_security(file)
+    }
+
+    #[cfg(test)]
+    #[allow(unsafe_code)]
+    fn windows_apply_directory_dacl_for_test(file: &File, dacl_sddl: &str) -> io::Result<()> {
+        let descriptor = windows_security_descriptor_from_sddl(dacl_sddl)?;
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut dacl = std::ptr::null_mut();
+        // SAFETY: the parsed descriptor is live and the three outputs point
+        // to writable local storage retained through SetSecurityInfo.
+        if unsafe {
+            GetSecurityDescriptorDacl(
+                descriptor.raw,
+                &raw mut present,
+                &raw mut dacl,
+                &raw mut defaulted,
+            )
+        } == 0
+            || present == 0
+            || dacl.is_null()
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let information = windows_combine_disjoint_flags(
+            DACL_SECURITY_INFORMATION,
+            PROTECTED_DACL_SECURITY_INFORMATION,
+        );
+        // SAFETY: the directory handle is live, the DACL remains owned by
+        // the descriptor, and no owner, group, or SACL update is requested.
+        let status = unsafe {
+            SetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                information,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null(),
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(status.cast_signed()));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn windows_create_owner_controlled_readable_directory_for_test(
+        path: &Path,
+    ) -> io::Result<()> {
+        windows_create_private_directory(path)?;
+        let access = windows_combine_disjoint_flags(READ_CONTROL, WRITE_DAC);
+        let flags = windows_combine_disjoint_flags(
+            windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+        );
+        let directory = OpenOptions::new()
+            .access_mode(access)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(flags)
+            .open(path)?;
+        let policy = windows_private_security_policy()?;
+        let readable_dacl = format!(
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{})(A;OICI;GR;;;WD)",
+            policy.owner_sid
+        );
+        windows_apply_directory_dacl_for_test(&directory, &readable_dacl)?;
+        windows_verify_owner_controlled_state_directory(&directory)?;
+        if windows_verify_private_directory_security(&directory).is_ok() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "owner-controlled directory fixture unexpectedly satisfied private ACL policy",
+            ));
+        }
+        Ok(())
+    }
+
+    fn windows_private_directory_security_policy() -> io::Result<WindowsPrivateSecurityPolicy> {
+        let owner_sid = windows_current_process_user_sid()?;
+        let requested_dacl = if owner_sid == SYSTEM_SID {
+            "D:P(A;OICI;FA;;;SY)".to_owned()
+        } else {
+            format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{owner_sid})")
+        };
+        let descriptor_sddl = format!("O:{owner_sid}{requested_dacl}");
+        let descriptor = windows_security_descriptor_from_sddl(&descriptor_sddl)?;
+        let dacl_sddl = windows_descriptor_dacl_sddl(descriptor.raw)?;
+        Ok(WindowsPrivateSecurityPolicy {
+            owner_sid,
+            dacl_sddl,
+            descriptor_sddl,
+        })
+    }
+
+    #[allow(unsafe_code)]
+    fn windows_directory_security(
+        file: &File,
+    ) -> io::Result<(WindowsSecurityDescriptor, String, *mut ACL)> {
+        let mut raw_descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut raw_owner: PSID = std::ptr::null_mut();
+        let mut raw_dacl: *mut ACL = std::ptr::null_mut();
+        // SAFETY: the retained directory handle is live and all requested
+        // outputs point to writable storage. Owner and DACL pointers remain
+        // live with the returned descriptor guard.
+        let status = unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                WINDOWS_PRIVATE_SECURITY_INFORMATION,
+                &raw mut raw_owner,
+                std::ptr::null_mut(),
+                &raw mut raw_dacl,
+                std::ptr::null_mut(),
+                &raw mut raw_descriptor,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(status.cast_signed()));
+        }
+        let descriptor = WindowsSecurityDescriptor {
+            raw: raw_descriptor,
+            deallocate: LocalFree,
+        };
+        // SAFETY: GetSecurityInfo returned both pointers and `descriptor`
+        // retains their allocation for these structural checks.
+        let descriptor_is_valid = unsafe { IsValidSecurityDescriptor(descriptor.raw) } != 0;
+        let dacl_is_valid = if raw_dacl.is_null() {
+            false
+        } else {
+            // SAFETY: the null case is rejected above and `descriptor` retains
+            // the allocation returned by GetSecurityInfo.
+            (unsafe { IsValidAcl(raw_dacl) }) != 0
+        };
+        if !windows_directory_security_components_are_valid(descriptor_is_valid, dacl_is_valid) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "state directory has no valid access-control list",
+            ));
+        }
+        let owner_sid = windows_sid_string(raw_owner)?;
+        Ok((descriptor, owner_sid, raw_dacl))
+    }
+
+    #[allow(unsafe_code)]
+    fn windows_verify_non_owner_aces_are_read_only(
+        dacl: *mut ACL,
+        owner_sid: &str,
+    ) -> io::Result<()> {
+        let mut information = ACL_SIZE_INFORMATION::default();
+        let information_size = u32::try_from(size_of::<ACL_SIZE_INFORMATION>()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ACL_SIZE_INFORMATION size does not fit the Windows API parameter",
+            )
+        })?;
+        // SAFETY: `dacl` belongs to a live security descriptor and
+        // `information` is writable for its exact byte size.
+        if unsafe {
+            GetAclInformation(
+                dacl,
+                (&raw mut information).cast(),
+                information_size,
+                AclSizeInformation,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: IsValidAcl succeeded before this helper was called, so the
+        // common ACL header is readable. The reported bytes must still fit
+        // within its declared allocation and the review budget.
+        let declared_acl_size = u32::from(unsafe { (*dacl).AclSize });
+        let minimum_acl_size = u32::try_from(size_of::<ACL>()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ACL header size does not fit the Windows API parameter",
+            )
+        })?;
+        windows_validate_state_acl_bounds(
+            information.AceCount,
+            information.AclBytesInUse,
+            minimum_acl_size,
+            declared_acl_size,
+        )?;
+
+        for index in 0..information.AceCount {
+            let mut raw_ace = std::ptr::null_mut();
+            // SAFETY: the ACL is live, `index` is below its reported ACE count,
+            // and the output points to writable local storage.
+            if unsafe { GetAce(dacl, index, &raw mut raw_ace) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if raw_ace.is_null() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Windows returned a null access-control entry",
+                ));
+            }
+            // SAFETY: GetAce returned a live ACE whose header is the common
+            // prefix for every ACE type.
+            let header = unsafe { &*raw_ace.cast::<windows_sys::Win32::Security::ACE_HEADER>() };
+            match windows_classify_state_ace(header.AceType, header.AceSize)? {
+                WindowsStateAceKind::Denied => continue,
+                WindowsStateAceKind::Allowed => {}
+            }
+            // SAFETY: the classified ACE includes the fixed SID header, so its
+            // subauthority count byte is readable without crossing the ACE.
+            let sid_bytes = unsafe { raw_ace.cast::<u8>().add(ACCESS_ALLOWED_SID_OFFSET) };
+            // SAFETY: the SID header check above proves the count byte at
+            // offset one is inside the live ACE allocation.
+            let subauthority_count = unsafe { *sid_bytes.add(1) };
+            let expected_sid_length =
+                windows_state_sid_length_within_ace(header.AceSize, subauthority_count)?;
+            let sid_pointer = sid_bytes.cast();
+            // SAFETY: the count-derived complete SID extent was proved to fit
+            // inside this live ACE before either SID API inspects it.
+            if unsafe { IsValidSid(sid_pointer) } == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "state directory access-control entry contains an invalid SID",
+                ));
+            }
+            // SAFETY: IsValidSid accepted the bounded SID pointer, so the API
+            // may report its length without reading outside the ACE.
+            let native_sid_length =
+                usize::try_from(unsafe { GetLengthSid(sid_pointer) }).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Windows SID length does not fit this process",
+                    )
+                })?;
+            if native_sid_length != expected_sid_length {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Windows SID length disagrees with its bounded access-control entry",
+                ));
+            }
+            // SAFETY: the ACE type, the bounded extent, and IsValidSid establish
+            // an ACCESS_ALLOWED_ACE SID that remains live with the DACL.
+            let ace = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
+            let sid = windows_sid_string(sid_pointer)?;
+            if sid == owner_sid || sid == SYSTEM_SID || sid == BUILTIN_ADMINISTRATORS_SID {
+                continue;
+            }
+            if !windows_state_access_is_read_only(ace.Mask) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "state directory grants non-owner write or control access",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn windows_private_security_policy_for_sid(
@@ -3038,7 +3559,7 @@ mod imp {
         if owner_sid != expected_owner_sid || dacl_sddl != expected_dacl_sddl {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "created file does not expose the required explicit user owner and protected user-and-SYSTEM DACL",
+                "private object does not expose the required explicit user owner and protected user-and-SYSTEM DACL",
             ));
         }
         Ok(())
@@ -3429,6 +3950,7 @@ mod imp {
         use std::fs::{self, File, OpenOptions};
         use std::io::{self, Write};
         use std::mem::size_of;
+        use std::os::windows::fs::OpenOptionsExt;
         use std::os::windows::io::AsRawHandle;
         use std::path::Path;
 
@@ -3436,29 +3958,40 @@ mod imp {
         use windows_sys::Win32::Foundation::ERROR_SUCCESS;
         use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
         use windows_sys::Win32::Security::{
-            DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl, OWNER_SECURITY_INFORMATION,
-            PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, TOKEN_USER,
+            DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+            OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, TOKEN_USER,
         };
         use windows_sys::Win32::Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, FILE_ID_128, FILE_ID_INFO,
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_ID_128, FILE_ID_INFO, READ_CONTROL, WRITE_DAC,
         };
 
         use super::{
-            DELETE, FILE_SHARE_DELETE, FILE_SHARE_READ, GENERIC_READ, GENERIC_WRITE,
-            INVALID_HANDLE_VALUE, IdentityQuality, LocalFree, STD_ERROR_HANDLE, STD_HANDLE,
-            STD_OUTPUT_HANDLE, SYSTEM_SID, WINDOWS_PRIVATE_FILE_ACCESS, WINDOWS_PRIVATE_FILE_SHARE,
-            WINDOWS_PRIVATE_SECURITY_INFORMATION, WindowsConsoleStream, WindowsLocalWideString,
-            WindowsSecurityDescriptor, windows_combine_disjoint_flags,
+            ACCESS_ALLOWED_ACE_KIND, ACCESS_ALLOWED_SID_OFFSET, ACCESS_DENIED_ACE_KIND, DELETE,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE,
+            IdentityQuality, LocalFree, MAX_STATE_DIRECTORY_ACES, STD_ERROR_HANDLE, STD_HANDLE,
+            STD_OUTPUT_HANDLE, SYSTEM_SID, WINDOWS_MAX_SID_SUBAUTHORITIES,
+            WINDOWS_PRIVATE_FILE_ACCESS, WINDOWS_PRIVATE_FILE_SHARE,
+            WINDOWS_PRIVATE_SECURITY_INFORMATION, WINDOWS_SID_HEADER_SIZE,
+            WINDOWS_SID_SUBAUTHORITY_SIZE, WindowsConsoleStream, WindowsLocalWideString,
+            WindowsSecurityDescriptor, WindowsStateAceKind, windows_apply_directory_dacl_for_test,
+            windows_classify_state_ace, windows_combine_disjoint_flags,
             windows_console_streams_ready, windows_create_new_file_with_security,
-            windows_create_private_new_file, windows_delete_open_file,
-            windows_descriptor_dacl_sddl, windows_extended_information,
+            windows_create_private_directory, windows_create_private_new_file,
+            windows_delete_open_file, windows_descriptor_dacl_sddl,
+            windows_directory_security_components_are_valid, windows_extended_information,
             windows_finalize_private_creation, windows_identity_from_information,
             windows_open_existing_no_follow, windows_open_for_cleanup,
-            windows_open_for_reconciliation, windows_private_security_policy,
-            windows_private_security_policy_for_sid, windows_raw_handle_is_bound,
-            windows_security_descriptor_from_sddl, windows_sid_string, windows_std_handle_is_bound,
-            windows_token_user_buffer_length, windows_validate_token_user_returned_length,
-            windows_verify_private_file_security,
+            windows_open_for_reconciliation, windows_private_directory_security_matches,
+            windows_private_security_policy, windows_private_security_policy_for_sid,
+            windows_raw_handle_is_bound, windows_security_descriptor_from_sddl, windows_sid_string,
+            windows_state_access_is_read_only, windows_state_sid_length_within_ace,
+            windows_std_handle_is_bound, windows_tighten_private_directory_security,
+            windows_token_user_buffer_length, windows_validate_state_acl_bounds,
+            windows_validate_token_user_returned_length,
+            windows_verify_non_owner_aces_are_read_only,
+            windows_verify_owner_controlled_state_directory,
+            windows_verify_private_directory_security, windows_verify_private_file_security,
         };
 
         /// `GetStdHandle` rejects any identifier outside the three documented
@@ -3596,6 +4129,231 @@ mod imp {
                     format!("D:P(A;;FA;;;SY)(A;;FA;;;{alias})")
                 );
             }
+            Ok(())
+        }
+
+        #[test]
+        fn private_directory_security_comparison_checks_owner_and_dacl_independently() {
+            assert!(windows_private_directory_security_matches(
+                "owner", "dacl", "owner", "dacl"
+            ));
+            assert!(!windows_private_directory_security_matches(
+                "other", "dacl", "owner", "dacl"
+            ));
+            assert!(!windows_private_directory_security_matches(
+                "owner", "other", "owner", "dacl"
+            ));
+            assert!(!windows_private_directory_security_matches(
+                "other", "other", "owner", "dacl"
+            ));
+        }
+
+        #[test]
+        fn directory_security_requires_a_valid_descriptor_and_dacl() {
+            assert!(windows_directory_security_components_are_valid(true, true));
+            assert!(!windows_directory_security_components_are_valid(
+                false, true
+            ));
+            assert!(!windows_directory_security_components_are_valid(
+                true, false
+            ));
+            assert!(!windows_directory_security_components_are_valid(
+                false, false
+            ));
+        }
+
+        #[test]
+        fn state_acl_structural_bounds_are_exact() {
+            let minimum = u32::try_from(size_of::<windows_sys::Win32::Security::ACL>())
+                .expect("ACL size must fit a Windows length");
+            let declared = minimum + 32;
+
+            windows_validate_state_acl_bounds(MAX_STATE_DIRECTORY_ACES, minimum, minimum, declared)
+                .expect("exact ACE and minimum-size boundaries must be accepted");
+            windows_validate_state_acl_bounds(0, declared, minimum, declared)
+                .expect("the exact declared-size boundary must be accepted");
+            assert!(
+                windows_validate_state_acl_bounds(
+                    MAX_STATE_DIRECTORY_ACES + 1,
+                    minimum,
+                    minimum,
+                    declared,
+                )
+                .is_err()
+            );
+            assert!(windows_validate_state_acl_bounds(0, minimum - 1, minimum, declared).is_err());
+            assert!(windows_validate_state_acl_bounds(0, declared + 1, minimum, declared).is_err());
+        }
+
+        #[test]
+        fn state_ace_classification_is_closed_and_size_bounded() {
+            let allowed_size = u16::try_from(ACCESS_ALLOWED_SID_OFFSET + WINDOWS_SID_HEADER_SIZE)
+                .expect("minimum bounded ACE size must fit its header");
+
+            assert_eq!(
+                windows_classify_state_ace(ACCESS_DENIED_ACE_KIND, 0)
+                    .expect("deny entries are safe because they grant no access"),
+                WindowsStateAceKind::Denied
+            );
+            assert_eq!(
+                windows_classify_state_ace(ACCESS_ALLOWED_ACE_KIND, allowed_size)
+                    .expect("a complete standard allow entry must be inspectable"),
+                WindowsStateAceKind::Allowed
+            );
+            assert!(windows_classify_state_ace(ACCESS_ALLOWED_ACE_KIND, allowed_size - 1).is_err());
+            for unsupported in [4_u8, 5, 9, 11, u8::MAX] {
+                assert!(
+                    windows_classify_state_ace(unsupported, allowed_size).is_err(),
+                    "unexpectedly accepted ACE type {unsupported}"
+                );
+            }
+        }
+
+        #[test]
+        fn state_sid_extent_is_bounded_by_its_ace() {
+            let empty_sid_ace = u16::try_from(ACCESS_ALLOWED_SID_OFFSET + WINDOWS_SID_HEADER_SIZE)
+                .expect("minimum bounded ACE size must fit its header");
+            assert_eq!(
+                windows_state_sid_length_within_ace(empty_sid_ace, 0)
+                    .expect("a zero-subauthority SID fits its exact extent"),
+                WINDOWS_SID_HEADER_SIZE
+            );
+
+            let one_sid_length = WINDOWS_SID_HEADER_SIZE + WINDOWS_SID_SUBAUTHORITY_SIZE;
+            let one_sid_ace = u16::try_from(ACCESS_ALLOWED_SID_OFFSET + one_sid_length)
+                .expect("one-subauthority SID size must fit an ACE");
+            assert_eq!(
+                windows_state_sid_length_within_ace(one_sid_ace, 1)
+                    .expect("one subauthority fits its exact extent"),
+                one_sid_length
+            );
+            assert!(windows_state_sid_length_within_ace(one_sid_ace - 1, 1).is_err());
+
+            let maximum_sid_length = WINDOWS_SID_HEADER_SIZE
+                + WINDOWS_MAX_SID_SUBAUTHORITIES * WINDOWS_SID_SUBAUTHORITY_SIZE;
+            let maximum_sid_ace = u16::try_from(ACCESS_ALLOWED_SID_OFFSET + maximum_sid_length)
+                .expect("maximum SID size must fit an ACE");
+            assert_eq!(
+                windows_state_sid_length_within_ace(
+                    maximum_sid_ace,
+                    u8::try_from(WINDOWS_MAX_SID_SUBAUTHORITIES)
+                        .expect("Windows maximum must fit a SID count"),
+                )
+                .expect("the Windows maximum fits its exact extent"),
+                maximum_sid_length
+            );
+            assert!(
+                windows_state_sid_length_within_ace(
+                    u16::MAX,
+                    u8::try_from(WINDOWS_MAX_SID_SUBAUTHORITIES + 1)
+                        .expect("one beyond the Windows maximum must fit a test count"),
+                )
+                .is_err()
+            );
+        }
+
+        #[test]
+        fn directory_verification_rejects_broad_access_and_tightening_repairs_it() -> io::Result<()>
+        {
+            let parent = tempdir()?;
+            let path = parent.path().join("private-directory");
+            windows_create_private_directory(&path)?;
+            let access = windows_combine_disjoint_flags(READ_CONTROL, WRITE_DAC);
+            let flags = windows_combine_disjoint_flags(
+                FILE_FLAG_BACKUP_SEMANTICS,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+            );
+            let directory = OpenOptions::new()
+                .access_mode(access)
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(flags)
+                .open(&path)?;
+            windows_verify_private_directory_security(&directory)?;
+
+            let policy = windows_private_security_policy()?;
+            let broad_dacl = format!(
+                "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{})(A;OICI;GW;;;WD)",
+                policy.owner_sid
+            );
+            windows_apply_directory_dacl_for_test(&directory, &broad_dacl)?;
+            assert_eq!(
+                windows_verify_private_directory_security(&directory)
+                    .expect_err("an additional write grant must fail private verification")
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+            assert_eq!(
+                windows_verify_owner_controlled_state_directory(&directory)
+                    .expect_err("an unprivileged write grant must fail state verification")
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+
+            windows_tighten_private_directory_security(&directory)?;
+            windows_verify_private_directory_security(&directory)?;
+            windows_verify_owner_controlled_state_directory(&directory)?;
+            Ok(())
+        }
+
+        #[test]
+        fn state_directory_read_only_policy_rejects_every_mutation_right() {
+            assert!(windows_state_access_is_read_only(0));
+            assert!(windows_state_access_is_read_only(0x0012_00a9));
+            assert!(windows_state_access_is_read_only(0xa012_00a9));
+
+            for mutation_right in [
+                0x0000_0002,
+                0x0000_0004,
+                0x0000_0010,
+                0x0000_0040,
+                0x0000_0100,
+                0x0001_0000,
+                0x0004_0000,
+                0x0008_0000,
+                0x0100_0000,
+                0x1000_0000,
+                0x4000_0000,
+            ] {
+                assert!(
+                    !windows_state_access_is_read_only(mutation_right),
+                    "unexpectedly accepted mutation right {mutation_right:#010x}"
+                );
+                assert!(
+                    !windows_state_access_is_read_only(0x0012_00a9 | mutation_right),
+                    "read access hid mutation right {mutation_right:#010x}"
+                );
+            }
+        }
+
+        #[test]
+        #[allow(unsafe_code)]
+        fn state_directory_policy_rejects_inherit_only_write_access() -> io::Result<()> {
+            let descriptor = windows_security_descriptor_from_sddl("O:SYD:(A;OICIIO;GW;;;WD)")?;
+            let mut present = 0;
+            let mut defaulted = 0;
+            let mut dacl = std::ptr::null_mut();
+            // SAFETY: the parsed descriptor is live and the three outputs point
+            // to writable local storage retained through the policy call.
+            if unsafe {
+                GetSecurityDescriptorDacl(
+                    descriptor.raw,
+                    &raw mut present,
+                    &raw mut dacl,
+                    &raw mut defaulted,
+                )
+            } == 0
+                || present == 0
+                || dacl.is_null()
+            {
+                return Err(io::Error::last_os_error());
+            }
+
+            assert_eq!(
+                windows_verify_non_owner_aces_are_read_only(dacl, SYSTEM_SID)
+                    .expect_err("inheritable write access must be rejected")
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
             Ok(())
         }
 
