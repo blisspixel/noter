@@ -206,10 +206,11 @@ jobs:
       - name: Run Windows trust-kernel mutation tests
         if: runner.os == 'Windows'
         env:
-          # Windows runners occasionally exceed cargo-mutants' 20-second
-          # auto-selected test floor while a failing suite is unwinding.
-          # Sixty seconds preserves finite-failure evidence without weakening
-          # the job's 90-minute outer bound.
+          # cargo-mutants calibrates from the mutated platform package even
+          # though each candidate runs the complete workspace. Hosted Windows
+          # runners can therefore exceed a 60-second floor while the bounded
+          # recovery fixtures finish. Two minutes preserves finite-failure
+          # evidence beneath the job's 90-minute outer bound.
           #
           # The exclusion below must name every Unix-gated item, in both cases.
           # cargo-mutants builds its candidate list by parsing source without
@@ -219,7 +220,7 @@ jobs:
           CARGO_INCREMENTAL: 1
         run: >
           cargo mutants -vV --in-place --colors never --workspace
-          --minimum-test-timeout 60
+          --minimum-test-timeout 120
           --shard ${{ matrix.shard }}
           --exclude-re
           '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|[Uu]nix|from_open_parent|linux|[Mm]acos)'
