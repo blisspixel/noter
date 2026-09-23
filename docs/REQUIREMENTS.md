@@ -64,6 +64,12 @@ Feature presence alone is not verification.
 - **FR-011 Open:** Open a user-selected regular file through a system file
   dialog. Refuse a final symlink or Windows reparse point in v0.1; following a
   link requires a future resolved-target identity contract.
+- **FR-011a Terminal User Interface (TUI) Mode:** Provide an interactive terminal
+  editing interface (`noter --tui` or headless display auto-detection) backed
+  by the identical `src/core/` trust kernel (revisions, atomic durable save,
+  bounded undo/redo, crash recovery, and conflict handling). The TUI provides
+  dual modern and classic shortcuts, mouse selection, terminal theme rendering,
+  and rendered terminal Markdown preview.
 - **FR-012 Strict UTF-8:** Accept UTF-8 with or without a UTF-8 BOM. Reject
   invalid UTF-8 without replacement characters. A future explicit import flow
   may create a new untitled converted document, but it must never overwrite the
@@ -140,11 +146,13 @@ Feature presence alone is not verification.
 - **FR-028 Long operations:** Search, indexing, and formatting cannot commit a
   stale result to a newer document revision.
 - **FR-029 Optional spell checking:** Spell checking is an explicit, persisted
-  preference backed only by a supported local operating-system or installed
-  dictionary provider. Language selection is explicit. Unavailable providers
-  fail without changing text, and suggestions never replace text without a
-  user action. Document content is never uploaded, retained by Noter as a
-  dictionary corpus, or sent through background network access.
+  preference backed by the host operating system's native provider (Windows
+  `ISpellCheckerFactory`, macOS `NSSpellChecker`, Linux `libenchant-2` or
+  system `hunspell`). Language selection is explicit and supports all installed
+  system language packs without bundling external dictionaries into Noter.
+  Unavailable providers fail without changing text, and suggestions never replace
+  text without a user action. Document content is never uploaded, retained by
+  Noter as a dictionary corpus, or sent through background network access.
 
 ### 2.3 Lifecycle and recovery
 
@@ -247,7 +255,10 @@ Feature presence alone is not verification.
 ### 2.5 Platform behavior and accessibility
 
 - **FR-080 Shortcuts:** Use Command on macOS and Control on Windows and Linux,
-  with platform-standard alternatives where conventions differ.
+  with platform-standard alternatives where conventions differ. Support platform
+  actions including macOS `Cmd+Q` (Quit), `Cmd+W` (Close), `Cmd+,` (Preferences),
+  and `Cmd+Ctrl+F` (Fullscreen); Windows `Ctrl+W` (Close) and Alt-key menu
+  accelerators; and Linux `PRIMARY` selection with middle-click paste.
 - **FR-081 Keyboard reachability:** All primary workflows, dialogs, bars, menus,
   and recovery actions work without a mouse.
 - **FR-082 Semantics:** Expose names, roles, values, selection, caret, editable
@@ -256,18 +267,23 @@ Feature presence alone is not verification.
 - **FR-084 IME:** Pre-edit text remains distinguishable from committed text and
   the candidate window follows the caret.
 - **FR-085 Display:** Support high DPI, 125 to 200 percent scaling, high contrast,
-  and visible focus and selection states.
+  and visible focus and selection states. Support macOS ProMotion (120Hz) and
+  Windows/Linux high refresh rates without dropped frames.
 - **FR-086 Dialogs:** Use system file dialogs. The rendered application chrome is
   consistent and system-integrated; native widget appearance is not promised.
 
 ### 2.6 Installation and updates
 
-- **FR-090 Install:** Provide supported per-user installer commands for Windows,
-  macOS, and Linux that select the correct published artifact, verify it, and do
-  not require administrator access by default.
-- **FR-091 Update command:** `noter update` checks the documented release channel,
-  shows the offered version and trust information, and performs a verified
-  upgrade without losing the working installation on failure.
+- **FR-090 Install:** Provide standalone per-user installer scripts (`install.ps1`
+  for Windows and `install.sh` for macOS and Linux) that download precompiled
+  binary release archives directly from GitHub Releases, verify cryptographic
+  SHA-256 digests, configure PATH idempotently, and execute without requiring
+  local build tools or elevation.
+- **FR-091 Update command:** `noter update` checks the official GitHub release
+  endpoint upon explicit invocation, validates the latest published version and
+  checksums, prompts for confirmation, verifies the document is clean, and
+  safely replaces the binary in place (using atomic rename on Unix and a detached
+  helper process on Windows to handle executable file locking).
 - **FR-092 Update UI:** Help > Check for Updates invokes the same version and
   verification policy as the command-line updater.
 - **FR-093 Explicit network:** Update checks occur only after an explicit action
@@ -337,6 +353,15 @@ The complete release and verification contract is in
 - **FR-116 Formatter determinism:** Whole-document Format is deterministic and
   idempotent. It preserves front matter and documented opaque regions, rejects a
   supported semantic-tree change, previews the diff, and commits as one undo step.
+- **FR-117 Sticky formatting and delimiter unfurl:** Markdown Mode provides
+  sticky formatting intent for Bold, Italic, Strikethrough, and Code spans
+  without writing empty syntax pairs (`****`) to disk or draft. Toggling an empty
+  selection records in-memory formatting intent and synthesizes delimiters only
+  when printable characters are typed. Formatting intent continues across line
+  breaks upon Enter until explicitly toggled off or exited. Delimiters fold into
+  formatted text when the cursor is distant and unfurl with muted syntax coloring
+  when the caret enters the token span, preventing dead caret steps and visual
+  layout jumps.
 
 [MARKDOWN.md](MARKDOWN.md) is the normative interaction and safety specification.
 
@@ -376,8 +401,10 @@ samples for latency percentiles, and explicit cold or warm state.
 | Warm launch to first interactive frame | p95 at most 250 ms |
 | Open and edit 1 MiB UTF-8 file | p95 at most 150 ms |
 | First editable frame for 50 MiB file | p95 at most 2.0 s |
-| Input to painted frame | p95 at most 16.7 ms, p99 at most 33 ms |
-| Warm scroll frame time | p99 at most 16.7 ms |
+| Input to painted frame | p95 at most 16.7 ms (p95 at most 8.33 ms at 120Hz), p99 at most 33 ms |
+| 120Hz/ProMotion frame time on supported displays | p95 at most 7.0 ms, p99 at most 8.33 ms |
+| Warm scroll frame time | p99 at most 16.7 ms (p99 at most 8.33 ms at 120Hz) |
+| Viewport virtualized line layout up to 50 MiB | at most 1.0 ms |
 | First literal-search match in 50 MiB | p95 at most 800 ms |
 | Native Markdown edit to painted frame for 1 MiB | p95 at most 33 ms |
 | Markdown diagnostic refresh after ordinary edit | p95 at most 150 ms |
@@ -452,7 +479,7 @@ Noter v0.1 is releasable only when:
 - Tabs, projects, folder trees, and workspaces
 - Rich text or a proprietary document format
 - Programming-language syntax highlighting
-- LSP, Git integration, terminal, plugins, or command palette
+- LSP, Git integration, embedded terminal emulator pane, plugins, or command palette
 - Accounts, synchronization, collaboration, or cloud storage
 - AI features
 - Background networking, remote Markdown assets, or automatic telemetry

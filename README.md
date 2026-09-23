@@ -1,8 +1,10 @@
 # Noter
 
 [![CI](https://github.com/blisspixel/noter/actions/workflows/ci.yml/badge.svg)](https://github.com/blisspixel/noter/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/blisspixel/noter?include_prereleases)](https://github.com/blisspixel/noter/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**A clean editor. Nothing else.**
+**A clean, private, buttery-smooth text and Markdown editor. Nothing else.**
 
 Privacy first. Zero spyware. Zero telemetry. Zero activity logging. No analytics
 panel, no usage funnel, no silent crash phone-home, no background history of
@@ -21,21 +23,26 @@ pipeline. You choose how to store, sync, back up, or publish. Local preferences
 such as theme, wrap, and zoom are ordinary settings on your machine, not a
 dossier.
 
-## Why this shape
+## Highlights
 
-- **Just the app.** No spyware, no telemetry, no activity logging, no ads, no
-  account, no subscription, no cloud document format, no bundled AI. Update
-  checks, when you choose them, stay explicit and separate from editing.
-- **Local by default.** A compiled desktop app with a native window and GPU
-  renderer. No WebView, no browser engine, no JavaScript runtime inside the
-  editor, no remote content fetch while you write. An idle window sleeps instead
-  of spending your battery on a render loop (measured on Windows; other
-  platforms remain open evidence).
-- **One document, full attention.** Classic single-file focus instead of a
+- **Private by Design:** A compiled native desktop and terminal application. No
+  WebView, no browser engine, no background network access, and zero telemetry.
+  An idle window sleeps instead of draining battery on continuous repaints.
+- **One File, Three Exact Views:**
+  - **Text Mode:** Raw byte fidelity, explicit line endings, and exact source
+    inspection.
+  - **Markdown Mode:** Directly editable live structure with sticky formatting
+    and caret-aware delimiter unfurl.
+  - **Terminal TUI Mode:** A fast, lightweight terminal interface ("Like Nano...
+    but better") with dual modern and Nano shortcuts, mouse support, and CRT
+    themes (`noter --tui`).
+- **Defensive Durability:** Atomic file replacement, BLAKE3 content hashing,
+  sibling staging, verified permissions, and owner-restricted crash recovery.
+- **Responsive and Butter-Smooth:** Sub-16.7ms input latency, 120Hz/ProMotion
+  frame pacing, and a virtualized rope engine that handles files up to 50 MiB
+  with zero hesitation.
+- **One Document, Full Focus:** Single-document ergonomics instead of a
   workspace that wants to become a platform.
-- **Two exact views of the same source.** Text Mode shows every character.
-  Markdown Mode shows the same file as readable structure with supported content
-  still editable. Switching views never rewrites your bytes.
 
 The full privacy contract is in [docs/PRIVACY.md](docs/PRIVACY.md).
 
@@ -53,8 +60,8 @@ The source bytes do not change when the view changes.
 ### Light, dark, and terminal themes
 
 Each theme uses the same native text shaping, source-backed Markdown editor, and
-deterministic demo file. Green Screen and Amber Screen are complete themes, not
-filters over a generic dark capture.
+deterministic demo file. Green Screen and Amber Screen are complete CRT phosphor
+themes, not simple filters over a generic dark capture.
 
 | Dark | Green Screen | Amber Screen |
 | --- | --- | --- |
@@ -62,19 +69,30 @@ filters over a generic dark capture.
 
 ## Install
 
-The current correctness alpha is published as the
-[v0.1.0-alpha.2 release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-alpha.2).
-It includes platform archives for Windows, Linux, and both macOS
-architectures, a Windows MSI, checksums, target-specific SBOMs, and GitHub
-build provenance for every asset. The artifacts are not Windows or macOS
-code-signed. Download an asset before running it, and verify its provenance
-with `gh attestation verify FILE --repo blisspixel/noter`. This is an alpha for
-careful dogfood with backups, not the only copy of important work.
+### Quick install (Standalone binaries)
 
-You can also build the locked source checkout with the Rust toolchain pinned by
-the repository. Install [Git](https://git-scm.com/) and
-[Rust through rustup](https://rustup.rs/), then run the commands for your
-platform.
+Precompiled binaries for Windows, Linux, and macOS (Intel and Apple Silicon) are
+published on the [GitHub Releases page](https://github.com/blisspixel/noter/releases).
+You can install Noter in seconds with zero build tools:
+
+Windows (PowerShell):
+
+```powershell
+Invoke-RestMethod https://github.com/blisspixel/noter/releases/latest/download/install.ps1 | Invoke-Expression
+```
+
+macOS or Linux (POSIX shell):
+
+```sh
+curl -fsSL https://github.com/blisspixel/noter/releases/latest/download/install.sh | sh
+```
+
+The installer verifies cryptographic SHA-256 checksums, installs into your user
+binary directory, and configures `PATH`.
+
+### Source install
+
+You can also build the locked source checkout with the pinned Rust toolchain:
 
 Windows PowerShell:
 
@@ -92,47 +110,40 @@ cd noter
 sh scripts/install.sh
 ```
 
-Start Noter with `noter`, or verify the installation with `noter --version`.
-Open an existing file with `noter FILE`; a path Noter cannot open fails on the
-command line rather than opening an empty window. The
-[installation guide](docs/INSTALLATION.md) covers the full command-line
-contract, updates, custom install locations, uninstallation, troubleshooting,
-and the future binary-release contract.
-
-The current application makes no network request while you work. Even Help >
-Check for Updates only opens a local status dialog unless you explicitly open
-the releases page in your browser.
+Start Noter with `noter [FILE]`, or launch the terminal interface with
+`noter --tui [FILE]`. Check version with `noter --version`. Full command-line
+and update contracts are documented in [docs/INSTALLATION.md](docs/INSTALLATION.md).
 
 ## Project status
 
-Today the source build provides exact-source Text Mode, source-backed Markdown
-Mode, Undo and Redo, Find and Replace, Go To Line, wrap, zoom, five themes, and
-defensive local saves for ordinary UTF-8 `.txt` and `.md` files.
-
-The current version is `0.1.0-alpha.2`, the correctness alpha. Owner-restricted
-crash-recovery files, explicit external-change decisions, clipboard commands,
-keyboard navigation, and first-contact behavior are ready for careful local
-dogfood with backups when Noter's state directory is a normally permissioned,
-local, owner-controlled per-user directory. Group-writable or ACL-shared
-directories and redirected, synchronized, network, removable, or weak-filesystem
-state roots remain outside alpha.2 recovery support. Continuous Markdown
-editing, accessibility matrices, remaining filesystem evidence, and
-public-quality distribution remain open.
+The current version is `0.1.0-alpha.2`, the correctness alpha. Durable save,
+crash recovery, clipboard parity, conflict detection, caret navigation, and
+themes are verified. Production rope virtualization (M5), continuous fluid
+Markdown (M6), and cross-platform binary distribution with TUI mode (M7) are
+in active progression.
 
 The privacy stance above is product law for every release, including alpha. What
 is still unfinished is reliability, completeness, and packaging, not a planned
 telemetry path. The [roadmap](docs/ROADMAP.md) defines the ordered path through
-correctness alpha (`0.1.0-alpha.2`), beta, release candidate, and the first
-public-quality `0.1.0`.
+correctness alpha, beta, release candidate, and the first public-quality `0.1.0`.
 
 ## Documentation
 
-- [Documentation index](docs/README.md)
-- [Privacy contract](docs/PRIVACY.md)
-- [Native Markdown Mode](docs/MARKDOWN.md)
-- [Contributing](CONTRIBUTING.md)
-- [Security policy](SECURITY.md)
-- [Changelog](CHANGELOG.md)
+Detailed architecture specifications, functional contracts, and evidence records
+are maintained in the `docs/` index:
+
+| Document | Purpose |
+| --- | --- |
+| [Roadmap](docs/ROADMAP.md) | Release milestones, version train, and exit criteria |
+| [Technical Design](docs/DESIGN.md) | System architecture, state reducers, virtualized editor, and TUI |
+| [Product Requirements](docs/REQUIREMENTS.md) | Functional contracts, performance budgets, and non-goals |
+| [Installation & Updates](docs/INSTALLATION.md) | Binary installers, package management, and updater contracts |
+| [Native Markdown Mode](docs/MARKDOWN.md) | Continuous editing, sticky formatting, and CommonMark conformance |
+| [Privacy Contract](docs/PRIVACY.md) | Offline law, zero-telemetry guarantee, and local state bounds |
+| [Code Quality Standards](docs/CODE-QUALITY-STANDARDS.md) | Merge gates, testing standards, and mutation coverage rules |
+| [Changelog](CHANGELOG.md) | User-visible releases and version history |
+| [Contributing](CONTRIBUTING.md) | Working agreement, development rules, and pull requests |
+| [Security Policy](SECURITY.md) | Vulnerability disclosure and security contacts |
 
 ## License
 

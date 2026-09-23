@@ -184,21 +184,30 @@ Text Mode remains the recovery path for unsupported or malformed source.
 ## Final document model
 
 - Text Mode exposes complete source and punctuation without Markdown work.
-- Markdown Mode is a directly editable projection of that same source.
+- Markdown Mode is a directly editable projection of that same source across a
+  continuous unified canvas, without per-block widget boundaries.
 - Untouched regions are preserved byte-for-byte.
 - Every Markdown operation changes the smallest practical source range and is
   one reversible transaction.
 - Ambiguous edits reveal source instead of guessing.
 - Unsupported constructs remain visible and editable as source.
+- Formatting delimiters fold into styled text when the caret is elsewhere, and
+  unfurl with muted syntax coloring when the caret enters the span, eliminating
+  ghost caret stops and click ambiguities.
 - Parser failure cannot block Text Mode or saving.
 
 ## Formatting controls
 
 The completed M6 toolbar and accessible menus will cover headings, emphasis,
 strikethrough, inline and fenced code, links, quotes, ordered and unordered
-lists, task lists, and supported tables. Commands must work with empty and
-non-empty selections, expose keyboard paths, and avoid stacking invalid
-delimiters when toggled repeatedly.
+lists, task lists, and supported tables. Commands work with empty and non-empty
+selections:
+- Toggling formatting with an empty selection sets a virtual `ActiveFormattingState`
+  in memory without writing empty marker pairs (`****`) to the buffer.
+- Delimiters are synthesized only upon printable character insertion.
+- Active formatting intent cleanly carries across Enter and newlines until
+  explicitly toggled off or exited.
+- Repeated toggles update virtual state rather than stacking invalid delimiters.
 
 ## Markdown quality engine
 

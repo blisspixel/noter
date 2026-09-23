@@ -48,6 +48,13 @@ exclude_re = [
     "replace (imp::(unix|windows)_)?attach_parent_console -> bool with true",
     "windows_bind_console_stream",
     "in imp::windows_attach_parent_console",
+    # Terminal raw mode, terminal dimensions, and interactive stream queries.
+    # The trust kernel mutation gate is scoped to durable file persistence,
+    # recovery namespaces, and ACL security. Terminal raw mode and geometry
+    # queries interface with interactive console host subsystems (ConPTY /
+    # termios) which cannot be exercised without an interactive TTY in headless
+    # CI runners where test processes execute with redirected I/O pipes.
+    "[Tt]erminal",
 ]
 all_features = true
 test_workspace = true

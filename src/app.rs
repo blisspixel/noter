@@ -102,7 +102,7 @@ pub enum DocumentView {
 }
 
 impl DocumentView {
-    const fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Text => "Text",
             Self::Markdown => "Markdown",
@@ -124,6 +124,7 @@ pub struct LaunchOptions {
     pub show_updates: bool,
     pub screenshot_path: Option<PathBuf>,
     pub screenshot_idle: bool,
+    pub tui: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -691,7 +692,7 @@ impl NoterApp {
         Self::interactive_text_maximum_for(&self.document)
     }
 
-    pub fn new(cc: &eframe::CreationContext<'_>, options: LaunchOptions) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, options: &LaunchOptions) -> Self {
         theme::configure_styles(&cc.egui_ctx);
         cc.egui_ctx
             .options_mut(|options| options.zoom_with_keyboard = false);
@@ -730,14 +731,14 @@ impl NoterApp {
         }
 
         #[cfg(feature = "screenshot-qa")]
-        if let Some(path) = options.screenshot_path {
+        if let Some(path) = &options.screenshot_path {
             if app.view == DocumentView::Markdown {
                 app.markdown_editor.activate_first_block(&app.text);
             }
             if options.screenshot_idle {
                 app.idle_screen.force_active_for_capture();
             }
-            app.screenshot = Some(ScreenshotCapture::new(path));
+            app.screenshot = Some(ScreenshotCapture::new(path.clone()));
         }
         #[cfg(not(feature = "screenshot-qa"))]
         if options.screenshot_path.is_some() {
@@ -2861,8 +2862,10 @@ impl NoterApp {
             selected_characters,
         } = self.status_snapshot();
         let modified_label = persistence_status_label(&self.document, self.external_memory_at_risk);
-        egui::Panel::bottom("status_bar")
-            .exact_size(STATUS_BAR_HEIGHT)
+        egui::Frame::NONE
+            .fill(ui.visuals().panel_fill)
+            .stroke(egui::Stroke::new(1.0, ui.visuals().window_stroke.color))
+            .inner_margin(egui::Margin::symmetric(8, 2))
             .show(ui, |ui| {
                 ui.style_mut().override_text_style = Some(egui::TextStyle::Small);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -3126,7 +3129,6 @@ impl NoterApp {
                     self.pointer_zoom.reset();
                 }
                 apply_editor_zoom(ui.style_mut(), self.editor_zoom);
-                let previous_selection = self.selection;
                 let outcome = match self.view {
                     DocumentView::Text => self.show_text_editor(ui),
                     DocumentView::Markdown => self.show_markdown_editor(ui),
@@ -3148,12 +3150,6 @@ impl NoterApp {
                     }
                 } else {
                     self.selection = valid_selection_or_end(&self.text, outcome.selection);
-                }
-                if self.selection != previous_selection {
-                    // Status is painted before the editor so Ln/Col can lag one
-                    // frame. Book a follow-up paint after caret-only movement,
-                    // including after the window has been sleeping.
-                    ui.ctx().request_repaint();
                 }
             });
     }
@@ -3637,6 +3633,7 @@ impl NoterApp {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn render_frame(&mut self, ui: &mut egui::Ui) {
         // Inspect before dispatching commands so a focus-regain observation can
         // protect the retained in-memory revision in this same input frame.
@@ -3706,11 +3703,27 @@ impl NoterApp {
             self.execute_view_command(command, ui.ctx());
             self.apply_pending_document_view();
         }
-        self.show_status(ui);
         self.show_go_to_line(ui.ctx());
-        self.show_editor_with_isolated_ime_commit(ui, isolated_ime_commit);
+        let available = ui.available_rect_before_wrap();
+        let status_height = STATUS_BAR_HEIGHT.min(available.height());
+        let editor_height = (available.height() - status_height).max(0.0);
+        let editor_rect =
+            egui::Rect::from_min_size(available.min, egui::vec2(available.width(), editor_height));
+        let status_rect = egui::Rect::from_min_size(
+            egui::pos2(available.min.x, available.min.y + editor_height),
+            egui::vec2(available.width(), status_height),
+        );
+
+        ui.scope_builder(egui::UiBuilder::new().max_rect(editor_rect), |ui| {
+            self.show_editor_with_isolated_ime_commit(ui, isolated_ime_commit);
+        });
         self.markdown_editor.finish_input_frame();
         self.apply_pending_document_view();
+
+        ui.scope_builder(egui::UiBuilder::new().max_rect(status_rect), |ui| {
+            self.show_status(ui);
+        });
+        ui.allocate_rect(available, egui::Sense::hover());
         if commands_enabled
             && !input_edit_executed
             && !menu_edit_executed
@@ -5841,6 +5854,38 @@ mod tests {
         app.advance_document_editor();
         assert_eq!(app.status_snapshot_with(analyze).line, 4);
         assert_eq!(calls.get(), 4);
+    }
+
+    #[test]
+    fn status_bar_reflects_editor_caret_in_same_render_frame() {
+        let mut app = NoterApp {
+            text: "Hello\nWorld".to_owned(),
+            selection: Selection::caret(0),
+            ..NoterApp::default()
+        };
+        app.document
+            .replace_text(&app.text)
+            .expect("fixture text should become authoritative");
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+
+        let output = context.run_ui(ui_input(800.0, 600.0, 0.0), |ui| app.render_frame(ui));
+        let strings: Vec<String> = rendered_text(&output).into_iter().map(|(t, _)| t).collect();
+        assert!(
+            strings.iter().any(|s| s.contains("Ln 1, Col 1")),
+            "status bar should show initial Ln 1, Col 1, got {strings:?}"
+        );
+
+        app.selection = Selection::caret(6);
+        let output2 = context.run_ui(ui_input(800.0, 600.0, 0.1), |ui| app.render_frame(ui));
+        let strings2: Vec<String> = rendered_text(&output2)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(
+            strings2.iter().any(|s| s.contains("Ln 2, Col 1")),
+            "status bar must immediately reflect Ln 2, Col 1 in the same frame without lag, got {strings2:?}"
+        );
     }
 
     #[test]

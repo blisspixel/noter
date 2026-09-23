@@ -312,6 +312,7 @@ fn apply_light_palette(visuals: &mut egui::Visuals) {
     visuals.error_fg_color = LIGHT_ERROR_COLOR;
     visuals.selection.bg_fill = egui::Color32::from_rgb(190, 215, 245);
     visuals.selection.stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(22, 64, 112));
+    visuals.text_cursor.stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(31, 33, 36));
 }
 
 fn apply_dark_palette(visuals: &mut egui::Visuals) {
@@ -327,6 +328,7 @@ fn apply_dark_palette(visuals: &mut egui::Visuals) {
     visuals.error_fg_color = DARK_ERROR_COLOR;
     visuals.selection.bg_fill = egui::Color32::from_rgb(55, 92, 139);
     visuals.selection.stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(235, 241, 250));
+    visuals.text_cursor.stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(230, 232, 236));
 }
 
 fn apply_green_screen_palette(visuals: &mut egui::Visuals) {
@@ -436,6 +438,7 @@ fn apply_terminal_palette(visuals: &mut egui::Visuals, palette: TerminalPalette)
     visuals.hyperlink_color = palette.hyperlink;
     visuals.selection.bg_fill = palette.selection;
     visuals.selection.stroke = egui::Stroke::new(1.0, palette.selected_text);
+    visuals.text_cursor.stroke = egui::Stroke::new(8.0, palette.text);
     visuals.warn_fg_color = palette.warning;
     visuals.error_fg_color = palette.error;
     visuals.window_stroke = egui::Stroke::new(1.0, palette.outline);
@@ -783,5 +786,44 @@ mod tests {
         for theme in [AppTheme::System, AppTheme::Light, AppTheme::Dark] {
             assert!(crt_overlay(theme).is_none());
         }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn theme_text_cursor_matches_theme_palette() {
+        let context = egui::Context::default();
+        configure_styles(&context);
+
+        AppTheme::Light.apply(&context);
+        let light_style = context.style_of(egui::Theme::Light);
+        assert_eq!(
+            light_style.visuals.text_cursor.stroke.color,
+            egui::Color32::from_rgb(31, 33, 36)
+        );
+        assert_eq!(light_style.visuals.text_cursor.stroke.width, 2.0);
+
+        AppTheme::Dark.apply(&context);
+        let dark_style = context.style_of(egui::Theme::Dark);
+        assert_eq!(
+            dark_style.visuals.text_cursor.stroke.color,
+            egui::Color32::from_rgb(230, 232, 236)
+        );
+        assert_eq!(dark_style.visuals.text_cursor.stroke.width, 2.0);
+
+        AppTheme::GreenScreen.apply(&context);
+        let green_style = context.style_of(egui::Theme::Dark);
+        assert_eq!(
+            green_style.visuals.text_cursor.stroke.color,
+            green_screen_palette().text
+        );
+        assert_eq!(green_style.visuals.text_cursor.stroke.width, 8.0);
+
+        AppTheme::AmberScreen.apply(&context);
+        let amber_style = context.style_of(egui::Theme::Dark);
+        assert_eq!(
+            amber_style.visuals.text_cursor.stroke.color,
+            amber_screen_palette().text
+        );
+        assert_eq!(amber_style.visuals.text_cursor.stroke.width, 8.0);
     }
 }

@@ -6,18 +6,31 @@ source_dir=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
 invocation_dir=$(pwd -P)
 install_root=
 check_only=false
+from_source=false
+has_explicit_source=false
+version=latest
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --source)
             [ "$#" -ge 2 ] || { echo "--source requires a path" >&2; exit 2; }
             source_dir=$(CDPATH= cd -- "$2" && pwd -P)
+            has_explicit_source=true
             shift 2
             ;;
         --root)
             [ "$#" -ge 2 ] || { echo "--root requires a path" >&2; exit 2; }
             install_root=$2
             shift 2
+            ;;
+        --version)
+            [ "$#" -ge 2 ] || { echo "--version requires an argument" >&2; exit 2; }
+            version=$2
+            shift 2
+            ;;
+        --from-source)
+            from_source=true
+            shift
             ;;
         --check)
             check_only=true
@@ -61,55 +74,144 @@ if [ -z "$install_root" ]; then
 fi
 
 manifest=$source_dir/Cargo.toml
-[ -f "$manifest" ] || { echo "Noter source manifest not found at '$manifest'." >&2; exit 1; }
-command -v cargo >/dev/null 2>&1 || {
-    echo "Cargo is required. Install the Rust toolchain from https://rustup.rs, then retry." >&2
-    exit 1
-}
-
-metadata=$(cd "$source_dir" && cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest")
-case "$metadata" in
-    *'"name":"noter"'*) ;;
-    *) echo "The workspace at '$source_dir' does not contain the Noter package." >&2; exit 1 ;;
-esac
-expected_version=$(printf '%s\n' "$metadata" | sed -n 's/.*"name":"noter","version":"\([^"]*\)".*/\1/p')
-[ -n "$expected_version" ] || {
-    echo "Cargo metadata did not contain the Noter package version." >&2
-    exit 1
-}
-
-if [ "$check_only" = true ]; then
-    printf "Validated Noter %s at '%s'.\n" "$expected_version" "$source_dir"
-    exit 0
+is_source_available=false
+if [ -f "$manifest" ]; then
+    is_source_available=true
 fi
 
-(cd "$source_dir" && cargo install --path "$source_dir" --locked --force --root "$install_root")
+if [ "$from_source" = true ] || { [ "$is_source_available" = true ] && [ "$has_explicit_source" = true ]; }; then
+    [ -f "$manifest" ] || { echo "Noter source manifest not found at '$manifest'." >&2; exit 1; }
+    command -v cargo >/dev/null 2>&1 || {
+        echo "Cargo is required. Install the Rust toolchain from https://rustup.rs, then retry." >&2
+        exit 1
+    }
 
-installed_binary=$install_root/bin/noter
-[ -x "$installed_binary" ] || {
-    echo "Cargo reported success, but '$installed_binary' was not found." >&2
-    exit 1
-}
-installed_version=$("$installed_binary" --version)
-[ "$installed_version" = "noter $expected_version" ] || {
-    echo "The installed executable did not report the expected Noter version $expected_version." >&2
-    exit 1
-}
+    metadata=$(cd "$source_dir" && cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest")
+    case "$metadata" in
+        *'"name":"noter"'*) ;;
+        *) echo "The workspace at '$source_dir' does not contain the Noter package." >&2; exit 1 ;;
+    esac
+    expected_version=$(printf '%s\n' "$metadata" | sed -n 's/.*"name":"noter","version":"\([^"]*\)".*/\1/p')
+    [ -n "$expected_version" ] || {
+        echo "Cargo metadata did not contain the Noter package version." >&2
+        exit 1
+    }
 
-cli_temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/noter-install.XXXXXX")
-trap 'rm -rf "$cli_temp_dir"' EXIT HUP INT TERM
-invalid_stdout=$cli_temp_dir/invalid.stdout
-invalid_stderr=$cli_temp_dir/invalid.stderr
-if "$installed_binary" --theme invalid >"$invalid_stdout" 2>"$invalid_stderr"; then
-    invalid_status=0
+    if [ "$check_only" = true ]; then
+        printf "Validated Noter %s at '%s'.\n" "$expected_version" "$source_dir"
+        exit 0
+    fi
+
+    (cd "$source_dir" && cargo install --path "$source_dir" --locked --force --root "$install_root")
+
+    installed_binary=$install_root/bin/noter
+    [ -x "$installed_binary" ] || {
+        echo "Cargo reported success, but '$installed_binary' was not found." >&2
+        exit 1
+    }
+    installed_version=$("$installed_binary" --version)
+    [ "$installed_version" = "noter $expected_version" ] || {
+        echo "The installed executable did not report the expected Noter version $expected_version." >&2
+        exit 1
+    }
+
+    cli_temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/noter-install.XXXXXX")
+    trap 'rm -rf "$cli_temp_dir"' EXIT HUP INT TERM
+    invalid_stdout=$cli_temp_dir/invalid.stdout
+    invalid_stderr=$cli_temp_dir/invalid.stderr
+    if "$installed_binary" --theme invalid >"$invalid_stdout" 2>"$invalid_stderr"; then
+        invalid_status=0
+    else
+        invalid_status=$?
+    fi
+    [ "$invalid_status" -eq 2 ] &&
+        [ ! -s "$invalid_stdout" ] &&
+        grep -F 'unknown theme `invalid`; expected system, light, dark, green, or amber' "$invalid_stderr" >/dev/null &&
+        grep -F 'Usage:' "$invalid_stderr" >/dev/null || {
+        echo "The installed executable did not preserve the release command-line error contract." >&2
+        exit 1
+    }
+    printf "Installed Noter %s at '%s'.\n" "$expected_version" "$installed_binary"
 else
-    invalid_status=$?
+    os=$(uname -s)
+    arch=$(uname -m)
+    case "$os" in
+        Darwin)
+            case "$arch" in
+                arm64|aarch64) target="aarch64-apple-darwin" ;;
+                x86_64) target="x86_64-apple-darwin" ;;
+                *) echo "Unsupported architecture: $arch on macOS" >&2; exit 1 ;;
+            esac
+            ;;
+        Linux)
+            case "$arch" in
+                x86_64) target="x86_64-unknown-linux-gnu" ;;
+                *) echo "Unsupported architecture: $arch on Linux" >&2; exit 1 ;;
+            esac
+            ;;
+        *)
+            echo "Unsupported operating system: $os" >&2
+            exit 1
+            ;;
+    esac
+
+    repo="blisspixel/noter"
+    archive="noter-$target.tar.xz"
+    if [ "$version" = "latest" ]; then
+        base_url="https://github.com/$repo/releases/latest/download"
+    else
+        base_url="https://github.com/$repo/releases/download/$version"
+    fi
+    archive_url="$base_url/$archive"
+    checksum_url="$archive_url.sha256"
+
+    if [ "$check_only" = true ]; then
+        printf "Validated release target %s for Noter (%s).\n" "$target" "$version"
+        exit 0
+    fi
+
+    mkdir -p "$install_root/bin"
+    cli_temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/noter-install.XXXXXX")
+    trap 'rm -rf "$cli_temp_dir"' EXIT HUP INT TERM
+
+    echo "Downloading Noter ($version) for $target..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$archive_url" -o "$cli_temp_dir/$archive"
+        curl -fsSL "$checksum_url" -o "$cli_temp_dir/$archive.sha256"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$cli_temp_dir/$archive" "$archive_url"
+        wget -qO "$cli_temp_dir/$archive.sha256" "$checksum_url"
+    else
+        echo "curl or wget is required to download Noter." >&2
+        exit 1
+    fi
+
+    expected_hash=$(awk '{print $1}' "$cli_temp_dir/$archive.sha256")
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual_hash=$(sha256sum "$cli_temp_dir/$archive" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual_hash=$(shasum -a 256 "$cli_temp_dir/$archive" | awk '{print $1}')
+    else
+        echo "sha256sum or shasum is required for integrity verification." >&2
+        exit 1
+    fi
+
+    if [ "$expected_hash" != "$actual_hash" ]; then
+        echo "Checksum verification failed! Expected $expected_hash, got $actual_hash." >&2
+        exit 1
+    fi
+
+    tar -xJf "$cli_temp_dir/$archive" -C "$cli_temp_dir"
+    found_binary=$(find "$cli_temp_dir" -name noter -type f | head -n 1)
+    if [ -z "$found_binary" ]; then
+        echo "Release archive did not contain the noter binary." >&2
+        exit 1
+    fi
+
+    cp -f "$found_binary" "$install_root/bin/noter"
+    chmod 755 "$install_root/bin/noter"
+
+    installed_binary=$install_root/bin/noter
+    installed_version=$("$installed_binary" --version)
+    printf "Installed %s at '%s'.\n" "$installed_version" "$installed_binary"
 fi
-[ "$invalid_status" -eq 2 ] &&
-    [ ! -s "$invalid_stdout" ] &&
-    grep -F 'unknown theme `invalid`; expected system, light, dark, green, or amber' "$invalid_stderr" >/dev/null &&
-    grep -F 'Usage:' "$invalid_stderr" >/dev/null || {
-    echo "The installed executable did not preserve the release command-line error contract." >&2
-    exit 1
-}
-printf "Installed Noter %s at '%s'.\n" "$expected_version" "$installed_binary"

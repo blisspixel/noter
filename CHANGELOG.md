@@ -8,6 +8,26 @@ that candidate is frozen for publication.
 
 ### Added
 
+- Add native Terminal User Interface (TUI) mode (`noter --tui [file]`) sharing
+  all core document, revision, crash recovery, and atomic save logic, featuring
+  dual Nano and modern keyboard shortcuts, mouse navigation, full 5-theme
+  palettes, formatted Markdown preview, and automated headless fallback.
+- Add safe terminal raw mode and geometry primitives to `crates/noter-platform`
+  supporting Windows ConPTY and Unix termios.
+- Add standalone binary installer scripts (`scripts/install.sh` for macOS and
+  Linux, `scripts/install.ps1` for Windows) supporting verified precompiled
+  release downloads with SHA-256 checksum validation and source build fallback.
+- Support fluid Markdown inline style continuation across Enter line breaks via
+  pending inline run reopening, preserving formatting without emitting empty
+  syntax pairs to disk.
+
+### Changed
+
+- Set theme-specific text caret colors and stroke widths across all themes,
+  ensuring Green Screen and Amber Screen specialty themes display phosphor-green
+  and phosphor-amber cursors instead of light blue.
+- Eliminate one-frame status bar render latency during caret navigation and
+  remove redundant repaint requests on selection updates.
 - Add the first Windows M4-H1 recovery namespace foundation. Production
   recovery now validates an absolute fixed-drive NTFS state path, rejects
   reparse and cross-volume directory components, verifies stable preferred
@@ -15,9 +35,6 @@ that candidate is frozen for publication.
   chain without delete sharing, and hardens the owned recovery directories to
   a protected inheritable user-and-SYSTEM DACL before writing recovery bytes.
   Record operations remain pathname-based, so M4-H1 is still in progress.
-
-### Changed
-
 - Correct the post-alpha roadmap sequence so recovery namespace binding remains
   the explicit safety prerequisite before the beta editor feasibility gate, and
   update installation and playtest guidance for the published alpha.2 release.
