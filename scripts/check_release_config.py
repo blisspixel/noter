@@ -38,7 +38,7 @@ PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 REVIEWED_RELEASE_WORKFLOW_SHA256 = (
     "d13c6aca54ae69148259df91f681c3b497fcd2aad96dc4b0807d89e3b5b680f1"
 )
-REVIEWED_WIX_SHA256 = "90d3892cab5d6b450a76a5f1b1596a061306f2bddcac2908c7e59a99a00fa6be"
+REVIEWED_WIX_SHA256 = "613e8980817c96241e27956eea5dc235630e3c215b705d8097f75fe1b382d391"
 REVIEWED_CI_WORKFLOW_SHA256 = (
     "67ae8c622c3c324f46c72ca28c105ff6fde29aa2242ccd380131d18b6bcae039"
 )
@@ -46,7 +46,7 @@ REVIEWED_CI_TEST_JOB_SHA256 = (
     "7abb1436d4c1bbcd14c106d5bf60812866df7265966156226d7353561f2ad785"
 )
 REVIEWED_RELEASE_ARTIFACT_VALIDATOR_SHA256 = (
-    "a50d1acbdfbc976eff13254896c9d876905612515f17ec985d91ddbb22e91632"
+    "fdc8376c35381ec24505b46cf112e6b4c65023d11213b80730cabef25ffaf578"
 )
 WIX_NAMESPACE = {"wix": "http://schemas.microsoft.com/wix/2006/wi"}
 WIX_XML_COMMENT = re.compile(rb"<!--.*?-->", flags=re.DOTALL)
@@ -155,7 +155,7 @@ def validate_manifest(text: str) -> list[str]:
     errors: list[str] = []
     requirements = {
         'cargo-dist-version = "0.32.0"': "pinned cargo-dist version",
-        'version = "0.1.0-alpha.2"': "prerelease package version",
+        'version = "0.1.0-beta.1"': "prerelease package version",
         'installers = ["shell", "powershell", "homebrew", "msi"]': (
             "cross-platform installer set"
         ),
@@ -835,9 +835,9 @@ def validate_wix(contents: bytes) -> list[str]:
         errors.append(
             "MSI product and package identities must rotate per release build"
         )
-    if product.get("Version") != "0.0.2":
+    if product.get("Version") != "0.0.3":
         errors.append("MSI package version differs from its monotonic release sequence")
-    if display_version.get("Value") != "0.1.0-alpha.2":
+    if display_version.get("Value") != "0.1.0-beta.1":
         errors.append("MSI display version differs from the Noter package version")
     if major_upgrade.get("AllowSameVersionUpgrades") is not None:
         errors.append("MSI must not permit ambiguous same-version upgrades")
@@ -910,15 +910,15 @@ def validate_license_inventory(
                 "CI test job differs from its reviewed cross-platform program"
             )
     for text, expected, description in [
-        (manifest, 'version = "0.1.0-alpha.2"', "root prerelease version"),
+        (manifest, 'version = "0.1.0-beta.1"', "root prerelease version"),
         (
             manifest,
-            'noter-platform = { version = "=0.1.0-alpha.2"',
+            'noter-platform = { version = "=0.1.0-beta.1"',
             "path dependency prerelease version",
         ),
         (
             platform_manifest,
-            'version = "0.1.0-alpha.2"',
+            'version = "0.1.0-beta.1"',
             "platform crate prerelease version",
         ),
         (about_config, "ignore-dev-dependencies = true", "runtime-only inventory"),

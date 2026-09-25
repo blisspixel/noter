@@ -16,7 +16,7 @@ from typing import Any
 
 DIST_VERSION = "0.32.0"
 APP_NAME = "noter"
-APP_VERSION = "0.1.0-alpha.2"
+APP_VERSION = "0.1.0-beta.1"
 RELEASE_TARGETS = (
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",

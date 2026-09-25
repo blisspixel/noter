@@ -681,8 +681,10 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
     let theme_str = session.theme.label();
 
     // 1. Header Row
-    let header_title =
-        format!(" Noter 0.1.0-alpha.2 │ {doc_name}{dirty_indicator} │ [{mode_str}] │ {theme_str} ");
+    let header_title = format!(
+        " Noter {} │ {doc_name}{dirty_indicator} │ [{mode_str}] │ {theme_str} ",
+        env!("CARGO_PKG_VERSION")
+    );
     let pad_len = (cols as usize).saturating_sub(header_title.chars().count());
     let _ = write!(
         out,
