@@ -116,7 +116,7 @@ and update contracts are documented in [docs/INSTALLATION.md](docs/INSTALLATION.
 
 ## Project status
 
-The current version is `0.1.0-alpha.2`, the correctness alpha. Durable save,
+The current version is `0.1.0-beta.1`. Durable save,
 crash recovery, clipboard parity, conflict detection, caret navigation, and
 themes are verified. Production rope virtualization (M5), continuous fluid
 Markdown (M6), and cross-platform binary distribution with TUI mode (M7) are

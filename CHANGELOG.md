@@ -6,6 +6,8 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+## 0.1.0-beta.1 - 2026-09-24
+
 ### Added
 
 - Add native Terminal User Interface (TUI) mode (`noter --tui [file]`) sharing

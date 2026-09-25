@@ -2,7 +2,7 @@
 
 **Reviewed:** 2026-08-30
 
-**Current availability:** The published `0.1.0-alpha.2` correctness alpha is
+**Current availability:** The published `0.1.0-beta.1` release is
 available for careful evaluation with backups. Its artifacts include platform
 archives, a Windows MSI, checksums, SBOMs, and GitHub build provenance.
 Windows and macOS artifacts are not yet platform-signed, and no self-updating
@@ -12,7 +12,7 @@ release channel exists. Source installation remains supported. See the
 ## Prerelease artifacts
 
 The publication location is the
-[GitHub release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-alpha.2).
+[GitHub release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.1).
 Download an asset before executing it and verify its GitHub attestation.
 Published SHA-256 sidecars and
 the unified checksum list cover the source archive, platform archives, and

@@ -27,7 +27,7 @@ def release_plan(*, global_matrix: bool = False) -> dict[str, object]:
         github["global_artifacts_matrix"] = {"include": [{"runner": "ubuntu-22.04"}]}
     return {
         "dist_version": artifacts.DIST_VERSION,
-        "announcement_tag": "v0.1.0-alpha.2",
+        "announcement_tag": "v0.1.0-beta.1",
         "announcement_is_prerelease": True,
         "releases": [
             {
@@ -107,7 +107,7 @@ def create_downloads(
 
 class ReleaseArtifactTests(unittest.TestCase):
     def test_validates_the_exact_pinned_plan_schema(self) -> None:
-        self.assertIsNone(artifacts.validate_plan(release_plan(), "v0.1.0-alpha.2"))
+        self.assertIsNone(artifacts.validate_plan(release_plan(), "v0.1.0-beta.1"))
 
     def test_rejects_a_plan_missing_a_required_sbom(self) -> None:
         plan = release_plan()
@@ -158,7 +158,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     inputs,
                     destination,
                     "host",
-                    "v0.1.0-alpha.2",
+                    "v0.1.0-beta.1",
                     "success",
                 )
             self.assertFalse(destination.exists())
@@ -218,7 +218,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                 "missing from its global build",
             ):
                 artifacts.prepare_artifacts(
-                    inputs, root / "distrib", "host", "v0.1.0-alpha.2", "success"
+                    inputs, root / "distrib", "host", "v0.1.0-beta.1", "success"
                 )
 
     def test_rejects_a_global_artifact_in_a_local_build(self) -> None:
@@ -272,7 +272,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     inputs,
                     root / "distrib",
                     "host",
-                    "v0.1.0-alpha.2",
+                    "v0.1.0-beta.1",
                     "success",
                 )
 
@@ -288,7 +288,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     inputs,
                     root / "distrib",
                     "host",
-                    "v0.1.0-alpha.2",
+                    "v0.1.0-beta.1",
                     "skipped",
                 )
 
@@ -303,7 +303,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                 inputs,
                 destination,
                 "publish",
-                "v0.1.0-alpha.2",
+                "v0.1.0-beta.1",
                 "success",
             )
 
@@ -322,7 +322,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                 inputs,
                 publication,
                 "publish",
-                "v0.1.0-alpha.2",
+                "v0.1.0-beta.1",
                 "success",
             )
             assets = []
@@ -340,14 +340,14 @@ class ReleaseArtifactTests(unittest.TestCase):
             write_json(
                 release_json,
                 {
-                    "tag_name": "v0.1.0-alpha.2",
+                    "tag_name": "v0.1.0-beta.1",
                     "draft": True,
                     "prerelease": True,
                     "assets": assets,
                 },
             )
 
-            artifacts.verify_remote_release(publication, release_json, "v0.1.0-alpha.2")
+            artifacts.verify_remote_release(publication, release_json, "v0.1.0-beta.1")
 
             original = assets[0].copy()
             mutations = {
@@ -361,7 +361,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     write_json(
                         release_json,
                         {
-                            "tag_name": "v0.1.0-alpha.2",
+                            "tag_name": "v0.1.0-beta.1",
                             "draft": True,
                             "prerelease": True,
                             "assets": assets,
@@ -372,7 +372,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                         "does not match the local payload",
                     ):
                         artifacts.verify_remote_release(
-                            publication, release_json, "v0.1.0-alpha.2"
+                            publication, release_json, "v0.1.0-beta.1"
                         )
             assets[0] = original
 
@@ -401,7 +401,7 @@ class ReleaseArtifactTests(unittest.TestCase):
             write_json(
                 release_json,
                 {
-                    "tag_name": "v0.1.0-alpha.2",
+                    "tag_name": "v0.1.0-beta.1",
                     "draft": True,
                     "prerelease": True,
                     "assets": remote_assets,
@@ -411,7 +411,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                 artifacts.ReleaseArtifactError, "asset names differ"
             ):
                 artifacts.verify_remote_release(
-                    publication, release_json, "v0.1.0-alpha.2"
+                    publication, release_json, "v0.1.0-beta.1"
                 )
 
 
