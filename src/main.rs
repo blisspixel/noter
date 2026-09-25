@@ -15,6 +15,7 @@ mod idle_screen;
 mod keyboard_nav;
 mod markdown_ui;
 mod theme;
+mod tui;
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -23,7 +24,7 @@ use app::{DocumentView, LaunchOptions, NoterApp};
 use noter::core::file_observation::preflight_regular_file;
 use theme::AppTheme;
 
-const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --theme system|light|dark|green|amber\n  --view text|markdown\n  -h, --help\n  -V, --version\n\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` opens the local update status window and makes no network\nrequest. Option values are case-insensitive.";
+const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --tui\n  --theme system|light|dark|green|amber\n  --view text|markdown\n  -h, --help\n  -V, --version\n\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` opens the local update status window and makes no network\nrequest. Option values are case-insensitive.";
 const THEME_ERROR_VALUES: &str = "system, light, dark, green, or amber";
 
 fn main() -> eframe::Result {
@@ -62,6 +63,27 @@ fn main() -> eframe::Result {
         std::process::exit(2);
     }
 
+    let headless = cfg!(unix)
+        && std::env::var_os("DISPLAY").is_none()
+        && std::env::var_os("WAYLAND_DISPLAY").is_none();
+
+    if launch.tui || headless {
+        if headless && !launch.tui {
+            write_line(
+                std::io::stderr().lock(),
+                "noter: graphical display server not found; launching TUI mode",
+            );
+        }
+        if let Err(error) = tui::run(&launch) {
+            write_line(
+                std::io::stderr().lock(),
+                &format!("noter: tui error: {error}"),
+            );
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     let screenshot_qa = launch.screenshot_path.is_some();
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_inner_size(if screenshot_qa {
@@ -82,7 +104,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Noter",
         options,
-        Box::new(move |cc| Ok(Box::new(NoterApp::new(cc, launch)))),
+        Box::new(move |cc| Ok(Box::new(NoterApp::new(cc, &launch)))),
     )
 }
 
@@ -140,6 +162,8 @@ fn parse_launch_request(args: impl IntoIterator<Item = OsString>) -> Result<Laun
             && (argument == OsStr::new("-V") || argument == OsStr::new("--version"))
         {
             return Ok(LaunchRequest::Version);
+        } else if !options_finished && argument == OsStr::new("--tui") {
+            options.tui = true;
         } else if !options_finished && argument == OsStr::new("--theme") {
             let value = args
                 .next()

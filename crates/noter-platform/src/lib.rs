@@ -25,14 +25,18 @@ use imp::{
     unix_apply_required_metadata as platform_apply_required_metadata,
     unix_attach_parent_console as platform_attach_parent_console,
     unix_capture_required_metadata as platform_capture_required_metadata,
-    unix_delete_open_file as platform_delete_open_file, unix_file_facts as platform_file_facts,
-    unix_install_new as platform_install_new,
+    unix_delete_open_file as platform_delete_open_file,
+    unix_enable_raw_terminal as platform_enable_raw_terminal,
+    unix_file_facts as platform_file_facts, unix_install_new as platform_install_new,
+    unix_is_terminal_stdin as platform_is_terminal_stdin,
+    unix_is_terminal_stdout as platform_is_terminal_stdout,
     unix_open_existing_no_follow as platform_open_existing_no_follow,
     unix_open_for_cleanup as platform_open_for_cleanup,
     unix_replace_existing as platform_replace_existing,
     unix_required_metadata_matches_source as platform_required_metadata_matches_source,
     unix_restrict_open_file_to_owner as platform_restrict_open_file_to_owner,
     unix_sync_file as platform_sync_file, unix_sync_parent as platform_sync_parent,
+    unix_terminal_size as platform_terminal_size,
 };
 
 #[cfg(target_os = "macos")]
@@ -44,22 +48,29 @@ use imp::{
     unsupported_attach_parent_console as platform_attach_parent_console,
     unsupported_create_private_new_file as platform_create_private_new_file,
     unsupported_delete_open_file as platform_delete_open_file,
+    unsupported_enable_raw_terminal as platform_enable_raw_terminal,
     unsupported_file_facts as platform_file_facts, unsupported_install_new as platform_install_new,
+    unsupported_is_terminal_stdin as platform_is_terminal_stdin,
+    unsupported_is_terminal_stdout as platform_is_terminal_stdout,
     unsupported_open_existing_no_follow as platform_open_existing_no_follow,
     unsupported_open_for_cleanup as platform_open_for_cleanup,
     unsupported_replace_existing as platform_replace_existing,
     unsupported_sync_file as platform_sync_file, unsupported_sync_parent as platform_sync_parent,
+    unsupported_terminal_size as platform_terminal_size,
 };
 #[cfg(windows)]
 use imp::{
     windows_attach_parent_console as platform_attach_parent_console,
     windows_create_private_new_file as platform_create_private_new_file,
     windows_delete_open_file as platform_delete_open_file,
+    windows_enable_raw_terminal as platform_enable_raw_terminal,
     windows_file_facts as platform_file_facts, windows_install_new as platform_install_new,
+    windows_is_terminal_stdin as platform_is_terminal_stdin,
+    windows_is_terminal_stdout as platform_is_terminal_stdout,
     windows_open_existing_no_follow as platform_open_existing_no_follow,
     windows_open_for_cleanup as platform_open_for_cleanup,
     windows_replace_existing as platform_replace_existing, windows_sync_file as platform_sync_file,
-    windows_sync_parent as platform_sync_parent,
+    windows_sync_parent as platform_sync_parent, windows_terminal_size as platform_terminal_size,
 };
 
 #[cfg(any(unix, windows, test))]
@@ -727,6 +738,39 @@ pub fn sync_parent(destination: &Path) -> io::Result<ParentSyncOutcome> {
 #[must_use]
 pub fn attach_parent_console() -> bool {
     platform_attach_parent_console()
+}
+
+pub use imp::TerminalRawGuard;
+
+/// Places the terminal into raw character-by-character input mode and enables
+/// virtual terminal processing. Dropping the returned guard restores the
+/// original terminal modes.
+///
+/// # Errors
+///
+/// Returns an [`io::Error`] if the standard streams are not bound to an
+/// interactive terminal or if the operating system rejects querying or setting
+/// terminal modes.
+pub fn enable_raw_terminal() -> io::Result<TerminalRawGuard> {
+    platform_enable_raw_terminal()
+}
+
+/// Returns the current terminal dimensions as `(columns, rows)`.
+#[must_use]
+pub fn terminal_size() -> (u16, u16) {
+    platform_terminal_size()
+}
+
+/// Returns whether standard input is attached to an interactive terminal.
+#[must_use]
+pub fn is_terminal_stdin() -> bool {
+    platform_is_terminal_stdin()
+}
+
+/// Returns whether standard output is attached to an interactive terminal.
+#[must_use]
+pub fn is_terminal_stdout() -> bool {
+    platform_is_terminal_stdout()
 }
 
 #[cfg(unix)]
@@ -1459,6 +1503,91 @@ mod imp {
     /// standard streams, so there is nothing to attach and nothing can fail.
     pub const fn unix_attach_parent_console() -> bool {
         true
+    }
+
+    /// A guard that restores original Unix terminal settings when dropped.
+    #[derive(Debug)]
+    pub struct UnixTerminalRawGuard {
+        orig_termios: libc::termios,
+    }
+
+    /// RAII guard that restores original terminal settings on drop.
+    pub type TerminalRawGuard = UnixTerminalRawGuard;
+
+    impl Drop for UnixTerminalRawGuard {
+        fn drop(&mut self) {
+            // SAFETY: `tcsetattr` restores the original termios captured during `unix_enable_raw_terminal`.
+            #[allow(unsafe_code)]
+            unsafe {
+                libc::tcsetattr(
+                    libc::STDIN_FILENO,
+                    libc::TCSANOW,
+                    &raw const self.orig_termios,
+                );
+            }
+        }
+    }
+
+    /// Enables raw terminal input and disables echo on Unix.
+    pub fn unix_enable_raw_terminal() -> io::Result<TerminalRawGuard> {
+        // SAFETY: Checks that standard input is a TTY before querying and updating termios via libc.
+        #[allow(unsafe_code)]
+        unsafe {
+            if libc::isatty(libc::STDIN_FILENO) == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "standard input is not a terminal",
+                ));
+            }
+            let mut orig_termios = std::mem::zeroed();
+            if libc::tcgetattr(libc::STDIN_FILENO, &raw mut orig_termios) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut raw = orig_termios;
+            libc::cfmakeraw(&raw mut raw);
+            if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw const raw) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(UnixTerminalRawGuard { orig_termios })
+        }
+    }
+
+    /// Queries the Unix terminal window size using TIOCGWINSZ ioctl.
+    #[must_use]
+    pub fn unix_terminal_size() -> (u16, u16) {
+        // SAFETY: Allocates a zeroed winsize structure and queries stdout via ioctl TIOCGWINSZ.
+        #[allow(unsafe_code)]
+        unsafe {
+            let mut ws: libc::winsize = std::mem::zeroed();
+            if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &raw mut ws) == 0
+                && ws.ws_col > 0
+                && ws.ws_row > 0
+            {
+                (ws.ws_col, ws.ws_row)
+            } else {
+                (80, 24)
+            }
+        }
+    }
+
+    /// Reports whether standard input is a Unix TTY.
+    #[must_use]
+    pub fn unix_is_terminal_stdin() -> bool {
+        // SAFETY: Checks standard input descriptor with libc isatty.
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::isatty(libc::STDIN_FILENO) != 0
+        }
+    }
+
+    /// Reports whether standard output is a Unix TTY.
+    #[must_use]
+    pub fn unix_is_terminal_stdout() -> bool {
+        // SAFETY: Checks standard output descriptor with libc isatty.
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::isatty(libc::STDOUT_FILENO) != 0
+        }
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2635,8 +2764,12 @@ mod imp {
         MoveFileExW, READ_CONTROL, ReplaceFileW, SYNCHRONIZE, SetFileInformationByHandle,
     };
     use windows_sys::Win32::System::Console::{
-        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE,
-        STD_OUTPUT_HANDLE, SetStdHandle,
+        ATTACH_PARENT_PROCESS, AttachConsole, CONSOLE_SCREEN_BUFFER_INFO, ENABLE_ECHO_INPUT,
+        ENABLE_EXTENDED_FLAGS, ENABLE_LINE_INPUT, ENABLE_MOUSE_INPUT, ENABLE_PROCESSED_INPUT,
+        ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+        ENABLE_WINDOW_INPUT, GetConsoleMode, GetConsoleScreenBufferInfo, GetStdHandle,
+        STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleMode,
+        SetStdHandle,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -2750,6 +2883,162 @@ mod imp {
         stdout.stored = attached && !stdout.bound && windows_bind_console_stream(STD_OUTPUT_HANDLE);
         stderr.stored = attached && !stderr.bound && windows_bind_console_stream(STD_ERROR_HANDLE);
         windows_console_streams_ready(stdout, stderr)
+    }
+
+    /// A guard that restores original Windows console modes when dropped.
+    #[derive(Debug)]
+    pub struct WindowsTerminalRawGuard {
+        stdin_handle: HANDLE,
+        stdout_handle: HANDLE,
+        orig_in_mode: u32,
+        orig_out_mode: u32,
+    }
+
+    /// RAII guard that restores original terminal settings on drop.
+    pub type TerminalRawGuard = WindowsTerminalRawGuard;
+
+    impl Drop for WindowsTerminalRawGuard {
+        fn drop(&mut self) {
+            // SAFETY: Restores the captured input and output console modes if the handles are valid.
+            #[allow(unsafe_code)]
+            unsafe {
+                if windows_raw_handle_is_bound(self.stdin_handle) {
+                    SetConsoleMode(self.stdin_handle, self.orig_in_mode);
+                }
+                if windows_raw_handle_is_bound(self.stdout_handle) {
+                    SetConsoleMode(self.stdout_handle, self.orig_out_mode);
+                }
+            }
+        }
+    }
+
+    /// Enables raw terminal input and virtual terminal processing on Windows console handles.
+    pub fn windows_enable_raw_terminal() -> io::Result<TerminalRawGuard> {
+        // SAFETY: Queries and modifies console input and output modes using Windows API.
+        #[allow(unsafe_code)]
+        unsafe {
+            let mut stdin = GetStdHandle(STD_INPUT_HANDLE);
+            if !windows_raw_handle_is_bound(stdin)
+                && let Ok(conin) = OpenOptions::new().read(true).write(true).open("CONIN$")
+            {
+                let raw = conin.as_raw_handle().cast();
+                let _ = SetStdHandle(STD_INPUT_HANDLE, raw);
+                std::mem::forget(conin);
+                stdin = raw;
+            }
+            if !windows_raw_handle_is_bound(stdin) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "standard input is not bound to a console",
+                ));
+            }
+
+            let mut stdout = GetStdHandle(STD_OUTPUT_HANDLE);
+            if !windows_raw_handle_is_bound(stdout)
+                && let Ok(conout) = OpenOptions::new().read(true).write(true).open("CONOUT$")
+            {
+                let raw = conout.as_raw_handle().cast();
+                let _ = SetStdHandle(STD_OUTPUT_HANDLE, raw);
+                std::mem::forget(conout);
+                stdout = raw;
+            }
+            if !windows_raw_handle_is_bound(stdout) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "standard output is not bound to a console",
+                ));
+            }
+
+            let mut orig_in_mode = 0u32;
+            if GetConsoleMode(stdin, &raw mut orig_in_mode) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            let mut orig_out_mode = 0u32;
+            if GetConsoleMode(stdout, &raw mut orig_out_mode) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            let raw_in_mode = (orig_in_mode
+                & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT))
+                | ENABLE_VIRTUAL_TERMINAL_INPUT
+                | ENABLE_WINDOW_INPUT
+                | ENABLE_MOUSE_INPUT
+                | ENABLE_EXTENDED_FLAGS;
+
+            if SetConsoleMode(stdin, raw_in_mode) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            let raw_out_mode =
+                orig_out_mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            if SetConsoleMode(stdout, raw_out_mode) == 0 {
+                let _ = SetConsoleMode(stdin, orig_in_mode);
+                return Err(io::Error::last_os_error());
+            }
+
+            Ok(WindowsTerminalRawGuard {
+                stdin_handle: stdin,
+                stdout_handle: stdout,
+                orig_in_mode,
+                orig_out_mode,
+            })
+        }
+    }
+
+    /// Queries the Windows console screen buffer to determine dimensions.
+    #[must_use]
+    pub fn windows_terminal_size() -> (u16, u16) {
+        // SAFETY: Calls GetConsoleScreenBufferInfo with a zeroed stack-allocated CONSOLE_SCREEN_BUFFER_INFO.
+        #[allow(unsafe_code)]
+        unsafe {
+            let stdout = GetStdHandle(STD_OUTPUT_HANDLE);
+            if windows_raw_handle_is_bound(stdout) {
+                let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
+                if GetConsoleScreenBufferInfo(stdout, &raw mut csbi) != 0 {
+                    let width = (csbi.srWindow.Right - csbi.srWindow.Left).saturating_add(1);
+                    let height = (csbi.srWindow.Bottom - csbi.srWindow.Top).saturating_add(1);
+                    let cols = if width > 0 { width.cast_unsigned() } else { 80 };
+                    let rows = if height > 0 {
+                        height.cast_unsigned()
+                    } else {
+                        24
+                    };
+                    return (cols, rows);
+                }
+            }
+        }
+        (80, 24)
+    }
+
+    /// Reports whether standard input is attached to a Windows console.
+    #[must_use]
+    pub fn windows_is_terminal_stdin() -> bool {
+        // SAFETY: Reads standard input handle and queries its console mode.
+        #[allow(unsafe_code)]
+        unsafe {
+            let stdin = GetStdHandle(STD_INPUT_HANDLE);
+            if !windows_raw_handle_is_bound(stdin) {
+                return false;
+            }
+            let mut mode = 0u32;
+            GetConsoleMode(stdin, &raw mut mode) != 0
+        }
+    }
+
+    /// Reports whether standard output is attached to a Windows console.
+    #[must_use]
+    pub fn windows_is_terminal_stdout() -> bool {
+        // SAFETY: Reads standard output handle and queries its console mode.
+        #[allow(unsafe_code)]
+        unsafe {
+            let stdout = GetStdHandle(STD_OUTPUT_HANDLE);
+            if !windows_raw_handle_is_bound(stdout) {
+                return false;
+            }
+            let mut mode = 0u32;
+            GetConsoleMode(stdout, &raw mut mode) != 0
+        }
     }
 
     const MAX_SID_STRING_UNITS: usize = 256;
@@ -4861,6 +5150,36 @@ mod imp {
         true
     }
 
+    /// A stub guard on unsupported platforms.
+    #[derive(Debug)]
+    pub struct UnsupportedTerminalRawGuard;
+
+    /// RAII guard that restores original terminal settings on drop.
+    pub type TerminalRawGuard = UnsupportedTerminalRawGuard;
+
+    /// Fails closed on unsupported platforms.
+    pub fn unsupported_enable_raw_terminal() -> io::Result<TerminalRawGuard> {
+        unsupported_error("terminal raw mode")
+    }
+
+    /// Returns a standard fallback terminal size on unsupported platforms.
+    #[must_use]
+    pub const fn unsupported_terminal_size() -> (u16, u16) {
+        (80, 24)
+    }
+
+    /// Reports false on unsupported platforms.
+    #[must_use]
+    pub const fn unsupported_is_terminal_stdin() -> bool {
+        false
+    }
+
+    /// Reports false on unsupported platforms.
+    #[must_use]
+    pub const fn unsupported_is_terminal_stdout() -> bool {
+        false
+    }
+
     fn unsupported_error<T>(operation: &str) -> io::Result<T> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -4890,7 +5209,8 @@ mod tests {
     use super::sync_file;
     use super::{
         FileChangeToken, FileIdentity, IdentityQuality, attach_parent_console,
-        combine_disjoint_flag_bits, file_facts,
+        combine_disjoint_flag_bits, file_facts, is_terminal_stdin, is_terminal_stdout,
+        terminal_size,
     };
     #[cfg(unix)]
     use super::{
@@ -4916,6 +5236,19 @@ mod tests {
         // platform. Nothing is attached and the call must still report that a
         // command-line message can be delivered.
         assert!(attach_parent_console());
+    }
+
+    #[test]
+    fn terminal_size_returns_positive_dimensions() {
+        let (cols, rows) = terminal_size();
+        assert!(cols > 0, "columns must be greater than zero");
+        assert!(rows > 0, "rows must be greater than zero");
+    }
+
+    #[test]
+    fn terminal_query_functions_do_not_panic() {
+        let _ = is_terminal_stdin();
+        let _ = is_terminal_stdout();
     }
 
     #[test]

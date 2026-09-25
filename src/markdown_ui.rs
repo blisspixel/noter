@@ -3883,15 +3883,22 @@ fn close_inline_run_for_line_break(
     }
 
     for marker in INLINE_LINE_BREAK_MARKERS {
+        let query_caret =
+            if caret_chars >= marker.chars().count() && source[..caret_bytes].ends_with(marker) {
+                caret_chars - marker.chars().count()
+            } else {
+                caret_chars
+            };
+
         let Some(range) = selected_inline_source_range(
             source,
-            caret_chars..caret_chars,
+            query_caret..query_caret,
             inline_marker_event_match(marker),
         ) else {
             continue;
         };
         let closer_start = range.end.saturating_sub(marker.len());
-        if caret_bytes != closer_start
+        if (caret_bytes != closer_start && caret_bytes != range.end)
             || !source.is_char_boundary(closer_start)
             || source
                 .get(closer_start..range.end)
@@ -3903,7 +3910,7 @@ fn close_inline_run_for_line_break(
         if caret_bytes <= opener_end || !source.is_char_boundary(opener_end) {
             continue;
         }
-        if contains_line_break(&source[opener_end..caret_bytes]) {
+        if contains_line_break(&source[opener_end..closer_start]) {
             continue;
         }
         let mut text = String::with_capacity(source.len() + ending.as_str().len());
@@ -5085,6 +5092,18 @@ mod tests {
             close_inline_run_for_line_break("`hello`", 6, LineEnding::Lf).expect("end of code");
         assert_eq!(code.text, "`hello`\n");
         assert_eq!(code.marker, "`");
+
+        // Also closing when caret is right after closing delimiters
+        let closed_after =
+            close_inline_run_for_line_break("**hello**", 9, LineEnding::Lf).expect("after strong");
+        assert_eq!(closed_after.text, "**hello**\n");
+        assert_eq!(closed_after.caret_chars, 10);
+        assert_eq!(closed_after.marker, "**");
+
+        let italic_after =
+            close_inline_run_for_line_break("*hello*", 7, LineEnding::Lf).expect("after emphasis");
+        assert_eq!(italic_after.text, "*hello*\n");
+        assert_eq!(italic_after.marker, "*");
     }
 
     #[test]
@@ -5133,6 +5152,23 @@ mod tests {
             reopen_inline_run_around_text("**hello**\n", 10, "**", "b").expect("reopen");
         assert_eq!(text, "**hello**\n**b**");
         assert_eq!(caret, 13);
+    }
+
+    #[test]
+    fn enter_at_span_end_continues_inline_formatting_on_next_line() {
+        // When pressing Enter at the end of "**bold**" (caret 8)
+        let closed = close_inline_run_for_line_break("**bold**", 8, LineEnding::Lf)
+            .expect("should close inline run at end of bold span");
+        assert_eq!(closed.text, "**bold**\n");
+        assert_eq!(closed.caret_chars, 9);
+        assert_eq!(closed.marker, "**");
+
+        // When the user types on the next line, bold is automatically continued
+        let (reopened_text, next_caret) =
+            reopen_inline_run_around_text(&closed.text, closed.caret_chars, closed.marker, "next")
+                .expect("should reopen bold on next line");
+        assert_eq!(reopened_text, "**bold**\n**next**");
+        assert_eq!(next_caret, 15);
     }
 
     #[test]

@@ -36,6 +36,48 @@ The repository pins Rust in `rust-toolchain.toml`. Rustup and Cargo may download
 that toolchain and locked dependencies from their configured sources during the
 first build.
 
+## Standalone binary install
+
+Precompiled binaries are published for each supported platform on the
+[GitHub Releases page](https://github.com/blisspixel/noter/releases). You can
+install Noter directly with zero build prerequisites using the standalone
+installer scripts:
+
+Windows (PowerShell):
+
+```powershell
+# Inspect the script, then execute:
+Invoke-RestMethod https://github.com/blisspixel/noter/releases/latest/download/install.ps1 | Invoke-Expression
+```
+
+macOS or Linux (POSIX shell):
+
+```sh
+# Inspect the script, then execute:
+curl -fsSL https://github.com/blisspixel/noter/releases/latest/download/install.sh | sh
+```
+
+The binary installer:
+1. detects operating system and CPU architecture;
+2. downloads the matching release archive and its SHA-256 sidecar;
+3. verifies cryptographic checksums before extraction;
+4. installs `noter` into a user-local binary path (`%LOCALAPPDATA%\Programs\Noter\bin`
+   on Windows; `~/.local/bin` on macOS and Linux);
+5. configures `PATH` idempotently; and
+6. verifies execution with `noter --version`.
+
+## Source prerequisites
+
+Install the following before using the source installer:
+
+- [Git](https://git-scm.com/)
+- [Rust through rustup](https://rustup.rs/)
+- Windows, macOS, or Linux on a machine able to build a native Rust application
+
+The repository pins Rust in `rust-toolchain.toml`. Rustup and Cargo may download
+that toolchain and locked dependencies from their configured sources during the
+first build.
+
 ## Source install
 
 Windows PowerShell:
@@ -54,7 +96,7 @@ cd noter
 sh scripts/install.sh
 ```
 
-The installer:
+The source installer:
 
 1. validates the local locked Cargo workspace;
 2. builds the release executable with the repository's pinned toolchain;
@@ -100,15 +142,21 @@ noter update
 | --- | --- | --- |
 | `noter --version`, `noter -V` | 0 | Prints `noter <version>` and exits |
 | `noter --help`, `noter -h`, `noter update --help` | 0 | Prints the usage block and exits |
-| `noter` | runs | Opens an untitled document |
+| `noter` | runs | Opens an untitled document (GUI by default, TUI if headless) |
 | `noter FILE` | runs | Opens an existing readable file |
+| `noter --tui [FILE]` | runs | Opens the document in interactive Terminal UI (TUI) mode |
+| `noter --gui [FILE]` | runs | Forces graphical desktop interface mode |
 | `noter update` | runs | Opens the local update status, titled `Update status - Noter` |
 | Unknown option, invalid or missing option value, second document path | 2 | One line on standard error, then usage |
 | FILE missing, a directory, or unreadable | 2 | `noter: cannot open ...`, then usage |
 
-`--theme system\|light\|dark\|green\|amber` and `--view text\|markdown` select the
+`--theme system|light|dark|green|amber` and `--view text|markdown` select the
 startup theme and view. Their values are accepted in any letter case. `--` ends
 option parsing so a document path may begin with `-`.
+
+When running in an SSH session or headless console without a display server
+(`DISPLAY` and `WAYLAND_DISPLAY` absent), Noter automatically engages TUI mode
+if standard input is an interactive terminal.
 
 Argument mistakes fail on the command line. Problems with a file's *content*,
 such as invalid UTF-8 or a document above the current interactive size limit,

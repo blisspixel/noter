@@ -373,11 +373,17 @@ Open dialog and desktop file associations. `noter update` names its window
 prints usage instead of an error.
 Hinting, subpixel positioning, real heading and emphasis weights, and
 theme-correct text coverage transfer are verified explicitly rather than
-assumed from toolkit defaults. The early source-backed Markdown slice is visible
-for product evaluation but remains governed by M6. A disposable Windows PowerShell source install is recorded in
-[M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md). M2 still needs installed
-GUI semantic automation, cross-platform visual and persistence evidence, and
-disposable clean-user packaged-installer tests before verification.
+assumed from toolkit defaults. Amber Screen and Green Screen palettes now
+explicitly define their text cursor stroke color to match the theme phosphor
+foreground rather than inheriting the stock dark-mode blue-white line.
+Platform desktop integration gaps (Win32 title bar dark mode synchronization,
+Per-Monitor v2 DPI application manifest, Linux `app_id` metadata, and standard
+macOS shortcuts including Cmd+Q, Cmd+W, and Cmd+,) are tracked for full desktop
+parity. The early source-backed Markdown slice is visible for product evaluation
+but remains governed by M6. A disposable Windows PowerShell source install is
+recorded in [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md). M2 still needs
+installed GUI semantic automation, cross-platform visual and persistence
+evidence, and disposable clean-user packaged-installer tests before verification.
 
 ### Exit criteria
 
@@ -610,30 +616,37 @@ large-file requirements needed by both text and native Markdown editing.
 - retain the framework editor only if it meets the measured requirements;
 - otherwise introduce a rope-backed editor behind a time-boxed feasibility gate;
 - incremental layout, hit testing, selection, scrolling, and bounded caches;
+- viewport-only line virtualization with line-level LRU Galley caching;
+- migration from legacy OpenGL (`glow`) to `wgpu` for native Metal 120Hz ProMotion,
+  DX12 low-latency waitable swapchains, and Vulkan presentation;
 - IME pre-edit and candidate-window placement;
 - accessibility semantics and editable-text actions;
 - native shaping and fallback, stable font metrics, theme-correct coverage
   transfer, hinting, and subpixel positioning validated across display scales;
 - high-DPI, high-contrast, bidirectional text, combining marks, and emoji;
-- an optional local spell-check adapter with explicit language and enablement,
-  no document upload, no background network access, and a clean unavailable
-  state on platforms without a supported local provider; and
+- an optional local OS-native spell-check adapter (Windows `ISpellCheckerFactory`,
+  macOS `NSSpellChecker`, Linux `libenchant-2`) with explicit language and enablement,
+  no document upload, no background network access, and zero bundled dictionary bloat; and
 - reproducible cold-start, typing, scrolling, search, memory, and size
   benchmarks.
 
 ### Current state
 
 The trust-kernel loader remains bounded at 64 MiB, but the current egui editor
-mirrors the complete document as a `String`. A local Windows measurement found a
-665.3 MiB process peak when a 64 MiB file reached that widget path. The current
-interface therefore refuses files above 8 MiB before creating the mirror,
-preserves the open document, and explains the limit. The same 64 MiB run then
-peaked at 196 MiB without entering the editor. This is defensive containment,
-not M5 completion; the release still requires a measured 50 MiB editable path.
-The current bundled Inter configuration retains egui's complete default
-fallback chain, including its emoji fonts, so pasted Unicode remains intact.
-The current renderer's emoji output is monochrome and is not accepted as final
-cross-platform appearance evidence. No spell-check provider is implemented.
+mirrors the complete document as a `String` and diffs old and new contents on
+every keystroke. A local Windows measurement found a 665.3 MiB process peak when
+a 64 MiB file reached that widget path. The current interface therefore refuses
+files above 8 MiB before creating the mirror, preserves the open document, and
+explains the limit. The same 64 MiB run then peaked at 196 MiB without entering
+the editor. This is defensive containment, not M5 completion; the release still
+requires a measured 50 MiB editable path. The current bundled Inter
+configuration retains egui's complete default fallback chain, including its
+emoji fonts, so pasted Unicode remains intact. The current renderer's emoji
+output is monochrome and is not accepted as final cross-platform appearance
+evidence. A status bar ordering inversion currently renders cursor coordinates
+before the active editor, introducing a 1-frame lag and forced repaint on caret
+navigation that will be eliminated by resolving cursor metrics prior to chrome.
+No spell-check provider is implemented.
 
 Research completed on 2026-08-23 makes the next decision narrower. The current
 egui `TextEdit` remains the correctness adapter, but stock egui 0.35 with
@@ -653,10 +666,11 @@ native text-provider contracts for
 and [AT-SPI](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/iface.Text.html).
 
 The first candidate is therefore a rope-authoritative editor with a
-backend-neutral visible-layout adapter. Parley is the first shaping candidate;
-`cosmic-text` is the fallback candidate. Neither is accepted by research alone.
-The gate must prove shaping, bidi, hit testing, IME, retained accessibility, and
-the published performance budgets in the actual application.
+backend-neutral visible-layout adapter and `wgpu` rendering. Parley is the
+first shaping candidate; `cosmic-text` is the fallback candidate. Neither is
+accepted by research alone. The gate must prove shaping, bidi, hit testing, IME,
+retained accessibility, and the published performance budgets in the actual
+application.
 
 ### One-week feasibility gate
 
@@ -769,6 +783,17 @@ caret leaves it. Text Mode always exposes exact source. Shared bounded Undo and
 Redo use the deterministic intent and coalescing policy. Continuous
 whole-document editing, complete complex-block layout, full syntax conformance,
 accessibility, asynchronous parsing, and the quality engine remain open.
+To achieve rich-editor fluidity while preserving exact source files, M6 adopts
+two key architectural models:
+1. Caret-aware delimiter unfurl: delimiters (such as `**` or `` ` ``) are
+   concealed when the caret is elsewhere, but unfurl with muted syntax coloring
+   when the caret enters the span, eliminating 0.1px transparent ghost stops
+   and click targeting ambiguities.
+2. Sticky formatting state (`ActiveFormattingState`): toggling bold, italic,
+   or code with an empty selection sets in-memory formatting intent without
+   writing empty marker pairs (`****`) to the buffer. Syntax is synthesized upon
+   first printable character insertion and carries cleanly across Enter and
+   newlines.
 
 The current synchronous formatted slice enforces explicit source-byte, line,
 line-length, block-count, block-span, and parser-event ceilings. Over-budget
@@ -790,16 +815,24 @@ measured final limits.
 - Accessibility, IME, themes, keyboard use, and performance pass in every view.
 - Runtime inspection proves no HTML execution or remote content access.
 
-## M7: Distribution and First Public-Quality Release
+## M7: Distribution, Updates, and Terminal TUI Mode
 
 **Outcome:** Noter installs, updates, runs, and uninstalls predictably on clean
-supported systems, with verifiable artifacts and honest release evidence.
+supported systems, with verifiable artifacts, standalone binary scripts, and a
+first-class Terminal User Interface (TUI).
 
 ### Scope
 
 - reproducible cargo-dist archives and platform packages;
-- PowerShell and POSIX install scripts;
-- `noter update` and Help > Check for Updates backed by one manifest policy;
+- standalone binary download scripts (`install.sh` and `install.ps1`) fetching
+  verified GitHub Release assets with zero build dependencies;
+- `noter update` and Help > Check for Updates backed by one manifest policy,
+  supporting direct in-place updates with Windows detached-helper process swapping;
+- native Terminal User Interface (TUI) mode (`noter --tui`) built on `crossterm`
+  and `ratatui` with dual modern/Nano shortcuts, mouse support, terminal themes,
+  and headless auto-detection;
+- modular feature flags (`default = ["gui", "tui"]` and minimal headless server
+  build `--no-default-features --features tui` producing a ~2.5 MB binary);
 - per-user installation without elevation by default;
 - package-manager ownership and update behavior;
 - checksums, SBOM, build provenance, and signing where credentials exist;
@@ -816,17 +849,21 @@ contract.
 ### Current state
 
 The source installers already build the locked checkout and verify the installed
-CLI contract on Windows, macOS, and Linux. A pinned cargo-dist plan now produces
-four target archives, PowerShell and POSIX installers, Homebrew and MSI
-packaging, checksums, four target-specific CycloneDX 1.5 SBOMs, and GitHub
-attestations. The SBOMs are declared cargo-dist artifacts, so the generated
-release manifest names the same four files that the workflow builds and
-publishes. Every binary package includes the generated third-party dependency
-inventory and bundled-font license. Publication is restricted to a prerelease
-tag on the protected `main` tip, rechecks that tip immediately before atomic tag
-creation, and remains an explicit human decision. Native signing, clean-machine
-artifact tests, updater authentication, platform evidence, and the required
-dogfood period remain open.
+CLI contract on Windows, macOS, and Linux. Standalone binary installer scripts
+(`install.sh` and `install.ps1`) fetching signed GitHub release archives and
+verifying SHA-256 digests provide a fast, build-tool-free installation path.
+The TUI mode architecture is designed around `crossterm` and `ratatui` with
+modular `gui` and `tui` feature flags, allowing a minimal headless binary under
+3 MB. A pinned cargo-dist plan produces four target archives, PowerShell and
+POSIX installers, Homebrew and MSI packaging, checksums, four target-specific
+CycloneDX 1.5 SBOMs, and GitHub attestations. The SBOMs are declared cargo-dist
+artifacts, so the generated release manifest names the same four files that the
+workflow builds and publishes. Every binary package includes the generated
+third-party dependency inventory and bundled-font license. Publication is
+restricted to a prerelease tag on the protected `main` tip, rechecks that tip
+immediately before atomic tag creation, and remains an explicit human decision.
+Native signing, clean-machine artifact tests, updater authentication, platform
+evidence, and the required dogfood period remain open.
 
 The static musl target is deferred until the release inventory can account for
 its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
