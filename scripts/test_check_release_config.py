@@ -202,7 +202,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         mutations = {
             "mixed denominator": (
                 self.ci_workflow.replace(
-                    "            shard: 7/8", "            shard: 7/7"
+                    "            shard: 9/10", "            shard: 9/9"
                 ),
                 "CI mutation partitions are incomplete, reordered, or inconsistent",
             ),
