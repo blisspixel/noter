@@ -322,35 +322,35 @@ impl LineEndingProfile {
     /// convention is needed only when two conventions tie for the most
     /// endings, so it is computed only then.
     fn from_counts(counts: LineEndingCounts, first_positions: impl FnOnce() -> [usize; 3]) -> Self {
-        let kinds = [LineEnding::Lf, LineEnding::CrLf, LineEnding::Cr];
-        let most = kinds
-            .iter()
-            .map(|&kind| counts.get(kind))
-            .max()
-            .unwrap_or(0);
+        let most = counts.lf.max(counts.crlf).max(counts.cr);
         if most == 0 {
             return Self::None {
                 insertion: LineEnding::platform_default(),
             };
         }
-        let mut leaders = kinds.into_iter().filter(|&kind| counts.get(kind) == most);
-        let first_leader = leaders.next().unwrap_or(LineEnding::Lf);
+        let kinds = [LineEnding::Lf, LineEnding::CrLf, LineEnding::Cr];
+        let leaders = kinds.map(|kind| counts.get(kind) == most);
+        let mut insertion = if leaders[0] {
+            LineEnding::Lf
+        } else if leaders[1] {
+            LineEnding::CrLf
+        } else {
+            LineEnding::Cr
+        };
         if counts.kinds() == 1 {
             return Self::Uniform {
-                ending: first_leader,
+                ending: insertion,
                 count: counts.total(),
             };
         }
-        let insertion = if leaders.next().is_none() {
-            first_leader
-        } else {
+        if leaders.iter().filter(|&&leads| leads).count() > 1 {
             let positions = first_positions();
-            kinds
-                .into_iter()
-                .filter(|&kind| counts.get(kind) == most)
-                .min_by_key(|kind| positions[kind.slot()])
-                .unwrap_or(first_leader)
-        };
+            for (kind, leads) in kinds.into_iter().zip(leaders) {
+                if leads && positions[kind.slot()] < positions[insertion.slot()] {
+                    insertion = kind;
+                }
+            }
+        }
         Self::Mixed { counts, insertion }
     }
 
@@ -562,6 +562,20 @@ fn scan_line_endings(bytes: impl Iterator<Item = u8>) -> (LineEndingCounts, [usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_most_common_convention_wins_and_the_first_breaks_ties() {
+        let insertion = |text: &str| LineEndingProfile::detect(text).fallback_insertion();
+        assert_eq!(insertion("a\r\nb\nc\n"), LineEnding::Lf);
+        assert_eq!(insertion("a\nb\r\nc\r\n"), LineEnding::CrLf);
+        assert_eq!(insertion("a\nb\rc\r"), LineEnding::Cr);
+        assert_eq!(insertion("\r\n\r"), LineEnding::CrLf);
+        assert_eq!(insertion("\ra\r\n"), LineEnding::Cr);
+        assert_eq!(insertion("\n\r\r\n"), LineEnding::Lf);
+        assert_eq!(insertion("\r\n\n\r"), LineEnding::CrLf);
+        assert_eq!(insertion("\ra\r\n\n"), LineEnding::Cr);
+        assert_eq!(insertion("\na\r"), LineEnding::Lf);
+    }
 
     #[test]
     fn detects_none_uniform_and_mixed_profiles() {
