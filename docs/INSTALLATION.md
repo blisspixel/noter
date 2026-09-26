@@ -1,6 +1,6 @@
 # Installation and Updates
 
-**Reviewed:** 2026-08-30
+**Reviewed:** 2026-09-26
 
 **Current availability:** The published `0.1.0-beta.1` release is
 available for careful evaluation with backups. Its artifacts include platform
@@ -24,47 +24,57 @@ The Windows MSI is an unsigned per-machine evaluation package. It requires
 elevation, installs under Program Files, and offers a system PATH entry; it is
 not a supported stable installer.
 
-## Source prerequisites
-
-Install the following before using the source installer:
-
-- [Git](https://git-scm.com/)
-- [Rust through rustup](https://rustup.rs/)
-- Windows, macOS, or Linux on a machine able to build a native Rust application
-
-The repository pins Rust in `rust-toolchain.toml`. Rustup and Cargo may download
-that toolchain and locked dependencies from their configured sources during the
-first build.
-
 ## Standalone binary install
 
 Precompiled binaries are published for each supported platform on the
-[GitHub Releases page](https://github.com/blisspixel/noter/releases). You can
-install Noter directly with zero build prerequisites using the standalone
-installer scripts:
+[GitHub Releases page](https://github.com/blisspixel/noter/releases). The
+installer scripts install one without build tools. Download the script, read
+it, then run it; do not pipe a remote script into a shell.
 
 Windows (PowerShell):
 
 ```powershell
-# Inspect the script, then execute:
-Invoke-RestMethod https://github.com/blisspixel/noter/releases/latest/download/install.ps1 | Invoke-Expression
+Invoke-WebRequest https://raw.githubusercontent.com/blisspixel/noter/main/scripts/install.ps1 -OutFile install-noter.ps1
+powershell -ExecutionPolicy Bypass -File .\install-noter.ps1
 ```
 
-macOS or Linux (POSIX shell):
+macOS or Linux:
 
 ```sh
-# Inspect the script, then execute:
-curl -fsSL https://github.com/blisspixel/noter/releases/latest/download/install.sh | sh
+curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/main/scripts/install.sh
+sh install-noter.sh
 ```
 
 The binary installer:
-1. detects operating system and CPU architecture;
-2. downloads the matching release archive and its SHA-256 sidecar;
-3. verifies cryptographic checksums before extraction;
-4. installs `noter` into a user-local binary path (`%LOCALAPPDATA%\Programs\Noter\bin`
-   on Windows; `~/.local/bin` on macOS and Linux);
-5. configures `PATH` idempotently; and
-6. verifies execution with `noter --version`.
+
+1. finds the newest release, prereleases included, or the one named with
+   `--version` (`-Version` on Windows);
+2. picks the archive for the operating system and CPU architecture (x64 on
+   Windows);
+3. downloads the matching archive and its SHA-256 sidecar and verifies the
+   checksum before extraction;
+4. checks that the downloaded binary reports the expected version;
+5. copies it beside the destination and renames it into place, into
+   `%LOCALAPPDATA%\Programs\Noter\bin` on Windows or `~/.local/bin` on macOS
+   and Linux (`--root` / `-InstallRoot` chooses another root);
+6. on Windows, adds that directory to the user `PATH`, keeping existing
+   `%VARIABLE%` entries unexpanded; on macOS and Linux, prints a reminder when
+   the directory is not on `PATH`.
+
+`--uninstall` (`-Uninstall`) removes the binary, and on Windows its `PATH`
+entry when the directory is otherwise empty. Documents, settings, and recovery
+records are not touched. `--check` (`-Check`) validates the plan without
+installing.
+
+The checksum sidecar comes from the same release as the archive, so it proves
+the download arrived intact, not who built it. To verify provenance as well,
+download the archive by hand and check its
+[GitHub attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds)
+with `gh attestation verify <archive> --repo blisspixel/noter` before
+extracting it.
+
+On Linux the window needs a few system libraries; see
+[Linux window libraries](#linux-window-libraries).
 
 ## Source prerequisites
 
@@ -104,9 +114,10 @@ The source installer:
 4. verifies `noter --version`; and
 5. verifies the installed command-line error and exit-status contract.
 
-It does not fetch Noter source, modify shell startup files, or request
-administrator access. It prints the exact installed executable path when it
-finishes.
+Run from a checkout, the installer builds that source; pass `--binary`
+(`-Binary`) to download a release instead. It does not fetch Noter source,
+modify shell startup files, or request administrator access. It prints the
+exact installed executable path when it finishes.
 
 ## Start and verify
 
@@ -123,9 +134,10 @@ for you: a mistyped path fails on the command line instead of opening a window
 that looks like a new blank document.
 
 If `noter` is not found, use the exact path printed by the installer or add its
-parent `bin` directory to `PATH`. The default is Cargo's per-user binary
-directory, normally `%USERPROFILE%\.cargo\bin` on Windows and `$HOME/.cargo/bin`
-on macOS and Linux.
+parent `bin` directory to `PATH`. A source install defaults to Cargo's per-user
+binary directory, normally `%USERPROFILE%\.cargo\bin` on Windows and
+`$HOME/.cargo/bin` on macOS and Linux; a binary install defaults to the
+directories listed above.
 
 Noter remains under active development. Keep backups and do not use it as the
 only editor for important files until the release evidence in the roadmap is
@@ -222,26 +234,33 @@ lockfile and replaces the existing source-installed executable.
 
 | PowerShell | POSIX shell | Purpose |
 | --- | --- | --- |
-| `-Source <path>` | `--source <path>` | Install a different local Noter checkout |
-| `-InstallRoot <path>` | `--root <path>` | Use a specific Cargo installation root |
-| `-Check` | `--check` | Validate prerequisites and source without installing |
+| `-Binary` | `--binary` | Download a release even when run from a checkout |
+| `-FromSource` | `--from-source` | Build the checkout that contains the script |
+| `-Source <path>` | `--source <path>` | Build a different local Noter checkout |
+| `-Version <version>` | `--version <version>` | Download this release instead of the newest (binary installs only) |
+| `-InstallRoot <path>` | `--root <path>` | Install into `<path>/bin` |
+| `-Uninstall` | `--uninstall` | Remove the installed binary |
+| `-Check` | `--check` | Validate the plan without installing |
 
 Examples:
 
 ```powershell
 .\scripts\install.ps1 -Check
-.\scripts\install.ps1 -InstallRoot "$env:LOCALAPPDATA\Noter"
+.\scripts\install.ps1 -Binary -Version 0.1.0-beta.1
 ```
 
 ```sh
 sh scripts/install.sh --check
-sh scripts/install.sh --root "$HOME/.local"
+sh scripts/install.sh --binary --version 0.1.0-beta.1
 ```
 
-An explicit install root takes precedence. Without it, the scripts use
-`CARGO_INSTALL_ROOT` when set, then `CARGO_HOME`, then Cargo's standard per-user
-directory. The scripts pass the resulting absolute path to Cargo so repository
-or user configuration cannot silently redirect the executable.
+An explicit install root takes precedence, then `CARGO_INSTALL_ROOT` when set.
+Otherwise a source build uses `CARGO_HOME` or Cargo's standard per-user
+directory, and a binary install uses `%LOCALAPPDATA%\Programs\Noter` on
+Windows or `~/.local` on macOS and Linux. The scripts pass the resulting
+absolute path to Cargo so repository or user configuration cannot silently
+redirect the executable. Only an x64 Windows build is published; Windows on
+ARM runs it through x64 emulation.
 
 ## Uninstall a source build
 

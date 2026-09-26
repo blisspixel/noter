@@ -61,8 +61,27 @@ that candidate is frozen for publication.
   Applying an edit no longer copies and compares the whole document; drawing
   the screen still reads it, which remains open performance work.
 
+- Make the installer scripts work. The documented one-line commands pointed
+  at `releases/latest/download/install.sh` and `install.ps1`, which were
+  never published, and GitHub's `latest` skips prereleases, so both failed.
+  The README and installation guide now download the script from the
+  repository to read before running. The scripts find the newest release
+  including prereleases, verify the checksum, check the binary's version,
+  install by renaming a staged copy, and gain `--uninstall`. A checkout again
+  builds from source by default, as documented, with `--binary` to download
+  instead. The PowerShell script keeps `%VARIABLE%` entries in the user
+  `PATH` unexpanded, no longer closes the calling session, replaces a running
+  `noter.exe`, and verifies checksums under PowerShell 7 as well as 5.1.
+  Both scripts run entirely from a function, so a partial download executes
+  nothing.
+
 ### Security
 
+- Restore mutation testing for terminal text safety. A broad `[Tt]erminal`
+  exclusion added in beta.1 removed every mutant whose name or path mentioned
+  a terminal, including all of the new terminal-safe drawing module. The
+  exclusion now names only the interactive terminal primitives that need a
+  real terminal.
 - Draw document text, file names, typed input, and messages in the terminal
   interface through one terminal-safe path. Control characters, including
   escape sequences that could set the window title or write the clipboard

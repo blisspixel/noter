@@ -38,9 +38,10 @@ dossier.
     themes (`noter --tui`).
 - **Defensive Durability:** Atomic file replacement, BLAKE3 content hashing,
   sibling staging, verified permissions, and owner-restricted crash recovery.
-- **Responsive and Butter-Smooth:** Sub-16.7ms input latency, 120Hz/ProMotion
-  frame pacing, and a virtualized rope engine that handles files up to 50 MiB
-  with zero hesitation.
+- **Quiet and Responsive:** Native rendering, an idle window that sleeps
+  instead of repainting, and a rope-backed document core. The measured
+  latency budgets and the virtualized large-file editor (target: 50 MiB) are
+  roadmap work; today the window edits files up to 8 MiB.
 - **One Document, Full Focus:** Single-document ergonomics instead of a
   workspace that wants to become a platform.
 
@@ -69,26 +70,31 @@ themes, not simple filters over a generic dark capture.
 
 ## Install
 
-### Quick install (Standalone binaries)
+### Install a release
 
-Precompiled binaries for Windows, Linux, and macOS (Intel and Apple Silicon) are
+Prebuilt binaries for Windows, Linux, and macOS (Intel and Apple Silicon) are
 published on the [GitHub Releases page](https://github.com/blisspixel/noter/releases).
-You can install Noter in seconds with zero build tools:
+The installer script downloads the newest release, verifies its SHA-256
+checksum, and installs `noter` for your user. Download it, read it, then run it:
 
 Windows (PowerShell):
 
 ```powershell
-Invoke-RestMethod https://github.com/blisspixel/noter/releases/latest/download/install.ps1 | Invoke-Expression
+Invoke-WebRequest https://raw.githubusercontent.com/blisspixel/noter/main/scripts/install.ps1 -OutFile install-noter.ps1
+powershell -ExecutionPolicy Bypass -File .\install-noter.ps1
 ```
 
-macOS or Linux (POSIX shell):
+macOS or Linux:
 
 ```sh
-curl -fsSL https://github.com/blisspixel/noter/releases/latest/download/install.sh | sh
+curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/main/scripts/install.sh
+sh install-noter.sh
 ```
 
-The installer verifies cryptographic SHA-256 checksums, installs into your user
-binary directory, and configures `PATH`.
+It installs to `%LOCALAPPDATA%\Programs\Noter\bin` (added to your user
+`PATH`) on Windows and `~/.local/bin` on macOS and Linux. `--version`
+(`-Version`) picks a release and `--uninstall` (`-Uninstall`) removes it; see
+[docs/INSTALLATION.md](docs/INSTALLATION.md).
 
 ### Source install
 
@@ -116,11 +122,13 @@ and update contracts are documented in [docs/INSTALLATION.md](docs/INSTALLATION.
 
 ## Project status
 
-The current version is `0.1.0-beta.1`. Durable save,
-crash recovery, clipboard parity, conflict detection, caret navigation, and
-themes are verified. Production rope virtualization (M5), continuous fluid
-Markdown (M6), and cross-platform binary distribution with TUI mode (M7) are
-in active progression.
+The current published version is `0.1.0-beta.1`, a prerelease for careful use
+with backups. Durable save, crash recovery, clipboard parity, conflict
+detection, caret navigation, and themes are verified for the window, and the
+terminal interface now shares the same save safety, crash recovery, and
+bounded Undo. The virtualized large-file editor (M5), continuous Markdown
+editing (M6), and signed, packaged distribution (M7) are not built yet; the
+roadmap orders that work.
 
 The privacy stance above is product law for every release, including alpha. What
 is still unfinished is reliability, completeness, and packaging, not a planned

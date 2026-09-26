@@ -64,6 +64,14 @@ python scripts/check_release_config.py
 python -m unittest discover -s scripts -p "test_*.py"
 ```
 
+The terminal interface needs a real terminal for raw mode, paste, restoration,
+and hangup recovery. On macOS or Linux, check a built binary with:
+
+```sh
+cargo build --locked
+python3 scripts/check_tui_pty.py target/debug/noter
+```
+
 CI also runs rustdoc, dependency policy and advisory checks, enforced coverage,
 native tests on Windows, macOS, and Linux, and the declared mutation scopes. A
 local pass does not replace exact-commit CI evidence. Commands and thresholds
