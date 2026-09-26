@@ -92,7 +92,7 @@ fn main() -> eframe::Result {
         let named = |name: &str| display_variable_names_server(std::env::var_os(name).as_deref());
         let wayland = named("WAYLAND_DISPLAY") || named("WAYLAND_SOCKET");
         let backend = display_runtime::DisplayBackend::from_environment(wayland);
-        let missing = display_runtime::missing(backend, noter_platform::shared_library_loads);
+        let missing = display_runtime::missing(backend, noter_platform::unix_shared_library_loads);
         if !missing.is_empty() {
             write_line(
                 std::io::stderr().lock(),

@@ -1455,10 +1455,16 @@ Current state:
   an uncertain outcome in its save-recovery flow. The TUI has no such flow, so
   it pauses saves to the uncertain path only and leaves Save As to other
   destinations available, so the text can always be written somewhere.
-- **Not yet shared:** the TUI keeps its own undo stacks instead of
-  `UndoHistory`, and it does not persist crash recovery, inspect external
-  changes while idle, or offer Reload. These are beta hardening work in the
-  roadmap.
+- **Undo and recovery:** edits are single-range `EditTransaction`s built
+  from the changed bytes only, recorded in the core `UndoHistory` with the
+  window's coalescing rules. Crash recovery uses the same
+  `CrashRecoverySession` and private store as the window: dirty text is
+  persisted after the idle debounce, a committed save or an explicit exit
+  without saving removes the record, and an untitled launch offers Restore,
+  Discard, or Later. On Unix the TUI ignores `SIGHUP`, so a closed terminal
+  or dropped SSH session ends input instead of the process, and the text is
+  written to recovery before exit. The TUI does not yet watch the file for
+  external changes while idle or offer Reload.
 - **Shortcuts:** `Ctrl+S` Save, `Ctrl+O` Save As (prefilled with the current
   name), `Ctrl+X`, `Ctrl+Q`, or `Ctrl+C` Exit, `Ctrl+W` or `Ctrl+F` Find,
   `Ctrl+K` Cut Line, `Ctrl+U` Paste, `Ctrl+Z` Undo, `Ctrl+Y` Redo, `Ctrl+E`

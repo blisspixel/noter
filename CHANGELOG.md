@@ -52,6 +52,14 @@ that candidate is frozen for publication.
   shell was left without echo. A load failure also no longer leaves the
   alternate screen on, a resized terminal is redrawn without a keypress, and
   a hung-up terminal ends the session.
+- Keep unsaved terminal text through a crash or a lost terminal. The terminal
+  interface now shares the window's private crash recovery: dirty text is
+  written after a short idle pause, on macOS, Linux, and the BSDs a closed
+  terminal or dropped SSH session writes it before exit, and the next
+  untitled launch offers Restore, Discard, or Later. It also shares the
+  window's bounded Undo, which groups typing into steps the same way.
+  Applying an edit no longer copies and compares the whole document; drawing
+  the screen still reads it, which remains open performance work.
 
 ### Security
 

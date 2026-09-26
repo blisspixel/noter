@@ -70,8 +70,9 @@ Feature presence alone is not verification.
   bounded undo/redo, crash recovery, and conflict handling). The TUI provides
   dual modern and classic shortcuts, mouse caret placement, terminal theme
   rendering, and rendered terminal Markdown preview. A save that does not
-  commit never exits or discards text. Status: save, Save As, and conflict
-  reporting are shared; bounded undo and crash recovery are not yet wired.
+  commit never exits or discards text. Status: save, Save As, conflict
+  reporting, bounded undo, and crash recovery are shared; idle external-change
+  inspection and Reload are not yet available in the TUI.
 - **FR-012 Strict UTF-8:** Accept UTF-8 with or without a UTF-8 BOM. Reject
   invalid UTF-8 without replacement characters. A future explicit import flow
   may create a new untitled converted document, but it must never overwrite the

@@ -18,10 +18,12 @@ use std::fmt::Write as FmtWrite;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use noter::core::document::{Document, PreparedSaveAs};
-use noter::core::edit::{EditOrigin, EditTimestamp, EditTransaction, Selection};
+use noter::core::edit::{
+    EditOrigin, EditTimestamp, EditTransaction, Selection, TextEdit, TextRange,
+};
 use noter::core::limits::MAX_DOCUMENT_BYTES;
 use noter::core::line_endings::{logical_lines, normalize_inserted_text};
 use noter::core::navigation::{
@@ -32,9 +34,16 @@ use noter::core::search::{LiteralSearch, MatchCase, SearchDirection};
 use noter::core::terminal_text::{
     cell_width, column_of, display_width, fit_line, offset_at_column, push_display,
 };
+use noter::core::undo::{
+    HistoryApplyOutcome, HistoryError, HistoryLimits, HistoryRecordOutcome, UndoHistory,
+};
 use noter::error::NoterError;
 
 use crate::app::{DocumentView, LaunchOptions};
+use crate::crash_recovery::{
+    CrashRecoverySession, RECOVERY_CLEANUP_FAILURE_MESSAGE, RECOVERY_PERSIST_FAILURE_MESSAGE,
+    RECOVERY_UNAVAILABLE_MESSAGE,
+};
 
 mod input;
 
@@ -53,6 +62,19 @@ pub enum PromptMode {
     Find,
     GoToLine,
     ExitConfirm,
+    /// Unsaved text from an earlier session is waiting in private recovery.
+    RecoveryOffer,
+}
+
+/// The answer to a startup recovery offer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecoveryDecision {
+    /// Replace the empty document with the recovered text.
+    Restore,
+    /// Delete the recovered text.
+    Discard,
+    /// Keep the recovered text for a later launch.
+    Later,
 }
 
 /// What happens once the save in progress commits.
@@ -175,8 +197,13 @@ pub struct TuiSession {
     pub status_message: Option<(String, std::time::Instant)>,
     pub search_query: Option<String>,
     pub show_help: bool,
-    pub undo_history: Vec<EditTransaction>,
-    pub redo_history: Vec<EditTransaction>,
+    /// Bounded undo and redo, shared with the window through the core.
+    pub history: UndoHistory,
+    /// Private crash-recovery records, shared with the window's store.
+    pub recovery: CrashRecoverySession,
+    /// Monotonic origin for edit timestamps, so typing coalesces into Undo
+    /// steps by the same rules as the window.
+    pub started: Instant,
     pub should_exit: bool,
     pub after_save: AfterSave,
     pub pending_save: Option<PendingSave>,
@@ -191,10 +218,14 @@ pub struct TuiSession {
 impl TuiSession {
     /// Initializes a new TUI session from launch options.
     ///
+    /// An explicit file keeps any startup recovery offers for a later
+    /// untitled launch, as the window does; an untitled launch presents the
+    /// first offer.
+    ///
     /// # Errors
     ///
     /// Returns an error if an initial file path was supplied but cannot be loaded.
-    pub fn new(options: &LaunchOptions) -> Result<Self, String> {
+    pub fn new(options: &LaunchOptions, recovery: CrashRecoverySession) -> Result<Self, String> {
         let document = if let Some(path) = &options.initial_path {
             Document::from_path(path)
                 .map_err(|e| format!("cannot load `{}`: {e}", path.display()))?
@@ -204,8 +235,9 @@ impl TuiSession {
 
         let theme = options.theme.unwrap_or(AppTheme::Dark);
         let view = options.view.unwrap_or(DocumentView::Text);
+        let history = UndoHistory::new(HistoryLimits::default(), document.revision());
 
-        Ok(Self {
+        let mut session = Self {
             document,
             theme,
             view,
@@ -219,13 +251,98 @@ impl TuiSession {
             status_message: None,
             search_query: None,
             show_help: false,
-            undo_history: Vec::new(),
-            redo_history: Vec::new(),
+            history,
+            recovery,
+            started: Instant::now(),
             should_exit: false,
             after_save: AfterSave::Stay,
             pending_save: None,
             uncertain_paths: Vec::new(),
-        })
+        };
+        if options.initial_path.is_some() {
+            session.recovery.defer_startup_offers();
+            session.recovery.begin_fresh_identity();
+        } else if session.recovery.active_offer().is_some() {
+            session.prompt = PromptMode::RecoveryOffer;
+        }
+        if session.recovery.is_unavailable() {
+            session.set_status(RECOVERY_UNAVAILABLE_MESSAGE);
+        }
+        Ok(session)
+    }
+
+    /// Tells crash recovery whether the text now needs a private copy, after
+    /// Undo, Redo, or a save, as the window's `synchronize_crash_recovery`
+    /// does. A direct edit uses `on_edited` instead, also as the window does.
+    fn sync_recovery(&mut self) {
+        let selection = Selection::caret(self.caret_byte);
+        if self.document.is_dirty() {
+            self.recovery.on_retained(&self.document, selection);
+        } else {
+            self.recovery.on_saved_clean(self.document.revision());
+        }
+    }
+
+    /// Runs recovery work that has come due, reports a failed write once,
+    /// and returns whether that changed the status line.
+    pub fn tick_recovery(&mut self) -> bool {
+        self.recovery
+            .on_tick(&self.document, Selection::caret(self.caret_byte));
+        if !self.recovery.has_persist_failure() {
+            return false;
+        }
+        self.recovery.dismiss_persist_failure();
+        self.set_status(RECOVERY_PERSIST_FAILURE_MESSAGE);
+        true
+    }
+
+    /// How long the loop may wait before recovery work comes due.
+    pub fn recovery_delay(&self) -> Option<Duration> {
+        self.recovery.next_persist_delay()
+    }
+
+    /// Keeps unsaved text in a recovery record before an exit the user did
+    /// not choose, such as a terminal hangup.
+    pub fn persist_before_exit(&mut self) -> bool {
+        let selection = Selection::caret(self.caret_byte);
+        self.recovery
+            .persist_before_exit(&self.document, selection, EXIT_PERSIST_LIMIT)
+    }
+
+    /// Answers the startup recovery offer that is showing.
+    pub fn answer_recovery_offer(&mut self, decision: RecoveryDecision) {
+        match decision {
+            RecoveryDecision::Restore => match self.recovery.restore_active_offer() {
+                Ok((document, selection)) => {
+                    self.document = document;
+                    self.caret_byte = selection.active();
+                    self.history.reset(self.document.revision());
+                    self.recovery.on_edited(&self.document, selection);
+                    // Remaining offers stay on disk for a later untitled
+                    // launch; presenting the next one now would replace the
+                    // text just restored.
+                    self.recovery.defer_startup_offers();
+                    self.set_status("Restored unsaved text. Save it to keep it.");
+                }
+                Err(message) => self.set_status(message),
+            },
+            RecoveryDecision::Discard => {
+                if self.recovery.discard_active_offer() {
+                    self.set_status("Discarded the recovered text");
+                } else {
+                    self.set_status(RECOVERY_CLEANUP_FAILURE_MESSAGE);
+                }
+            }
+            RecoveryDecision::Later => {
+                self.recovery.defer_startup_offers();
+                self.set_status("Kept the recovered text for a later launch");
+            }
+        }
+        self.prompt = if self.recovery.active_offer().is_some() {
+            PromptMode::RecoveryOffer
+        } else {
+            PromptMode::None
+        };
     }
 
     /// Sets a temporary status message visible for 3 seconds.
@@ -255,7 +372,7 @@ impl TuiSession {
         if normalized.was_limited() {
             self.set_status("Paste shortened to fit the document size limit");
         }
-        self.insert_str(normalized.text());
+        self.insert_with_origin(normalized.text(), EditOrigin::Paste);
     }
 
     /// Returns the current document text as a String.
@@ -270,49 +387,73 @@ impl TuiSession {
         self.caret_byte = move_caret(&text, self.caret_byte, direction, unit);
     }
 
-    /// Applies an edit transaction, preserving Undo/Redo history.
-    pub fn apply_edit(&mut self, before_text: &str, after_text: &str, new_caret: usize) {
-        let before_selection = Selection::caret(self.caret_byte);
-        let after_selection = Selection::caret(new_caret);
-
-        let tx = EditTransaction::between(
-            self.document.revision(),
-            before_text,
-            after_text,
-            before_selection,
-            after_selection,
-            EditOrigin::TextInput,
-            EditTimestamp::default(),
-        );
-
-        match tx {
-            Ok(Some(transaction)) => match self.document.apply_transaction(&transaction) {
-                Ok(applied) => {
-                    self.caret_byte = new_caret;
-                    self.undo_history.push(applied.inverse().clone());
-                    self.redo_history.clear();
-                }
-                Err(e) => {
-                    self.set_status(format!("Edit error: {e}"));
-                }
-            },
-            Ok(None) => {}
-            Err(e) => {
-                self.set_status(format!("Edit transaction error: {e}"));
-            }
+    /// Replaces `range` with `inserted` as one transaction and moves the
+    /// caret to `caret_after`.
+    ///
+    /// Only the replaced range is read, so an edit costs the size of the
+    /// change, not the size of the document. The core validates boundaries,
+    /// the removed text, and the size limit before anything changes.
+    pub fn replace_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        inserted: &str,
+        caret_after: usize,
+        origin: EditOrigin,
+    ) {
+        let removed = self.document.rope().byte_slice(range.clone()).to_string();
+        if removed.is_empty() && inserted.is_empty() {
+            return;
         }
+        let transaction = EditTransaction::new(
+            self.document.revision(),
+            vec![TextEdit::replace(
+                TextRange::new(range.start, range.end),
+                inserted,
+                removed,
+            )],
+            Selection::caret(self.caret_byte),
+            Selection::caret(caret_after),
+            origin,
+            EditTimestamp::new(self.started.elapsed()),
+        );
+        match self.document.apply_transaction(&transaction) {
+            Ok(applied) => {
+                self.caret_byte = caret_after;
+                if self.history.record(applied)
+                    == HistoryRecordOutcome::ClearedForOversizedTransaction
+                {
+                    self.set_status("Undo history cleared: that edit was too large to keep");
+                }
+                self.recovery
+                    .on_edited(&self.document, Selection::caret(self.caret_byte));
+            }
+            Err(error) => self.set_status(format!("Edit refused: {error}")),
+        }
+    }
+
+    /// Returns the caret one character away, deciding from a few characters
+    /// of context instead of copying the document.
+    ///
+    /// A character step moves over one scalar or one whole line ending, so
+    /// four characters on each side always hold the answer.
+    fn character_step(&self, direction: MoveDirection) -> usize {
+        let rope = self.document.rope();
+        let caret = self.caret_byte.min(rope.len_bytes());
+        let caret_char = rope.byte_to_char(caret);
+        let start = rope.char_to_byte(caret_char.saturating_sub(4));
+        let end = rope.char_to_byte((caret_char + 4).min(rope.len_chars()));
+        let window = rope.byte_slice(start..end).to_string();
+        start + move_caret(&window, caret - start, direction, MoveUnit::Character)
     }
 
     /// Inserts a string at the current caret.
     pub fn insert_str(&mut self, insert: &str) {
-        let text = self.text();
-        let caret = self.caret_byte.min(text.len());
-        let mut new_text = String::with_capacity(text.len() + insert.len());
-        new_text.push_str(&text[..caret]);
-        new_text.push_str(insert);
-        new_text.push_str(&text[caret..]);
-        let new_caret = caret + insert.len();
-        self.apply_edit(&text, &new_text, new_caret);
+        self.insert_with_origin(insert, EditOrigin::TextInput);
+    }
+
+    fn insert_with_origin(&mut self, insert: &str, origin: EditOrigin) {
+        let caret = self.caret_byte.min(self.document.rope().len_bytes());
+        self.replace_range(caret..caret, insert, caret + insert.len(), origin);
     }
 
     /// Inserts a newline matching the document's line-ending profile.
@@ -323,41 +464,23 @@ impl TuiSession {
 
     /// Deletes the character before the caret (Backspace).
     pub fn delete_backwards(&mut self) {
-        if self.caret_byte == 0 {
-            return;
-        }
-        let text = self.text();
-        let prev_caret = move_caret(
-            &text,
-            self.caret_byte,
-            MoveDirection::Backward,
-            MoveUnit::Character,
-        );
-        if prev_caret < self.caret_byte {
-            let mut new_text = String::with_capacity(text.len());
-            new_text.push_str(&text[..prev_caret]);
-            new_text.push_str(&text[self.caret_byte..]);
-            self.apply_edit(&text, &new_text, prev_caret);
+        let previous = self.character_step(MoveDirection::Backward);
+        if previous < self.caret_byte {
+            self.replace_range(
+                previous..self.caret_byte,
+                "",
+                previous,
+                EditOrigin::TextInput,
+            );
         }
     }
 
     /// Deletes the character at the caret (Delete).
     pub fn delete_forwards(&mut self) {
-        let text = self.text();
-        if self.caret_byte >= text.len() {
-            return;
-        }
-        let next_caret = move_caret(
-            &text,
-            self.caret_byte,
-            MoveDirection::Forward,
-            MoveUnit::Character,
-        );
-        if next_caret > self.caret_byte {
-            let mut new_text = String::with_capacity(text.len());
-            new_text.push_str(&text[..self.caret_byte]);
-            new_text.push_str(&text[next_caret..]);
-            self.apply_edit(&text, &new_text, self.caret_byte);
+        let next = self.character_step(MoveDirection::Forward);
+        if next > self.caret_byte {
+            let caret = self.caret_byte;
+            self.replace_range(caret..next, "", caret, EditOrigin::TextInput);
         }
     }
 
@@ -372,12 +495,7 @@ impl TuiSession {
         let (start, next_start) = (span.start, span.next);
 
         text[start..next_start].clone_into(&mut self.clipboard);
-
-        let mut new_text = String::with_capacity(text.len());
-        new_text.push_str(&text[..start]);
-        new_text.push_str(&text[next_start..]);
-        let new_caret = start.min(new_text.len());
-        self.apply_edit(&text, &new_text, new_caret);
+        self.replace_range(start..next_start, "", start, EditOrigin::Programmatic);
         self.set_status("Cut 1 line to clipboard");
     }
 
@@ -388,45 +506,36 @@ impl TuiSession {
             return;
         }
         let clip = self.clipboard.clone();
-        self.insert_str(&clip);
+        self.insert_with_origin(&clip, EditOrigin::Paste);
         self.set_status("Pasted from clipboard");
     }
 
     /// Undoes the last edit transaction (^Z).
     pub fn undo(&mut self) {
-        let Some(transaction) = self.undo_history.pop() else {
-            self.set_status("Already at oldest change");
-            return;
-        };
-
-        match self.document.apply_transaction(&transaction) {
-            Ok(applied) => {
-                self.caret_byte = transaction.selection_after().active();
-                self.redo_history.push(applied.inverse().clone());
-                self.set_status("Undid 1 change");
-            }
-            Err(e) => {
-                self.set_status(format!("Undo failed: {e}"));
-            }
-        }
+        let result = self.history.undo(&mut self.document);
+        self.finish_history_step(result, "Undid 1 change", "Already at oldest change");
     }
 
     /// Redoes the last undone edit transaction (^Y).
     pub fn redo(&mut self) {
-        let Some(transaction) = self.redo_history.pop() else {
-            self.set_status("Already at newest change");
-            return;
-        };
+        let result = self.history.redo(&mut self.document);
+        self.finish_history_step(result, "Redid 1 change", "Already at newest change");
+    }
 
-        match self.document.apply_transaction(&transaction) {
-            Ok(applied) => {
-                self.caret_byte = transaction.selection_after().active();
-                self.undo_history.push(applied.inverse().clone());
-                self.set_status("Redid 1 change");
+    fn finish_history_step(
+        &mut self,
+        result: Result<Option<HistoryApplyOutcome>, HistoryError>,
+        done: &str,
+        nothing: &str,
+    ) {
+        match result {
+            Ok(Some(outcome)) => {
+                self.caret_byte = outcome.selection().active();
+                self.sync_recovery();
+                self.set_status(done);
             }
-            Err(e) => {
-                self.set_status(format!("Redo failed: {e}"));
-            }
+            Ok(None) => self.set_status(nothing),
+            Err(error) => self.set_status(format!("History unavailable: {error}")),
         }
     }
 
@@ -558,6 +667,7 @@ impl TuiSession {
                 ..
             }) => {
                 let warning_count = warnings.cleanup().len() + warnings.durability().len();
+                self.sync_recovery();
                 if warning_count == 0 {
                     self.set_status(format!("Wrote {} bytes", observation.length()));
                 } else {
@@ -705,6 +815,9 @@ impl TuiSession {
         }
     }
 }
+
+/// Longest wait for a recovery write when the terminal goes away.
+const EXIT_PERSIST_LIMIT: Duration = Duration::from_secs(2);
 
 /// How long a status message stays in place of the position summary.
 const STATUS_LIFETIME: Duration = Duration::from_secs(3);
@@ -970,6 +1083,19 @@ fn prompt_parts(session: &TuiSession) -> Option<(String, &str, &'static str)> {
             "",
             "",
         ),
+        PromptMode::RecoveryOffer => {
+            let label = session.recovery.active_offer().map_or_else(
+                || "Untitled".to_owned(),
+                crate::crash_recovery::StartupRecoveryOffer::original_path_label,
+            );
+            return Some((
+                format!(
+                    "Unsaved text from {label} was kept after Noter closed. (r)estore, (d)iscard, (l)ater"
+                ),
+                "",
+                "",
+            ));
+        }
         PromptMode::None => return None,
     };
     Some((label.to_owned(), input, hint))
@@ -1314,7 +1440,10 @@ impl Drop for ScreenModes {
 /// Returns an [`io::Error`] if the document cannot load, terminal raw mode
 /// cannot be enabled, or standard I/O fails.
 pub fn run(options: &LaunchOptions) -> io::Result<()> {
-    let mut session = TuiSession::new(options).map_err(io::Error::other)?;
+    let mut session =
+        TuiSession::new(options, CrashRecoverySession::open_default()).map_err(io::Error::other)?;
+    #[cfg(unix)]
+    noter_platform::ignore_terminal_hangup();
     let raw_terminal = noter_platform::enable_raw_terminal()?;
     let restorer = raw_terminal.restorer();
     let previous_hook = Arc::new(std::panic::take_hook());
@@ -1329,6 +1458,11 @@ pub fn run(options: &LaunchOptions) -> io::Result<()> {
     }));
 
     let result = ScreenModes::enter().and_then(|_screen| event_loop(&mut session));
+    // The loop ends without the user choosing to exit only when the terminal
+    // went away or failed; keep the unsaved text for the next launch.
+    if !session.should_exit {
+        session.persist_before_exit();
+    }
 
     drop(raw_terminal);
     drop(std::panic::take_hook());
@@ -1358,8 +1492,12 @@ fn event_loop(session: &mut TuiSession) -> io::Result<()> {
             needs_frame = false;
         }
 
-        if !noter_platform::wait_for_terminal_input(IDLE_TICK)? {
-            if session.expire_status() {
+        let wait = session
+            .recovery_delay()
+            .map_or(IDLE_TICK, |delay| delay.min(IDLE_TICK));
+        if !noter_platform::wait_for_terminal_input(wait)? {
+            let reported = session.tick_recovery();
+            if session.expire_status() || reported {
                 needs_frame = true;
             }
             continue;
@@ -1390,6 +1528,20 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
     }
 
     match &session.prompt {
+        PromptMode::RecoveryOffer => {
+            if let TuiEvent::Key(key) = event {
+                let decision = match key {
+                    TuiKey::Char('r' | 'R') => Some(RecoveryDecision::Restore),
+                    TuiKey::Char('d' | 'D') => Some(RecoveryDecision::Discard),
+                    TuiKey::Char('l' | 'L') | TuiKey::Escape => Some(RecoveryDecision::Later),
+                    _ => None,
+                };
+                if let Some(decision) = decision {
+                    session.answer_recovery_offer(decision);
+                }
+            }
+            return;
+        }
         PromptMode::ExitConfirm => {
             if let TuiEvent::Key(key) = event {
                 match key {
@@ -1400,6 +1552,7 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
                         session.finish_save(step);
                     }
                     TuiKey::Char('n' | 'N') => {
+                        session.recovery.on_discarded();
                         session.should_exit = true;
                     }
                     TuiKey::Escape | TuiKey::Char('c' | 'C') => {
@@ -1679,7 +1832,10 @@ fn handle_paste(session: &mut TuiSession, pasted: &str) {
         PromptMode::GoToLine => session
             .prompt_input
             .extend(first_line.chars().filter(char::is_ascii_digit)),
-        PromptMode::ConfirmReplace | PromptMode::ConfirmHardLink(_) | PromptMode::ExitConfirm => {}
+        PromptMode::ConfirmReplace
+        | PromptMode::ConfirmHardLink(_)
+        | PromptMode::ExitConfirm
+        | PromptMode::RecoveryOffer => {}
     }
 }
 
@@ -1697,28 +1853,54 @@ mod tests {
 
     #[test]
     fn tui_session_typing_undo_and_redo() {
-        let options = LaunchOptions::default();
-        let mut session = TuiSession::new(&options).unwrap();
+        let mut session = untitled();
         assert_eq!(session.text(), "");
 
+        // Adjacent typing within the coalescing window is one Undo step, as
+        // in the window.
         session.insert_str("Hello");
-        assert_eq!(session.text(), "Hello");
-        assert_eq!(session.caret_byte, 5);
-
         session.insert_str(" World");
-        assert_eq!(session.text(), "Hello World");
-
+        assert_eq!(session.caret_byte, 11);
         session.undo();
-        assert_eq!(session.text(), "Hello");
-
+        assert_eq!(session.text(), "");
         session.redo();
         assert_eq!(session.text(), "Hello World");
+        assert_eq!(session.caret_byte, 11);
+    }
+
+    #[test]
+    fn moving_the_caret_starts_a_new_undo_step() {
+        let mut session = untitled();
+        session.insert_str("ab");
+        key(&mut session, TuiKey::Left);
+        key(&mut session, TuiKey::Char('X'));
+        assert_eq!(session.text(), "aXb");
+
+        session.undo();
+        assert_eq!(session.text(), "ab");
+        assert_eq!(session.caret_byte, 1);
+        session.undo();
+        assert_eq!(session.text(), "");
+    }
+
+    #[test]
+    fn backspace_and_delete_remove_a_whole_line_ending() {
+        let mut session = untitled();
+        session.insert_str("a\r\nb");
+        session.caret_byte = 3;
+        key(&mut session, TuiKey::Backspace);
+        assert_eq!(session.text(), "ab");
+        assert_eq!(session.caret_byte, 1);
+
+        session.insert_str("\r\n");
+        session.caret_byte = 1;
+        key(&mut session, TuiKey::Delete);
+        assert_eq!(session.text(), "ab");
     }
 
     #[test]
     fn tui_session_cut_and_paste_line() {
-        let options = LaunchOptions::default();
-        let mut session = TuiSession::new(&options).unwrap();
+        let mut session = untitled();
         session.insert_str("Line 1\nLine 2\nLine 3\n");
         session.caret_byte = 8; // On Line 2
 
@@ -1732,8 +1914,7 @@ mod tests {
 
     #[test]
     fn tui_session_theme_cycling() {
-        let options = LaunchOptions::default();
-        let mut session = TuiSession::new(&options).unwrap();
+        let mut session = untitled();
         assert_eq!(session.theme, AppTheme::Dark);
 
         session.cycle_theme();
@@ -1751,8 +1932,7 @@ mod tests {
 
     #[test]
     fn render_frame_produces_valid_terminal_strings() {
-        let options = LaunchOptions::default();
-        let mut session = TuiSession::new(&options).unwrap();
+        let mut session = untitled();
         session.insert_str("# Markdown Header\nSome regular text here.");
 
         let frame = render_frame(&session, 80, 24);
@@ -1764,8 +1944,7 @@ mod tests {
 
     #[test]
     fn handle_event_navigation_and_editing() {
-        let options = LaunchOptions::default();
-        let mut session = TuiSession::new(&options).unwrap();
+        let mut session = untitled();
 
         // Type "abc"
         handle_event(&mut session, TuiEvent::Key(TuiKey::Char('a')), 80, 24);
@@ -1798,8 +1977,7 @@ mod tests {
 
     #[test]
     fn handle_event_search_and_jump() {
-        let options = LaunchOptions::default();
-        let mut session = TuiSession::new(&options).unwrap();
+        let mut session = untitled();
         session.insert_str("First line\nSecond line\nThird line\n");
 
         // Trigger Find
@@ -1830,8 +2008,7 @@ mod tests {
 
     #[test]
     fn handle_event_mouse_clicks_and_scroll() {
-        let options = LaunchOptions::default();
-        let mut session = TuiSession::new(&options).unwrap();
+        let mut session = untitled();
         session.insert_str("Hello World\nLine 2 here\n");
 
         // Click on row 2, col 12 (in editor text)
@@ -1869,8 +2046,7 @@ mod tests {
 
     #[test]
     fn handle_event_help_and_exit_prompts() {
-        let options = LaunchOptions::default();
-        let mut session = TuiSession::new(&options).unwrap();
+        let mut session = untitled();
 
         // Toggle help with Ctrl+G
         handle_event(&mut session, TuiEvent::Key(TuiKey::Ctrl('g')), 80, 24);
@@ -1896,11 +2072,32 @@ mod tests {
     }
 
     fn session_for(path: &std::path::Path) -> TuiSession {
-        TuiSession::new(&LaunchOptions {
-            initial_path: Some(path.to_path_buf()),
-            ..LaunchOptions::default()
-        })
-        .expect("fixture document should load")
+        let session = TuiSession::new(
+            &LaunchOptions {
+                initial_path: Some(path.to_path_buf()),
+                ..LaunchOptions::default()
+            },
+            CrashRecoverySession::disabled_for_test(),
+        )
+        .expect("fixture document should load");
+        without_startup_status(session)
+    }
+
+    fn untitled() -> TuiSession {
+        without_startup_status(
+            TuiSession::new(
+                &LaunchOptions::default(),
+                CrashRecoverySession::disabled_for_test(),
+            )
+            .expect("an untitled session always starts"),
+        )
+    }
+
+    /// A disabled recovery store truthfully reports itself unavailable at
+    /// startup; tests that read the status line start from a clean one.
+    fn without_startup_status(mut session: TuiSession) -> TuiSession {
+        session.status_message = None;
+        session
     }
 
     #[test]
@@ -1951,7 +2148,7 @@ mod tests {
     fn untitled_exit_asks_for_a_name_then_exits_after_writing() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("new.txt");
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         type_text(&mut session, "draft");
 
         key(&mut session, TuiKey::Ctrl('x'));
@@ -1968,7 +2165,7 @@ mod tests {
 
     #[test]
     fn cancelling_the_save_as_name_cancels_a_pending_exit() {
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         type_text(&mut session, "draft");
         key(&mut session, TuiKey::Ctrl('x'));
         key(&mut session, TuiKey::Char('y'));
@@ -1985,7 +2182,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let existing = directory.path().join("existing.txt");
         std::fs::write(&existing, "keep me").unwrap();
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         type_text(&mut session, "replacement");
 
         key(&mut session, TuiKey::Ctrl('o'));
@@ -2063,7 +2260,7 @@ mod tests {
 
     #[test]
     fn a_save_that_did_not_commit_cancels_a_pending_exit() {
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         session.after_save = AfterSave::Exit;
 
         let step = session.report_save(
@@ -2137,7 +2334,7 @@ mod tests {
         let other_name = directory.path().join("other-name.txt");
         std::fs::write(&target, "shared").unwrap();
         std::fs::hard_link(&target, &other_name).unwrap();
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         type_text(&mut session, "mine");
 
         key(&mut session, TuiKey::Ctrl('o'));
@@ -2193,7 +2390,7 @@ mod tests {
 
     #[test]
     fn document_escape_sequences_are_drawn_inert() {
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         session.insert_str(
             "title\u{1B}]0;owned\u{7}\nclip\u{1B}]52;c;ZWNobw==\u{7}\n\u{9B}2J\u{202E}txt",
         );
@@ -2222,7 +2419,7 @@ mod tests {
 
     #[test]
     fn search_uses_exact_ranges_when_case_folding_changes_length() {
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         session.insert_str("\u{212A}elvin and kelvin");
         session.caret_byte = 0;
         session.search_query = Some("KELVIN".to_owned());
@@ -2242,7 +2439,7 @@ mod tests {
 
     #[test]
     fn clicks_land_on_character_boundaries_in_multibyte_and_wide_text() {
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         session.insert_str("héllo\n世界ab");
         let text_column = |column: u16| 9 + column;
 
@@ -2290,7 +2487,7 @@ mod tests {
 
     #[test]
     fn long_lines_scroll_horizontally_and_rows_never_overflow() {
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         session.insert_str(&"世".repeat(100));
 
         session.scroll_to_caret(40, 10);
@@ -2303,7 +2500,7 @@ mod tests {
 
     #[test]
     fn the_wheel_scrolls_away_from_the_caret_until_the_next_key() {
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         session.insert_str(&"line\n".repeat(100));
         session.scroll_to_caret(80, 24);
         let at_caret = session.scroll_row;
@@ -2325,7 +2522,7 @@ mod tests {
 
     #[test]
     fn combining_marks_are_drawn_with_their_base_character() {
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         session.insert_str("cafe\u{301} \u{1F44D}\u{1F3FD}");
         let frame = strip_own_sequences(&render_frame(&session, 80, 24));
         assert!(frame.contains("cafe\u{301}"), "{frame}");
@@ -2333,7 +2530,7 @@ mod tests {
 
     #[test]
     fn terminals_too_small_for_the_layout_get_a_fitted_notice() {
-        let session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let session = untitled();
         for (cols, rows) in [(10, 24), (80, 4), (5, 2)] {
             let frame = strip_own_sequences(&render_frame(&session, cols, rows));
             assert_eq!(frame.lines().count(), 1);
@@ -2363,7 +2560,7 @@ mod tests {
 
     #[test]
     fn a_paste_into_a_prompt_takes_the_first_line_only() {
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         key(&mut session, TuiKey::Ctrl('f'));
         handle_event(
             &mut session,
@@ -2387,7 +2584,7 @@ mod tests {
 
     #[test]
     fn expired_status_messages_are_cleared() {
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         assert!(!session.expire_status());
         session.set_status("recent");
         assert!(!session.expire_status());
@@ -2401,9 +2598,135 @@ mod tests {
         assert!(session.status_message.is_none());
     }
 
+    fn untitled_with_store(root: &std::path::Path) -> TuiSession {
+        TuiSession::new(
+            &LaunchOptions::default(),
+            CrashRecoverySession::open_at(root),
+        )
+        .expect("an untitled session always starts")
+    }
+
+    #[test]
+    fn unsaved_text_survives_a_lost_terminal_and_is_offered_on_the_next_launch() {
+        let store = tempfile::tempdir().unwrap();
+        {
+            let mut session = untitled_with_store(store.path());
+            assert_eq!(session.prompt, PromptMode::None);
+            type_text(&mut session, "draft that must not be lost");
+            assert!(session.persist_before_exit());
+        }
+
+        let mut next = untitled_with_store(store.path());
+        assert_eq!(next.prompt, PromptMode::RecoveryOffer);
+        let offer = strip_own_sequences(&render_frame(&next, 120, 24));
+        assert!(offer.contains("Unsaved text from Untitled"), "{offer}");
+
+        key(&mut next, TuiKey::Char('r'));
+        assert_eq!(next.prompt, PromptMode::None);
+        assert_eq!(next.text(), "draft that must not be lost");
+        assert!(next.document.is_dirty());
+        // The restored text is one fresh history, not an undo of the restore.
+        next.undo();
+        assert_eq!(next.text(), "draft that must not be lost");
+    }
+
+    #[test]
+    fn restoring_one_offer_keeps_the_others_for_a_later_launch() {
+        let store = tempfile::tempdir().unwrap();
+        for text in ["first lost draft", "second lost draft"] {
+            let mut session = untitled_with_store(store.path());
+            key(&mut session, TuiKey::Char('l'));
+            type_text(&mut session, text);
+            assert!(session.persist_before_exit());
+        }
+
+        let mut session = untitled_with_store(store.path());
+        assert_eq!(session.prompt, PromptMode::RecoveryOffer);
+        key(&mut session, TuiKey::Char('r'));
+        let restored = session.text();
+        assert_eq!(session.prompt, PromptMode::None);
+        // Another r is ordinary typing, never a second restore.
+        key(&mut session, TuiKey::Char('r'));
+        assert_eq!(session.text(), format!("{restored}r"));
+        drop(session);
+
+        assert_eq!(
+            untitled_with_store(store.path()).prompt,
+            PromptMode::RecoveryOffer
+        );
+    }
+
+    #[test]
+    fn saving_or_discarding_leaves_nothing_to_recover() {
+        let store = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let mut session = untitled_with_store(store.path());
+            type_text(&mut session, "saved text");
+            session.recovery.force_due_persist_for_test(
+                &session.document,
+                Selection::caret(session.caret_byte),
+            );
+            key(&mut session, TuiKey::Ctrl('s'));
+            type_text(
+                &mut session,
+                &directory.path().join("saved.txt").to_string_lossy(),
+            );
+            key(&mut session, TuiKey::Enter);
+            assert!(!session.document.is_dirty());
+        }
+        assert_eq!(untitled_with_store(store.path()).prompt, PromptMode::None);
+
+        {
+            let mut session = untitled_with_store(store.path());
+            type_text(&mut session, "thrown away");
+            assert!(session.persist_before_exit());
+            key(&mut session, TuiKey::Ctrl('x'));
+            key(&mut session, TuiKey::Char('n'));
+            assert!(session.should_exit);
+        }
+        assert_eq!(untitled_with_store(store.path()).prompt, PromptMode::None);
+    }
+
+    #[test]
+    fn a_later_answer_keeps_the_offer_and_an_explicit_file_skips_it() {
+        let store = tempfile::tempdir().unwrap();
+        {
+            let mut session = untitled_with_store(store.path());
+            type_text(&mut session, "keep for later");
+            assert!(session.persist_before_exit());
+        }
+        let mut later = untitled_with_store(store.path());
+        key(&mut later, TuiKey::Char('l'));
+        assert_eq!(later.prompt, PromptMode::None);
+        assert_eq!(later.text(), "");
+        drop(later);
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "file").unwrap();
+        let explicit = TuiSession::new(
+            &LaunchOptions {
+                initial_path: Some(path),
+                ..LaunchOptions::default()
+            },
+            CrashRecoverySession::open_at(store.path()),
+        )
+        .unwrap();
+        assert_eq!(explicit.prompt, PromptMode::None);
+        drop(explicit);
+
+        let mut restored = untitled_with_store(store.path());
+        assert_eq!(restored.prompt, PromptMode::RecoveryOffer);
+        key(&mut restored, TuiKey::Char('d'));
+        assert_eq!(restored.prompt, PromptMode::None);
+        drop(restored);
+        assert_eq!(untitled_with_store(store.path()).prompt, PromptMode::None);
+    }
+
     #[test]
     fn status_reports_one_based_display_columns() {
-        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        let mut session = untitled();
         session.insert_str("世界");
         let frame = strip_own_sequences(&render_frame(&session, 80, 24));
         assert!(frame.contains("Ln 1, Col 5"), "{frame}");
@@ -2439,7 +2762,7 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn frames_never_emit_unsafe_characters(text in proptest::prelude::any::<String>(), cols in 1_u16..120, rows in 1_u16..16) {
-            let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+            let mut session = untitled();
             session.insert_str(&text);
             session.search_query = Some(text.chars().take(2).collect());
             for view in [DocumentView::Text, DocumentView::Markdown] {

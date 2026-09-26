@@ -784,11 +784,22 @@ pub fn wait_for_terminal_input(timeout: std::time::Duration) -> io::Result<bool>
 /// deep inside the windowing stack. Names containing NUL are skipped.
 #[cfg(all(unix, not(target_os = "macos")))]
 #[must_use]
-pub fn shared_library_loads(sonames: &[&str]) -> bool {
+pub fn unix_shared_library_loads(sonames: &[&str]) -> bool {
     sonames
         .iter()
         .filter_map(|soname| std::ffi::CString::new(*soname).ok())
-        .any(|soname| imp::unix_shared_library_loads(&soname))
+        .any(|soname| imp::unix_shared_library_opens(&soname))
+}
+
+/// Keeps a terminal hangup from ending the process.
+///
+/// By default a closed terminal or dropped SSH session sends `SIGHUP`, which
+/// ends the process before it can keep unsaved text. Ignoring it lets reads
+/// from the hung-up terminal report end of input instead, so an editor can
+/// write its recovery record and then exit.
+#[cfg(unix)]
+pub fn ignore_terminal_hangup() {
+    imp::unix_ignore_terminal_hangup();
 }
 
 /// Returns the current terminal dimensions as `(columns, rows)`.
@@ -1594,6 +1605,19 @@ mod imp {
         }
     }
 
+    /// Sets the `SIGHUP` disposition to ignore.
+    pub fn unix_ignore_terminal_hangup() {
+        // SAFETY: `signal` installs the predefined `SIG_IGN` disposition for
+        // one valid signal number; no handler code runs. The returned
+        // previous disposition is never dereferenced. `SIG_ERR` is possible
+        // only for an invalid signal number, which `SIGHUP` is not, so the
+        // result is not checked.
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        }
+    }
+
     /// Waits for standard input with `poll`.
     pub fn unix_wait_for_terminal_input(timeout: std::time::Duration) -> io::Result<bool> {
         let milliseconds = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
@@ -1674,7 +1698,7 @@ mod imp {
 
     /// Opens and closes one shared library by soname.
     #[cfg(not(target_os = "macos"))]
-    pub fn unix_shared_library_loads(soname: &std::ffi::CStr) -> bool {
+    pub fn unix_shared_library_opens(soname: &std::ffi::CStr) -> bool {
         // SAFETY: `dlopen` reads one NUL-terminated name that outlives the
         // call. It runs the library's initializers, which is acceptable only
         // because callers probe libraries the process is about to load
@@ -5427,17 +5451,17 @@ mod tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn shared_library_probe_finds_the_c_library_and_rejects_missing_names() {
-        assert!(super::shared_library_loads(&[
+        assert!(super::unix_shared_library_loads(&[
             "libc.so.6",
             "libc.so.7",
             "libc.so.12",
             "libc.so"
         ]));
-        assert!(!super::shared_library_loads(&[
+        assert!(!super::unix_shared_library_loads(&[
             "libnoter-does-not-exist.so.0"
         ]));
-        assert!(!super::shared_library_loads(&["nul\0inside.so"]));
-        assert!(!super::shared_library_loads(&[]));
+        assert!(!super::unix_shared_library_loads(&["nul\0inside.so"]));
+        assert!(!super::unix_shared_library_loads(&[]));
     }
 
     #[test]

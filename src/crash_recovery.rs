@@ -692,6 +692,45 @@ impl CrashRecoverySession {
         self.schedule.next_persist_delay(self.monotonic_now())
     }
 
+    /// Writes the current revision now because the process is about to end
+    /// without a Save, as when a terminal hangs up, and waits up to `limit`
+    /// for the write to be confirmed.
+    ///
+    /// The scheduler normally waits for an idle pause. Moving its clock
+    /// forward by the longest dirty interval makes the revision due at once;
+    /// time still only moves forward. Returns whether the record is known to
+    /// hold this revision.
+    pub fn persist_before_exit(
+        &mut self,
+        document: &Document,
+        selection: Selection,
+        limit: Duration,
+    ) -> bool {
+        if self.unavailable || self.store.is_none() || !document.is_dirty() {
+            return false;
+        }
+        let deadline = Instant::now() + limit;
+        self.on_retained(document, selection);
+        if let Some(earlier) = self
+            .session_started
+            .checked_sub(noter::core::recovery::RECOVERY_MAX_DIRTY_INTERVAL)
+        {
+            self.session_started = earlier;
+        }
+        loop {
+            self.on_tick(document, selection);
+            if self.schedule.in_flight_revision().is_none()
+                && self.schedule.last_persisted_revision() == Some(document.revision())
+            {
+                return true;
+            }
+            if Instant::now() >= deadline || self.persist_failure {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// Records a successful Save and deletes the owned recovery record.
     pub fn on_saved_clean(&mut self, revision: Revision) {
         if self.unavailable || self.store.is_none() {
@@ -923,6 +962,13 @@ impl CrashRecoverySession {
 
     fn monotonic_now(&self) -> RecoveryClock {
         RecoveryClock::new(self.session_started.elapsed())
+    }
+
+    /// A session that never persists, for tests that must not touch the
+    /// user's real recovery store.
+    #[cfg(test)]
+    pub(crate) fn disabled_for_test() -> Self {
+        Self::unavailable()
     }
 
     #[cfg(test)]
