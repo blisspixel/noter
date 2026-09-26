@@ -8,6 +8,8 @@
 mod app;
 mod bounded_text_input;
 mod crash_recovery;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod display_runtime;
 mod editor_settings;
 mod find_ui;
 mod go_to_line_ui;
@@ -24,7 +26,7 @@ use app::{DocumentView, InterfaceRequest, LaunchOptions, NoterApp, RELEASES_URL,
 use noter::core::file_observation::preflight_regular_file;
 use theme::AppTheme;
 
-const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --gui\n  --tui\n  --theme system|light|dark|green|amber\n  --view text|markdown\n  -h, --help\n  -V, --version\n\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` shows the local update status and makes no network request.\nOption values are case-insensitive.\n\nWithout --gui or --tui, Noter opens a window. On non-macOS Unix, such as\nLinux or BSD, with no DISPLAY or WAYLAND_DISPLAY and a terminal on standard\ninput and output, it opens the terminal interface instead, and `noter update`\nprints its status.";
+const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --gui\n  --tui\n  --theme system|light|dark|green|amber\n  --view text|markdown\n  -h, --help\n  -V, --version\n\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` shows the local update status and makes no network request.\nOption values are case-insensitive.\n\nWithout --gui or --tui, Noter opens a window. On non-macOS Unix, such as\nLinux or BSD, with no DISPLAY, WAYLAND_DISPLAY, or WAYLAND_SOCKET and a\nterminal on standard input and output, it opens the terminal interface\ninstead, and `noter update` prints its status.";
 const THEME_ERROR_VALUES: &str = "system, light, dark, green, or amber";
 
 fn main() -> eframe::Result {
@@ -83,6 +85,21 @@ fn main() -> eframe::Result {
             std::process::exit(1);
         }
         return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let named = |name: &str| display_variable_names_server(std::env::var_os(name).as_deref());
+        let wayland = named("WAYLAND_DISPLAY") || named("WAYLAND_SOCKET");
+        let backend = display_runtime::DisplayBackend::from_environment(wayland);
+        let missing = display_runtime::missing(backend, noter_platform::shared_library_loads);
+        if !missing.is_empty() {
+            write_line(
+                std::io::stderr().lock(),
+                &format!("noter: {}", display_runtime::describe(&missing)),
+            );
+            std::process::exit(1);
+        }
     }
 
     let screenshot_qa = launch.screenshot_path.is_some();
@@ -253,7 +270,9 @@ impl LaunchEnvironment {
         let named = |name: &str| display_variable_names_server(std::env::var_os(name).as_deref());
         Self {
             needs_display_server: cfg!(all(unix, not(target_os = "macos"))),
-            display_server_present: named("DISPLAY") || named("WAYLAND_DISPLAY"),
+            display_server_present: named("DISPLAY")
+                || named("WAYLAND_DISPLAY")
+                || named("WAYLAND_SOCKET"),
             interactive_terminal: noter_platform::is_terminal_stdin()
                 && noter_platform::is_terminal_stdout(),
         }

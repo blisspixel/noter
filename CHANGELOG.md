@@ -8,6 +8,13 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Explain a missing Linux window library instead of crashing. Without
+  `libxkbcommon-x11` the window aborted with a panic. Noter now checks the
+  keyboard, display-protocol, and OpenGL libraries the window loads for the
+  X11 or Wayland session it will use, names
+  any that are missing with the Debian, Fedora, and Arch packages that
+  provide them, suggests `noter --tui`, and exits with status 1. The packages
+  are listed in the installation guide.
 - Open the window on macOS. The terminal fallback treated every Unix system
   without `DISPLAY` as headless, so macOS launches opened the terminal
   interface or failed without a terminal. The fallback now applies only on

@@ -131,6 +131,24 @@ Noter remains under active development. Keep backups and do not use it as the
 only editor for important files until the release evidence in the roadmap is
 complete.
 
+### Linux window libraries
+
+On Linux and the BSDs the window loads its keyboard, display, and OpenGL
+libraries when it starts. Desktop installations normally have them. On a
+minimal system, install:
+
+| Distribution | X11 session | Wayland session |
+| --- | --- | --- |
+| Debian or Ubuntu | `libxkbcommon0 libxkbcommon-x11-0 libegl1` | `libxkbcommon0 libwayland-client0 libwayland-egl1 libegl1` |
+| Fedora | `libxkbcommon libxkbcommon-x11 mesa-libEGL` | `libxkbcommon libwayland-client libwayland-egl mesa-libEGL` |
+| Arch | `libxkbcommon libxkbcommon-x11 libglvnd` | `libxkbcommon wayland libglvnd` |
+
+On X11, `libGL` (GLX) can stand in for `libEGL`. The session is Wayland when
+`WAYLAND_DISPLAY` or `WAYLAND_SOCKET` is set.
+
+If one is missing, Noter names it with these packages and exits with status 1 instead of opening
+the window. The terminal interface (`noter --tui`) needs none of them.
+
 ## Command-line contract
 
 ```text
@@ -148,6 +166,7 @@ noter update
 | `noter --gui [FILE]` | runs | Forces graphical desktop interface mode |
 | `noter update` | runs | Opens the local update status, titled `Update status - Noter`, or prints it where the terminal interface would open |
 | Unknown option, invalid or missing option value, second document path | 2 | One line on standard error, then usage |
+| A Linux or BSD window library cannot be loaded | 1 | The missing library and the packages that provide it |
 | FILE missing, a directory, or unreadable | 2 | `noter: cannot open ...`, then usage |
 
 `--theme system|light|dark|green|amber` and `--view text|markdown` select the
@@ -156,7 +175,8 @@ option parsing so a document path may begin with `-`.
 
 Without `--gui` or `--tui`, Noter opens a window. On Linux, the BSDs, and other
 non-macOS Unix systems, where windows need an X11 or Wayland display server, a
-launch with neither `DISPLAY` nor `WAYLAND_DISPLAY` set to a non-empty value
+launch with none of `DISPLAY`, `WAYLAND_DISPLAY`, or `WAYLAND_SOCKET` set to a
+non-empty value
 whose standard input and standard output are both interactive terminals opens
 the terminal interface instead, such as over SSH. `noter update` in that
 situation prints the update status to standard output and exits. macOS and

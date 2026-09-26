@@ -776,6 +776,21 @@ pub fn wait_for_terminal_input(timeout: std::time::Duration) -> io::Result<bool>
     platform_wait_for_terminal_input(timeout)
 }
 
+/// Returns whether the dynamic loader can load any of `sonames`.
+///
+/// Each name is opened lazily and privately, then closed, so the probe does
+/// not add symbols to the process. Linux and the BSDs load their windowing
+/// libraries at run time, and a missing one otherwise surfaces as a panic
+/// deep inside the windowing stack. Names containing NUL are skipped.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[must_use]
+pub fn shared_library_loads(sonames: &[&str]) -> bool {
+    sonames
+        .iter()
+        .filter_map(|soname| std::ffi::CString::new(*soname).ok())
+        .any(|soname| imp::unix_shared_library_loads(&soname))
+}
+
 /// Returns the current terminal dimensions as `(columns, rows)`.
 #[must_use]
 pub fn terminal_size() -> (u16, u16) {
@@ -1655,6 +1670,28 @@ mod imp {
         unsafe {
             libc::isatty(libc::STDIN_FILENO) != 0
         }
+    }
+
+    /// Opens and closes one shared library by soname.
+    #[cfg(not(target_os = "macos"))]
+    pub fn unix_shared_library_loads(soname: &std::ffi::CStr) -> bool {
+        // SAFETY: `dlopen` reads one NUL-terminated name that outlives the
+        // call. It runs the library's initializers, which is acceptable only
+        // because callers probe libraries the process is about to load
+        // anyway. `RTLD_LOCAL` keeps the library's symbols out of the global
+        // namespace, and `RTLD_LAZY` defers symbol binding. A non-null handle
+        // is closed exactly once and never used again.
+        #[allow(unsafe_code)]
+        unsafe {
+            let handle = libc::dlopen(soname.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
+            if handle.is_null() {
+                return false;
+            }
+            // A close failure leaves the library mapped, which is harmless:
+            // the window is about to load the same library anyway.
+            libc::dlclose(handle);
+        }
+        true
     }
 
     /// Reports whether standard output is a Unix TTY.
@@ -5386,6 +5423,22 @@ mod tests {
         retained_private_creation_error, retained_private_creation_error_with_cleanup,
         retained_private_file_cleanup_cause, retained_private_file_creation_cause,
     };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn shared_library_probe_finds_the_c_library_and_rejects_missing_names() {
+        assert!(super::shared_library_loads(&[
+            "libc.so.6",
+            "libc.so.7",
+            "libc.so.12",
+            "libc.so"
+        ]));
+        assert!(!super::shared_library_loads(&[
+            "libnoter-does-not-exist.so.0"
+        ]));
+        assert!(!super::shared_library_loads(&["nul\0inside.so"]));
+        assert!(!super::shared_library_loads(&[]));
+    }
 
     #[test]
     fn attaching_a_console_reports_already_bound_streams_as_usable() {
