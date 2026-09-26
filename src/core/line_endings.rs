@@ -587,6 +587,30 @@ mod tests {
     }
 
     #[test]
+    fn first_positions_are_read_only_to_break_a_tie() {
+        let counts = |lf, crlf, cr| LineEndingCounts { lf, crlf, cr };
+        let untied = LineEndingProfile::from_counts(counts(2, 1, 0), || {
+            panic!("an untied profile must not scan for first positions")
+        });
+        assert_eq!(untied.fallback_insertion(), LineEnding::Lf);
+
+        let mut scans = 0;
+        let tied = LineEndingProfile::from_counts(counts(1, 1, 0), || {
+            scans += 1;
+            [4, 2, usize::MAX]
+        });
+        assert_eq!(scans, 1);
+        assert_eq!(tied.fallback_insertion(), LineEnding::CrLf);
+    }
+
+    #[test]
+    fn equal_first_positions_keep_the_fixed_convention_order() {
+        let counts = LineEndingCounts { lf: 1, crlf: 1, cr: 1 };
+        let profile = LineEndingProfile::from_counts(counts, || [3, 3, 3]);
+        assert_eq!(profile.fallback_insertion(), LineEnding::Lf);
+    }
+
+    #[test]
     fn the_most_common_convention_wins_and_the_first_breaks_ties() {
         let insertion = |text: &str| LineEndingProfile::detect(text).fallback_insertion();
         assert_eq!(insertion("a\r\nb\nc\n"), LineEnding::Lf);
