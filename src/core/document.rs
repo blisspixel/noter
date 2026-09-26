@@ -521,7 +521,9 @@ mod tests {
     use crate::core::line_endings::{LineEnding, LineEndingCounts};
     use tempfile::{NamedTempFile, tempdir};
 
-    const PIECES: [&str; 6] = ["a", "\r", "\n", "\r\n", "é", "\u{feff}"];
+    // A leading U+FEFF would load as a byte-order mark, so BOMs come only
+    // from the `bom` flag.
+    const PIECES: [&str; 6] = ["a", "\r", "\n", "\r\n", "é", "世"];
 
     fn piece_text(pieces: &[usize]) -> String {
         pieces.iter().map(|&index| PIECES[index]).collect()
