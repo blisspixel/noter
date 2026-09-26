@@ -42,6 +42,12 @@ dossier.
   instead of repainting, and a rope-backed document core. The measured
   latency budgets and the virtualized large-file editor (target: 50 MiB) are
   roadmap work; today the window edits files up to 8 MiB.
+- **Any Language:** Text in every script is kept byte for byte. The window
+  draws scripts beyond Latin, Greek, and Cyrillic with fonts already on your
+  computer, loaded only when a document needs them; right-to-left reordering
+  and complex-script shaping in the window are roadmap work. The terminal
+  interface measures wide and combining characters and relies on the
+  terminal's own shaping.
 - **One Document, Full Focus:** Single-document ergonomics instead of a
   workspace that wants to become a platform.
 

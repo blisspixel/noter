@@ -1002,6 +1002,23 @@ rejected extension reconstructs standard Dark visuals instead of applying a
 partial or unreadable palette. The future custom-theme loader is declarative
 and accepts no scripts, shaders, assets, URLs, commands, or behavior overrides.
 
+The window bundles Inter and keeps egui's default fonts, which cover Latin,
+Greek, Cyrillic, and emoji. Every other script comes from fonts already on the
+computer, loaded only when text needs them. Opening, restoring, or editing text
+that contains characters no loaded font maps sends that text to one background
+thread. The thread lists font files in the platform's font directories (the
+Windows and per-user Windows font folders, the macOS system, library, and user
+font folders, or the XDG, home, and system font folders on Linux and the BSDs),
+ranks broad regular faces first, reads each candidate's character map, and adds
+only files that cover a missing character to both font families at the lowest
+priority. Characters no file covers are remembered so they never restart the
+search. Reads are bounded: files above 96 MiB are skipped, examination stops
+after 768 MiB, and resident fallback fonts stay under 192 MiB. The first frame
+may draw a replacement box for a character whose font is still loading; the
+thread requests a repaint when fonts arrive. egui lays out one glyph per
+character, so right-to-left runs are not reordered and complex scripts are not
+shaped until the production text engine in section 9.3 replaces it.
+
 ## 12. Native Markdown architecture
 
 Markdown Mode and Text Mode share one authoritative Markdown source. Text Mode

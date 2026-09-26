@@ -40,6 +40,7 @@ use crate::editor_settings::{
     apply_editor_zoom,
 };
 use crate::find_ui::{FindBar, FindBarAction, ReplaceScope};
+use crate::font_fallback::FontFallback;
 use crate::go_to_line_ui::{GoToLineAction, GoToLineDialog};
 use crate::idle_screen::IdleScreen;
 use crate::keyboard_nav::{
@@ -625,6 +626,8 @@ pub struct NoterApp {
     external_memory_at_risk: bool,
     last_external_inspect_at: Option<f64>,
     crash_recovery: CrashRecoverySession,
+    /// Present only in a real window, so tests never scan system fonts.
+    font_fallback: Option<FontFallback>,
     #[cfg(test)]
     test_recovery_root: Option<tempfile::TempDir>,
     #[cfg(feature = "screenshot-qa")]
@@ -687,6 +690,7 @@ impl NoterApp {
             external_memory_at_risk: false,
             last_external_inspect_at: None,
             crash_recovery,
+            font_fallback: None,
             #[cfg(test)]
             test_recovery_root: None,
             #[cfg(feature = "screenshot-qa")]
@@ -714,6 +718,7 @@ impl NoterApp {
         selected_theme.apply(&cc.egui_ctx);
 
         let mut app = Self::with_crash_recovery(CrashRecoverySession::open_default());
+        app.font_fallback = Some(FontFallback::new(cc.egui_ctx.clone()));
         app.theme = selected_theme;
         app.text_wrap = TextWrap::from_storage(cc.storage);
         app.editor_zoom = EditorZoom::from_storage(cc.storage);
@@ -790,6 +795,7 @@ impl NoterApp {
 
     fn install_prepared_document(&mut self, document: Document) {
         self.text = String::from(document.rope());
+        self.observe_glyphs_in_text();
         self.document = document;
         self.history.reset(self.document.revision());
         self.selection = Selection::caret(0);
@@ -3200,6 +3206,11 @@ impl NoterApp {
     ) {
         match record(&mut self.document, transaction) {
             Ok(applied) => {
+                if let Some(fonts) = &mut self.font_fallback {
+                    for edit in transaction.edits() {
+                        fonts.observe(edit.inserted());
+                    }
+                }
                 self.selection = applied.selection();
                 let history_outcome = self.history.record(applied);
                 self.text = String::from(self.document.rope());
@@ -3226,6 +3237,12 @@ impl NoterApp {
             self.markdown_editor.reset();
             self.pending_selection_restore = Some(self.selection);
             self.error_msg = Some(markdown_limit_message(self.text.len(), limit));
+        }
+    }
+
+    fn observe_glyphs_in_text(&mut self) {
+        if let Some(fonts) = &mut self.font_fallback {
+            fonts.observe(&self.text);
         }
     }
 
@@ -3946,6 +3963,7 @@ impl NoterApp {
             match self.crash_recovery.restore_active_offer() {
                 Ok((document, selection)) => {
                     self.text = String::from(document.rope());
+                    self.observe_glyphs_in_text();
                     self.document = document;
                     self.history.reset(self.document.revision());
                     self.selection = valid_selection_or_end(&self.text, selection);
