@@ -6,10 +6,11 @@
 //! quarantine directory instead of being deleted silently. Quarantine failures
 //! are reported on the scan entry rather than swallowed.
 
-use std::fs::{self, File, TryLockError};
+#[cfg(any(not(unix), test))]
+use std::fs;
+use std::fs::{File, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-#[cfg(windows)]
 use std::sync::Arc;
 
 use getrandom::fill as fill_random;
@@ -17,6 +18,8 @@ use getrandom::fill as fill_random;
 use noter_platform::WindowsRecoveryNamespace;
 #[cfg(any(windows, test))]
 use noter_platform::{CommitReceipt, ReplaceExistingOutcome};
+#[cfg(unix)]
+use noter_platform::{UnixRecoveryDirectory, UnixRecoveryNamespace};
 
 use super::recovery::{
     RECOVERY_MAGIC, RECOVERY_SCHEMA_VERSION, RecoveryInstanceId, RecoveryQuarantineReason,
@@ -289,8 +292,181 @@ impl IntoIterator for RecoveryStartupScan {
 #[derive(Clone)]
 pub struct RecoveryStore {
     root: PathBuf,
+    #[cfg(unix)]
+    namespace: Arc<UnixRecoveryNamespace>,
     #[cfg(windows)]
     _namespace_guard: Arc<WindowsRecoveryNamespace>,
+}
+
+/// Recovery entries are reached through the held directories of the bound
+/// namespace on Unix, and by pathname inside the held, delete-protected
+/// directories on Windows.
+impl RecoveryStore {
+    #[cfg(unix)]
+    fn bound_directory(&self, directory: &Path) -> io::Result<&UnixRecoveryDirectory> {
+        [self.namespace.records(), self.namespace.quarantine()]
+            .into_iter()
+            .find(|bound| bound.path() == directory)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the path is outside the bound recovery directories",
+                )
+            })
+    }
+
+    #[cfg(unix)]
+    fn bound_entry<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> io::Result<(&'a UnixRecoveryDirectory, &'a std::ffi::OsStr)> {
+        let name = path.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "a recovery entry needs a name")
+        })?;
+        let directory = self.bound_directory(path.parent().unwrap_or_else(|| Path::new("")))?;
+        Ok((directory, name))
+    }
+
+    /// Refuses a pathname outside the held records and quarantine directories.
+    #[cfg(not(unix))]
+    fn require_bound_directory(&self, directory: &Path) -> io::Result<()> {
+        if directory == self.records_dir() || directory == self.quarantine_dir() {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the path is outside the bound recovery directories",
+            ))
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn require_bound_entry(&self, path: &Path) -> io::Result<()> {
+        self.require_bound_directory(path.parent().unwrap_or_else(|| Path::new("")))
+    }
+
+    fn entry_open_existing(&self, path: &Path) -> io::Result<File> {
+        #[cfg(unix)]
+        {
+            let (directory, name) = self.bound_entry(path)?;
+            directory.open_existing(name)
+        }
+        #[cfg(not(unix))]
+        {
+            self.require_bound_entry(path)?;
+            noter_platform::open_existing_no_follow(path)
+        }
+    }
+
+    fn entry_open_for_cleanup(&self, path: &Path) -> io::Result<File> {
+        #[cfg(unix)]
+        {
+            self.entry_open_existing(path)
+        }
+        #[cfg(not(unix))]
+        {
+            self.require_bound_entry(path)?;
+            noter_platform::open_for_cleanup(path)
+        }
+    }
+
+    fn entry_create_private_new(&self, path: &Path) -> io::Result<File> {
+        #[cfg(unix)]
+        {
+            let (directory, name) = self.bound_entry(path)?;
+            directory.create_private_new(name)
+        }
+        #[cfg(not(unix))]
+        {
+            self.require_bound_entry(path)?;
+            noter_platform::create_private_new_file(path)
+        }
+    }
+
+    fn entry_remove(&self, path: &Path) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            let (directory, name) = self.bound_entry(path)?;
+            directory.remove(name)
+        }
+        #[cfg(not(unix))]
+        {
+            self.require_bound_entry(path)?;
+            fs::remove_file(path)
+        }
+    }
+
+    /// Removes `path` only while it still names `expected`. On Unix the check
+    /// and removal are relative to the held private directory.
+    fn entry_remove_if_identifies(&self, path: &Path, expected: &File) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            let (directory, name) = self.bound_entry(path)?;
+            directory.remove_if_identifies(name, expected)
+        }
+        #[cfg(not(unix))]
+        {
+            self.require_bound_entry(path)?;
+            let named = noter_platform::open_existing_no_follow(path)?;
+            if noter_platform::file_facts(&named)?.identity()
+                != noter_platform::file_facts(expected)?.identity()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the recovery entry no longer identifies the opened file",
+                ));
+            }
+            drop(named);
+            fs::remove_file(path)
+        }
+    }
+
+    fn entry_is_file(&self, path: &Path) -> io::Result<bool> {
+        #[cfg(unix)]
+        {
+            let (directory, name) = self.bound_entry(path)?;
+            directory.is_regular_file(name)
+        }
+        #[cfg(not(unix))]
+        {
+            self.require_bound_entry(path)?;
+            fs::symlink_metadata(path).map(|metadata| metadata.file_type().is_file())
+        }
+    }
+
+    /// Lists at most `limit` entries of a recovery directory as paths.
+    fn entry_paths(&self, directory: &Path, limit: usize) -> io::Result<Vec<io::Result<PathBuf>>> {
+        #[cfg(unix)]
+        {
+            Ok(self
+                .bound_directory(directory)?
+                .entry_names(limit)?
+                .into_iter()
+                .map(|name| Ok(directory.join(name)))
+                .collect())
+        }
+        #[cfg(not(unix))]
+        {
+            self.require_bound_directory(directory)?;
+            Ok(fs::read_dir(directory)?
+                .take(limit)
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect())
+        }
+    }
+
+    fn sync_entry_directory(&self, path: &Path) -> io::Result<noter_platform::ParentSyncOutcome> {
+        #[cfg(unix)]
+        {
+            self.bound_entry(path)?.0.sync()?;
+            Ok(noter_platform::ParentSyncOutcome::Synced)
+        }
+        #[cfg(not(unix))]
+        {
+            self.require_bound_entry(path)?;
+            noter_platform::sync_parent(path)
+        }
+    }
 }
 
 fn recovery_directory_error_is_missing(kind: io::ErrorKind) -> bool {
@@ -300,30 +476,16 @@ fn recovery_directory_error_is_missing(kind: io::ErrorKind) -> bool {
 impl RecoveryStore {
     #[cfg(test)]
     fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
-        let root = root.into();
-        #[cfg(windows)]
-        {
-            Self::open_in_state(root.join("state"))
-        }
-        #[cfg(not(windows))]
-        {
-            Self::open_unbound_on_unix(root)
-        }
-    }
-
-    #[cfg(not(windows))]
-    fn open_unbound_on_unix(root: PathBuf) -> io::Result<Self> {
-        fs::create_dir_all(root.join(RECOVERY_RECORDS_DIR))?;
-        fs::create_dir_all(root.join(RECOVERY_QUARANTINE_DIR))?;
-        Ok(Self { root })
+        Self::open_in_state(root.into().join("state"))
     }
 
     /// Opens the production recovery layout beneath a platform state root.
     ///
-    /// Windows validates and retains the state, recovery, records, and
-    /// quarantine directory namespace before recovery content can be written.
-    /// Other platforms retain the existing path-based implementation until
-    /// their M4-H1 namespace adapters are complete.
+    /// The state, recovery, records, and quarantine directories are validated
+    /// and retained before recovery content can be written. On Unix every
+    /// record, lease, and quarantine operation then goes through the held
+    /// directories; Windows keeps pathname operations inside its held,
+    /// delete-protected directories.
     ///
     /// # Errors
     ///
@@ -342,9 +504,24 @@ impl RecoveryStore {
                 _namespace_guard: Arc::new(namespace),
             })
         }
-        #[cfg(not(windows))]
+        #[cfg(unix)]
         {
-            Self::open_unbound_on_unix(state_root.join(RECOVERY_STATE_SUBDIR))
+            let namespace = UnixRecoveryNamespace::open_or_create(
+                &state_root,
+                std::ffi::OsStr::new(RECOVERY_STATE_SUBDIR),
+            )?;
+            Ok(Self {
+                root: namespace.recovery().path().to_path_buf(),
+                namespace: Arc::new(namespace),
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = state_root;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "crash recovery is unsupported on this operating system",
+            ))
         }
     }
 
@@ -396,12 +573,12 @@ impl RecoveryStore {
     ) -> io::Result<RecoveryLiveLease> {
         let attempt = (|| {
             let primary_path = self.live_path(instance_id);
-            let primary = acquire_live_file(&primary_path)?;
+            let primary = acquire_live_file(self, &primary_path)?;
             let guard_path = self.live_guard_path(instance_id);
-            let guard = match acquire_live_file(&guard_path) {
+            let guard = match acquire_live_file(self, &guard_path) {
                 Ok(guard) => guard,
                 Err(error) => {
-                    let _ = delete_locked_live_path(&primary_path, &primary);
+                    let _ = delete_locked_live_path(self, &primary_path, &primary);
                     return Err(error);
                 }
             };
@@ -427,8 +604,8 @@ impl RecoveryStore {
     /// fail closed rather than expose a potentially live record for restore or
     /// discard.
     pub fn instance_is_live(&self, instance_id: RecoveryInstanceId) -> io::Result<bool> {
-        let primary = probe_live_path(&self.live_path(instance_id))?;
-        let guard = probe_live_path(&self.live_guard_path(instance_id))?;
+        let primary = probe_live_path(self, &self.live_path(instance_id))?;
+        let guard = probe_live_path(self, &self.live_guard_path(instance_id))?;
         Ok(primary == Some(true) || guard == Some(true))
     }
 
@@ -443,7 +620,7 @@ impl RecoveryStore {
         let encoded = snapshot.encode();
         #[cfg(unix)]
         {
-            write_atomic_private_unix(&destination, snapshot.instance_id(), &encoded)
+            write_atomic_private_unix(self, &destination, snapshot.instance_id(), &encoded)
         }
         #[cfg(windows)]
         {
@@ -468,7 +645,7 @@ impl RecoveryStore {
     ///
     /// Returns an I/O error when an existing record cannot be removed.
     pub fn delete_record(&self, instance_id: RecoveryInstanceId) -> io::Result<()> {
-        remove_file_if_present(&self.record_path(instance_id))
+        remove_file_if_present(self, &self.record_path(instance_id))
     }
 
     /// Removes the canonical record and only keyed temporary artifacts owned by
@@ -482,7 +659,7 @@ impl RecoveryStore {
     pub fn delete_owned_artifacts(&self, instance_id: RecoveryInstanceId) -> io::Result<()> {
         let mut first_error = self.delete_record(instance_id).err();
         let records = self.records_dir();
-        let dir = match fs::read_dir(&records) {
+        let dir = match self.entry_paths(&records, MAX_OWNED_RECOVERY_CLEANUP_FILES + 1) {
             Ok(dir) => dir,
             Err(error) => {
                 if recovery_directory_error_is_missing(error.kind()) {
@@ -491,7 +668,7 @@ impl RecoveryStore {
                 return Err(first_error.unwrap_or(error));
             }
         };
-        for (index, next) in dir.enumerate() {
+        for (index, next) in dir.into_iter().enumerate() {
             if index == MAX_OWNED_RECOVERY_CLEANUP_FILES {
                 if first_error.is_none() {
                     first_error = Some(io::Error::other(
@@ -500,8 +677,8 @@ impl RecoveryStore {
                 }
                 break;
             }
-            let entry = match next {
-                Ok(entry) => entry,
+            let candidate = match next {
+                Ok(candidate) => candidate,
                 Err(error) => {
                     if first_error.is_none() {
                         first_error = Some(error);
@@ -509,9 +686,8 @@ impl RecoveryStore {
                     continue;
                 }
             };
-            let candidate = entry.path();
             if keyed_temporary_instance(&candidate) == Some(instance_id)
-                && let Err(error) = remove_file_if_present(&candidate)
+                && let Err(error) = remove_file_if_present(self, &candidate)
                 && first_error.is_none()
             {
                 first_error = Some(error);
@@ -569,7 +745,7 @@ impl RecoveryStore {
         claim: &RecoveryInstanceClaim,
     ) -> io::Result<ValidatedRecoveryRecord> {
         require_matching_claim(handle, claim)?;
-        load_bound_record(handle)
+        load_bound_record(self, handle)
     }
 
     /// Releases an offered-instance claim and removes its stale lease path.
@@ -590,8 +766,10 @@ impl RecoveryStore {
     /// Returns an I/O error when a present path no longer identifies its locked
     /// lease object or facts-bound deletion fails.
     pub fn release_live_lease(&self, lease: RecoveryLiveLease) -> io::Result<()> {
-        let primary = delete_locked_live_path(&self.live_path(lease.instance_id), &lease.primary);
-        let guard = delete_locked_live_path(&self.live_guard_path(lease.instance_id), &lease.guard);
+        let primary =
+            delete_locked_live_path(self, &self.live_path(lease.instance_id), &lease.primary);
+        let guard =
+            delete_locked_live_path(self, &self.live_guard_path(lease.instance_id), &lease.guard);
         drop(lease);
         primary.and(guard)
     }
@@ -623,8 +801,8 @@ impl RecoveryStore {
         claim: &RecoveryInstanceClaim,
     ) -> io::Result<()> {
         require_matching_claim(&handle, claim)?;
-        let _ = load_bound_record(&handle)?;
-        delete_bound_record(handle)
+        let _ = load_bound_record(self, &handle)?;
+        delete_bound_record(self, handle)
     }
 
     /// Scans a bounded number of active recovery artifacts into metadata-only
@@ -639,7 +817,7 @@ impl RecoveryStore {
         let mut scan = RecoveryStartupScan::default();
         let mut paths = Vec::with_capacity(MAX_STARTUP_RECOVERY_FILES);
         let records = self.records_dir();
-        let dir = match fs::read_dir(&records) {
+        let dir = match self.entry_paths(&records, MAX_STARTUP_RECOVERY_DIRECTORY_ENTRIES + 1) {
             Ok(dir) => dir,
             Err(error) => {
                 if recovery_directory_error_is_missing(error.kind()) {
@@ -648,16 +826,16 @@ impl RecoveryStore {
                 return Err(error);
             }
         };
-        for (raw_index, next) in dir.enumerate() {
+        for (raw_index, next) in dir.into_iter().enumerate() {
             if raw_index == MAX_STARTUP_RECOVERY_DIRECTORY_ENTRIES {
                 scan.note_omission(DIRECTORY_LIMIT_REACHED);
                 break;
             }
-            let path = next?.path();
-            let Some(path_metadata) = startup_path_metadata(&path)? else {
+            let path = next?;
+            let Some(is_file) = startup_entry_is_file(self, &path)? else {
                 continue;
             };
-            if !path_metadata.file_type().is_file() {
+            if !is_file {
                 continue;
             }
             if let Some(instance_id) = live_instance_from_path(&path) {
@@ -680,7 +858,7 @@ impl RecoveryStore {
         let mut offers = Vec::with_capacity(MAX_STARTUP_RECOVERY_OFFERS);
         let mut scanned_bytes = 0_u64;
         for path in paths {
-            let opened = match open_recovery_candidate(&path) {
+            let opened = match open_recovery_candidate(self, &path) {
                 Ok(opened) => opened,
                 Err(OpenRecoveryCandidateFailure::Missing) => continue,
                 Err(OpenRecoveryCandidateFailure::Inaccessible(error)) => return Err(error),
@@ -749,7 +927,7 @@ impl RecoveryStore {
                 );
                 continue;
             };
-            if revalidate_path_identity(&path, opened.facts, opened.encoded_len).is_err() {
+            if revalidate_path_identity(self, &path, opened.facts, opened.encoded_len).is_err() {
                 retain_quarantine_result(
                     &mut scan,
                     retained_quarantine_entry(
@@ -816,8 +994,8 @@ impl RecoveryStore {
     /// missing source is reported as [`io::ErrorKind::NotFound`] rather than
     /// success.
     pub fn quarantine_file(&self, path: &Path) -> io::Result<PathBuf> {
-        fs::symlink_metadata(path)?;
-        let opened = open_recovery_candidate(path).map_err(|failure| match failure {
+        self.entry_is_file(path)?;
+        let opened = open_recovery_candidate(self, path).map_err(|failure| match failure {
             OpenRecoveryCandidateFailure::Missing => io::Error::new(
                 io::ErrorKind::NotFound,
                 "recovery source disappeared before it could be bound",
@@ -931,7 +1109,9 @@ fn quarantine_bound_file(
     opened: &OpenedRecoveryCandidate,
     bytes: &[u8],
 ) -> io::Result<(PathBuf, Option<io::Error>)> {
-    quarantine_bound_file_with(store, path, opened, bytes, noter_platform::sync_parent)
+    quarantine_bound_file_with(store, path, opened, bytes, |path| {
+        store.sync_entry_directory(path)
+    })
 }
 
 fn quarantine_bound_file_with(
@@ -947,18 +1127,16 @@ fn quarantine_bound_file_with(
             "bound recovery bytes do not match the opened artifact length",
         ));
     }
-    revalidate_path_identity(path, opened.facts, opened.encoded_len)?;
+    revalidate_path_identity(store, path, opened.facts, opened.encoded_len)?;
     let (destination, mut quarantine_file) = create_quarantine_copy(store, bytes)?;
     if let Err(error) = verify_exact_bytes(&mut quarantine_file, bytes) {
-        let _ = noter_platform::delete_open_file(&quarantine_file);
-        drop(quarantine_file);
-        let _ = fs::remove_file(&destination);
+        discard_created_entry(store, &destination, &quarantine_file);
         return Err(error);
     }
 
     noter_platform::sync_file(&quarantine_file)?;
     let _ = sync_parent(&destination)?;
-    let cleanup_error = match delete_bound_candidate(path, opened) {
+    let cleanup_error = match delete_bound_candidate(store, path, opened) {
         Ok(()) => sync_parent(path).map(|_| ()).err(),
         Err(error) => Some(error),
     };
@@ -975,7 +1153,7 @@ fn create_quarantine_copy(store: &RecoveryStore, bytes: &[u8]) -> io::Result<(Pa
         let destination = store
             .quarantine_dir()
             .join(format!("noter-quarantine-{}.rec", hex16(&random)));
-        let mut file = match noter_platform::create_private_new_file(&destination) {
+        let mut file = match store.entry_create_private_new(&destination) {
             Ok(file) => file,
             Err(error) => {
                 if is_quarantine_name_collision(error.kind()) {
@@ -990,9 +1168,7 @@ fn create_quarantine_copy(store: &RecoveryStore, bytes: &[u8]) -> io::Result<(Pa
             noter_platform::sync_file(&file)
         })();
         if let Err(error) = write_result {
-            let _ = noter_platform::delete_open_file(&file);
-            drop(file);
-            let _ = fs::remove_file(&destination);
+            discard_created_entry(store, &destination, &file);
             return Err(error);
         }
         return Ok((destination, file));
@@ -1001,6 +1177,14 @@ fn create_quarantine_copy(store: &RecoveryStore, bytes: &[u8]) -> io::Result<(Pa
         io::ErrorKind::AlreadyExists,
         "could not allocate a private recovery quarantine name",
     ))
+}
+
+/// Best-effort removal of a quarantine copy this call just created: by handle
+/// where supported, otherwise only while the name still identifies it.
+fn discard_created_entry(store: &RecoveryStore, destination: &Path, file: &File) {
+    if noter_platform::delete_open_file(file).is_err() {
+        let _ = store.entry_remove_if_identifies(destination, file);
+    }
 }
 
 fn verify_exact_bytes(file: &mut File, expected: &[u8]) -> io::Result<()> {
@@ -1025,9 +1209,13 @@ fn verify_exact_bytes(file: &mut File, expected: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-fn delete_bound_candidate(path: &Path, opened: &OpenedRecoveryCandidate) -> io::Result<()> {
-    revalidate_path_identity(path, opened.facts, opened.encoded_len)?;
-    let cleanup_file = noter_platform::open_for_cleanup(path)?;
+fn delete_bound_candidate(
+    store: &RecoveryStore,
+    path: &Path,
+    opened: &OpenedRecoveryCandidate,
+) -> io::Result<()> {
+    revalidate_path_identity(store, path, opened.facts, opened.encoded_len)?;
+    let cleanup_file = store.entry_open_for_cleanup(path)?;
     if !file_binding_matches(
         noter_platform::file_facts(&cleanup_file)? == opened.facts,
         cleanup_file.metadata()?.len() == opened.encoded_len,
@@ -1041,7 +1229,7 @@ fn delete_bound_candidate(path: &Path, opened: &OpenedRecoveryCandidate) -> io::
         Ok(()) => Ok(()),
         Err(error) => {
             if requires_path_delete_fallback(error.kind()) {
-                delete_bound_candidate_unix_fallback(path, opened, cleanup_file)
+                delete_bound_candidate_unix_fallback(store, path, opened, cleanup_file)
             } else {
                 Err(error)
             }
@@ -1050,13 +1238,14 @@ fn delete_bound_candidate(path: &Path, opened: &OpenedRecoveryCandidate) -> io::
 }
 
 fn delete_bound_candidate_unix_fallback(
+    store: &RecoveryStore,
     path: &Path,
     opened: &OpenedRecoveryCandidate,
     cleanup_file: File,
 ) -> io::Result<()> {
-    revalidate_path_identity(path, opened.facts, opened.encoded_len)?;
+    revalidate_path_identity(store, path, opened.facts, opened.encoded_len)?;
     drop(cleanup_file);
-    fs::remove_file(path)?;
+    store.entry_remove_if_identifies(path, &opened.file)?;
     if noter_platform::file_facts(&opened.file)?.link_count() >= opened.facts.link_count() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1250,11 +1439,11 @@ fn validate_and_lock_live_file(file: File) -> io::Result<(File, noter_platform::
     Ok((file, facts))
 }
 
-fn acquire_live_file(path: &Path) -> io::Result<LockedLiveFile> {
-    let file = match noter_platform::create_private_new_file(path) {
+fn acquire_live_file(store: &RecoveryStore, path: &Path) -> io::Result<LockedLiveFile> {
+    let file = match store.entry_create_private_new(path) {
         Ok(file) => file,
         Err(error) => match error.kind() {
-            io::ErrorKind::AlreadyExists => noter_platform::open_for_cleanup(path)?,
+            io::ErrorKind::AlreadyExists => store.entry_open_for_cleanup(path)?,
             _ => return Err(error),
         },
     };
@@ -1262,8 +1451,8 @@ fn acquire_live_file(path: &Path) -> io::Result<LockedLiveFile> {
     Ok(LockedLiveFile { file, facts })
 }
 
-fn probe_live_path(path: &Path) -> io::Result<Option<bool>> {
-    let file = match noter_platform::open_existing_no_follow(path) {
+fn probe_live_path(store: &RecoveryStore, path: &Path) -> io::Result<Option<bool>> {
+    let file = match store.entry_open_existing(path) {
         Ok(file) => file,
         Err(error) => match error.kind() {
             io::ErrorKind::NotFound => return Ok(None),
@@ -1322,23 +1511,21 @@ const fn requires_path_delete_fallback(kind: io::ErrorKind) -> bool {
     matches!(kind, io::ErrorKind::Unsupported)
 }
 
-fn remove_file_if_present(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
+fn remove_file_if_present(store: &RecoveryStore, path: &Path) -> io::Result<()> {
+    match store.entry_remove(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
 }
 
-fn startup_path_metadata(path: &Path) -> io::Result<Option<fs::Metadata>> {
-    classify_startup_path_metadata(fs::symlink_metadata(path))
+fn startup_entry_is_file(store: &RecoveryStore, path: &Path) -> io::Result<Option<bool>> {
+    classify_startup_entry(store.entry_is_file(path))
 }
 
-fn classify_startup_path_metadata(
-    result: io::Result<fs::Metadata>,
-) -> io::Result<Option<fs::Metadata>> {
+fn classify_startup_entry(result: io::Result<bool>) -> io::Result<Option<bool>> {
     match result {
-        Ok(metadata) => Ok(Some(metadata)),
+        Ok(is_file) => Ok(Some(is_file)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
@@ -1380,10 +1567,12 @@ fn classify_recovery_candidate_io(error: io::Error) -> OpenRecoveryCandidateFail
 }
 
 fn open_recovery_candidate(
+    store: &RecoveryStore,
     path: &Path,
 ) -> Result<OpenedRecoveryCandidate, OpenRecoveryCandidateFailure> {
-    let file =
-        noter_platform::open_existing_no_follow(path).map_err(classify_recovery_candidate_io)?;
+    let file = store
+        .entry_open_existing(path)
+        .map_err(classify_recovery_candidate_io)?;
     let metadata = file.metadata().map_err(classify_recovery_candidate_io)?;
     if !metadata.is_file() {
         return Err(OpenRecoveryCandidateFailure::Invalid(
@@ -1452,13 +1641,25 @@ fn read_bound_open_file(
 }
 
 fn revalidate_path_identity(
+    store: &RecoveryStore,
     path: &Path,
     expected_facts: noter_platform::FileFacts,
     expected_len: u64,
 ) -> io::Result<()> {
-    let path_file = noter_platform::open_existing_no_follow(path)?;
+    require_same_artifact(
+        &store.entry_open_existing(path)?,
+        expected_facts,
+        expected_len,
+    )
+}
+
+fn require_same_artifact(
+    path_file: &File,
+    expected_facts: noter_platform::FileFacts,
+    expected_len: u64,
+) -> io::Result<()> {
     if !file_binding_matches(
-        noter_platform::file_facts(&path_file)? == expected_facts,
+        noter_platform::file_facts(path_file)? == expected_facts,
         path_file.metadata()?.len() == expected_len,
     ) {
         return Err(io::Error::new(
@@ -1507,9 +1708,12 @@ fn require_matching_claim(
     Ok(())
 }
 
-fn load_bound_record(handle: &RecoveryRecordHandle) -> io::Result<ValidatedRecoveryRecord> {
+fn load_bound_record(
+    store: &RecoveryStore,
+    handle: &RecoveryRecordHandle,
+) -> io::Result<ValidatedRecoveryRecord> {
     let bytes = read_bound_open_file(&handle.file, handle.facts, handle.encoded_len)?;
-    revalidate_path_identity(&handle.path, handle.facts, handle.encoded_len)?;
+    revalidate_path_identity(store, &handle.path, handle.facts, handle.encoded_len)?;
     let RecoveryStartupDisposition::Offer(record) = validate_recovery_record(&bytes) else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1525,8 +1729,8 @@ fn load_bound_record(handle: &RecoveryRecordHandle) -> io::Result<ValidatedRecov
     Ok(record)
 }
 
-fn delete_bound_record(handle: RecoveryRecordHandle) -> io::Result<()> {
-    let cleanup_file = noter_platform::open_for_cleanup(&handle.path)?;
+fn delete_bound_record(store: &RecoveryStore, handle: RecoveryRecordHandle) -> io::Result<()> {
+    let cleanup_file = store.entry_open_for_cleanup(&handle.path)?;
     if !file_binding_matches(
         noter_platform::file_facts(&cleanup_file)? == handle.facts,
         cleanup_file.metadata()?.len() == handle.encoded_len,
@@ -1544,7 +1748,7 @@ fn delete_bound_record(handle: RecoveryRecordHandle) -> io::Result<()> {
         }
         Err(error) => {
             if requires_path_delete_fallback(error.kind()) {
-                delete_bound_record_unix_fallback(&handle, cleanup_file)
+                delete_bound_record_unix_fallback(store, &handle, cleanup_file)
             } else {
                 Err(error)
             }
@@ -1553,12 +1757,13 @@ fn delete_bound_record(handle: RecoveryRecordHandle) -> io::Result<()> {
 }
 
 fn delete_bound_record_unix_fallback(
+    store: &RecoveryStore,
     handle: &RecoveryRecordHandle,
     cleanup_file: File,
 ) -> io::Result<()> {
-    revalidate_path_identity(&handle.path, handle.facts, handle.encoded_len)?;
+    revalidate_path_identity(store, &handle.path, handle.facts, handle.encoded_len)?;
     drop(cleanup_file);
-    fs::remove_file(&handle.path)?;
+    store.entry_remove_if_identifies(&handle.path, &handle.file)?;
     if noter_platform::file_facts(&handle.file)?.link_count() >= handle.facts.link_count() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1569,6 +1774,7 @@ fn delete_bound_record_unix_fallback(
 }
 
 fn delete_claimed_live_path(
+    store: &RecoveryStore,
     path: &Path,
     lease: &File,
     expected_facts: noter_platform::FileFacts,
@@ -1583,7 +1789,7 @@ fn delete_claimed_live_path(
                         "recovery live lease changed while its claim was held",
                     ));
                 }
-                delete_claimed_live_path_unix_fallback(path, lease, expected_facts)
+                delete_claimed_live_path_unix_fallback(store, path, lease, expected_facts)
             } else {
                 Err(error)
             }
@@ -1592,11 +1798,12 @@ fn delete_claimed_live_path(
 }
 
 fn delete_claimed_live_path_unix_fallback(
+    store: &RecoveryStore,
     path: &Path,
     lease: &File,
     expected_facts: noter_platform::FileFacts,
 ) -> io::Result<()> {
-    let path_file = match noter_platform::open_existing_no_follow(path) {
+    let path_file = match store.entry_open_existing(path) {
         Ok(file) => file,
         Err(error) => match error.kind() {
             io::ErrorKind::NotFound => return Ok(()),
@@ -1610,7 +1817,7 @@ fn delete_claimed_live_path_unix_fallback(
         ));
     }
     drop(path_file);
-    fs::remove_file(path)?;
+    store.entry_remove_if_identifies(path, lease)?;
     if noter_platform::file_facts(lease)?.link_count() >= expected_facts.link_count() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1620,8 +1827,12 @@ fn delete_claimed_live_path_unix_fallback(
     Ok(())
 }
 
-fn delete_locked_live_path(path: &Path, locked: &LockedLiveFile) -> io::Result<()> {
-    delete_claimed_live_path(path, &locked.file, locked.facts)
+fn delete_locked_live_path(
+    store: &RecoveryStore,
+    path: &Path,
+    locked: &LockedLiveFile,
+) -> io::Result<()> {
+    delete_claimed_live_path(store, path, &locked.file, locked.facts)
 }
 
 fn live_lease_facts_match(
@@ -1660,23 +1871,25 @@ impl TemporaryArtifactKind {
 
 #[cfg(unix)]
 fn write_atomic_private_unix(
+    store: &RecoveryStore,
     destination: &Path,
     instance_id: RecoveryInstanceId,
     bytes: &[u8],
 ) -> io::Result<()> {
-    write_atomic_private_unix_with(destination, instance_id, bytes, |_| Ok(()))
+    write_atomic_private_unix_with(store, destination, instance_id, bytes, |_| Ok(()))
 }
 
 #[cfg(unix)]
 fn write_atomic_private_unix_with(
+    store: &RecoveryStore,
     destination: &Path,
     instance_id: RecoveryInstanceId,
     bytes: &[u8],
     before_commit: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)?;
-    let commit_parent = noter_platform::UnixRecoveryCommitParent::bind(destination)?;
+    let (directory, name) = store.bound_entry(destination)?;
+    let parent = directory.path();
+    let commit_parent = directory.commit_parent(name)?;
     let stage = unix_recovery_stage_path(parent, instance_id);
     let mut file = commit_parent.create_private_new(&stage).map_err(|error| {
         if error.kind() == io::ErrorKind::AlreadyExists {
@@ -2059,7 +2272,11 @@ fn observe_windows_recovery_artifact(
     }
 
     let fingerprint = fingerprint_bound_open_windows_file(file, facts, metadata.len())?;
-    revalidate_path_identity(path, facts, metadata.len())?;
+    require_same_artifact(
+        &noter_platform::open_existing_no_follow(path)?,
+        facts,
+        metadata.len(),
+    )?;
     Ok(RecoveryArtifactObservation {
         identity: facts.identity(),
         fingerprint,
@@ -2913,16 +3130,17 @@ mod tests {
     #[test]
     fn unix_recovery_commit_consumes_the_reserved_stage() -> io::Result<()> {
         let directory = tempdir()?;
-        let destination = directory.path().join("record.bin");
+        let store = RecoveryStore::open(directory.path())?;
+        let destination = store.records_dir().join("record.bin");
         let first = snapshot_at(60, 6, 15, b"first recovery");
         let second = snapshot_at(60, 7, 16, b"second recovery");
-        let stage = unix_recovery_stage_path(directory.path(), first.instance_id());
+        let stage = unix_recovery_stage_path(&store.records_dir(), first.instance_id());
 
-        write_atomic_private_unix(&destination, first.instance_id(), &first.encode())?;
+        write_atomic_private_unix(&store, &destination, first.instance_id(), &first.encode())?;
         assert_eq!(fs::read(&destination)?, first.encode());
         assert!(!stage.exists());
 
-        write_atomic_private_unix(&destination, second.instance_id(), &second.encode())?;
+        write_atomic_private_unix(&store, &destination, second.instance_id(), &second.encode())?;
         assert_eq!(fs::read(&destination)?, second.encode());
         assert!(!stage.exists());
         Ok(())
@@ -2932,23 +3150,29 @@ mod tests {
     #[test]
     fn unix_recovery_commit_stays_in_original_parent_during_rebind() -> io::Result<()> {
         let directory = tempdir()?;
-        let active = directory.path().join("active");
-        let moved = directory.path().join("moved");
-        fs::create_dir(&active)?;
+        let store = RecoveryStore::open(directory.path())?;
+        let active = store.records_dir();
+        let moved = store.root().join("moved");
         let destination = active.join("record.bin");
         let snapshot = snapshot_at(60, 8, 17, b"descriptor-bound recovery");
         let encoded = snapshot.encode();
 
-        write_atomic_private_unix_with(&destination, snapshot.instance_id(), &encoded, |stage| {
-            let stage_name = stage
-                .file_name()
-                .expect("the reserved stage has a basename")
-                .to_owned();
-            fs::rename(&active, &moved)?;
-            fs::create_dir(&active)?;
-            fs::write(active.join(&stage_name), b"rebound stage")?;
-            fs::write(active.join("record.bin"), b"rebound destination")
-        })?;
+        write_atomic_private_unix_with(
+            &store,
+            &destination,
+            snapshot.instance_id(),
+            &encoded,
+            |stage: &Path| {
+                let stage_name = stage
+                    .file_name()
+                    .expect("the reserved stage has a basename")
+                    .to_owned();
+                fs::rename(&active, &moved)?;
+                fs::create_dir(&active)?;
+                fs::write(active.join(&stage_name), b"rebound stage")?;
+                fs::write(active.join("record.bin"), b"rebound destination")
+            },
+        )?;
 
         assert_eq!(fs::read(moved.join("record.bin"))?, encoded);
         assert_eq!(fs::read(active.join("record.bin"))?, b"rebound destination");
@@ -3014,19 +3238,24 @@ mod tests {
     #[test]
     fn unix_recovery_retry_refuses_a_second_retained_stage() -> io::Result<()> {
         let directory = tempdir()?;
-        let destination = directory.path().join("record.bin");
+        let store = RecoveryStore::open(directory.path())?;
+        let destination = store.records_dir().join("record.bin");
         let snapshot = snapshot_at(60, 4, 13, b"bounded retained recovery");
-        let stage = unix_recovery_stage_path(directory.path(), snapshot.instance_id());
+        let stage = unix_recovery_stage_path(&store.records_dir(), snapshot.instance_id());
         fs::write(&stage, b"retained partial recovery")?;
 
-        let error =
-            write_atomic_private_unix(&destination, snapshot.instance_id(), &snapshot.encode())
-                .expect_err("a retained stage must stop retries from accumulating artifacts");
+        let error = write_atomic_private_unix(
+            &store,
+            &destination,
+            snapshot.instance_id(),
+            &snapshot.encode(),
+        )
+        .expect_err("a retained stage must stop retries from accumulating artifacts");
 
         assert_eq!(error.kind(), io::ErrorKind::ResourceBusy);
         assert_eq!(fs::read(&stage)?, b"retained partial recovery");
         assert!(!destination.exists());
-        let keyed: Vec<_> = fs::read_dir(directory.path())?
+        let keyed: Vec<_> = fs::read_dir(store.records_dir())?
             .filter_map(Result::ok)
             .filter(|entry| keyed_temporary_instance(&entry.path()) == Some(snapshot.instance_id()))
             .collect();
@@ -3916,7 +4145,7 @@ mod tests {
         let path = store.records_dir().join("damaged.rec");
         let damaged = b"not a recovery record";
         fs::write(&path, damaged)?;
-        let opened = open_recovery_candidate(&path).expect("bind damaged fixture");
+        let opened = open_recovery_candidate(&store, &path).expect("bind damaged fixture");
 
         fs::remove_file(&path)?;
         let replacement = sample_snapshot(42, b"valid replacement").encode();
@@ -3935,7 +4164,7 @@ mod tests {
         let path = store.records_dir().join("damaged.rec");
         let damaged = b"damaged recovery bytes";
         fs::write(&path, damaged)?;
-        let opened = open_recovery_candidate(&path).expect("bind damaged fixture");
+        let opened = open_recovery_candidate(&store, &path).expect("bind damaged fixture");
         let quarantine_parent = store.quarantine_dir();
         let sync_calls = std::cell::RefCell::new(Vec::new());
 
@@ -3976,7 +4205,7 @@ mod tests {
         let path = store.records_dir().join("damaged.rec");
         let damaged = b"damaged recovery bytes";
         fs::write(&path, damaged)?;
-        let opened = open_recovery_candidate(&path).expect("bind damaged fixture");
+        let opened = open_recovery_candidate(&store, &path).expect("bind damaged fixture");
         let quarantine_parent = store.quarantine_dir();
         let source_parent = store.records_dir();
         let sync_calls = std::cell::RefCell::new(Vec::new());
@@ -4112,7 +4341,7 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::ResourceBusy);
         assert!(store.record_path(snapshot.instance_id()).exists());
         drop(lease);
-        remove_file_if_present(&store.live_path(snapshot.instance_id()))?;
+        remove_file_if_present(&store, &store.live_path(snapshot.instance_id()))?;
         Ok(())
     }
 
@@ -4329,7 +4558,7 @@ mod tests {
                 .kind(),
             io::ErrorKind::ResourceBusy
         );
-        remove_file_if_present(&store.live_path(snapshot.instance_id()))?;
+        remove_file_if_present(&store, &store.live_path(snapshot.instance_id()))?;
         assert!(
             store
                 .scan_startup()?
@@ -4340,18 +4569,19 @@ mod tests {
         store.release_live_lease(lease)?;
         assert!(!store.live_path(snapshot.instance_id()).exists());
         assert!(!store.live_guard_path(snapshot.instance_id()).exists());
-        remove_file_if_present(&displaced)?;
+        fs::remove_file(&displaced)?;
         Ok(())
     }
 
     #[test]
     fn unix_live_cleanup_accepts_an_already_unlinked_path() -> io::Result<()> {
         let dir = tempdir()?;
-        let path = dir.path().join("claimed.live");
-        let locked = acquire_live_file(&path)?;
+        let store = RecoveryStore::open(dir.path())?;
+        let path = store.records_dir().join("claimed.live");
+        let locked = acquire_live_file(&store, &path)?;
         fs::remove_file(&path)?;
 
-        delete_claimed_live_path_unix_fallback(&path, &locked.file, locked.facts)?;
+        delete_claimed_live_path_unix_fallback(&store, &path, &locked.file, locked.facts)?;
 
         assert!(!path.exists());
         Ok(())
@@ -4402,7 +4632,7 @@ mod tests {
         let missing = store.records_dir().join("disappeared.rec");
 
         assert!(matches!(
-            open_recovery_candidate(&missing),
+            open_recovery_candidate(&store, &missing),
             Err(OpenRecoveryCandidateFailure::Missing)
         ));
         assert!(store.scan_startup()?.is_empty());
@@ -4430,7 +4660,9 @@ mod tests {
 
     #[test]
     fn startup_metadata_ignores_only_missing_and_preserves_other_io_errors() {
-        let missing = classify_startup_path_metadata(Err(io::Error::new(
+        assert_eq!(classify_startup_entry(Ok(true)).unwrap(), Some(true));
+        assert_eq!(classify_startup_entry(Ok(false)).unwrap(), Some(false));
+        let missing = classify_startup_entry(Err(io::Error::new(
             io::ErrorKind::NotFound,
             "injected disappearance",
         )))
@@ -4438,7 +4670,7 @@ mod tests {
         assert!(missing.is_none());
 
         let code = if cfg!(windows) { 5 } else { 13 };
-        let error = classify_startup_path_metadata(Err(io::Error::from_raw_os_error(code)))
+        let error = classify_startup_entry(Err(io::Error::from_raw_os_error(code)))
             .expect_err("an inaccessible enumerated candidate must fail the scan closed");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert_eq!(error.raw_os_error(), Some(code));
@@ -4743,20 +4975,22 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     #[test]
-    fn owned_cleanup_rejects_a_non_directory_records_path() -> io::Result<()> {
+    fn a_replaced_records_path_cannot_redirect_recovery_work() -> io::Result<()> {
         let dir = tempdir()?;
         let store = RecoveryStore::open(dir.path())?;
         let records = store.records_dir();
         fs::remove_dir_all(&records)?;
         fs::write(&records, b"not a directory")?;
 
+        store.delete_owned_artifacts(indexed_instance(28))?;
+        assert!(store.scan_startup()?.is_empty());
         let error = store
-            .delete_owned_artifacts(indexed_instance(28))
-            .expect_err("a non-directory records path is not missing");
-        assert_ne!(error.kind(), io::ErrorKind::NotFound);
-        assert!(records.is_file());
+            .persist(&sample_snapshot(28, b"after removal"))
+            .expect_err("a removed records directory must fail persistence visibly");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(fs::read(&records)?, b"not a directory");
         Ok(())
     }
 

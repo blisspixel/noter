@@ -183,6 +183,8 @@ pub struct CrashRecoverySession {
     persist_failure: bool,
     cleanup_failure: bool,
     unavailable: bool,
+    /// Why the recovery store could not be opened, when it was refused.
+    unavailable_reason: Option<String>,
     persist_jobs: Option<Sender<PersistCommand>>,
     persist_outcomes: Option<Receiver<PersistOutcome>>,
     persist_worker: Option<JoinHandle<()>>,
@@ -226,8 +228,9 @@ impl CrashRecoverySession {
                     session.ingest_scan();
                 }
             }
-            Err(_) => {
+            Err(error) => {
                 session.unavailable = true;
+                session.unavailable_reason = Some(error.to_string());
             }
         }
         session
@@ -284,6 +287,7 @@ impl CrashRecoverySession {
             persist_failure: false,
             cleanup_failure: false,
             unavailable,
+            unavailable_reason: None,
             persist_jobs: None,
             persist_outcomes: None,
             persist_worker: None,
@@ -350,6 +354,15 @@ impl CrashRecoverySession {
     /// Returns whether private recovery storage is unavailable this session.
     pub const fn is_unavailable(&self) -> bool {
         self.unavailable
+    }
+
+    /// The message to show when recovery is unavailable, with the reason the
+    /// storage was refused when one is known.
+    pub fn unavailable_message(&self) -> String {
+        self.unavailable_reason.as_ref().map_or_else(
+            || RECOVERY_UNAVAILABLE_MESSAGE.to_owned(),
+            |reason| format!("{RECOVERY_UNAVAILABLE_MESSAGE} Reason: {reason}."),
+        )
     }
 
     /// Returns whether the last recovery persist failed and still needs review.
@@ -1308,6 +1321,34 @@ mod tests {
         assert!(session.has_cleanup_failure());
 
         fs::remove_dir(record_path).expect("clean fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unsafe_state_root_is_refused_before_writing_and_says_why() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().expect("tempdir");
+        let state = dir.path().join("state");
+        fs::create_dir(&state).expect("state directory");
+        fs::set_permissions(&state, PermissionsExt::from_mode(0o777)).expect("loosen");
+
+        let session = CrashRecoverySession::open_in_state(&state);
+        assert!(session.is_unavailable());
+        let message = session.unavailable_message();
+        assert!(
+            message.starts_with(RECOVERY_UNAVAILABLE_MESSAGE),
+            "{message}"
+        );
+        assert!(
+            message.contains("can be changed by another user"),
+            "{message}"
+        );
+        assert!(!state.join("recovery").exists());
+
+        assert_eq!(
+            CrashRecoverySession::unavailable().unavailable_message(),
+            RECOVERY_UNAVAILABLE_MESSAGE
+        );
     }
 
     #[test]

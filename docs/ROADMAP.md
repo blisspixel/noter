@@ -602,18 +602,31 @@ retain directory handles for the session and route creation, scan, sync, rename,
 quarantine, and cleanup through them. Reject an unsafe or unverifiable root
 before writing recovery content.
 
+The Unix namespace binding is in tree
+([ADR-0004](adr/0004-unix-recovery-namespace.md)): a verified, held directory
+chain from `/`, owner and mode checks, local file system classification, ACL
+removal on macOS, handle-relative record, lease, and quarantine operations,
+identity-checked retirement in a private directory, and native fixtures for
+group and other write access, ancestor rebind, final-entry swaps, links, and
+removal. Windows record operations now refuse paths outside the held
+directories.
+
 The first Windows foundation validates the drive-rooted state path on fixed
 NTFS, rejects reparse and cross-volume directory components, verifies stable
 preferred identities, retains every traversed and recovery-directory handle
 without delete sharing, rejects state DACLs that grant unprivileged mutation,
 and applies an exact protected inheritable user-and-SYSTEM DACL to the owned
-recovery subtree. It intentionally does not claim handle-relative record
-operations, redirected or synchronized-root detection, Unix namespace binding,
-or exact Unix retirement. Those gaps keep M4-H1 in progress.
+recovery subtree. It does not claim handle-relative record operations or
+redirected or synchronized-root detection; those keep M4-H1 in progress.
 
-The Unix cleanup ADR must either provide a genuinely object-bound retirement
-strategy or retain and safely neutralize the exact opened object instead of
-claiming atomic pathname unlink. Native Windows, Linux, and macOS fixtures must
+The Unix cleanup ADR was required either to provide a genuinely object-bound
+retirement strategy or to retain and safely neutralize the exact opened object
+instead of claiming atomic pathname unlink. ADR-0004 takes a third path and
+records why: it claims no atomic unlink, and instead confines the check and the
+`unlinkat` to a verified private directory, so only the same user's processes
+can race them. Retaining and neutralizing was rejected because it leaves an
+unbounded trail of artifacts and still ends in a name-based removal. Native
+Windows, Linux, and macOS fixtures must
 cover group or ACL sharing, ancestor rebind, commit and cleanup final-window
 swaps, redirected roots, and explicit weak or remote filesystem rejection.
 M4-H1 passes only when every supported platform either rejects the unsafe root

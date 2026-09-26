@@ -12,8 +12,13 @@ use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
 
+#[cfg(unix)]
+mod unix_recovery_namespace;
 #[cfg(windows)]
 mod windows_recovery_namespace;
+
+#[cfg(unix)]
+pub use unix_recovery_namespace::{UnixRecoveryDirectory, UnixRecoveryNamespace};
 
 #[cfg(windows)]
 pub use windows_recovery_namespace::{
@@ -614,6 +619,19 @@ impl UnixRecoveryCommitParent {
         })
     }
 
+    /// Binds a commit to an already verified, held directory.
+    pub(crate) const fn from_bound_directory(
+        parent: File,
+        parent_path: PathBuf,
+        destination_name: OsString,
+    ) -> Self {
+        Self {
+            parent,
+            parent_path,
+            destination_name,
+        }
+    }
+
     /// Exclusively creates one private stage in the bound directory.
     ///
     /// # Errors
@@ -1183,13 +1201,15 @@ mod imp {
         Ok(())
     }
 
+    /// Removes any extended ACL from an open file or directory and verifies
+    /// that none remains.
     #[cfg(target_os = "macos")]
-    fn macos_restrict_open_file_acl_to_owner(file: &File) -> io::Result<()> {
+    pub fn macos_restrict_open_file_acl_to_owner(file: &File) -> io::Result<()> {
         remove_macos_acl(file)?;
         if read_macos_acl_snapshot(file)? != MacosAclSnapshot::Absent {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "private file retains an access control list after owner-only restriction",
+                "a private file or directory retains an access control list after owner-only restriction",
             ));
         }
         Ok(())
@@ -1432,7 +1452,7 @@ mod imp {
         Ok(())
     }
 
-    fn unix_open_existing_at(parent: &File, name: &OsStr) -> io::Result<File> {
+    pub fn unix_open_existing_at(parent: &File, name: &OsStr) -> io::Result<File> {
         openat(parent, name, unix_existing_read_flags(), Mode::empty())
             .map(File::from)
             .map_err(io::Error::from)

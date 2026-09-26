@@ -6,6 +6,20 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+### Security
+
+- Bind crash recovery to verified, held directories on Linux and macOS. Noter
+  reopens the state directory from `/` without following links and refuses it
+  when another user could change a directory on the way, when the state
+  directory is not yours or others can write it, when a recovery directory is a
+  link, or when it is on a network file system. Recovery directories are made
+  private, and on macOS their access control lists are removed. Every record,
+  lease, and quarantine operation then runs through the held directories, so
+  renaming a parent directory cannot redirect recovery content, and a recovery
+  tree removed while Noter runs fails persistence visibly instead of losing
+  snapshots. When recovery is refused, the message now names the reason. On
+  Windows, recovery file operations refuse paths outside the held directories.
+
 ### Changed
 
 - Make each keystroke in the window cost the document core about a thirtieth
