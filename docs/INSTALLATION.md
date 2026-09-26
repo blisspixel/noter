@@ -312,8 +312,17 @@ directory handles, rejecting state ACLs with unprivileged mutation rights, and
 hardening the recovery subtree to a protected inheritable user-and-SYSTEM DACL
 before writing recovery bytes. This foundation does not yet route record
 operations through directory handles or prove that a fixed local profile is not
-synchronized or redirected. Linux and macOS namespace binding also remains
-open, so this is not yet the beta recovery contract.
+synchronized or redirected.
+
+The current unreleased Linux and macOS builds bind the recovery namespace. If a
+directory on the path to the state directory can be changed by another user,
+the state directory is not yours, a recovery directory is a link, or the state
+directory is on a known network file system, recovery is unavailable for the
+session and the message names the directory and the reason; saves still work.
+Noter makes its own state directory private when others can write it. Fix the
+named directory's owner or permissions and restart Noter. On Linux you can
+instead point `XDG_DATA_HOME` at a local directory you own; macOS always uses
+`~/Library/Application Support/Noter`.
 
 Uninstall and cleanup distinguish:
 

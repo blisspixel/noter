@@ -92,8 +92,10 @@ does not expand unsafe UI surface.
     panic, and shares the window's bounded Undo and crash recovery, checked
     in a real pseudo-terminal by `scripts/check_tui_pty.py` on Linux and
     macOS CI; a missing Linux window library is named instead of aborting;
-    the installer scripts work. Exact-head CI evidence
-    is recorded when the branch merges.
+    the installer scripts work; the window draws any script with local
+    fonts; and a keystroke's document-core cost is proportional to the edit.
+    Exact-head CI passed on `e3247c1`, including every mutation shard, and
+    it merged to protected `main` as `7e4edb3` on 2026-09-26.
 9. **Complete M4-H1 recovery namespace binding:** verify and retain the state and
    recovery directory identities and access policy, route operations through
    held directory handles, reject unsupported roots before writing recovery
@@ -138,7 +140,8 @@ and installer scripts, but without the M4-H1, M5, and M6 work this roadmap had
 placed before it. A later review found that the preview could lose text on a
 failed save, had no crash recovery, and wrote untrusted text to the terminal,
 and that the documented installer commands failed. Item 8a records the
-hardening in progress; the version table records the correction.
+merged hardening; the version table records the correction. Beta.2 also waits
+for M4-H1, the M5 gate, and continuous Markdown editing.
 
 ## Previous checkpoint: `0.1.0-alpha.2` correctness alpha
 
@@ -599,18 +602,31 @@ retain directory handles for the session and route creation, scan, sync, rename,
 quarantine, and cleanup through them. Reject an unsafe or unverifiable root
 before writing recovery content.
 
+The Unix namespace binding is in tree
+([ADR-0004](adr/0004-unix-recovery-namespace.md)): a verified, held directory
+chain from `/`, owner and mode checks, local file system classification, ACL
+removal on macOS, handle-relative record, lease, and quarantine operations,
+identity-checked retirement in a private directory, and native fixtures for
+group and other write access, ancestor rebind, final-entry swaps, links, and
+removal. Windows record operations now refuse paths outside the held
+directories.
+
 The first Windows foundation validates the drive-rooted state path on fixed
 NTFS, rejects reparse and cross-volume directory components, verifies stable
 preferred identities, retains every traversed and recovery-directory handle
 without delete sharing, rejects state DACLs that grant unprivileged mutation,
 and applies an exact protected inheritable user-and-SYSTEM DACL to the owned
-recovery subtree. It intentionally does not claim handle-relative record
-operations, redirected or synchronized-root detection, Unix namespace binding,
-or exact Unix retirement. Those gaps keep M4-H1 in progress.
+recovery subtree. It does not claim handle-relative record operations or
+redirected or synchronized-root detection; those keep M4-H1 in progress.
 
-The Unix cleanup ADR must either provide a genuinely object-bound retirement
-strategy or retain and safely neutralize the exact opened object instead of
-claiming atomic pathname unlink. Native Windows, Linux, and macOS fixtures must
+The Unix cleanup ADR was required either to provide a genuinely object-bound
+retirement strategy or to retain and safely neutralize the exact opened object
+instead of claiming atomic pathname unlink. ADR-0004 takes a third path and
+records why: it claims no atomic unlink, and instead confines the check and the
+`unlinkat` to a verified private directory, so only the same user's processes
+can race them. Retaining and neutralizing was rejected because it leaves an
+unbounded trail of artifacts and still ends in a name-based removal. Native
+Windows, Linux, and macOS fixtures must
 cover group or ACL sharing, ancestor rebind, commit and cleanup final-window
 swaps, redirected roots, and explicit weak or remote filesystem rejection.
 M4-H1 passes only when every supported platform either rejects the unsafe root

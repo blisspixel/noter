@@ -12,8 +12,13 @@ use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
 
+#[cfg(unix)]
+mod unix_recovery_namespace;
 #[cfg(windows)]
 mod windows_recovery_namespace;
+
+#[cfg(unix)]
+pub use unix_recovery_namespace::{UnixRecoveryDirectory, UnixRecoveryNamespace};
 
 #[cfg(windows)]
 pub use windows_recovery_namespace::{
@@ -575,13 +580,13 @@ pub fn replace_existing(
     platform_replace_existing(temporary, destination, backup)
 }
 
-/// Descriptor-bound Unix sibling directory used by recovery-only commits.
+/// Descriptor-bound Unix directory used by recovery-only commits.
 ///
-/// The directory is opened before the private stage is created. Creation is
-/// descriptor-relative where the platform permits it; macOS instead uses its
-/// atomic ACL-aware creation primitive and ratifies the result against this
-/// descriptor. The consuming rename always uses the held directory, so a
-/// pathname rebind cannot be acknowledged as a successful recovery commit.
+/// It is obtained only from a verified [`UnixRecoveryDirectory`], which is
+/// private to the user and, on macOS, free of ACLs that new files could
+/// inherit. The private stage is created relative to the held descriptor, and
+/// the consuming rename always uses it, so a pathname rebind cannot be
+/// acknowledged as a successful recovery commit.
 #[cfg(unix)]
 #[derive(Debug)]
 pub struct UnixRecoveryCommitParent {
@@ -592,26 +597,17 @@ pub struct UnixRecoveryCommitParent {
 
 #[cfg(unix)]
 impl UnixRecoveryCommitParent {
-    /// Opens and binds the destination's containing directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the destination has no basename or its containing
-    /// directory cannot be opened.
-    pub fn bind(destination: &Path) -> io::Result<Self> {
-        let parent_path = unix_normalized_parent(destination).to_path_buf();
-        let destination_name = destination.file_name().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "recovery destination has no filename",
-            )
-        })?;
-        let parent = File::open(&parent_path)?;
-        Ok(Self {
+    /// Binds a commit to an already verified, held directory.
+    pub(crate) const fn from_bound_directory(
+        parent: File,
+        parent_path: PathBuf,
+        destination_name: OsString,
+    ) -> Self {
+        Self {
             parent,
             parent_path,
-            destination_name: destination_name.to_os_string(),
-        })
+            destination_name,
+        }
     }
 
     /// Exclusively creates one private stage in the bound directory.
@@ -622,19 +618,7 @@ impl UnixRecoveryCommitParent {
     /// destination or descriptor-relative private creation fails.
     pub fn create_private_new(&self, temporary: &Path) -> io::Result<File> {
         let temporary_name = self.require_sibling_name(temporary)?;
-        #[cfg(target_os = "macos")]
-        {
-            // Apple's file-security creation API is path-based but prevents
-            // inherited ACL access during creation. Ratify its result against
-            // the already-open parent before allowing it to commit.
-            let file = create_private_new_file(temporary)?;
-            imp::unix_require_name_matches(&self.parent, temporary_name, &file)?;
-            Ok(file)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            imp::unix_create_private_new_at(&self.parent, temporary_name)
-        }
+        imp::unix_create_private_new_at(&self.parent, temporary_name)
     }
 
     /// Consumes the exact staged object into the destination basename.
@@ -1113,7 +1097,6 @@ mod imp {
             .open(path)
     }
 
-    #[cfg(not(target_os = "macos"))]
     pub fn unix_create_private_new_at(parent: &File, name: &OsStr) -> io::Result<File> {
         let file = File::from(
             openat(parent, name, unix_private_create_flags(), Mode::empty())
@@ -1129,7 +1112,6 @@ mod imp {
         OFlags::from_bits_retain(combine_disjoint_flag_bits(left.bits(), right.bits()))
     }
 
-    #[cfg(not(target_os = "macos"))]
     const fn unix_private_create_flags() -> OFlags {
         unix_combine_disjoint_flags(
             unix_combine_disjoint_flags(
@@ -1183,13 +1165,15 @@ mod imp {
         Ok(())
     }
 
+    /// Removes any extended ACL from an open file or directory and verifies
+    /// that none remains.
     #[cfg(target_os = "macos")]
-    fn macos_restrict_open_file_acl_to_owner(file: &File) -> io::Result<()> {
+    pub fn macos_restrict_open_file_acl_to_owner(file: &File) -> io::Result<()> {
         remove_macos_acl(file)?;
         if read_macos_acl_snapshot(file)? != MacosAclSnapshot::Absent {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "private file retains an access control list after owner-only restriction",
+                "a private file or directory retains an access control list after owner-only restriction",
             ));
         }
         Ok(())
@@ -1432,7 +1416,7 @@ mod imp {
         Ok(())
     }
 
-    fn unix_open_existing_at(parent: &File, name: &OsStr) -> io::Result<File> {
+    pub fn unix_open_existing_at(parent: &File, name: &OsStr) -> io::Result<File> {
         openat(parent, name, unix_existing_read_flags(), Mode::empty())
             .map(File::from)
             .map_err(io::Error::from)
@@ -2580,7 +2564,6 @@ mod imp {
 
         #[test]
         fn descriptor_relative_open_flag_policies_are_exact() {
-            #[cfg(not(target_os = "macos"))]
             assert_eq!(
                 super::unix_private_create_flags(),
                 OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC

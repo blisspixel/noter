@@ -42,7 +42,6 @@ use noter::error::NoterError;
 use crate::app::{DocumentView, LaunchOptions};
 use crate::crash_recovery::{
     CrashRecoverySession, RECOVERY_CLEANUP_FAILURE_MESSAGE, RECOVERY_PERSIST_FAILURE_MESSAGE,
-    RECOVERY_UNAVAILABLE_MESSAGE,
 };
 
 mod input;
@@ -266,7 +265,8 @@ impl TuiSession {
             session.prompt = PromptMode::RecoveryOffer;
         }
         if session.recovery.is_unavailable() {
-            session.set_status(RECOVERY_UNAVAILABLE_MESSAGE);
+            let message = session.recovery.unavailable_message();
+            session.set_status(&message);
         }
         Ok(session)
     }

@@ -31,10 +31,11 @@ use crate::bounded_text_input::{
 };
 use crate::crash_recovery::{
     CrashRecoverySession, RECOVERY_CLEANUP_FAILURE_MESSAGE, RECOVERY_PERSIST_FAILURE_MESSAGE,
-    RECOVERY_UNAVAILABLE_MESSAGE,
 };
 #[cfg(test)]
-use crate::crash_recovery::{RecoveryStoreTestExt, recovery_store_root_for_test};
+use crate::crash_recovery::{
+    RECOVERY_UNAVAILABLE_MESSAGE, RecoveryStoreTestExt, recovery_store_root_for_test,
+};
 use crate::editor_settings::{
     EditorZoom, PointerZoomAccumulator, TextWrap, WORD_WRAP_STORAGE_KEY, ZOOM_STORAGE_KEY,
     apply_editor_zoom,
@@ -728,7 +729,7 @@ impl NoterApp {
             UpdateStatusState::Closed
         };
         if app.crash_recovery.is_unavailable() {
-            app.error_msg = Some(RECOVERY_UNAVAILABLE_MESSAGE.to_owned());
+            app.error_msg = Some(app.crash_recovery.unavailable_message());
         }
         // Explicit file opens and screenshot automation skip interactive recovery
         // offers so double-click open and capture remain deterministic. Records
@@ -1249,7 +1250,7 @@ impl NoterApp {
 
     fn surface_recovery_unavailable(&mut self) {
         if self.crash_recovery.is_unavailable() && self.error_msg.is_none() {
-            self.error_msg = Some(RECOVERY_UNAVAILABLE_MESSAGE.to_owned());
+            self.error_msg = Some(self.crash_recovery.unavailable_message());
         }
     }
 
@@ -5793,7 +5794,12 @@ mod tests {
 
         app.begin_fresh_recovery_identity();
 
-        assert_eq!(app.error_msg.as_deref(), Some(RECOVERY_UNAVAILABLE_MESSAGE));
+        let message = app
+            .error_msg
+            .as_deref()
+            .expect("the unavailability is shown");
+        assert!(message.starts_with(RECOVERY_UNAVAILABLE_MESSAGE));
+        assert!(message.contains(" Reason: "), "{message}");
     }
 
     #[test]
