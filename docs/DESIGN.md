@@ -1353,6 +1353,18 @@ Removal requires an equally bounded literal matcher that returns original byte
 ranges, supports the documented Unicode case behavior, and retains linear
 worst-case matching.
 
+The terminal interface uses [unicode-width 0.2.2](https://crates.io/crates/unicode-width/0.2.2)
+to measure terminal cells under Unicode Standard Annex #11, so wide East Asian
+characters, combining marks, the caret, and mouse columns line up. Default
+features are disabled, which leaves out the ambiguous-width CJK variant that
+ordinary terminals do not use. Version 0.2.2 is the newest registry release as
+reviewed on 2026-09-26. It is MIT or Apache-2.0 licensed, declares Rust 1.66,
+has no dependencies and no build script, and adds no filesystem, process, or
+network capability. It was already in the lockfile through a build-only path,
+so direct use adds no lock entry, but it is new to the runtime graph and the
+third-party notice inventory. Removal requires an equivalent East Asian Width
+table that tracks new Unicode versions.
+
 Those statements describe third-party dependency licenses. Noter itself is
 licensed only under Apache-2.0, as declared by both package manifests and the
 root [LICENSE](../LICENSE).
@@ -1450,6 +1462,16 @@ Current state:
   Markdown styling, `Ctrl+T` Theme, `Ctrl+G` Help.
 - **Mouse:** click to place the caret, wheel to scroll, and clickable shortcut
   legend. There is no drag selection.
+- **Terminal-safe drawing:** document text, file names, typed input, and
+  messages all pass through `src/core/terminal_text.rs`. Control characters,
+  C1 controls, bidirectional formatting characters, and Unicode line and
+  paragraph separators are drawn as U+FFFD, and tabs expand to four-column
+  stops. Each row is cut to the terminal width, long lines scroll
+  horizontally, and columns are measured in terminal cells.
+- **Lines and search:** line and column decisions use the core logical-line
+  split rather than rope line indexing, which also breaks at Unicode
+  separators. Find uses the core literal search with Unicode case folding and
+  highlights the engine's exact source ranges.
 - **Color:** 24-bit color for the Light, Dark, Green Screen, and Amber Screen
   palettes; System uses Dark.
 - **Launch:** `--tui` selects it explicitly. Without `--gui` or `--tui`, only

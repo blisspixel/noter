@@ -24,6 +24,24 @@ that candidate is frozen for publication.
   file, a save that would split a hard link asks first, and after an uncertain
   save outcome, saves to that file pause while other destinations stay
   available.
+- Place the terminal caret, mouse clicks, and search results on character
+  boundaries. A click inside multibyte or wide text, or a search near
+  characters whose case folding changes length such as the Kelvin sign, could
+  previously land inside a character and stop the editor. Search now uses the
+  same Unicode case folding as the window, repeats advance to the next match,
+  and the status names the match number.
+- Scroll long lines horizontally in the terminal interface instead of wrapping
+  them across the layout, measure columns in terminal cells so wide characters
+  and tabs align, keep the view where the mouse wheel moved it until the next
+  key, and style Markdown without moving any character.
+
+### Security
+
+- Draw document text, file names, typed input, and messages in the terminal
+  interface through one terminal-safe path. Control characters, including
+  escape sequences that could set the window title or write the clipboard
+  through OSC 52, C1 controls, and bidirectional overrides, now appear as a
+  visible replacement character instead of reaching the terminal.
 
 ## 0.1.0-beta.1 - 2026-09-24
 

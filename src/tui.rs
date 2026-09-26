@@ -20,10 +20,15 @@ use std::path::PathBuf;
 
 use noter::core::document::{Document, PreparedSaveAs};
 use noter::core::edit::{EditOrigin, EditTimestamp, EditTransaction, Selection};
+use noter::core::line_endings::logical_lines;
 use noter::core::navigation::{
-    LineNavigationError, MoveDirection, MoveUnit, line_end_offset, line_start_offset, move_caret,
+    LineNavigationError, MoveDirection, MoveUnit, line_start_offset, move_caret,
 };
 use noter::core::save::SaveOutcome;
+use noter::core::search::{LiteralSearch, MatchCase, SearchDirection};
+use noter::core::terminal_text::{
+    cell_width, column_of, display_width, fit_line, offset_at_column, push_display,
+};
 use noter::error::NoterError;
 
 use crate::app::{DocumentView, LaunchOptions};
@@ -192,6 +197,9 @@ pub struct TuiSession {
     pub caret_byte: usize,
     pub scroll_row: usize,
     pub scroll_col: usize,
+    /// Whether the next frame scrolls to keep the caret visible. The mouse
+    /// wheel clears it so the view can move away from the caret.
+    pub follow_caret: bool,
     pub clipboard: String,
     pub prompt: PromptMode,
     pub prompt_input: String,
@@ -235,6 +243,7 @@ impl TuiSession {
             caret_byte: 0,
             scroll_row: 0,
             scroll_col: 0,
+            follow_caret: true,
             clipboard: String::new(),
             prompt: PromptMode::None,
             prompt_input: String::new(),
@@ -364,13 +373,9 @@ impl TuiSession {
         if text.is_empty() {
             return;
         }
-        let line_num = self
-            .document
-            .rope()
-            .byte_to_line(self.caret_byte.min(text.len()))
-            + 1;
-        let start = line_start_offset(&text, line_num).unwrap_or(0);
-        let next_start = line_start_offset(&text, line_num + 1).unwrap_or(text.len());
+        let table = LineTable::new(&text);
+        let span = table.line(table.line_of(self.caret_byte.min(text.len())));
+        let (start, next_start) = (span.start, span.next);
 
         text[start..next_start].clone_into(&mut self.clipboard);
 
@@ -634,30 +639,58 @@ impl TuiSession {
         self.set_status(format!("Mode: {}", self.view.label()));
     }
 
-    /// Finds next match for the search query (^W or ^F).
+    /// Moves the caret to the next match of the search query (^W or ^F).
+    ///
+    /// Matching uses the core literal search with Unicode case folding, and
+    /// starts just after the caret so repeating the search advances.
     pub fn find_next(&mut self) {
-        let Some(query) = self.search_query.as_deref() else {
+        let Some(query) = self.search_query.clone() else {
             return;
         };
-        if query.is_empty() {
+        let search = match LiteralSearch::new(&query, MatchCase::Insensitive) {
+            Ok(search) => search,
+            Err(error) => {
+                self.set_status(format!("Cannot search: {error}"));
+                return;
+            }
+        };
+        let text = self.text();
+        match search.navigate(&text, self.caret_byte + 1, SearchDirection::Next) {
+            Some(found) => {
+                self.caret_byte = found.range().start();
+                self.follow_caret = true;
+                let wrapped = if found.wrapped() { " (wrapped)" } else { "" };
+                self.set_status(format!(
+                    "Match {} of {}{wrapped}",
+                    found.ordinal(),
+                    found.match_count()
+                ));
+            }
+            None => self.set_status(format!("Not found: {query}")),
+        }
+    }
+
+    /// Scrolls so the caret is visible, unless the wheel moved the view.
+    pub fn scroll_to_caret(&mut self, cols: u16, rows: u16) {
+        if !self.follow_caret {
             return;
         }
-
         let text = self.text();
-        let query_lower = query.to_lowercase();
-        let text_lower = text.to_lowercase();
-
-        let search_start = self.caret_byte.min(text.len());
-        let found = text_lower[search_start..]
-            .find(&query_lower)
-            .map(|idx| search_start + idx)
-            .or_else(|| text_lower[..search_start].find(&query_lower));
-
-        if let Some(pos) = found {
-            self.caret_byte = pos;
-            self.set_status(format!("Found `{query}` at byte {pos}"));
-        } else {
-            self.set_status(format!("Pattern not found: `{query}`"));
+        let table = LineTable::new(&text);
+        let (line, column) = table.caret(&text, self.caret_byte.min(text.len()));
+        let height = viewport_height(rows);
+        let width = (cols as usize)
+            .saturating_sub(text_offset(table.len()))
+            .max(1);
+        if line < self.scroll_row {
+            self.scroll_row = line;
+        } else if line >= self.scroll_row + height {
+            self.scroll_row = line + 1 - height;
+        }
+        if column < self.scroll_col {
+            self.scroll_col = column;
+        } else if column >= self.scroll_col + width {
+            self.scroll_col = column + 1 - width;
         }
     }
 
@@ -824,358 +857,499 @@ pub fn parse_input_bytes(bytes: &[u8]) -> Vec<TuiEvent> {
     events
 }
 
-/// Renders the complete TUI frame into an output buffer.
-#[allow(clippy::too_many_lines)]
-pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
-    let mut out = String::with_capacity(cols as usize * rows as usize * 4);
-    let palette = TuiPalette::for_theme(session.theme);
+/// One logical line: its content bytes and where the next line starts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct LineSpan {
+    start: usize,
+    end: usize,
+    next: usize,
+}
 
-    // Hide cursor while drawing
-    out.push_str("\x1b[?25l");
-    // Move to top-left
-    out.push_str("\x1b[H");
+/// The document's logical lines, split exactly as the core splits them.
+///
+/// Rope line indexing also breaks at Unicode separators such as U+2028, which
+/// the core navigation does not, so the terminal interface uses this table
+/// for every line and column decision.
+struct LineTable {
+    spans: Vec<LineSpan>,
+}
 
-    let text = session.text();
-    let total_lines = session.document.rope().len_lines().max(1);
-    let caret_line = session
-        .document
-        .rope()
-        .byte_to_line(session.caret_byte.min(text.len()))
-        + 1;
-    let caret_line_start = line_start_offset(&text, caret_line).unwrap_or(0);
-    let caret_col = session.caret_byte.saturating_sub(caret_line_start);
-
-    let doc_name = session.document.path().map_or_else(
-        || "Untitled".to_owned(),
-        |p| {
-            p.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned()
-        },
-    );
-    let dirty_indicator = if session.document.is_dirty() {
-        " *"
-    } else {
-        ""
-    };
-    let mode_str = session.view.label();
-    let theme_str = session.theme.label();
-
-    // 1. Header Row
-    let header_title = format!(
-        " Noter {} │ {doc_name}{dirty_indicator} │ [{mode_str}] │ {theme_str} ",
-        env!("CARGO_PKG_VERSION")
-    );
-    let pad_len = (cols as usize).saturating_sub(header_title.chars().count());
-    let _ = write!(
-        out,
-        "\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m\x1b[1m{}{:pad$}\x1b[0m\r\n",
-        palette.bar_bg.r,
-        palette.bar_bg.g,
-        palette.bar_bg.b,
-        palette.bar_fg.r,
-        palette.bar_fg.g,
-        palette.bar_fg.b,
-        header_title,
-        "",
-        pad = pad_len
-    );
-
-    // 2. Editor Viewport (Rows 2 to rows - 3)
-    let viewport_height = (rows as usize).saturating_sub(4);
-    let gutter_width = 7; // " 1234 │ "
-    let content_width = (cols as usize).saturating_sub(gutter_width);
-
-    // Auto-scroll viewport so caret is always visible
-    let mut scroll_row = session.scroll_row;
-    let caret_idx = caret_line.saturating_sub(1);
-    if caret_idx < scroll_row {
-        scroll_row = caret_idx;
-    } else if caret_idx >= scroll_row + viewport_height {
-        scroll_row = caret_idx.saturating_sub(viewport_height).saturating_add(1);
+impl LineTable {
+    fn new(text: &str) -> Self {
+        let mut spans = Vec::new();
+        let mut start = 0;
+        // Empty text, or text ending in a terminator, has a final empty line.
+        let mut open_final_line = true;
+        for segment in logical_lines(text) {
+            let end = start + segment.content().len();
+            let next = end + segment.ending().map_or(0, |ending| ending.as_str().len());
+            spans.push(LineSpan { start, end, next });
+            open_final_line = segment.ending().is_some();
+            start = next;
+        }
+        if open_final_line {
+            spans.push(LineSpan {
+                start: text.len(),
+                end: text.len(),
+                next: text.len(),
+            });
+        }
+        Self { spans }
     }
 
-    for v_row in 0..viewport_height {
-        let line_idx = scroll_row + v_row;
-        let line_num = line_idx + 1;
+    const fn len(&self) -> usize {
+        self.spans.len()
+    }
 
-        if line_num <= total_lines {
-            // Line gutter
-            let is_current = line_num == caret_line;
-            let (gutter_r, gutter_g, gutter_b) = if is_current {
-                (palette.accent.r, palette.accent.g, palette.accent.b)
+    /// Returns the line at `index`, or the last line when past the end.
+    fn line(&self, index: usize) -> LineSpan {
+        self.spans[index.min(self.spans.len() - 1)]
+    }
+
+    /// Returns the index of the line containing `offset`.
+    fn line_of(&self, offset: usize) -> usize {
+        self.spans
+            .partition_point(|span| span.start <= offset)
+            .saturating_sub(1)
+    }
+
+    /// Returns the caret's line index and display column.
+    fn caret(&self, text: &str, offset: usize) -> (usize, usize) {
+        let index = self.line_of(offset);
+        let span = self.spans[index];
+        let column = column_of(
+            &text[span.start..span.end],
+            offset.min(span.end) - span.start,
+        );
+        (index, column)
+    }
+}
+
+/// Screen rows used by the header, status line, and two legend rows.
+const CHROME_ROWS: usize = 4;
+
+/// Narrowest terminal that fits the line-number gutter and some text.
+const MIN_COLUMNS: usize = 20;
+
+/// Cells before the text: a space, the line number, " │", and a space.
+fn text_offset(line_count: usize) -> usize {
+    let digits = line_count.max(1).ilog10() as usize + 1;
+    digits.max(4) + 4
+}
+
+fn viewport_height(rows: u16) -> usize {
+    (rows as usize).saturating_sub(CHROME_ROWS).max(1)
+}
+
+/// How a run of document text is drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Style {
+    Text,
+    Match,
+    Heading,
+    Marker,
+    Quote,
+    Muted,
+}
+
+fn push_sgr(out: &mut String, style: Style, palette: &TuiPalette) {
+    let (background, foreground, attributes) = match style {
+        Style::Text => (palette.bg, palette.fg, ""),
+        Style::Match => (palette.match_bg, palette.match_fg, "\x1b[1m"),
+        Style::Heading => (palette.bg, palette.accent, "\x1b[1m"),
+        Style::Marker => (palette.bg, palette.accent, ""),
+        Style::Quote => (palette.bg, palette.fg, "\x1b[3m"),
+        Style::Muted => (palette.bg, palette.gutter_fg, ""),
+    };
+    let _ = write!(
+        out,
+        "\x1b[0m\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m{attributes}",
+        background.r, background.g, background.b, foreground.r, foreground.g, foreground.b,
+    );
+}
+
+/// Styles Markdown structure on one line without changing a single cell, so
+/// columns, the caret, and mouse positions match the source exactly.
+fn markdown_spans(line: &str) -> Vec<(std::ops::Range<usize>, Style)> {
+    let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
+    let body = &line[indent..];
+    let hashes = body.bytes().take_while(|byte| *byte == b'#').count();
+    if (1..=6).contains(&hashes) && body[hashes..].starts_with(' ') {
+        return vec![(0..line.len(), Style::Heading)];
+    }
+    if body.starts_with("```") || body.starts_with("~~~") {
+        return vec![(0..line.len(), Style::Muted)];
+    }
+    if body.starts_with('>') {
+        return vec![
+            (indent..indent + 1, Style::Muted),
+            (indent + 1..line.len(), Style::Quote),
+        ];
+    }
+    let digits = body.bytes().take_while(u8::is_ascii_digit).count();
+    let marker = if body.starts_with("- ") || body.starts_with("* ") || body.starts_with("+ ") {
+        1
+    } else if (1..=9).contains(&digits)
+        && (body[digits..].starts_with(". ") || body[digits..].starts_with(") "))
+    {
+        digits + 1
+    } else {
+        0
+    };
+    if marker > 0 {
+        return vec![(indent..indent + marker, Style::Marker)];
+    }
+    Vec::new()
+}
+
+/// Draws the cells of `line` from `first_column` for `width` cells.
+///
+/// Every character goes through the terminal-safe display rules. A wide
+/// character or tab cut by either edge is drawn as spaces, so each row is
+/// exactly `width` cells.
+fn push_line_window(
+    out: &mut String,
+    line: &str,
+    first_column: usize,
+    width: usize,
+    spans: &[(std::ops::Range<usize>, Style)],
+    palette: &TuiPalette,
+) {
+    let last_column = first_column + width;
+    let mut column = 0;
+    let mut drawn = 0;
+    let mut current = None;
+    for (offset, character) in line.char_indices() {
+        if column >= last_column {
+            break;
+        }
+        let cells = cell_width(character, column);
+        if cells == 0 {
+            // A combining mark, joiner, or variation selector attaches to the
+            // character before it and is drawn only when that one was.
+            if column > first_column && drawn > 0 {
+                push_display(out, character, column);
+            }
+            continue;
+        }
+        let visible_start = column.max(first_column);
+        let visible_end = (column + cells).min(last_column);
+        if visible_end > visible_start {
+            let style = spans
+                .iter()
+                .rev()
+                .find(|(range, _)| range.contains(&offset))
+                .map_or(Style::Text, |(_, style)| *style);
+            if current != Some(style) {
+                push_sgr(out, style, palette);
+                current = Some(style);
+            }
+            if visible_end - visible_start == cells {
+                push_display(out, character, column);
             } else {
-                (
-                    palette.gutter_fg.r,
-                    palette.gutter_fg.g,
-                    palette.gutter_fg.b,
-                )
-            };
+                out.extend(std::iter::repeat_n(' ', visible_end - visible_start));
+            }
+            drawn += visible_end - visible_start;
+        }
+        column += cells;
+    }
+    if current != Some(Style::Text) {
+        push_sgr(out, Style::Text, palette);
+    }
+    out.extend(std::iter::repeat_n(' ', width - drawn));
+}
 
+fn push_bar(
+    out: &mut String,
+    text: &str,
+    cols: usize,
+    background: AnsiColor,
+    foreground: AnsiColor,
+    bold: bool,
+) {
+    let _ = write!(
+        out,
+        "\x1b[0m\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m{}{}\x1b[0m",
+        background.r,
+        background.g,
+        background.b,
+        foreground.r,
+        foreground.g,
+        foreground.b,
+        if bold { "\x1b[1m" } else { "" },
+        fit_line(text, cols),
+    );
+}
+
+/// Returns the status-line prompt as a label, the typed input, and a hint.
+fn prompt_parts(session: &TuiSession) -> Option<(String, &str, &'static str)> {
+    let (label, input, hint) = match &session.prompt {
+        PromptMode::SaveAs => (
+            "Save As: ",
+            session.prompt_input.as_str(),
+            " (Enter to save, Esc to cancel)",
+        ),
+        PromptMode::Find => (
+            "Find: ",
+            session.prompt_input.as_str(),
+            " (Enter next, Esc cancel)",
+        ),
+        PromptMode::GoToLine => (
+            "Go to line: ",
+            session.prompt_input.as_str(),
+            " (Enter jump, Esc cancel)",
+        ),
+        PromptMode::ConfirmReplace => ("That file exists. Replace it? (y)es, (n)o", "", ""),
+        PromptMode::ConfirmHardLink(link_count) => {
+            return Some((
+                format!(
+                    "This file has {link_count} hard links. Save here only; the others keep the old text? (y)es, (n)o"
+                ),
+                "",
+                "",
+            ));
+        }
+        PromptMode::ExitConfirm => (
+            "Save modified buffer before exit? (y)es, (n)o, (c)ancel",
+            "",
+            "",
+        ),
+        PromptMode::None => return None,
+    };
+    Some((label.to_owned(), input, hint))
+}
+
+/// The text one frame draws, its lines, and where the caret is.
+struct Frame<'a> {
+    session: &'a TuiSession,
+    text: &'a str,
+    table: LineTable,
+    caret_line: usize,
+    caret_column: usize,
+}
+
+impl<'a> Frame<'a> {
+    fn new(session: &'a TuiSession, text: &'a str) -> Self {
+        let table = LineTable::new(text);
+        let (caret_line, caret_column) = table.caret(text, session.caret_byte.min(text.len()));
+        Self {
+            session,
+            text,
+            table,
+            caret_line,
+            caret_column,
+        }
+    }
+}
+
+/// Draws the document rows, with line numbers, Markdown styling, and
+/// search highlights, from the session's scroll position.
+fn push_viewport(
+    out: &mut String,
+    frame: &Frame<'_>,
+    columns: usize,
+    height: usize,
+    palette: &TuiPalette,
+) {
+    let &Frame {
+        session,
+        text,
+        ref table,
+        caret_line,
+        ..
+    } = frame;
+    let offset = text_offset(table.len());
+    let digits = offset - 4;
+    let text_width = columns.saturating_sub(offset);
+    let search = session
+        .search_query
+        .as_deref()
+        .and_then(|query| LiteralSearch::new(query, MatchCase::Insensitive).ok());
+    for row in 0..height {
+        let index = session.scroll_row + row;
+        if index < table.len() {
+            let span = table.line(index);
+            let line = &text[span.start..span.end];
+            let gutter = if index == caret_line {
+                palette.accent
+            } else {
+                palette.gutter_fg
+            };
             let _ = write!(
                 out,
-                "\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m {:>4} │\x1b[0m",
-                palette.bg.r, palette.bg.g, palette.bg.b, gutter_r, gutter_g, gutter_b, line_num
-            );
-
-            // Line content
-            let line_slice = session.document.rope().line(line_idx);
-            let raw_line = line_slice.to_string();
-            let trimmed = raw_line.trim_end_matches(['\r', '\n']);
-
-            // Render Markdown styling if enabled
-            let rendered = if session.view == DocumentView::Markdown {
-                render_markdown_line(trimmed, &palette)
-            } else {
-                render_text_line(trimmed, &palette, session.search_query.as_deref())
-            };
-
-            let line_chars = trimmed.chars().count();
-            let pad = content_width.saturating_sub(line_chars);
-            let _ = write!(
-                out,
-                "\x1b[48;2;{};{};{}m {}\x1b[0m{:pad$}\r\n",
+                "\x1b[0m\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m {:>digits$} │ ",
                 palette.bg.r,
                 palette.bg.g,
                 palette.bg.b,
-                rendered,
-                "",
-                pad = pad
+                gutter.r,
+                gutter.g,
+                gutter.b,
+                index + 1,
             );
+            let mut spans = if session.view == DocumentView::Markdown {
+                markdown_spans(line)
+            } else {
+                Vec::new()
+            };
+            if let Some(search) = &search {
+                spans.extend(
+                    search
+                        .ranges(line)
+                        .map(|range| (range.start()..range.end(), Style::Match)),
+                );
+            }
+            push_line_window(out, line, session.scroll_col, text_width, &spans, palette);
         } else {
-            // Empty past-end lines
-            let pad = (cols as usize).saturating_sub(gutter_width);
             let _ = write!(
                 out,
-                "\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m      ~ \x1b[0m{:pad$}\r\n",
+                "\x1b[0m\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m{}",
                 palette.bg.r,
                 palette.bg.g,
                 palette.bg.b,
                 palette.gutter_fg.r,
                 palette.gutter_fg.g,
                 palette.gutter_fg.b,
-                "",
-                pad = pad
+                fit_line(&format!(" {:>digits$} ", "~"), columns),
             );
         }
+        out.push_str("\x1b[0m\r\n");
     }
-
-    // 3. Status Line (Row rows - 2)
-    let status_text = match &session.prompt {
-        PromptMode::SaveAs => format!(
-            "Save As: {} (Enter to save, Esc to cancel)",
-            session.prompt_input
-        ),
-        PromptMode::ConfirmReplace => "That file exists. Replace it? (y)es, (n)o".to_owned(),
-        PromptMode::ConfirmHardLink(link_count) => format!(
-            "This file has {link_count} hard links. Save here only; the others keep the old text? (y)es, (n)o"
-        ),
-        PromptMode::Find => format!("Find: {} (Enter next, Esc cancel)", session.prompt_input),
-        PromptMode::GoToLine => format!(
-            "Go to line: {} (Enter jump, Esc cancel)",
-            session.prompt_input
-        ),
-        PromptMode::ExitConfirm => {
-            "Save modified buffer before exit? (y)es, (n)o, (c)ancel".to_owned()
-        }
-        PromptMode::None => {
-            if let Some((msg, created)) = &session.status_message
-                && created.elapsed() < std::time::Duration::from_secs(3)
-            {
-                msg.clone()
-            } else {
-                let bytes = session.document.rope().len_bytes();
-                let enc = session.document.encoding().status_label();
-                let ending_label = session.document.line_endings().status_label();
-                format!(
-                    " Ln {caret_line}, Col {caret_col}  │  {bytes} B  │  {total_lines} L  │  {enc}  │  {ending_label} "
-                )
-            }
-        }
-    };
-    let status_pad = (cols as usize).saturating_sub(status_text.chars().count());
-    let _ = write!(
-        out,
-        "\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m\x1b[1m{}{:pad$}\x1b[0m\r\n",
-        palette.bar_bg.r,
-        palette.bar_bg.g,
-        palette.bar_bg.b,
-        palette.bar_fg.r,
-        palette.bar_fg.g,
-        palette.bar_fg.b,
-        status_text,
-        "",
-        pad = status_pad
-    );
-
-    // 4. Shortcut Legend (Rows rows - 1 and rows)
-    let leg1 =
-        " ^G Help       ^O Save As    ^W Where Is   ^K Cut Line   ^U Paste      ^J Jump Line ";
-    let leg2 =
-        " ^X Exit       ^S Save       ^F Find       ^Z Undo       ^Y Redo       ^E Markdown  ";
-    let leg1_pad = (cols as usize).saturating_sub(leg1.chars().count());
-    let leg2_pad = (cols as usize).saturating_sub(leg2.chars().count());
-
-    let _ = write!(
-        out,
-        "\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m{}{:pad$}\x1b[0m\r\n",
-        palette.bg.r,
-        palette.bg.g,
-        palette.bg.b,
-        palette.fg.r,
-        palette.fg.g,
-        palette.fg.b,
-        leg1,
-        "",
-        pad = leg1_pad
-    );
-    let _ = write!(
-        out,
-        "\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m{}{:pad$}\x1b[0m",
-        palette.bg.r,
-        palette.bg.g,
-        palette.bg.b,
-        palette.fg.r,
-        palette.fg.g,
-        palette.fg.b,
-        leg2,
-        "",
-        pad = leg2_pad
-    );
-
-    // 5. Help Overlay (if active)
-    if session.show_help {
-        render_help_overlay(&mut out, cols, rows, &palette);
-    }
-
-    // 6. Caret Placement
-    if !session.show_help && session.prompt == PromptMode::None {
-        let screen_row = 2 + (caret_idx.saturating_sub(scroll_row));
-        let screen_col = 1 + gutter_width + caret_col.saturating_sub(session.scroll_col);
-        if screen_row <= (rows as usize).saturating_sub(3) && screen_col <= cols as usize {
-            let _ = write!(out, "\x1b[{screen_row};{screen_col}H");
-        }
-    } else if let PromptMode::SaveAs | PromptMode::Find | PromptMode::GoToLine = &session.prompt {
-        // Place cursor in prompt line
-        let prompt_col = 12 + session.prompt_input.chars().count();
-        let _ = write!(out, "\x1b[{};{}H", rows - 2, prompt_col);
-    }
-
-    // Show cursor
-    out.push_str("\x1b[?25h");
-
-    out
 }
 
-fn render_text_line(line: &str, palette: &TuiPalette, search_query: Option<&str>) -> String {
-    if let Some(query) = search_query
-        && !query.is_empty()
-        && line.to_lowercase().contains(&query.to_lowercase())
-    {
-        let query_lower = query.to_lowercase();
-        let line_lower = line.to_lowercase();
-        let mut out = String::with_capacity(line.len() * 2);
-        let mut last_idx = 0;
-
-        for (match_start, _) in line_lower.match_indices(&query_lower) {
-            if match_start > last_idx {
-                let _ = write!(
-                    out,
-                    "\x1b[38;2;{};{};{}m{}",
-                    palette.fg.r,
-                    palette.fg.g,
-                    palette.fg.b,
-                    &line[last_idx..match_start]
-                );
+/// Returns the status line: a prompt, a recent message, or the position.
+fn status_line(frame: &Frame<'_>) -> String {
+    let &Frame {
+        session,
+        text,
+        ref table,
+        caret_line,
+        caret_column,
+    } = frame;
+    prompt_parts(session).map_or_else(
+        || match &session.status_message {
+            Some((message, created)) if created.elapsed() < std::time::Duration::from_secs(3) => {
+                format!(" {message}")
             }
-            let match_end = match_start + query.len();
-            let _ = write!(
-                out,
-                "\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m\x1b[1m{}\x1b[0m\x1b[48;2;{};{};{}m",
-                palette.match_bg.r,
-                palette.match_bg.g,
-                palette.match_bg.b,
-                palette.match_fg.r,
-                palette.match_fg.g,
-                palette.match_fg.b,
-                &line[match_start..match_end],
-                palette.bg.r,
-                palette.bg.g,
-                palette.bg.b
-            );
-            last_idx = match_end;
-        }
-
-        if last_idx < line.len() {
-            let _ = write!(
-                out,
-                "\x1b[38;2;{};{};{}m{}",
-                palette.fg.r,
-                palette.fg.g,
-                palette.fg.b,
-                &line[last_idx..]
-            );
-        }
-        return out;
-    }
-
-    format!(
-        "\x1b[38;2;{};{};{}m{line}",
-        palette.fg.r, palette.fg.g, palette.fg.b
+            _ => format!(
+                " Ln {}, Col {}  │  {} B  │  {} L  │  {}  │  {} ",
+                caret_line + 1,
+                caret_column + 1,
+                text.len(),
+                table.len(),
+                session.document.encoding().status_label(),
+                session.document.line_endings().status_label()
+            ),
+        },
+        |(label, input, hint)| format!("{label}{input}{hint}"),
     )
 }
 
-#[allow(clippy::option_if_let_else)]
-fn render_markdown_line(line: &str, palette: &TuiPalette) -> String {
-    let trimmed = line.trim_start();
-    if let Some(heading) = trimmed.strip_prefix("# ") {
-        format!(
-            "\x1b[1m\x1b[4m\x1b[38;2;{};{};{}m# {heading}\x1b[0m",
-            palette.accent.r, palette.accent.g, palette.accent.b
-        )
-    } else if let Some(heading) = trimmed.strip_prefix("## ") {
-        format!(
-            "\x1b[1m\x1b[38;2;{};{};{}m## {heading}\x1b[0m",
-            palette.accent.r, palette.accent.g, palette.accent.b
-        )
-    } else if let Some(heading) = trimmed.strip_prefix("### ") {
-        format!(
-            "\x1b[1m\x1b[38;2;{};{};{}m### {heading}\x1b[0m",
-            palette.fg.r, palette.fg.g, palette.fg.b
-        )
-    } else if let Some(bullet) = trimmed
-        .strip_prefix("- ")
-        .or_else(|| trimmed.strip_prefix("* "))
-    {
-        format!(
-            "\x1b[38;2;{};{};{}m • \x1b[38;2;{};{};{}m{bullet}",
-            palette.accent.r,
-            palette.accent.g,
-            palette.accent.b,
-            palette.fg.r,
-            palette.fg.g,
-            palette.fg.b
-        )
-    } else if let Some(quote) = trimmed.strip_prefix("> ") {
-        format!(
-            "\x1b[38;2;{};{};{}m │ \x1b[3m\x1b[38;2;{};{};{}m{quote}\x1b[0m",
-            palette.gutter_fg.r,
-            palette.gutter_fg.g,
-            palette.gutter_fg.b,
-            palette.fg.r,
-            palette.fg.g,
-            palette.fg.b
-        )
-    } else if trimmed.starts_with("```") {
-        format!(
-            "\x1b[2m\x1b[38;2;{};{};{}m{trimmed}\x1b[0m",
-            palette.gutter_fg.r, palette.gutter_fg.g, palette.gutter_fg.b
-        )
-    } else {
-        render_text_line(line, palette, None)
+/// Renders the complete TUI frame into an output buffer.
+///
+/// The frame uses the scroll position stored in the session; call
+/// [`TuiSession::scroll_to_caret`] first to keep the caret visible.
+pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
+    let columns = cols as usize;
+    let mut out = String::with_capacity(columns * rows as usize * 4);
+    let palette = TuiPalette::for_theme(session.theme);
+    out.push_str("\x1b[?25l\x1b[H");
+    if usize::from(rows) <= CHROME_ROWS || columns < MIN_COLUMNS {
+        // Too small for the layout: say so in what fits instead of drawing
+        // rows that wrap or scroll the terminal.
+        out.push_str("\x1b[0m\x1b[2J\x1b[H");
+        out.push_str(&fit_line("Enlarge the terminal", columns));
+        return out;
     }
+
+    let text = session.text();
+    let frame = Frame::new(session, &text);
+    let (caret_line, caret_column) = (frame.caret_line, frame.caret_column);
+    let offset = text_offset(frame.table.len());
+    let text_width = columns.saturating_sub(offset);
+    let height = viewport_height(rows);
+
+    let doc_name = session.document.path().map_or_else(
+        || "Untitled".to_owned(),
+        |path| {
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        },
+    );
+    let dirty = if session.document.is_dirty() {
+        " *"
+    } else {
+        ""
+    };
+    let header = format!(
+        " Noter {} │ {doc_name}{dirty} │ [{}] │ {} ",
+        env!("CARGO_PKG_VERSION"),
+        session.view.label(),
+        session.theme.label()
+    );
+    push_bar(
+        &mut out,
+        &header,
+        columns,
+        palette.bar_bg,
+        palette.bar_fg,
+        true,
+    );
+    out.push_str("\r\n");
+
+    push_viewport(&mut out, &frame, columns, height, &palette);
+
+    let status = status_line(&frame);
+    push_bar(
+        &mut out,
+        &status,
+        columns,
+        palette.bar_bg,
+        palette.bar_fg,
+        true,
+    );
+    out.push_str("\r\n");
+    push_bar(&mut out, LEGEND_TOP, columns, palette.bg, palette.fg, false);
+    out.push_str("\r\n");
+    push_bar(
+        &mut out,
+        LEGEND_BOTTOM,
+        columns,
+        palette.bg,
+        palette.fg,
+        false,
+    );
+
+    // The cursor stays hidden unless it has a place: over help, or with the
+    // caret scrolled out of view, a visible cursor would mark a wrong cell.
+    if session.show_help {
+        render_help_overlay(&mut out, cols, rows, &palette);
+    } else if let Some((label, input, _)) = prompt_parts(session) {
+        let column = 1 + display_width(&label) + display_width(input);
+        let _ = write!(
+            out,
+            "\x1b[{};{}H\x1b[?25h",
+            (rows as usize).saturating_sub(2),
+            column.min(columns)
+        );
+    } else if (session.scroll_row..session.scroll_row + height).contains(&caret_line)
+        && (session.scroll_col..session.scroll_col + text_width).contains(&caret_column)
+    {
+        let _ = write!(
+            out,
+            "\x1b[{};{}H\x1b[?25h",
+            2 + caret_line - session.scroll_row,
+            1 + offset + caret_column - session.scroll_col
+        );
+    }
+    out
 }
+
+const LEGEND_TOP: &str =
+    " ^G Help       ^O Save As    ^W Where Is   ^K Cut Line   ^U Paste      ^J Jump Line ";
+const LEGEND_BOTTOM: &str =
+    " ^X Exit       ^S Save       ^F Find       ^Z Undo       ^Y Redo       ^E Markdown  ";
 
 fn render_help_overlay(out: &mut String, cols: u16, rows: u16, palette: &TuiPalette) {
     let width = 64.min((cols as usize).saturating_sub(4));
@@ -1257,6 +1431,7 @@ pub fn run(options: &LaunchOptions) -> io::Result<()> {
     // Main Interactive Loop
     while !session.should_exit {
         let (cols, rows) = noter_platform::terminal_size();
+        session.scroll_to_caret(cols, rows);
         let frame = render_frame(&session, cols, rows);
         stdout.write_all(frame.as_bytes())?;
         stdout.flush()?;
@@ -1396,25 +1571,33 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
         PromptMode::None => {}
     }
 
+    if let TuiEvent::Key(_) = event {
+        session.follow_caret = true;
+    }
     match event {
         TuiEvent::Mouse(mouse) => match mouse {
             TuiMouseEvent::ScrollUp { .. } => {
+                session.follow_caret = false;
                 session.scroll_row = session.scroll_row.saturating_sub(3);
             }
             TuiMouseEvent::ScrollDown { .. } => {
-                let max_scroll = session.document.rope().len_lines().saturating_sub(1);
-                session.scroll_row = (session.scroll_row + 3).min(max_scroll);
+                session.follow_caret = false;
+                let last_line = LineTable::new(&session.text()).len() - 1;
+                session.scroll_row = (session.scroll_row + 3).min(last_line);
             }
             TuiMouseEvent::Press { col, row } => {
-                let viewport_h = rows.saturating_sub(4);
-                if row >= 2 && row < 2 + viewport_h {
-                    let clicked_line = session.scroll_row + (row - 2) as usize + 1;
+                let first_text_row = 2;
+                if (first_text_row..first_text_row + viewport_height(rows))
+                    .contains(&usize::from(row))
+                {
                     let text = session.text();
-                    if let Ok(start) = line_start_offset(&text, clicked_line) {
-                        let end = line_end_offset(&text, start);
-                        let clicked_col = (col.saturating_sub(8)) as usize;
-                        session.caret_byte = (start + clicked_col).min(end);
-                    }
+                    let table = LineTable::new(&text);
+                    let span = table.line(session.scroll_row + usize::from(row) - first_text_row);
+                    let column = session.scroll_col
+                        + usize::from(col).saturating_sub(text_offset(table.len()) + 1);
+                    session.caret_byte =
+                        span.start + offset_at_column(&text[span.start..span.end], column);
+                    session.follow_caret = true;
                 } else if row == rows - 1 {
                     // Clicked top legend: ^G Help, ^O Save, ^W Where Is, ^K Cut Line, ^U Paste, ^J Jump Line
                     if col < 15 {
@@ -1774,7 +1957,7 @@ mod tests {
             80,
             24,
         );
-        assert_eq!(session.caret_byte, 4);
+        assert_eq!(session.caret_byte, 3);
 
         // Scroll down and up
         handle_event(
@@ -2086,6 +2269,245 @@ mod tests {
         assert!(session.pending_save.is_none());
     }
 
+    /// Removes the SGR and cursor sequences the renderer itself emits.
+    fn strip_own_sequences(frame: &str) -> String {
+        let mut out = String::new();
+        let mut characters = frame.chars();
+        while let Some(character) = characters.next() {
+            if character == '\u{1B}' {
+                assert_eq!(
+                    characters.next(),
+                    Some('['),
+                    "only CSI sequences are emitted"
+                );
+                for next in characters.by_ref() {
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(character);
+            }
+        }
+        out
+    }
+
+    fn assert_frame_is_terminal_safe(frame: &str, cols: usize) {
+        let visible = strip_own_sequences(frame);
+        for row in visible.split("\r\n") {
+            assert!(
+                !row.chars()
+                    .any(noter::core::terminal_text::is_terminal_unsafe),
+                "unsafe character in row {row:?}"
+            );
+            assert!(
+                display_width(row) <= cols,
+                "row wider than the terminal: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn document_escape_sequences_are_drawn_inert() {
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        session.insert_str(
+            "title\u{1B}]0;owned\u{7}\nclip\u{1B}]52;c;ZWNobw==\u{7}\n\u{9B}2J\u{202E}txt",
+        );
+        for view in [DocumentView::Text, DocumentView::Markdown] {
+            session.view = view;
+            let frame = render_frame(&session, 80, 24);
+            assert!(!frame.contains("\u{1B}]"));
+            assert!(!frame.contains('\u{7}'));
+            assert_frame_is_terminal_safe(&frame, 80);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_names_with_control_characters_are_drawn_inert() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("evil\u{1B}]0;x\u{7}.txt");
+        std::fs::write(&path, "text").unwrap();
+        let session = session_for(&path);
+
+        let frame = render_frame(&session, 80, 24);
+
+        assert!(!frame.contains("\u{1B}]0"));
+        assert_frame_is_terminal_safe(&frame, 80);
+    }
+
+    #[test]
+    fn search_uses_exact_ranges_when_case_folding_changes_length() {
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        session.insert_str("\u{212A}elvin and kelvin");
+        session.caret_byte = 0;
+        session.search_query = Some("KELVIN".to_owned());
+
+        session.find_next();
+        assert_eq!(session.caret_byte, 13);
+        session.find_next();
+        assert_eq!(session.caret_byte, 0);
+        assert!(
+            session
+                .status_message
+                .as_ref()
+                .is_some_and(|(message, _)| message == "Match 1 of 2 (wrapped)")
+        );
+        assert_frame_is_terminal_safe(&render_frame(&session, 80, 24), 80);
+    }
+
+    #[test]
+    fn clicks_land_on_character_boundaries_in_multibyte_and_wide_text() {
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        session.insert_str("héllo\n世界ab");
+        let text_column = |column: u16| 9 + column;
+
+        // Column 2 is the l after the two-byte é.
+        handle_event(
+            &mut session,
+            TuiEvent::Mouse(TuiMouseEvent::Press {
+                col: text_column(2),
+                row: 2,
+            }),
+            80,
+            24,
+        );
+        assert_eq!(session.caret_byte, 3);
+        key(&mut session, TuiKey::Char('x'));
+        assert_eq!(session.text(), "héxllo\n世界ab");
+
+        // Column 3 is the second cell of 界, which starts at column 2.
+        handle_event(
+            &mut session,
+            TuiEvent::Mouse(TuiMouseEvent::Press {
+                col: text_column(3),
+                row: 3,
+            }),
+            80,
+            24,
+        );
+        assert_eq!(session.caret_byte, "héxllo\n世".len());
+        // A click in the gutter or past the end stays on the line.
+        handle_event(
+            &mut session,
+            TuiEvent::Mouse(TuiMouseEvent::Press { col: 1, row: 3 }),
+            80,
+            24,
+        );
+        assert_eq!(session.caret_byte, "héxllo\n".len());
+        handle_event(
+            &mut session,
+            TuiEvent::Mouse(TuiMouseEvent::Press { col: 79, row: 3 }),
+            80,
+            24,
+        );
+        assert_eq!(session.caret_byte, session.text().len());
+    }
+
+    #[test]
+    fn long_lines_scroll_horizontally_and_rows_never_overflow() {
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        session.insert_str(&"世".repeat(100));
+
+        session.scroll_to_caret(40, 10);
+        let frame = render_frame(&session, 40, 10);
+
+        assert!(session.scroll_col > 0);
+        assert_frame_is_terminal_safe(&frame, 40);
+        assert!(frame.contains("\x1b[?25h"), "the caret is visible");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_away_from_the_caret_until_the_next_key() {
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        session.insert_str(&"line\n".repeat(100));
+        session.scroll_to_caret(80, 24);
+        let at_caret = session.scroll_row;
+
+        handle_event(
+            &mut session,
+            TuiEvent::Mouse(TuiMouseEvent::ScrollUp { col: 10, row: 5 }),
+            80,
+            24,
+        );
+        session.scroll_to_caret(80, 24);
+        assert_eq!(session.scroll_row, at_caret - 3);
+        assert!(!render_frame(&session, 80, 24).contains("\x1b[?25h"));
+
+        key(&mut session, TuiKey::Right);
+        session.scroll_to_caret(80, 24);
+        assert_eq!(session.scroll_row, at_caret);
+    }
+
+    #[test]
+    fn combining_marks_are_drawn_with_their_base_character() {
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        session.insert_str("cafe\u{301} \u{1F44D}\u{1F3FD}");
+        let frame = strip_own_sequences(&render_frame(&session, 80, 24));
+        assert!(frame.contains("cafe\u{301}"), "{frame}");
+    }
+
+    #[test]
+    fn terminals_too_small_for_the_layout_get_a_fitted_notice() {
+        let session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        for (cols, rows) in [(10, 24), (80, 4), (5, 2)] {
+            let frame = strip_own_sequences(&render_frame(&session, cols, rows));
+            assert_eq!(frame.lines().count(), 1);
+            assert_eq!(display_width(&frame), usize::from(cols));
+        }
+    }
+
+    #[test]
+    fn status_reports_one_based_display_columns() {
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        session.insert_str("世界");
+        let frame = strip_own_sequences(&render_frame(&session, 80, 24));
+        assert!(frame.contains("Ln 1, Col 5"), "{frame}");
+    }
+
+    #[test]
+    fn line_table_matches_core_line_splitting() {
+        let text = "a\r\nb\rc\u{2028}d\n";
+        let table = LineTable::new(text);
+        assert_eq!(table.len(), 4);
+        assert_eq!(
+            table.line(1),
+            LineSpan {
+                start: 3,
+                end: 4,
+                next: 5
+            }
+        );
+        assert_eq!(&text[table.line(2).start..table.line(2).end], "c\u{2028}d");
+        assert_eq!(
+            table.line(3),
+            LineSpan {
+                start: text.len(),
+                end: text.len(),
+                next: text.len()
+            }
+        );
+        assert_eq!(table.line_of(4), 1);
+        assert_eq!(LineTable::new("").len(), 1);
+        assert_eq!(LineTable::new("x").len(), 1);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn frames_never_emit_unsafe_characters(text in proptest::prelude::any::<String>(), cols in 1_u16..120, rows in 1_u16..16) {
+            let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+            session.insert_str(&text);
+            session.search_query = Some(text.chars().take(2).collect());
+            for view in [DocumentView::Text, DocumentView::Markdown] {
+                session.view = view;
+                session.scroll_to_caret(cols, rows);
+                let frame = render_frame(&session, cols, rows);
+                assert_frame_is_terminal_safe(&frame, usize::from(cols));
+                proptest::prop_assert!(strip_own_sequences(&frame).split("\r\n").count() <= usize::from(rows));
+            }
+        }
+    }
+
     #[test]
     fn tui_palette_and_markdown_rendering() {
         for theme in [
@@ -2099,17 +2521,18 @@ mod tests {
             assert!(palette.fg.r != 0 || palette.fg.g != 0 || palette.fg.b != 0);
         }
 
-        let palette = TuiPalette::for_theme(AppTheme::Dark);
-        let h1 = render_markdown_line("# Heading One", &palette);
-        assert!(h1.contains("Heading One"));
-
-        let bullet = render_markdown_line("- Bullet item", &palette);
-        assert!(bullet.contains("Bullet item"));
-
-        let quote = render_markdown_line("> Quoted block", &palette);
-        assert!(quote.contains("Quoted block"));
-
-        let text = render_text_line("The quick brown fox", &palette, Some("brown"));
-        assert!(text.contains("brown"));
+        assert_eq!(
+            markdown_spans("# Heading One"),
+            vec![(0..13, Style::Heading)]
+        );
+        assert_eq!(markdown_spans("  - item"), vec![(2..3, Style::Marker)]);
+        assert_eq!(markdown_spans("12. item"), vec![(0..3, Style::Marker)]);
+        assert_eq!(
+            markdown_spans("> quote"),
+            vec![(0..1, Style::Muted), (1..7, Style::Quote)]
+        );
+        assert_eq!(markdown_spans("```rust"), vec![(0..7, Style::Muted)]);
+        assert!(markdown_spans("#hashtag").is_empty());
+        assert!(markdown_spans("plain").is_empty());
     }
 }

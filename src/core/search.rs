@@ -137,6 +137,17 @@ impl LiteralSearch {
         })
     }
 
+    /// Returns every non-overlapping match in `source`, in order.
+    ///
+    /// Ranges come from the engine, so they are exact source byte ranges even
+    /// when case folding changes a character's encoded length.
+    pub fn ranges<'a>(&'a self, source: &'a str) -> impl Iterator<Item = TextRange> + 'a {
+        self.matcher
+            .iter()
+            .flat_map(move |matcher| matcher.find_iter(source))
+            .map(|found| TextRange::new(found.start(), found.end()))
+    }
+
     /// Selects one match relative to `position` and reports wrap behavior.
     ///
     /// Positions beyond the source are clamped to its byte length. They do not
@@ -373,6 +384,26 @@ mod tests {
                 )
                 .expect("valid scope should be accepted"),
             None
+        );
+    }
+
+    #[test]
+    fn ranges_are_exact_source_ranges_when_folding_changes_length() {
+        // KELVIN SIGN is three bytes and folds to the one-byte letter k.
+        let source = "\u{212A}elvin and kelvin";
+        let search = LiteralSearch::new("kelvin", MatchCase::Insensitive)
+            .expect("ASCII query should compile");
+
+        let ranges: Vec<_> = search.ranges(source).collect();
+
+        assert_eq!(ranges, vec![TextRange::new(0, 8), TextRange::new(13, 19)]);
+        assert_eq!(&source[0..8], "\u{212A}elvin");
+        assert_eq!(
+            LiteralSearch::new("", MatchCase::Insensitive)
+                .expect("empty query is valid")
+                .ranges(source)
+                .count(),
+            0
         );
     }
 

@@ -47,6 +47,7 @@ regex = { version = "1.13", default-features = false, features = ["perf", "std",
 rfd = "0.17"
 thiserror = "2.0"
 ropey = "1.6"
+unicode-width = { version = "0.2", default-features = false }
 
 [dev-dependencies]
 proptest = { version = "1.11", default-features = false, features = ["std"] }

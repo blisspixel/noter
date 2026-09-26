@@ -30,6 +30,8 @@ pub mod revision;
 pub mod save;
 /// Bounded literal search and replacement policy.
 pub mod search;
+/// Terminal-safe display of untrusted text.
+pub mod terminal_text;
 /// Explicit text encoding and byte-order-mark metadata.
 pub mod text_format;
 /// Bounded, revision-aware undo and redo history.
