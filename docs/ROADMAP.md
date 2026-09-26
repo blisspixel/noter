@@ -92,8 +92,10 @@ does not expand unsafe UI surface.
     panic, and shares the window's bounded Undo and crash recovery, checked
     in a real pseudo-terminal by `scripts/check_tui_pty.py` on Linux and
     macOS CI; a missing Linux window library is named instead of aborting;
-    the installer scripts work. Exact-head CI evidence
-    is recorded when the branch merges.
+    the installer scripts work; the window draws any script with local
+    fonts; and a keystroke's document-core cost is proportional to the edit.
+    Exact-head CI passed on `e3247c1`, including every mutation shard, and
+    it merged to protected `main` as `7e4edb3` on 2026-09-26.
 9. **Complete M4-H1 recovery namespace binding:** verify and retain the state and
    recovery directory identities and access policy, route operations through
    held directory handles, reject unsupported roots before writing recovery
@@ -138,7 +140,8 @@ and installer scripts, but without the M4-H1, M5, and M6 work this roadmap had
 placed before it. A later review found that the preview could lose text on a
 failed save, had no crash recovery, and wrote untrusted text to the terminal,
 and that the documented installer commands failed. Item 8a records the
-hardening in progress; the version table records the correction.
+merged hardening; the version table records the correction. Beta.2 also waits
+for M4-H1, the M5 gate, and continuous Markdown editing.
 
 ## Previous checkpoint: `0.1.0-alpha.2` correctness alpha
 
