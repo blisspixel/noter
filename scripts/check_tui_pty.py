@@ -76,6 +76,27 @@ def expect(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+SETTING_NAMES = ("iflag", "oflag", "cflag", "lflag", "ispeed", "ospeed", "cc")
+
+
+def settings_difference(before: list, after: list) -> list[str]:
+    """Name each terminal setting that differs, ignoring kernel state bits.
+
+    PENDIN and FLUSHO in the local flags report the line discipline's own
+    progress rather than a mode a program sets, so a restored terminal may
+    differ from its saved copy in them alone.
+    """
+
+    state_bits = getattr(termios, "PENDIN", 0) | getattr(termios, "FLUSHO", 0)
+    changed = []
+    for name, old, new in zip(SETTING_NAMES, before, after):
+        if name == "lflag":
+            old, new = old & ~state_bits, new & ~state_bits
+        if old != new:
+            changed.append(f"{name} {old!r} -> {new!r}")
+    return changed
+
+
 def check_editing_session(binary: str, state_directory: str) -> None:
     """Type split UTF-8 and a paste, save, exit, and check the terminal."""
 
@@ -113,10 +134,8 @@ def check_editing_session(binary: str, state_directory: str) -> None:
         document.read_text(encoding="utf-8") == "héllo wörld\npasted\x0fline\n",
         "the saved text differs from what was typed and pasted",
     )
-    expect(
-        termios.tcgetattr(slave) == settings_before,
-        "terminal settings were not restored",
-    )
+    changed = settings_difference(settings_before, termios.tcgetattr(slave))
+    expect(not changed, f"terminal settings were not restored: {changed}")
     expect(b"\x1b[?1049l" in screen, "the alternate screen was not left")
     expect(b"\x1b]" not in screen, "an operating-system command reached the terminal")
     os.close(master)

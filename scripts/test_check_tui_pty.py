@@ -45,6 +45,19 @@ class ReadUntilTests(unittest.TestCase):
             check_tui_pty.expect(False, "broken")
         check_tui_pty.expect(True, "unused")
 
+    @unittest.skipIf(check_tui_pty.termios is None, "termios is Unix only")
+    def test_settings_difference_names_fields_and_ignores_state_bits(self) -> None:
+        termios = check_tui_pty.termios
+        before = [1, 2, 3, 4, 38400, 38400, [b"a"]]
+        self.assertEqual(check_tui_pty.settings_difference(before, list(before)), [])
+        state = [1, 2, 3, 4 | termios.PENDIN | termios.FLUSHO, 38400, 38400, [b"a"]]
+        self.assertEqual(check_tui_pty.settings_difference(before, state), [])
+        echo_lost = [1, 2, 3, 0, 38400, 38400, [b"b"]]
+        self.assertEqual(
+            check_tui_pty.settings_difference(before, echo_lost),
+            ["lflag 4 -> 0", "cc [b'a'] -> [b'b']"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
