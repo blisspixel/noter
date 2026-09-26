@@ -6,6 +6,15 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+### Fixed
+
+- Open the window on macOS. The terminal fallback treated every Unix system
+  without `DISPLAY` as headless, so macOS launches opened the terminal
+  interface or failed without a terminal. The fallback now applies only on
+  Linux and the BSDs, and only when standard input and output are interactive
+  terminals. `--gui` forces the window, and `noter update` prints its status
+  when no window can open.
+
 ## 0.1.0-beta.1 - 2026-09-24
 
 ### Added

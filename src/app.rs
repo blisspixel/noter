@@ -55,8 +55,8 @@ const ABOUT_SUMMARY: &str = "A focused editor for plain text and Markdown files.
 const ABOUT_MARKDOWN_STATUS: &str = "Markdown Mode provides a formatted, direct editing surface while keeping ordinary Markdown source authoritative on disk.";
 const ABOUT_PRIVACY: &str = "Noter has no accounts, telemetry, or background network activity.";
 const ABOUT_LINK_BEHAVIOR: &str = "The project link opens in your default browser.";
-const UPDATE_STATUS: &str = "Noter does not check for updates in the background. Open the releases page to compare this version with published builds.";
-const RELEASES_URL: &str = "https://github.com/blisspixel/noter/releases";
+pub const UPDATE_STATUS: &str = "Noter does not check for updates in the background. Open the releases page to compare this version with published builds.";
+pub const RELEASES_URL: &str = "https://github.com/blisspixel/noter/releases";
 /// Names the window opened by `noter update` while its status is still shown.
 const UPDATE_WINDOW_TITLE: &str = "Update status";
 const UNCERTAIN_SAVE_ABANDON_GUIDANCE: &str = "Cancel this dialog and reconcile every uncertain save outcome before attempting another save. Your current text remains editable.";
@@ -124,7 +124,19 @@ pub struct LaunchOptions {
     pub show_updates: bool,
     pub screenshot_path: Option<PathBuf>,
     pub screenshot_idle: bool,
-    pub tui: bool,
+    pub interface: InterfaceRequest,
+}
+
+/// The interface the command line asked for.
+///
+/// `Auto` lets the launch environment decide; the explicit variants come from
+/// `--gui` and `--tui` and are never overridden.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum InterfaceRequest {
+    #[default]
+    Auto,
+    Gui,
+    Tui,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

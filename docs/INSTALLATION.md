@@ -142,11 +142,11 @@ noter update
 | --- | --- | --- |
 | `noter --version`, `noter -V` | 0 | Prints `noter <version>` and exits |
 | `noter --help`, `noter -h`, `noter update --help` | 0 | Prints the usage block and exits |
-| `noter` | runs | Opens an untitled document (GUI by default, TUI if headless) |
+| `noter` | runs | Opens an untitled document in a window, or in the terminal interface on a headless Linux or BSD terminal |
 | `noter FILE` | runs | Opens an existing readable file |
 | `noter --tui [FILE]` | runs | Opens the document in interactive Terminal UI (TUI) mode |
 | `noter --gui [FILE]` | runs | Forces graphical desktop interface mode |
-| `noter update` | runs | Opens the local update status, titled `Update status - Noter` |
+| `noter update` | runs | Opens the local update status, titled `Update status - Noter`, or prints it where the terminal interface would open |
 | Unknown option, invalid or missing option value, second document path | 2 | One line on standard error, then usage |
 | FILE missing, a directory, or unreadable | 2 | `noter: cannot open ...`, then usage |
 
@@ -154,9 +154,14 @@ noter update
 startup theme and view. Their values are accepted in any letter case. `--` ends
 option parsing so a document path may begin with `-`.
 
-When running in an SSH session or headless console without a display server
-(`DISPLAY` and `WAYLAND_DISPLAY` absent), Noter automatically engages TUI mode
-if standard input is an interactive terminal.
+Without `--gui` or `--tui`, Noter opens a window. On Linux, the BSDs, and other
+non-macOS Unix systems, where windows need an X11 or Wayland display server, a
+launch with neither `DISPLAY` nor `WAYLAND_DISPLAY` set to a non-empty value
+whose standard input and standard output are both interactive terminals opens
+the terminal interface instead, such as over SSH. `noter update` in that
+situation prints the update status to standard output and exits. macOS and
+Windows always open a window unless `--tui` is given. `--gui` and `--tui`
+together are an argument error.
 
 Argument mistakes fail on the command line. Problems with a file's *content*,
 such as invalid UTF-8 or a document above the current interactive size limit,
