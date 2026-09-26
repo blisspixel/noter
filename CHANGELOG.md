@@ -34,6 +34,17 @@ that candidate is frozen for publication.
   them across the layout, measure columns in terminal cells so wide characters
   and tabs align, keep the view where the mouse wheel moved it until the next
   key, and style Markdown without moving any character.
+- Decode terminal input across read boundaries. A character, key sequence,
+  or mouse report split between two reads used to turn into garbled text or
+  the wrong key. Unbound control keys no longer insert control characters,
+  Ctrl+J reaches Go To Line, and a bracketed paste arrives as one undoable
+  edit with the document's line endings, so a pasted Ctrl+O or Ctrl+S byte is
+  text instead of a command.
+- Restore the terminal after a panic in the terminal interface. Release
+  builds abort on panic, which skipped the code that leaves raw mode, so the
+  shell was left without echo. A load failure also no longer leaves the
+  alternate screen on, a resized terminal is redrawn without a keypress, and
+  a hung-up terminal ends the session.
 
 ### Security
 

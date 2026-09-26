@@ -17,10 +17,13 @@
 use std::fmt::Write as FmtWrite;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use noter::core::document::{Document, PreparedSaveAs};
 use noter::core::edit::{EditOrigin, EditTimestamp, EditTransaction, Selection};
-use noter::core::line_endings::logical_lines;
+use noter::core::limits::MAX_DOCUMENT_BYTES;
+use noter::core::line_endings::{logical_lines, normalize_inserted_text};
 use noter::core::navigation::{
     LineNavigationError, MoveDirection, MoveUnit, line_start_offset, move_caret,
 };
@@ -32,45 +35,11 @@ use noter::core::terminal_text::{
 use noter::error::NoterError;
 
 use crate::app::{DocumentView, LaunchOptions};
+
+mod input;
+
 use crate::theme::AppTheme;
-
-/// A parsed terminal key event.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TuiKey {
-    Char(char),
-    Enter,
-    Backspace,
-    Delete,
-    Tab,
-    Up,
-    Down,
-    Left,
-    Right,
-    Home,
-    End,
-    PageUp,
-    PageDown,
-    CtrlLeft,
-    CtrlRight,
-    Escape,
-    Ctrl(char),
-    F(u8),
-}
-
-/// A parsed mouse event from SGR mouse tracking.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TuiMouseEvent {
-    Press { col: u16, row: u16 },
-    ScrollUp { col: u16, row: u16 },
-    ScrollDown { col: u16, row: u16 },
-}
-
-/// A parsed high-level TUI input event.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TuiEvent {
-    Key(TuiKey),
-    Mouse(TuiMouseEvent),
-}
+pub use input::{InputDecoder, TuiEvent, TuiKey, TuiMouseEvent};
 
 /// Active modal prompt in the status area.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -262,6 +231,31 @@ impl TuiSession {
     /// Sets a temporary status message visible for 3 seconds.
     pub fn set_status(&mut self, message: impl Into<String>) {
         self.status_message = Some((message.into(), std::time::Instant::now()));
+    }
+
+    /// Clears a status message that has been visible for 3 seconds and
+    /// reports whether the frame changed.
+    pub fn expire_status(&mut self) -> bool {
+        let expired = self
+            .status_message
+            .as_ref()
+            .is_some_and(|(_, created)| created.elapsed() >= STATUS_LIFETIME);
+        if expired {
+            self.status_message = None;
+        }
+        expired
+    }
+
+    /// Inserts pasted text as one edit, with line endings converted to the
+    /// document's convention and within the document size limit.
+    pub fn paste_text(&mut self, pasted: &str) {
+        let available = MAX_DOCUMENT_BYTES.saturating_sub(self.document.rope().len_bytes());
+        let ending = self.document.line_endings().fallback_insertion();
+        let normalized = normalize_inserted_text(pasted, ending, available);
+        if normalized.was_limited() {
+            self.set_status("Paste shortened to fit the document size limit");
+        }
+        self.insert_str(normalized.text());
     }
 
     /// Returns the current document text as a String.
@@ -712,150 +706,12 @@ impl TuiSession {
     }
 }
 
+/// How long a status message stays in place of the position summary.
+const STATUS_LIFETIME: Duration = Duration::from_secs(3);
+
 /// Shown when an earlier save may have reached disk.
 const UNCERTAIN_SAVE_GUIDANCE: &str =
     "Check that file on disk. Saving to it is paused; ^O Save As can write another file.";
-
-/// Parses raw input bytes into high-level TUI events.
-#[allow(clippy::too_many_lines)]
-pub fn parse_input_bytes(bytes: &[u8]) -> Vec<TuiEvent> {
-    let mut events = Vec::new();
-    let mut idx = 0;
-
-    while idx < bytes.len() {
-        let b = bytes[idx];
-
-        if b == 0x1b {
-            // Escape or CSI sequence
-            if idx + 1 >= bytes.len() {
-                events.push(TuiEvent::Key(TuiKey::Escape));
-                idx += 1;
-                continue;
-            }
-
-            if bytes[idx + 1] == b'O' && idx + 2 < bytes.len() {
-                match bytes[idx + 2] {
-                    b'P' => events.push(TuiEvent::Key(TuiKey::F(1))),
-                    b'Q' => events.push(TuiEvent::Key(TuiKey::F(2))),
-                    b'R' => events.push(TuiEvent::Key(TuiKey::F(3))),
-                    b'S' => events.push(TuiEvent::Key(TuiKey::F(4))),
-                    _ => events.push(TuiEvent::Key(TuiKey::Escape)),
-                }
-                idx += 3;
-                continue;
-            }
-
-            if bytes[idx + 1] == b'[' {
-                // CSI sequence
-                let seq_start = idx + 2;
-                let mut seq_end = seq_start;
-                while seq_end < bytes.len()
-                    && !bytes[seq_end].is_ascii_alphabetic()
-                    && bytes[seq_end] != b'~'
-                {
-                    seq_end += 1;
-                }
-
-                if seq_end < bytes.len() {
-                    let final_char = bytes[seq_end];
-                    let params = std::str::from_utf8(&bytes[seq_start..seq_end]).unwrap_or("");
-                    idx = seq_end + 1;
-
-                    // Mouse SGR event: \x1b[<{code};{col};{row}{M|m}
-                    if params.starts_with('<') && (final_char == b'M' || final_char == b'm') {
-                        let parts: Vec<&str> = params[1..].split(';').collect();
-                        if parts.len() == 3
-                            && let Ok(code) = parts[0].parse::<u16>()
-                            && let Ok(col) = parts[1].parse::<u16>()
-                            && let Ok(row) = parts[2].parse::<u16>()
-                        {
-                            if code == 64 {
-                                events.push(TuiEvent::Mouse(TuiMouseEvent::ScrollUp { col, row }));
-                            } else if code == 65 {
-                                events
-                                    .push(TuiEvent::Mouse(TuiMouseEvent::ScrollDown { col, row }));
-                            } else if code == 0 && final_char == b'M' {
-                                events.push(TuiEvent::Mouse(TuiMouseEvent::Press { col, row }));
-                            }
-                        }
-                        continue;
-                    }
-
-                    match (params, final_char) {
-                        ("", b'A') => events.push(TuiEvent::Key(TuiKey::Up)),
-                        ("", b'B') => events.push(TuiEvent::Key(TuiKey::Down)),
-                        ("", b'C') => events.push(TuiEvent::Key(TuiKey::Right)),
-                        ("", b'D') => events.push(TuiEvent::Key(TuiKey::Left)),
-                        ("", b'H') | ("1" | "7", b'~') => events.push(TuiEvent::Key(TuiKey::Home)),
-                        ("", b'F') | ("4" | "8", b'~') => events.push(TuiEvent::Key(TuiKey::End)),
-                        ("3", b'~') => events.push(TuiEvent::Key(TuiKey::Delete)),
-                        ("5", b'~') => events.push(TuiEvent::Key(TuiKey::PageUp)),
-                        ("6", b'~') => events.push(TuiEvent::Key(TuiKey::PageDown)),
-                        ("1;5", b'C') => events.push(TuiEvent::Key(TuiKey::CtrlRight)),
-                        ("1;5", b'D') => events.push(TuiEvent::Key(TuiKey::CtrlLeft)),
-                        ("11", b'~') => events.push(TuiEvent::Key(TuiKey::F(1))),
-                        ("12", b'~') => events.push(TuiEvent::Key(TuiKey::F(2))),
-                        ("13", b'~') => events.push(TuiEvent::Key(TuiKey::F(3))),
-                        ("14", b'~') => events.push(TuiEvent::Key(TuiKey::F(4))),
-                        ("15", b'~') => events.push(TuiEvent::Key(TuiKey::F(5))),
-                        _ => {}
-                    }
-                    continue;
-                }
-
-                // Incomplete CSI
-                events.push(TuiEvent::Key(TuiKey::Escape));
-                idx += 1;
-                continue;
-            }
-
-            // Other escape sequence or standalone Esc
-            events.push(TuiEvent::Key(TuiKey::Escape));
-            idx += 1;
-            continue;
-        }
-
-        // Control keys (1..=26)
-        match b {
-            0x01 => events.push(TuiEvent::Key(TuiKey::Ctrl('a'))),
-            0x03 => events.push(TuiEvent::Key(TuiKey::Ctrl('c'))),
-            0x05 => events.push(TuiEvent::Key(TuiKey::Ctrl('e'))),
-            0x06 => events.push(TuiEvent::Key(TuiKey::Ctrl('f'))),
-            0x07 => events.push(TuiEvent::Key(TuiKey::Ctrl('g'))),
-            0x08 | 0x7f => events.push(TuiEvent::Key(TuiKey::Backspace)),
-            0x09 => events.push(TuiEvent::Key(TuiKey::Tab)),
-            0x0a | 0x0d => events.push(TuiEvent::Key(TuiKey::Enter)),
-            0x0b => events.push(TuiEvent::Key(TuiKey::Ctrl('k'))),
-            0x0e => events.push(TuiEvent::Key(TuiKey::Ctrl('n'))),
-            0x0f => events.push(TuiEvent::Key(TuiKey::Ctrl('o'))),
-            0x11 => events.push(TuiEvent::Key(TuiKey::Ctrl('q'))),
-            0x13 => events.push(TuiEvent::Key(TuiKey::Ctrl('s'))),
-            0x14 => events.push(TuiEvent::Key(TuiKey::Ctrl('t'))),
-            0x15 => events.push(TuiEvent::Key(TuiKey::Ctrl('u'))),
-            0x17 => events.push(TuiEvent::Key(TuiKey::Ctrl('w'))),
-            0x18 => events.push(TuiEvent::Key(TuiKey::Ctrl('x'))),
-            0x19 => events.push(TuiEvent::Key(TuiKey::Ctrl('y'))),
-            0x1a => events.push(TuiEvent::Key(TuiKey::Ctrl('z'))),
-            0x1f => events.push(TuiEvent::Key(TuiKey::Ctrl('_'))),
-            _ => {
-                // Try decoding UTF-8 character
-                let remaining = &bytes[idx..];
-                if let Ok(s) = std::str::from_utf8(remaining)
-                    && let Some(ch) = s.chars().next()
-                {
-                    events.push(TuiEvent::Key(TuiKey::Char(ch)));
-                    idx += ch.len_utf8();
-                    continue;
-                }
-                // Single ASCII byte fallback
-                events.push(TuiEvent::Key(TuiKey::Char(b as char)));
-            }
-        }
-        idx += 1;
-    }
-
-    events
-}
 
 /// One logical line: its content bytes and where the next line starts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1227,7 +1083,7 @@ fn status_line(frame: &Frame<'_>) -> String {
     } = frame;
     prompt_parts(session).map_or_else(
         || match &session.status_message {
-            Some((message, created)) if created.elapsed() < std::time::Duration::from_secs(3) => {
+            Some((message, created)) if created.elapsed() < STATUS_LIFETIME => {
                 format!(" {message}")
             }
             _ => format!(
@@ -1399,61 +1255,128 @@ fn render_help_overlay(out: &mut String, cols: u16, rows: u16, palette: &TuiPale
     }
 }
 
+/// Terminal modes the interface turns on: the alternate screen, mouse
+/// reporting in SGR form, and bracketed paste.
+const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h";
+
+/// Turns every mode in [`ENTER_SCREEN`] off again and shows the cursor.
+const LEAVE_SCREEN: &[u8] = b"\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?25h";
+
+/// How long the loop waits for input before checking the terminal size and
+/// expiring status messages without a keypress.
+const IDLE_TICK: Duration = Duration::from_millis(250);
+
+/// At least the capacity of the standard library's stdin buffer (8 KiB).
+/// `BufReader` skips its own buffer when that buffer is empty and a read asks
+/// for at least its capacity, so with every read this size no byte ever
+/// waits in a buffer that `wait_for_terminal_input` cannot see.
+const READ_BUFFER_BYTES: usize = 16 * 1024;
+
+fn leave_screen() -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(LEAVE_SCREEN)?;
+    stdout.flush()
+}
+
+/// Holds the terminal modes in [`ENTER_SCREEN`] and turns them off when
+/// dropped, on every return path.
+struct ScreenModes;
+
+impl ScreenModes {
+    fn enter() -> io::Result<Self> {
+        let mut stdout = io::stdout().lock();
+        let entered = stdout.write_all(ENTER_SCREEN).and_then(|()| stdout.flush());
+        drop(stdout);
+        if let Err(error) = entered {
+            let _ = leave_screen();
+            return Err(error);
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for ScreenModes {
+    fn drop(&mut self) {
+        let _ = leave_screen();
+    }
+}
+
 /// Runs the interactive terminal user interface.
+///
+/// The document loads before the terminal changes mode, so a load failure
+/// leaves the terminal untouched. Release builds abort on panic, which skips
+/// destructors, so a panic hook restores the screen modes and terminal
+/// settings before the previous hook reports the panic. The previous hook
+/// is reinstated on return.
 ///
 /// # Errors
 ///
-/// Returns an [`io::Error`] if terminal raw mode cannot be enabled or standard I/O fails.
-#[allow(clippy::significant_drop_tightening)]
+/// Returns an [`io::Error`] if the document cannot load, terminal raw mode
+/// cannot be enabled, or standard I/O fails.
 pub fn run(options: &LaunchOptions) -> io::Result<()> {
-    // 1. Enable raw terminal mode via noter_platform
-    let _raw_guard = noter_platform::enable_raw_terminal()?;
-
-    // 2. Set up panic hook to clean up terminal on unexpected failure
-    let prev_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |panic_info| {
-        let mut stdout = io::stdout().lock();
-        let _ = stdout.write_all(b"\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?25h");
-        let _ = stdout.flush();
-        prev_hook(panic_info);
+    let mut session = TuiSession::new(options).map_err(io::Error::other)?;
+    let raw_terminal = noter_platform::enable_raw_terminal()?;
+    let restorer = raw_terminal.restorer();
+    let previous_hook = Arc::new(std::panic::take_hook());
+    let chained_hook = Arc::clone(&previous_hook);
+    std::panic::set_hook(Box::new(move |info| {
+        // Settings first: they matter most and need no stream. The screen
+        // modes go out through unbuffered stderr, which reaches the same
+        // terminal and cannot be mid-write when a render to stdout panics.
+        restorer.restore();
+        let _ = io::stderr().write_all(LEAVE_SCREEN);
+        chained_hook(info);
     }));
 
-    // 3. Enter alternate screen buffer & enable SGR mouse tracking
+    let result = ScreenModes::enter().and_then(|_screen| event_loop(&mut session));
+
+    drop(raw_terminal);
+    drop(std::panic::take_hook());
+    if let Ok(previous_hook) = Arc::try_unwrap(previous_hook) {
+        std::panic::set_hook(previous_hook);
+    }
+    result
+}
+
+/// Draws, waits for input, and dispatches events until the session exits or
+/// the terminal hangs up.
+fn event_loop(session: &mut TuiSession) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
-    stdout.write_all(b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h")?;
-    stdout.flush()?;
+    let mut stdin = io::stdin();
+    let mut decoder = InputDecoder::default();
+    let mut buffer = vec![0_u8; READ_BUFFER_BYTES];
+    let mut drawn_size = None;
+    let mut needs_frame = true;
 
-    let mut session = TuiSession::new(options).map_err(io::Error::other)?;
-
-    let mut stdin = io::stdin().lock();
-    let mut read_buf = [0u8; 256];
-
-    // Main Interactive Loop
     while !session.should_exit {
         let (cols, rows) = noter_platform::terminal_size();
-        session.scroll_to_caret(cols, rows);
-        let frame = render_frame(&session, cols, rows);
-        stdout.write_all(frame.as_bytes())?;
-        stdout.flush()?;
-
-        let n = stdin.read(&mut read_buf)?;
-        if n == 0 {
-            break;
+        if needs_frame || drawn_size != Some((cols, rows)) {
+            session.scroll_to_caret(cols, rows);
+            stdout.write_all(render_frame(session, cols, rows).as_bytes())?;
+            stdout.flush()?;
+            drawn_size = Some((cols, rows));
+            needs_frame = false;
         }
 
-        let events = parse_input_bytes(&read_buf[..n]);
-        for event in events {
-            handle_event(&mut session, event, cols, rows);
+        if !noter_platform::wait_for_terminal_input(IDLE_TICK)? {
+            if session.expire_status() {
+                needs_frame = true;
+            }
+            continue;
+        }
+        let read = stdin.read(&mut buffer)?;
+        if read == 0 {
+            // The terminal hung up.
+            break;
+        }
+        for event in decoder.feed(&buffer[..read]) {
+            handle_event(session, event, cols, rows);
             if session.should_exit {
                 break;
             }
         }
+        needs_frame = true;
     }
-
-    // Restore terminal screen and mouse modes
-    stdout.write_all(b"\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?25h")?;
-    stdout.flush()?;
-
     Ok(())
 }
 
@@ -1519,6 +1442,7 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
                 TuiEvent::Key(TuiKey::Char(c)) => {
                     session.prompt_input.push(c);
                 }
+                TuiEvent::Paste(text) => handle_paste(session, &text),
                 _ => {}
             }
             return;
@@ -1540,6 +1464,7 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
                 TuiEvent::Key(TuiKey::Char(c)) => {
                     session.prompt_input.push(c);
                 }
+                TuiEvent::Paste(text) => handle_paste(session, &text),
                 _ => {}
             }
             return;
@@ -1564,6 +1489,7 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
                 TuiEvent::Key(TuiKey::Char(c)) if c.is_ascii_digit() => {
                     session.prompt_input.push(c);
                 }
+                TuiEvent::Paste(text) => handle_paste(session, &text),
                 _ => {}
             }
             return;
@@ -1634,6 +1560,7 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
                 }
             }
         },
+        TuiEvent::Paste(text) => handle_paste(session, &text),
         TuiEvent::Key(key) => match key {
             TuiKey::Ctrl('c' | 'x' | 'q') => {
                 trigger_exit(session);
@@ -1731,6 +1658,31 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
     }
 }
 
+/// Delivers a bracketed paste to the prompt that is open, or to the text.
+fn handle_paste(session: &mut TuiSession, pasted: &str) {
+    if session.show_help {
+        return;
+    }
+    // A prompt takes one line; its Enter key must stay a deliberate press.
+    // Terminals send pasted line breaks as CR, LF, or both.
+    let first_line = pasted.split(['\r', '\n']).next().unwrap_or_default();
+    match session.prompt {
+        PromptMode::None => {
+            session.follow_caret = true;
+            session.paste_text(pasted);
+        }
+        PromptMode::SaveAs | PromptMode::Find => session.prompt_input.extend(
+            first_line
+                .chars()
+                .filter(|character| !character.is_control()),
+        ),
+        PromptMode::GoToLine => session
+            .prompt_input
+            .extend(first_line.chars().filter(char::is_ascii_digit)),
+        PromptMode::ConfirmReplace | PromptMode::ConfirmHardLink(_) | PromptMode::ExitConfirm => {}
+    }
+}
+
 fn trigger_exit(session: &mut TuiSession) {
     if session.document.is_dirty() {
         session.prompt = PromptMode::ExitConfirm;
@@ -1742,74 +1694,6 @@ fn trigger_exit(session: &mut TuiSession) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_input_bytes_recognizes_printable_ascii_and_unicode() {
-        let events = parse_input_bytes("Hello, 世界!".as_bytes());
-        assert_eq!(
-            events,
-            vec![
-                TuiEvent::Key(TuiKey::Char('H')),
-                TuiEvent::Key(TuiKey::Char('e')),
-                TuiEvent::Key(TuiKey::Char('l')),
-                TuiEvent::Key(TuiKey::Char('l')),
-                TuiEvent::Key(TuiKey::Char('o')),
-                TuiEvent::Key(TuiKey::Char(',')),
-                TuiEvent::Key(TuiKey::Char(' ')),
-                TuiEvent::Key(TuiKey::Char('世')),
-                TuiEvent::Key(TuiKey::Char('界')),
-                TuiEvent::Key(TuiKey::Char('!')),
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_input_bytes_recognizes_dual_shortcuts() {
-        // Ctrl+O, Ctrl+S, Ctrl+X, Ctrl+Q, Ctrl+Z, Ctrl+K
-        let events = parse_input_bytes(&[0x0f, 0x13, 0x18, 0x11, 0x1a, 0x0b]);
-        assert_eq!(
-            events,
-            vec![
-                TuiEvent::Key(TuiKey::Ctrl('o')),
-                TuiEvent::Key(TuiKey::Ctrl('s')),
-                TuiEvent::Key(TuiKey::Ctrl('x')),
-                TuiEvent::Key(TuiKey::Ctrl('q')),
-                TuiEvent::Key(TuiKey::Ctrl('z')),
-                TuiEvent::Key(TuiKey::Ctrl('k')),
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_input_bytes_recognizes_csi_navigation_arrows_and_keys() {
-        // Up (\x1b[A), Down (\x1b[B), Home (\x1b[H), Delete (\x1b[3~)
-        let events = parse_input_bytes(b"\x1b[A\x1b[B\x1b[H\x1b[3~");
-        assert_eq!(
-            events,
-            vec![
-                TuiEvent::Key(TuiKey::Up),
-                TuiEvent::Key(TuiKey::Down),
-                TuiEvent::Key(TuiKey::Home),
-                TuiEvent::Key(TuiKey::Delete),
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_input_bytes_recognizes_sgr_mouse_events() {
-        // Left click at col 10, row 5: \x1b[<0;10;5M
-        // Scroll up at col 20, row 8: \x1b[<64;20;8M
-        // Scroll down at col 20, row 8: \x1b[<65;20;8M
-        let events = parse_input_bytes(b"\x1b[<0;10;5M\x1b[<64;20;8M\x1b[<65;20;8M");
-        assert_eq!(
-            events,
-            vec![
-                TuiEvent::Mouse(TuiMouseEvent::Press { col: 10, row: 5 }),
-                TuiEvent::Mouse(TuiMouseEvent::ScrollUp { col: 20, row: 8 }),
-                TuiEvent::Mouse(TuiMouseEvent::ScrollDown { col: 20, row: 8 }),
-            ]
-        );
-    }
 
     #[test]
     fn tui_session_typing_undo_and_redo() {
@@ -2455,6 +2339,66 @@ mod tests {
             assert_eq!(frame.lines().count(), 1);
             assert_eq!(display_width(&frame), usize::from(cols));
         }
+    }
+
+    #[test]
+    fn a_paste_is_one_edit_with_the_documents_line_endings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("crlf.txt");
+        std::fs::write(&path, "top\r\n").unwrap();
+        let mut session = session_for(&path);
+        session.caret_byte = 5;
+
+        handle_event(
+            &mut session,
+            TuiEvent::Paste("one\ntwo\rthree".to_owned()),
+            80,
+            24,
+        );
+        assert_eq!(session.text(), "top\r\none\r\ntwo\r\nthree");
+
+        key(&mut session, TuiKey::Ctrl('z'));
+        assert_eq!(session.text(), "top\r\n");
+    }
+
+    #[test]
+    fn a_paste_into_a_prompt_takes_the_first_line_only() {
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        key(&mut session, TuiKey::Ctrl('f'));
+        handle_event(
+            &mut session,
+            TuiEvent::Paste("needle\u{7}\nsecond".to_owned()),
+            80,
+            24,
+        );
+        assert_eq!(session.prompt_input, "needle");
+        assert_eq!(session.prompt, PromptMode::Find);
+
+        key(&mut session, TuiKey::Escape);
+        key(&mut session, TuiKey::Ctrl('j'));
+        handle_event(&mut session, TuiEvent::Paste("12a3".to_owned()), 80, 24);
+        assert_eq!(session.prompt_input, "123");
+
+        key(&mut session, TuiKey::Escape);
+        key(&mut session, TuiKey::Ctrl('f'));
+        handle_event(&mut session, TuiEvent::Paste("one\rtwo".to_owned()), 80, 24);
+        assert_eq!(session.prompt_input, "one");
+    }
+
+    #[test]
+    fn expired_status_messages_are_cleared() {
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        assert!(!session.expire_status());
+        session.set_status("recent");
+        assert!(!session.expire_status());
+        session.status_message = Some((
+            "old".to_owned(),
+            std::time::Instant::now()
+                .checked_sub(STATUS_LIFETIME)
+                .expect("the clock is past the status lifetime"),
+        ));
+        assert!(session.expire_status());
+        assert!(session.status_message.is_none());
     }
 
     #[test]

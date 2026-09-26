@@ -40,7 +40,7 @@ only with same-commit evidence named by its exit criteria.
 - `src/app.rs`, `src/markdown_ui.rs`, `src/bounded_text_input.rs`, and the other
   top-level `src/*.rs` UI files adapt user intent to the core. They must not
   re-decide trust-kernel policy.
-- `src/tui.rs` is the terminal front end. It must reach the same core seams as
+- `src/tui/` is the terminal front end. It must reach the same core seams as
   the GUI rather than growing parallel ones.
 - `crates/noter-platform/` is the only home for operating-system primitives and
   `unsafe` code. The application crate forbids `unsafe`.

@@ -1362,8 +1362,11 @@ reviewed on 2026-09-26. It is MIT or Apache-2.0 licensed, declares Rust 1.66,
 has no dependencies and no build script, and adds no filesystem, process, or
 network capability. It was already in the lockfile through a build-only path,
 so direct use adds no lock entry, but it is new to the runtime graph and the
-third-party notice inventory. Removal requires an equivalent East Asian Width
-table that tracks new Unicode versions.
+third-party notice inventory. The change that introduced it, including the
+terminal renderer rewrite, left the stripped Linux x86-64 release binary 4,352
+bytes smaller (14,387,008 to 14,382,656 bytes, measured locally on 2026-09-26
+from `f83ac24` and its successor). Removal requires an equivalent East Asian
+Width table that tracks new Unicode versions.
 
 Those statements describe third-party dependency licenses. Noter itself is
 licensed only under Apache-2.0, as declared by both package manifests and the
@@ -1436,7 +1439,7 @@ implementation starts before the M5 feasibility entry criteria are satisfied.
 
 ## 19. Terminal User Interface (TUI) architecture
 
-The terminal interface is one module, `src/tui.rs`, in the binary crate. It
+The terminal interface is the `src/tui/` module in the binary crate. It
 renders with plain ANSI escape sequences over the raw-mode and terminal-size
 primitives in `crates/noter-platform`. It has no terminal UI library dependency
 and no separate Cargo feature.
@@ -1468,6 +1471,16 @@ Current state:
   paragraph separators are drawn as U+FFFD, and tabs expand to four-column
   stops. Each row is cut to the terminal width, long lines scroll
   horizontally, and columns are measured in terminal cells.
+- **Input:** `src/tui/input.rs` holds back an incomplete UTF-8 character,
+  control sequence, or bracketed paste until the next read completes it, and
+  drops unbound control bytes instead of inserting them. A paste is one edit
+  whose line endings follow the document, through the core insertion policy.
+- **Terminal restoration:** the document loads before the terminal changes
+  mode. A guard leaves the alternate screen, mouse reporting, and bracketed
+  paste on every return path, and because release builds abort on panic, a
+  panic hook also restores the terminal settings from a copy the platform
+  crate provides. On Unix the loop waits for input with `poll` so it can
+  redraw after a resize; on Windows reads block until input arrives.
 - **Lines and search:** line and column decisions use the core logical-line
   split rather than rope line indexing, which also breaks at Unicode
   separators. Find uses the core literal search with Unicode case folding and

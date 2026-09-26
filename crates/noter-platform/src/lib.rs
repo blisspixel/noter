@@ -37,6 +37,7 @@ use imp::{
     unix_restrict_open_file_to_owner as platform_restrict_open_file_to_owner,
     unix_sync_file as platform_sync_file, unix_sync_parent as platform_sync_parent,
     unix_terminal_size as platform_terminal_size,
+    unix_wait_for_terminal_input as platform_wait_for_terminal_input,
 };
 
 #[cfg(target_os = "macos")]
@@ -57,6 +58,7 @@ use imp::{
     unsupported_replace_existing as platform_replace_existing,
     unsupported_sync_file as platform_sync_file, unsupported_sync_parent as platform_sync_parent,
     unsupported_terminal_size as platform_terminal_size,
+    unsupported_wait_for_terminal_input as platform_wait_for_terminal_input,
 };
 #[cfg(windows)]
 use imp::{
@@ -71,6 +73,7 @@ use imp::{
     windows_open_for_cleanup as platform_open_for_cleanup,
     windows_replace_existing as platform_replace_existing, windows_sync_file as platform_sync_file,
     windows_sync_parent as platform_sync_parent, windows_terminal_size as platform_terminal_size,
+    windows_wait_for_terminal_input as platform_wait_for_terminal_input,
 };
 
 #[cfg(any(unix, windows, test))]
@@ -740,7 +743,7 @@ pub fn attach_parent_console() -> bool {
     platform_attach_parent_console()
 }
 
-pub use imp::TerminalRawGuard;
+pub use imp::{TerminalRawGuard, TerminalRestorer};
 
 /// Places the terminal into raw character-by-character input mode and enables
 /// virtual terminal processing. Dropping the returned guard restores the
@@ -753,6 +756,24 @@ pub use imp::TerminalRawGuard;
 /// terminal modes.
 pub fn enable_raw_terminal() -> io::Result<TerminalRawGuard> {
     platform_enable_raw_terminal()
+}
+
+/// Waits up to `timeout` for terminal input and reports whether any arrived.
+///
+/// A hung-up terminal also reports ready, so the next read returns end of
+/// input. On Windows this returns `true` at once and the next read blocks:
+/// console input handles also signal for focus and buffer events that a read
+/// never returns, so waiting on them could report input that is not there.
+///
+/// # Errors
+///
+/// Returns an [`io::Error`] when the operating system rejects the wait. An
+/// interrupted wait reports no input instead of an error.
+// Only the Windows and unsupported implementations are constant. Unix must
+// call `poll`, so this stays one ordinary signature.
+#[allow(clippy::missing_const_for_fn)]
+pub fn wait_for_terminal_input(timeout: std::time::Duration) -> io::Result<bool> {
+    platform_wait_for_terminal_input(timeout)
 }
 
 /// Returns the current terminal dimensions as `(columns, rows)`.
@@ -1514,9 +1535,39 @@ mod imp {
     /// RAII guard that restores original terminal settings on drop.
     pub type TerminalRawGuard = UnixTerminalRawGuard;
 
+    impl UnixTerminalRawGuard {
+        /// Returns a copy of the captured settings that can restore them
+        /// where this guard's destructor cannot run, such as a panic hook in
+        /// a build that aborts on panic.
+        #[must_use]
+        pub const fn restorer(&self) -> TerminalRestorer {
+            UnixTerminalRestorer {
+                orig_termios: self.orig_termios,
+            }
+        }
+    }
+
     impl Drop for UnixTerminalRawGuard {
         fn drop(&mut self) {
-            // SAFETY: `tcsetattr` restores the original termios captured during `unix_enable_raw_terminal`.
+            self.restorer().restore();
+        }
+    }
+
+    /// Terminal settings captured before raw mode was enabled.
+    #[derive(Clone, Copy, Debug)]
+    pub struct UnixTerminalRestorer {
+        orig_termios: libc::termios,
+    }
+
+    /// Restores the terminal settings captured by a raw-mode guard.
+    pub type TerminalRestorer = UnixTerminalRestorer;
+
+    impl UnixTerminalRestorer {
+        /// Restores the captured settings. A failure is not reported: this
+        /// runs during shutdown, when there is nothing left to try.
+        pub fn restore(&self) {
+            // SAFETY: `tcsetattr` reads one fully initialized termios value
+            // captured by `tcgetattr` for this same descriptor.
             #[allow(unsafe_code)]
             unsafe {
                 libc::tcsetattr(
@@ -1524,6 +1575,32 @@ mod imp {
                     libc::TCSANOW,
                     &raw const self.orig_termios,
                 );
+            }
+        }
+    }
+
+    /// Waits for standard input with `poll`.
+    pub fn unix_wait_for_terminal_input(timeout: std::time::Duration) -> io::Result<bool> {
+        let milliseconds = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+        let mut descriptor = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `poll` reads and writes exactly one initialized `pollfd`
+        // that lives for the whole call.
+        #[allow(unsafe_code)]
+        let ready = unsafe { libc::poll(&raw mut descriptor, 1, milliseconds) };
+        match ready {
+            0 => Ok(false),
+            ready if ready > 0 => Ok(true),
+            _ => {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    Ok(false)
+                } else {
+                    Err(error)
+                }
             }
         }
     }
@@ -2897,19 +2974,71 @@ mod imp {
     /// RAII guard that restores original terminal settings on drop.
     pub type TerminalRawGuard = WindowsTerminalRawGuard;
 
+    impl WindowsTerminalRawGuard {
+        /// Returns a copy of the captured modes that can restore them where
+        /// this guard's destructor cannot run, such as a panic hook in a
+        /// build that aborts on panic.
+        #[must_use]
+        pub fn restorer(&self) -> TerminalRestorer {
+            WindowsTerminalRestorer {
+                stdin_handle: self.stdin_handle.expose_provenance(),
+                stdout_handle: self.stdout_handle.expose_provenance(),
+                orig_in_mode: self.orig_in_mode,
+                orig_out_mode: self.orig_out_mode,
+            }
+        }
+    }
+
     impl Drop for WindowsTerminalRawGuard {
         fn drop(&mut self) {
-            // SAFETY: Restores the captured input and output console modes if the handles are valid.
+            self.restorer().restore();
+        }
+    }
+
+    /// Console modes captured before raw mode was enabled.
+    ///
+    /// Handles are kept as addresses so the value can move into a panic
+    /// hook, which must be `Send` and `Sync`. They are the standard console
+    /// handles the guard captured; raw-mode setup never closes them, and a
+    /// console handle opened for a detached launch is deliberately leaked.
+    #[derive(Clone, Copy, Debug)]
+    pub struct WindowsTerminalRestorer {
+        stdin_handle: usize,
+        stdout_handle: usize,
+        orig_in_mode: u32,
+        orig_out_mode: u32,
+    }
+
+    /// Restores the console modes captured by a raw-mode guard.
+    pub type TerminalRestorer = WindowsTerminalRestorer;
+
+    impl WindowsTerminalRestorer {
+        /// Restores the captured modes. A failure is not reported: this runs
+        /// during shutdown, when there is nothing left to try.
+        pub fn restore(&self) {
+            let stdin: HANDLE = std::ptr::with_exposed_provenance_mut(self.stdin_handle);
+            let stdout: HANDLE = std::ptr::with_exposed_provenance_mut(self.stdout_handle);
+            // SAFETY: `SetConsoleMode` takes a console handle captured from
+            // this process's standard streams and a mode value read from it.
             #[allow(unsafe_code)]
             unsafe {
-                if windows_raw_handle_is_bound(self.stdin_handle) {
-                    SetConsoleMode(self.stdin_handle, self.orig_in_mode);
+                if windows_raw_handle_is_bound(stdin) {
+                    SetConsoleMode(stdin, self.orig_in_mode);
                 }
-                if windows_raw_handle_is_bound(self.stdout_handle) {
-                    SetConsoleMode(self.stdout_handle, self.orig_out_mode);
+                if windows_raw_handle_is_bound(stdout) {
+                    SetConsoleMode(stdout, self.orig_out_mode);
                 }
             }
         }
+    }
+
+    /// Reports input as ready so the next console read blocks for it.
+    // The shared signature returns a result because the Unix wait can fail.
+    #[allow(clippy::unnecessary_wraps)]
+    pub const fn windows_wait_for_terminal_input(
+        _timeout: std::time::Duration,
+    ) -> io::Result<bool> {
+        Ok(true)
     }
 
     /// Enables raw terminal input and virtual terminal processing on Windows console handles.
@@ -5160,6 +5289,35 @@ mod imp {
     /// Fails closed on unsupported platforms.
     pub fn unsupported_enable_raw_terminal() -> io::Result<TerminalRawGuard> {
         unsupported_error("terminal raw mode")
+    }
+
+    impl UnsupportedTerminalRawGuard {
+        /// Returns a restorer with nothing to restore.
+        #[must_use]
+        pub const fn restorer(&self) -> TerminalRestorer {
+            UnsupportedTerminalRestorer
+        }
+    }
+
+    /// Terminal state on unsupported platforms, where raw mode never starts.
+    #[derive(Clone, Copy, Debug)]
+    pub struct UnsupportedTerminalRestorer;
+
+    /// Restores the terminal state captured by a raw-mode guard.
+    pub type TerminalRestorer = UnsupportedTerminalRestorer;
+
+    impl UnsupportedTerminalRestorer {
+        /// Does nothing; raw mode never started.
+        pub const fn restore(&self) {}
+    }
+
+    /// Reports input as ready so the next read decides.
+    // The shared signature returns a result because the Unix wait can fail.
+    #[allow(clippy::unnecessary_wraps)]
+    pub const fn unsupported_wait_for_terminal_input(
+        _timeout: std::time::Duration,
+    ) -> io::Result<bool> {
+        Ok(true)
     }
 
     /// Returns a standard fallback terminal size on unsupported platforms.
