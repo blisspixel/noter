@@ -1,6 +1,6 @@
 //! Exact line-ending classification and insertion policy.
 
-use std::{cmp::Ordering, ops::Range};
+use std::ops::Range;
 
 use ropey::Rope;
 
@@ -281,49 +281,76 @@ pub fn normalize_inserted_text(
 impl LineEndingProfile {
     /// Classifies every line-ending sequence in strict UTF-8 text.
     pub fn detect(text: &str) -> Self {
-        let mut counts = LineEndingCounts::default();
-        let mut first_positions = [usize::MAX; 3];
-        let mut first_ending = None;
-        let mut bytes = text.as_bytes().iter().copied().enumerate().peekable();
+        let (counts, first_positions) = scan_line_endings(text.bytes());
+        Self::from_counts(counts, || first_positions)
+    }
 
-        while let Some((index, byte)) = bytes.next() {
-            let ending = match byte {
-                b'\r' if matches!(bytes.peek(), Some((_, b'\n'))) => {
-                    bytes.next();
-                    LineEnding::CrLf
-                }
-                b'\r' => LineEnding::Cr,
-                b'\n' => LineEnding::Lf,
-                _ => continue,
-            };
+    /// Returns the profile of `after`, which differs from `before`, whose
+    /// profile is `self`, only in the byte range starting at `start` that
+    /// ended at `before_end` and now ends at `after_end`.
+    ///
+    /// Only the changed range and one byte on each side are rescanned. An
+    /// ending is classified by its neighbors alone, and the bytes just outside
+    /// both windows are identical, so any ending a window misreads at its edge
+    /// is misread the same way in both windows and cancels.
+    pub(crate) fn after_edit(
+        self,
+        before: &Rope,
+        after: &Rope,
+        start: usize,
+        before_end: usize,
+        after_end: usize,
+    ) -> Self {
+        let window_start = start.saturating_sub(1);
+        let before_window_end = (before_end + 1).min(before.len_bytes());
+        let after_window_end = before_window_end - before_end + after_end;
+        let window = |rope: &Rope, end: usize| {
+            scan_line_endings(rope.bytes_at(window_start).take(end - window_start)).0
+        };
+        let removed = window(before, before_window_end);
+        let added = window(after, after_window_end);
+        let previous = self.counts();
+        let counts = LineEndingCounts {
+            lf: previous.lf + added.lf - removed.lf,
+            crlf: previous.crlf + added.crlf - removed.crlf,
+            cr: previous.cr + added.cr - removed.cr,
+        };
+        Self::from_counts(counts, || scan_line_endings(after.bytes()).1)
+    }
 
-            counts.increment(ending);
-            first_ending.get_or_insert(ending);
-            let slot = ending.slot();
-            if first_positions[slot] == usize::MAX {
-                first_positions[slot] = index;
-            }
-        }
-
-        let Some(mut insertion) = first_ending else {
+    /// Builds the profile for exact counts. The first position of each
+    /// convention is needed only when two conventions tie for the most
+    /// endings, so it is computed only then.
+    fn from_counts(counts: LineEndingCounts, first_positions: impl FnOnce() -> [usize; 3]) -> Self {
+        let kinds = [LineEnding::Lf, LineEnding::CrLf, LineEnding::Cr];
+        let most = kinds
+            .iter()
+            .map(|&kind| counts.get(kind))
+            .max()
+            .unwrap_or(0);
+        if most == 0 {
             return Self::None {
                 insertion: LineEnding::platform_default(),
             };
-        };
-
+        }
+        let mut leaders = kinds.into_iter().filter(|&kind| counts.get(kind) == most);
+        let first_leader = leaders.next().unwrap_or(LineEnding::Lf);
         if counts.kinds() == 1 {
             return Self::Uniform {
-                ending: insertion,
+                ending: first_leader,
                 count: counts.total(),
             };
         }
-
-        for candidate in [LineEnding::Lf, LineEnding::CrLf, LineEnding::Cr] {
-            if ending_precedes(candidate, insertion, counts, first_positions) {
-                insertion = candidate;
-            }
-        }
-
+        let insertion = if leaders.next().is_none() {
+            first_leader
+        } else {
+            let positions = first_positions();
+            kinds
+                .into_iter()
+                .filter(|&kind| counts.get(kind) == most)
+                .min_by_key(|kind| positions[kind.slot()])
+                .unwrap_or(first_leader)
+        };
         Self::Mixed { counts, insertion }
     }
 
@@ -508,20 +535,28 @@ fn splits_crlf(text: &str, byte_offset: usize) -> bool {
         && text.as_bytes().get(byte_offset) == Some(&b'\n')
 }
 
-fn ending_precedes(
-    candidate: LineEnding,
-    current: LineEnding,
-    counts: LineEndingCounts,
-    first_positions: [usize; 3],
-) -> bool {
-    match counts.get(candidate).cmp(&counts.get(current)) {
-        Ordering::Greater => true,
-        Ordering::Equal => matches!(
-            first_positions[candidate.slot()].cmp(&first_positions[current.slot()]),
-            Ordering::Less
-        ),
-        Ordering::Less => false,
+/// Counts line endings and records the first byte offset of each convention.
+fn scan_line_endings(bytes: impl Iterator<Item = u8>) -> (LineEndingCounts, [usize; 3]) {
+    let mut counts = LineEndingCounts::default();
+    let mut first_positions = [usize::MAX; 3];
+    let mut bytes = bytes.enumerate().peekable();
+    while let Some((index, byte)) = bytes.next() {
+        let ending = match byte {
+            b'\r' if matches!(bytes.peek(), Some((_, b'\n'))) => {
+                bytes.next();
+                LineEnding::CrLf
+            }
+            b'\r' => LineEnding::Cr,
+            b'\n' => LineEnding::Lf,
+            _ => continue,
+        };
+        counts.increment(ending);
+        let slot = ending.slot();
+        if first_positions[slot] == usize::MAX {
+            first_positions[slot] = index;
+        }
     }
+    (counts, first_positions)
 }
 
 #[cfg(test)]

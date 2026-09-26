@@ -6,6 +6,16 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+### Changed
+
+- Make each keystroke in the window cost the document core about a thirtieth
+  of what it did on large files. The edited text is compared with the document
+  chunk by chunk instead of being copied and compared character by character,
+  line endings are recounted only around the edit, and the document is hashed
+  for its unsaved state only when its length matches the saved length. The
+  median core cost at 8 MiB fell from about 30 ms to 1.0 ms
+  (`cargo bench --bench edit_latency`).
+
 ### Added
 
 - Draw text in any script the computer has a font for in the window.

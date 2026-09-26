@@ -3183,10 +3183,9 @@ impl NoterApp {
             self.restore_editor_after_failed_change(&error);
             return;
         }
-        let before = String::from(self.document.rope());
-        let transaction = EditTransaction::between(
+        let transaction = EditTransaction::between_rope(
             self.document.revision(),
-            &before,
+            self.document.rope(),
             &self.text,
             self.selection,
             outcome.selection,
@@ -3216,7 +3215,8 @@ impl NoterApp {
                 }
                 self.selection = applied.selection();
                 let history_outcome = self.history.record(applied);
-                self.text = String::from(self.document.rope());
+                // The transaction is the difference between the rope and this
+                // text, so after it applies the two are already equal.
                 self.markdown_issue_cache = None;
                 self.crash_recovery
                     .on_edited(&self.document, self.selection);

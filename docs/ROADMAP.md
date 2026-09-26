@@ -652,8 +652,16 @@ large-file requirements needed by both text and native Markdown editing.
 ### Current state
 
 The trust-kernel loader remains bounded at 64 MiB, but the current egui editor
-mirrors the complete document as a `String` and diffs old and new contents on
-every keystroke. A local Windows measurement found a 665.3 MiB process peak when
+mirrors the complete document as a `String`. Each keystroke now compares that
+mirror with the rope chunk by chunk in fast block comparisons, applies the one
+changed range, updates the line-ending profile from the changed bytes, and
+hashes content for the dirty flag only when its length matches the saved
+length. `cargo bench --bench edit_latency` measured the trust kernel's median
+cost per keystroke at 0.09 ms for 1 MiB, 1.0 ms for 8 MiB, and 6.9 ms for
+50 MiB on the Linux development container, where the previous path, which
+copied the rope, compared character by character, rescanned line endings, and
+rehashed the document, measured about 30 ms at 8 MiB. egui's own layout of
+the mirror is not included and remains the dominant cost. A local Windows measurement found a 665.3 MiB process peak when
 a 64 MiB file reached that widget path. The current interface therefore refuses
 files above 8 MiB before creating the mirror, preserves the open document, and
 explains the limit. The same 64 MiB run then peaked at 196 MiB without entering

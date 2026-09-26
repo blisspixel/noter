@@ -30,8 +30,15 @@ pub struct Document {
     /// Optional on-disk UTF-8 byte-order mark.
     bom: Bom,
     revision: Revision,
-    content_fingerprint: ContentFingerprint,
+    /// Fingerprint of the serialized content, or `None` when its length
+    /// differs from the saved baseline. Content of another length is dirty
+    /// by definition, and hashing the whole document on every keystroke
+    /// would dominate edit latency.
+    content_fingerprint: Option<ContentFingerprint>,
     saved_content_fingerprint: ContentFingerprint,
+    /// Serialized length of the saved baseline, or `None` when no content
+    /// can match it.
+    saved_serialized_len: Option<usize>,
     saved_target: Option<TargetExpectation>,
 }
 
@@ -85,8 +92,9 @@ impl Document {
             encoding: Encoding::Utf8,
             bom: Bom::Absent,
             revision: Revision::INITIAL,
-            content_fingerprint: fingerprint,
+            content_fingerprint: Some(fingerprint),
             saved_content_fingerprint: fingerprint,
+            saved_serialized_len: Some(0),
             saved_target: None,
         }
     }
@@ -134,8 +142,9 @@ impl Document {
             encoding: Encoding::Utf8,
             bom,
             revision: Revision::INITIAL,
-            content_fingerprint: fingerprint,
+            content_fingerprint: Some(fingerprint),
             saved_content_fingerprint: fingerprint,
+            saved_serialized_len: Some(bytes.len()),
             saved_target: None,
         })
     }
@@ -204,7 +213,7 @@ impl Document {
     /// Revisions remain monotonic through Undo and Redo, so dirty identity is
     /// tracked independently from revision identity.
     pub fn is_dirty(&self) -> bool {
-        self.content_fingerprint != self.saved_content_fingerprint
+        self.content_fingerprint != Some(self.saved_content_fingerprint)
     }
 
     /// Marks recovered crash-recovery content as dirty without changing bytes.
@@ -217,6 +226,7 @@ impl Document {
         // and is not a committed path; Save establishes a true saved baseline.
         self.saved_content_fingerprint =
             ContentFingerprint::from_bytes(b"\0noter-recovery-unsaved-baseline");
+        self.saved_serialized_len = None;
         self.saved_target = None;
     }
 
@@ -251,12 +261,11 @@ impl Document {
                 maximum,
             }));
         }
-        let before = self.rope.to_string();
-        let Some(transaction) = EditTransaction::between(
+        let Some(transaction) = EditTransaction::between_rope(
             self.revision,
-            &before,
+            &self.rope,
             text,
-            Selection::caret(before.len()),
+            Selection::caret(self.rope.len_bytes()),
             Selection::caret(text.len()),
             EditOrigin::Programmatic,
             EditTimestamp::default(),
@@ -288,12 +297,21 @@ impl Document {
     ) -> Result<AppliedTransaction, EditError> {
         let (replacement, applied) =
             transaction.apply_to(&self.rope, self.revision, self.maximum_text_bytes())?;
-        let replacement_text = replacement.to_string();
-        let replacement_line_endings = LineEndingProfile::detect(&replacement_text);
+        if let (Some(first), Some(last)) = (transaction.edits().first(), transaction.edits().last())
+        {
+            let before_end = last.range().end();
+            let after_end = before_end + replacement.len_bytes() - self.rope.len_bytes();
+            self.line_endings = self.line_endings.after_edit(
+                &self.rope,
+                &replacement,
+                first.range().start(),
+                before_end,
+                after_end,
+            );
+        }
         self.rope = replacement;
-        self.line_endings = replacement_line_endings;
         self.revision = applied.revision();
-        self.content_fingerprint = serialized_fingerprint(self.bom, &self.rope);
+        self.content_fingerprint = self.fingerprint_if_saved_length();
         Ok(applied)
     }
 
@@ -439,13 +457,29 @@ impl Document {
         } = &outcome
             && *revision == self.revision
         {
-            self.saved_content_fingerprint = self.content_fingerprint;
+            let fingerprint = self
+                .content_fingerprint
+                .unwrap_or_else(|| serialized_fingerprint(self.bom, &self.rope));
+            self.content_fingerprint = Some(fingerprint);
+            self.saved_content_fingerprint = fingerprint;
+            self.saved_serialized_len = Some(self.serialized_len());
             self.saved_target = Some(TargetExpectation::Existing(*observation));
             if adopt_path {
                 self.path = Some(path);
             }
         }
         outcome
+    }
+}
+
+impl Document {
+    fn serialized_len(&self) -> usize {
+        self.bom.as_bytes().len() + self.rope.len_bytes()
+    }
+
+    fn fingerprint_if_saved_length(&self) -> Option<ContentFingerprint> {
+        (self.saved_serialized_len == Some(self.serialized_len()))
+            .then(|| serialized_fingerprint(self.bom, &self.rope))
     }
 }
 
@@ -483,9 +517,135 @@ mod tests {
     use std::io::Write;
 
     use super::*;
-    use crate::core::edit::{TextEdit, TextRange};
+    use crate::core::edit::{EditOrigin, EditTimestamp, Selection, TextEdit, TextRange};
     use crate::core::line_endings::{LineEnding, LineEndingCounts};
     use tempfile::{NamedTempFile, tempdir};
+
+    const PIECES: [&str; 6] = ["a", "\r", "\n", "\r\n", "é", "\u{feff}"];
+
+    fn piece_text(pieces: &[usize]) -> String {
+        pieces.iter().map(|&index| PIECES[index]).collect()
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn incremental_state_matches_a_full_rescan_after_every_edit(
+            bom in proptest::bool::ANY,
+            base in proptest::collection::vec(0usize..PIECES.len(), 0..60),
+            edits in proptest::collection::vec(
+                (0usize..70, 0usize..6, proptest::collection::vec(0usize..PIECES.len(), 0..5)),
+                1..12,
+            ),
+        ) {
+            let mut bytes = if bom { b"\xEF\xBB\xBF".to_vec() } else { Vec::new() };
+            bytes.extend_from_slice(piece_text(&base).as_bytes());
+            let mut document = Document::from_bytes(&bytes).expect("fixture should load");
+            let saved = document.to_bytes();
+            let mut pieces = base;
+            for (start, removed, inserted) in edits {
+                let before = piece_text(&pieces);
+                let start = start.min(pieces.len());
+                let end = (start + removed).min(pieces.len());
+                pieces.splice(start..end, inserted);
+                let after = piece_text(&pieces);
+                let Some(transaction) = EditTransaction::between_rope(
+                    document.revision(),
+                    document.rope(),
+                    &after,
+                    Selection::caret(0),
+                    Selection::caret(0),
+                    EditOrigin::TextInput,
+                    EditTimestamp::default(),
+                )
+                .expect("carets at zero are valid") else {
+                    proptest::prop_assert_eq!(&before, &after);
+                    continue;
+                };
+                document.apply_transaction(&transaction).expect("the edit applies");
+                proptest::prop_assert_eq!(String::from(document.rope()), after.clone());
+                proptest::prop_assert_eq!(*document.line_endings(), LineEndingProfile::detect(&after));
+                proptest::prop_assert_eq!(document.is_dirty(), document.to_bytes() != saved);
+            }
+        }
+    }
+
+    #[test]
+    fn tied_conventions_prefer_the_first_to_appear_after_an_edit() {
+        let mut document = Document::from_bytes(b"a\r\nb\nc").expect("fixture should load");
+        assert_eq!(
+            *document.line_endings(),
+            LineEndingProfile::Mixed {
+                counts: LineEndingCounts {
+                    lf: 1,
+                    crlf: 1,
+                    cr: 0
+                },
+                insertion: LineEnding::CrLf,
+            }
+        );
+        let transaction = EditTransaction::between_rope(
+            document.revision(),
+            document.rope(),
+            "\nb\nc",
+            Selection::caret(0),
+            Selection::caret(0),
+            EditOrigin::TextInput,
+            EditTimestamp::default(),
+        )
+        .expect("carets are valid")
+        .expect("the text differs");
+        document
+            .apply_transaction(&transaction)
+            .expect("the edit applies");
+        assert_eq!(
+            *document.line_endings(),
+            LineEndingProfile::Uniform {
+                ending: LineEnding::Lf,
+                count: 2
+            }
+        );
+    }
+
+    #[test]
+    fn an_edit_back_to_the_saved_length_is_hashed_to_decide_dirty_state() {
+        let mut document = Document::from_bytes(b"abc").expect("fixture should load");
+        let edit = |document: &mut Document, text: &str| {
+            let transaction = EditTransaction::between_rope(
+                document.revision(),
+                document.rope(),
+                text,
+                Selection::caret(0),
+                Selection::caret(0),
+                EditOrigin::TextInput,
+                EditTimestamp::default(),
+            )
+            .expect("carets are valid")
+            .expect("the text differs");
+            document
+                .apply_transaction(&transaction)
+                .expect("the edit applies");
+        };
+        edit(&mut document, "abcd");
+        assert!(document.is_dirty());
+        assert_eq!(
+            document.content_fingerprint, None,
+            "another length is not hashed"
+        );
+        edit(&mut document, "abd");
+        assert!(document.is_dirty(), "same length, different bytes");
+        assert!(document.content_fingerprint.is_some());
+        edit(&mut document, "abc");
+        assert!(!document.is_dirty());
+
+        document.mark_recovered_dirty();
+        assert!(document.is_dirty());
+        edit(&mut document, "abcd");
+        edit(&mut document, "abc");
+        assert!(
+            document.is_dirty(),
+            "recovered content stays dirty until saved"
+        );
+    }
 
     #[test]
     fn default_document_matches_new_document() {
