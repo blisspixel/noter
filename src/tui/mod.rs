@@ -2761,6 +2761,27 @@ mod tests {
 
     proptest::proptest! {
         #[test]
+        fn character_steps_match_core_navigation_on_the_whole_text(
+            text in "[a\\r\\n\\u{301}é世😀\\u{200d}\\u{2028}\\u{85}\\u{feff}]{0,24}",
+            position in 0_usize..64,
+        ) {
+            let mut session = untitled();
+            session.insert_str(&text);
+            let text = session.text();
+            let mut caret = position.min(text.len());
+            while !text.is_char_boundary(caret) {
+                caret -= 1;
+            }
+            session.caret_byte = caret;
+            for direction in [MoveDirection::Backward, MoveDirection::Forward] {
+                proptest::prop_assert_eq!(
+                    session.character_step(direction),
+                    move_caret(&text, caret, direction, MoveUnit::Character)
+                );
+            }
+        }
+
+        #[test]
         fn frames_never_emit_unsafe_characters(text in proptest::prelude::any::<String>(), cols in 1_u16..120, rows in 1_u16..16) {
             let mut session = untitled();
             session.insert_str(&text);

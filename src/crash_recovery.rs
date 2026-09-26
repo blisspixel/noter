@@ -171,6 +171,9 @@ pub struct CrashRecoverySession {
     document_id: RecoveryDocumentId,
     instance_id: RecoveryInstanceId,
     session_started: Instant,
+    /// Time added to the scheduler clock, so an exit can make a pending
+    /// write due at once without reading the clock backward.
+    clock_advance: Duration,
     created_wall: RecoveryWallTime,
     lineage_generation: RecoveryLineageGeneration,
     predecessor_instance: Option<RecoveryInstanceId>,
@@ -271,6 +274,7 @@ impl CrashRecoverySession {
             document_id,
             instance_id,
             session_started: Instant::now(),
+            clock_advance: Duration::ZERO,
             created_wall: wall_now(),
             lineage_generation: RecoveryLineageGeneration::ROOT,
             predecessor_instance: None,
@@ -696,10 +700,10 @@ impl CrashRecoverySession {
     /// without a Save, as when a terminal hangs up, and waits up to `limit`
     /// for the write to be confirmed.
     ///
-    /// The scheduler normally waits for an idle pause. Moving its clock
-    /// forward by the longest dirty interval makes the revision due at once;
-    /// time still only moves forward. Returns whether the record is known to
-    /// hold this revision.
+    /// The scheduler normally waits for an idle pause. Advancing its clock by
+    /// the longest dirty interval makes the revision due at once; time still
+    /// only moves forward. Returns whether the record is known to hold this
+    /// revision.
     pub fn persist_before_exit(
         &mut self,
         document: &Document,
@@ -710,13 +714,10 @@ impl CrashRecoverySession {
             return false;
         }
         let deadline = Instant::now() + limit;
+        // A failure already reported must not end this last attempt early.
+        self.persist_failure = false;
         self.on_retained(document, selection);
-        if let Some(earlier) = self
-            .session_started
-            .checked_sub(noter::core::recovery::RECOVERY_MAX_DIRTY_INTERVAL)
-        {
-            self.session_started = earlier;
-        }
+        self.clock_advance += noter::core::recovery::RECOVERY_MAX_DIRTY_INTERVAL;
         loop {
             self.on_tick(document, selection);
             if self.schedule.in_flight_revision().is_none()
@@ -961,7 +962,7 @@ impl CrashRecoverySession {
     }
 
     fn monotonic_now(&self) -> RecoveryClock {
-        RecoveryClock::new(self.session_started.elapsed())
+        RecoveryClock::new(self.session_started.elapsed() + self.clock_advance)
     }
 
     /// A session that never persists, for tests that must not touch the
