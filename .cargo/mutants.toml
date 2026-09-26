@@ -65,7 +65,10 @@ exclude_re = [
     # No test can mount a network file system, and the test machine's own is
     # local, so reporting local is indistinguishable there. The classifiers
     # behind these wrappers are tested with every listed value.
-    "replace (linux|macos)_file_system_is_local -> io::Result<bool> with Ok\\(true\\)",
+    "replace ((linux|macos)_file_system_is_local -> io::Result<bool> with Ok\\(true\\)|require_local_file_system -> io::Result<\\(\\)> with Ok\\(\\(\\)\\))",
+    # The state directory's create flag only decides whether mkdirat runs
+    # first; on an existing directory it returns EEXIST, which is ignored.
+    "replace > with >= in bind_state_directory",
     # Only NotFound marks a missing component. Any other error recurs, with
     # the same kind, when the walk opens that component.
     "match guard error.kind\\(\\) == io::ErrorKind::NotFound with true in split_existing_prefix",

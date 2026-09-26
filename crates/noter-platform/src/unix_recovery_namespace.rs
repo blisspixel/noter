@@ -269,7 +269,6 @@ impl UnixRecoveryDirectory {
         let directory = open_or_create_directory(&self.directory, name, true)?;
         let path = self.path.join(name);
         let status = fstat(&directory)?;
-        require_directory(&status, &path)?;
         if status.st_uid != user.owner {
             return Err(permission_denied(format!(
                 "{} is owned by another user",
@@ -328,7 +327,6 @@ fn bind_state_directory(state_root: &Path, user: User) -> io::Result<UnixRecover
     let directory = open_or_create_directory(&directory, state_name, names.len() > existing_count)?;
     walked.push(state_name);
     let status = fstat(&directory)?;
-    require_directory(&status, &walked)?;
     if status.st_uid != user.owner {
         return Err(permission_denied(format!(
             "{} is not owned by you",
@@ -405,19 +403,7 @@ impl User {
     }
 }
 
-fn require_directory(status: &Stat, path: &Path) -> io::Result<()> {
-    if FileType::from_raw_mode(status.st_mode) == FileType::Directory {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            format!("{} is not a directory", path.display()),
-        ))
-    }
-}
-
 fn verify_ancestor(status: &Stat, user: User, path: &Path) -> io::Result<()> {
-    require_directory(status, path)?;
     if !ancestor_is_trusted(status.st_uid, status.st_gid, permission_bits(status), user) {
         return Err(permission_denied(format!(
             "{} can be changed by another user",

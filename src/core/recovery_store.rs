@@ -303,7 +303,7 @@ pub struct RecoveryStore {
 /// directories on Windows.
 impl RecoveryStore {
     #[cfg(unix)]
-    fn bound_directory(&self, directory: &Path) -> io::Result<&UnixRecoveryDirectory> {
+    fn unix_bound_directory(&self, directory: &Path) -> io::Result<&UnixRecoveryDirectory> {
         [self.namespace.records(), self.namespace.quarantine()]
             .into_iter()
             .find(|bound| bound.path() == directory)
@@ -316,20 +316,21 @@ impl RecoveryStore {
     }
 
     #[cfg(unix)]
-    fn bound_entry<'a>(
+    fn unix_bound_entry<'a>(
         &'a self,
         path: &'a Path,
     ) -> io::Result<(&'a UnixRecoveryDirectory, &'a std::ffi::OsStr)> {
         let name = path.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "a recovery entry needs a name")
         })?;
-        let directory = self.bound_directory(path.parent().unwrap_or_else(|| Path::new("")))?;
+        let directory =
+            self.unix_bound_directory(path.parent().unwrap_or_else(|| Path::new("")))?;
         Ok((directory, name))
     }
 
     /// Refuses a pathname outside the held records and quarantine directories.
     #[cfg(not(unix))]
-    fn require_bound_directory(&self, directory: &Path) -> io::Result<()> {
+    fn windows_require_bound_directory(&self, directory: &Path) -> io::Result<()> {
         if directory == self.records_dir() || directory == self.quarantine_dir() {
             Ok(())
         } else {
@@ -341,19 +342,19 @@ impl RecoveryStore {
     }
 
     #[cfg(not(unix))]
-    fn require_bound_entry(&self, path: &Path) -> io::Result<()> {
-        self.require_bound_directory(path.parent().unwrap_or_else(|| Path::new("")))
+    fn windows_require_bound_entry(&self, path: &Path) -> io::Result<()> {
+        self.windows_require_bound_directory(path.parent().unwrap_or_else(|| Path::new("")))
     }
 
     fn entry_open_existing(&self, path: &Path) -> io::Result<File> {
         #[cfg(unix)]
         {
-            let (directory, name) = self.bound_entry(path)?;
+            let (directory, name) = self.unix_bound_entry(path)?;
             directory.open_existing(name)
         }
         #[cfg(not(unix))]
         {
-            self.require_bound_entry(path)?;
+            self.windows_require_bound_entry(path)?;
             noter_platform::open_existing_no_follow(path)
         }
     }
@@ -365,7 +366,7 @@ impl RecoveryStore {
         }
         #[cfg(not(unix))]
         {
-            self.require_bound_entry(path)?;
+            self.windows_require_bound_entry(path)?;
             noter_platform::open_for_cleanup(path)
         }
     }
@@ -373,12 +374,12 @@ impl RecoveryStore {
     fn entry_create_private_new(&self, path: &Path) -> io::Result<File> {
         #[cfg(unix)]
         {
-            let (directory, name) = self.bound_entry(path)?;
+            let (directory, name) = self.unix_bound_entry(path)?;
             directory.create_private_new(name)
         }
         #[cfg(not(unix))]
         {
-            self.require_bound_entry(path)?;
+            self.windows_require_bound_entry(path)?;
             noter_platform::create_private_new_file(path)
         }
     }
@@ -386,12 +387,12 @@ impl RecoveryStore {
     fn entry_remove(&self, path: &Path) -> io::Result<()> {
         #[cfg(unix)]
         {
-            let (directory, name) = self.bound_entry(path)?;
+            let (directory, name) = self.unix_bound_entry(path)?;
             directory.remove(name)
         }
         #[cfg(not(unix))]
         {
-            self.require_bound_entry(path)?;
+            self.windows_require_bound_entry(path)?;
             fs::remove_file(path)
         }
     }
@@ -401,35 +402,25 @@ impl RecoveryStore {
     fn entry_remove_if_identifies(&self, path: &Path, expected: &File) -> io::Result<()> {
         #[cfg(unix)]
         {
-            let (directory, name) = self.bound_entry(path)?;
+            let (directory, name) = self.unix_bound_entry(path)?;
             directory.remove_if_identifies(name, expected)
         }
         #[cfg(not(unix))]
         {
-            self.require_bound_entry(path)?;
-            let named = noter_platform::open_existing_no_follow(path)?;
-            if noter_platform::file_facts(&named)?.identity()
-                != noter_platform::file_facts(expected)?.identity()
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "the recovery entry no longer identifies the opened file",
-                ));
-            }
-            drop(named);
-            fs::remove_file(path)
+            self.windows_require_bound_entry(path)?;
+            windows_remove_if_identifies(path, expected)
         }
     }
 
     fn entry_is_file(&self, path: &Path) -> io::Result<bool> {
         #[cfg(unix)]
         {
-            let (directory, name) = self.bound_entry(path)?;
+            let (directory, name) = self.unix_bound_entry(path)?;
             directory.is_regular_file(name)
         }
         #[cfg(not(unix))]
         {
-            self.require_bound_entry(path)?;
+            self.windows_require_bound_entry(path)?;
             fs::symlink_metadata(path).map(|metadata| metadata.file_type().is_file())
         }
     }
@@ -439,7 +430,7 @@ impl RecoveryStore {
         #[cfg(unix)]
         {
             Ok(self
-                .bound_directory(directory)?
+                .unix_bound_directory(directory)?
                 .entry_names(limit)?
                 .into_iter()
                 .map(|name| Ok(directory.join(name)))
@@ -447,7 +438,7 @@ impl RecoveryStore {
         }
         #[cfg(not(unix))]
         {
-            self.require_bound_directory(directory)?;
+            self.windows_require_bound_directory(directory)?;
             Ok(fs::read_dir(directory)?
                 .take(limit)
                 .map(|entry| entry.map(|entry| entry.path()))
@@ -458,15 +449,30 @@ impl RecoveryStore {
     fn sync_entry_directory(&self, path: &Path) -> io::Result<noter_platform::ParentSyncOutcome> {
         #[cfg(unix)]
         {
-            self.bound_entry(path)?.0.sync()?;
+            self.unix_bound_entry(path)?.0.sync()?;
             Ok(noter_platform::ParentSyncOutcome::Synced)
         }
         #[cfg(not(unix))]
         {
-            self.require_bound_entry(path)?;
+            self.windows_require_bound_entry(path)?;
             noter_platform::sync_parent(path)
         }
     }
+}
+
+#[cfg(not(unix))]
+fn windows_remove_if_identifies(path: &Path, expected: &File) -> io::Result<()> {
+    let named = noter_platform::open_existing_no_follow(path)?;
+    if noter_platform::file_facts(&named)?.identity()
+        != noter_platform::file_facts(expected)?.identity()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the recovery entry no longer identifies the opened file",
+        ));
+    }
+    drop(named);
+    fs::remove_file(path)
 }
 
 fn recovery_directory_error_is_missing(kind: io::ErrorKind) -> bool {
@@ -1887,7 +1893,7 @@ fn write_atomic_private_unix_with(
     bytes: &[u8],
     before_commit: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    let (directory, name) = store.bound_entry(destination)?;
+    let (directory, name) = store.unix_bound_entry(destination)?;
     let parent = directory.path();
     let commit_parent = directory.commit_parent(name)?;
     let stage = unix_recovery_stage_path(parent, instance_id);
@@ -4972,6 +4978,35 @@ mod tests {
             "a missing records directory is an empty startup scan, not an error"
         );
         store.delete_owned_artifacts(indexed_instance(27))?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_scan_leaves_links_in_the_records_directory_alone() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let target = dir.path().join("elsewhere.rec");
+        fs::write(&target, b"not a recovery record")?;
+        let link = store.records_dir().join("linked.rec");
+        std::os::unix::fs::symlink(&target, &link)?;
+
+        assert!(store.scan_startup()?.is_empty());
+        assert!(fs::symlink_metadata(&link)?.file_type().is_symlink());
+        assert!(store.quarantine_dir().read_dir()?.next().is_none());
+        assert_eq!(fs::read(&target)?, b"not a recovery record");
+        Ok(())
+    }
+
+    #[test]
+    fn a_just_created_entry_is_discarded_by_identity() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let path = store.quarantine_dir().join("partial.rec");
+        let file = store.entry_create_private_new(&path)?;
+
+        discard_created_entry(&store, &path, &file);
+        assert!(!path.exists());
         Ok(())
     }
 
