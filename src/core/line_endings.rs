@@ -605,7 +605,11 @@ mod tests {
 
     #[test]
     fn equal_first_positions_keep_the_fixed_convention_order() {
-        let counts = LineEndingCounts { lf: 1, crlf: 1, cr: 1 };
+        let counts = LineEndingCounts {
+            lf: 1,
+            crlf: 1,
+            cr: 1,
+        };
         let profile = LineEndingProfile::from_counts(counts, || [3, 3, 3]);
         assert_eq!(profile.fallback_insertion(), LineEnding::Lf);
     }
