@@ -57,6 +57,20 @@ exclude_re = [
     "(enable_raw_terminal|terminal_size|is_terminal_std(in|out)|wait_for_terminal_input|ignore_terminal_hangup|TerminalRestorer|TerminalRawGuard)",
     # The dlopen flag bits are disjoint, so OR and XOR are identical.
     "replace \\| with \\^ in imp::unix_shared_library_opens",
+    # Recovery namespace (ADR-0004). The open flag bits are disjoint, so OR
+    # and XOR are identical.
+    "replace \\| with \\^ in open_directory_no_follow",
+    # A directory fsync has no effect a test can observe short of a crash.
+    "replace UnixRecoveryDirectory::sync -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    # No test can mount a network file system, and the test machine's own is
+    # local, so reporting local is indistinguishable there. The classifiers
+    # behind these wrappers are tested with every listed value.
+    "replace (linux|macos)_file_system_is_local -> io::Result<bool> with Ok\\(true\\)",
+    # Only NotFound marks a missing component. Any other error recurs, with
+    # the same kind, when the walk opens that component.
+    "match guard error.kind\\(\\) == io::ErrorKind::NotFound with true in split_existing_prefix",
+    # Compiled only on Unix systems no campaign runs on.
+    "unsupported_file_system_is_local",
 ]
 all_features = true
 test_workspace = true

@@ -4,10 +4,11 @@
 //! links. The recovery, records, and quarantine directories are then created
 //! or opened through their held parents. Before any recovery content can be
 //! written, each directory is verified: every ancestor is owned by the
-//! superuser or this user and cannot be changed by others, the state directory
-//! is owned by this user, the recovery subtree is private to this user and on
-//! the state directory's device with no extended ACL on macOS, and the file
-//! system is local.
+//! superuser or this user and cannot be changed by other users, the state
+//! directory is owned by this user and closed to writes by others, the
+//! recovery subtree is private to this user and on the state directory's
+//! device with no extended ACL on macOS, and the file system is not a known
+//! network or shared one.
 //!
 //! Every entry operation is relative to a held descriptor, so renaming or
 //! replacing any ancestor after binding cannot redirect recovery content.
@@ -15,6 +16,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -22,13 +24,15 @@ use rustix::fs::{
     AtFlags, CWD, Dir, FileType, Mode, OFlags, Stat, fchmod, fstat, fsync, mkdirat, openat, statat,
     unlinkat,
 };
-use rustix::process::{Uid, geteuid};
+use rustix::process::{getegid, geteuid};
 
 use crate::UnixRecoveryCommitParent;
 
 const RECORDS_DIRECTORY_NAME: &str = "records";
 const QUARANTINE_DIRECTORY_NAME: &str = "quarantine";
 const GROUP_OR_OTHER_WRITE: u32 = 0o022;
+const GROUP_WRITE: u32 = 0o020;
+const OTHER_WRITE: u32 = 0o002;
 const GROUP_OR_OTHER_ANY: u32 = 0o077;
 const STICKY: u32 = 0o1000;
 
@@ -62,19 +66,16 @@ impl UnixRecoveryNamespace {
             return Err(invalid_input("the state directory path must be absolute"));
         }
         validate_entry_name(recovery_name)?;
-        let owner = geteuid();
-        let state = bind_state_directory(state_root, owner)?;
-        require_local_file_system(&state.directory)?;
+        let user = User::current();
+        let state = bind_state_directory(state_root, user)?;
+        require_local_file_system(&state.directory, &state.path)?;
         let state_status = fstat(&state.directory)?;
-        let recovery = state.bind_private_child(recovery_name, owner, &state_status)?;
-        let records = recovery.bind_private_child(
-            OsStr::new(RECORDS_DIRECTORY_NAME),
-            owner,
-            &state_status,
-        )?;
+        let recovery = state.bind_private_child(recovery_name, user, &state_status)?;
+        let records =
+            recovery.bind_private_child(OsStr::new(RECORDS_DIRECTORY_NAME), user, &state_status)?;
         let quarantine = recovery.bind_private_child(
             OsStr::new(QUARANTINE_DIRECTORY_NAME),
-            owner,
+            user,
             &state_status,
         )?;
         Ok(Self {
@@ -138,18 +139,10 @@ impl UnixRecoveryDirectory {
     pub fn create_private_new(&self, name: &OsStr) -> io::Result<File> {
         validate_entry_name(name)?;
         self.require_linked()?;
-        #[cfg(target_os = "macos")]
-        {
-            // Apple's ACL-aware private creation is path-based; ratify the
-            // created object against the held directory before using it.
-            let file = crate::create_private_new_file(&self.path.join(name))?;
-            crate::imp::unix_require_name_matches(&self.directory, name, &file)?;
-            Ok(file)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            crate::imp::unix_create_private_new_at(&self.directory, name)
-        }
+        // The directory is private and, on macOS, free of ACLs a new file
+        // could inherit, so creation relative to it needs no path-based
+        // ACL-aware primitive.
+        crate::imp::unix_create_private_new_at(&self.directory, name)
     }
 
     /// Opens the existing entry `name` for reading without following a link.
@@ -259,8 +252,9 @@ impl UnixRecoveryDirectory {
         fsync(&self.directory).map_err(io::Error::from)
     }
 
-    /// Refuses new content in a directory that has been removed. Its held
-    /// descriptor would still accept entries, but nothing could find them.
+    /// Refuses new content in a directory that has been removed. Linux already
+    /// refuses entries there; this makes the refusal explicit and portable,
+    /// and a later scan could never find content written to it.
     fn require_linked(&self) -> io::Result<()> {
         if fstat(&self.directory)?.st_nlink == 0 {
             return Err(io::Error::new(
@@ -271,83 +265,102 @@ impl UnixRecoveryDirectory {
         Ok(())
     }
 
-    fn bind_private_child(&self, name: &OsStr, owner: Uid, state: &Stat) -> io::Result<Self> {
-        match mkdirat(&self.directory, name, Mode::RWXU) {
-            Ok(()) | Err(rustix::io::Errno::EXIST) => {}
-            Err(error) => return Err(error.into()),
-        }
-        let directory = open_directory_no_follow(&self.directory, name)?;
+    fn bind_private_child(&self, name: &OsStr, user: User, state: &Stat) -> io::Result<Self> {
+        let directory = open_or_create_directory(&self.directory, name, true)?;
+        let path = self.path.join(name);
         let status = fstat(&directory)?;
-        if status.st_uid != owner.as_raw() {
-            return Err(permission_denied(
-                "a recovery directory is owned by another user",
-            ));
+        require_directory(&status, &path)?;
+        if status.st_uid != user.owner {
+            return Err(permission_denied(format!(
+                "{} is owned by another user",
+                path.display()
+            )));
         }
         if status.st_dev != state.st_dev {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "a recovery directory is on a different device from the state directory",
+                format!(
+                    "{} is on a different device from the state directory",
+                    path.display()
+                ),
             ));
         }
         // Mode bits do not cover an extended ACL, which on macOS could still
         // grant another user access to a 0700 directory.
         #[cfg(target_os = "macos")]
         crate::imp::macos_restrict_open_file_acl_to_owner(&directory)?;
-        if permission_bits(&status) & GROUP_OR_OTHER_ANY != 0 {
-            fchmod(&directory, Mode::RWXU)?;
-            if permission_bits(&fstat(&directory)?) & GROUP_OR_OTHER_ANY != 0 {
-                return Err(permission_denied(
-                    "a recovery directory could not be made private",
-                ));
-            }
+        fchmod(&directory, Mode::RWXU)?;
+        if permission_bits(&fstat(&directory)?) & GROUP_OR_OTHER_ANY != 0 {
+            return Err(permission_denied(format!(
+                "{} could not be made private",
+                path.display()
+            )));
         }
-        Ok(Self {
-            directory,
-            path: self.path.join(name),
-        })
+        Ok(Self { directory, path })
     }
 }
 
-fn bind_state_directory(state_root: &Path, owner: Uid) -> io::Result<UnixRecoveryDirectory> {
+fn bind_state_directory(state_root: &Path, user: User) -> io::Result<UnixRecoveryDirectory> {
     let (existing, missing) = split_existing_prefix(state_root)?;
     let canonical = std::fs::canonicalize(&existing)?;
-    let mut directory: File = openat(
-        CWD,
-        "/",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?
-    .into();
-    verify_ancestor(&fstat(&directory)?, owner)?;
-    let mut path = PathBuf::from("/");
+    let mut names: Vec<OsString> = Vec::new();
     for component in canonical.components() {
         match component {
             Component::RootDir => {}
-            Component::Normal(name) => {
-                directory = open_directory_no_follow(&directory, name)?;
-                verify_ancestor(&fstat(&directory)?, owner)?;
-                path.push(name);
-            }
+            Component::Normal(name) => names.push(name.to_os_string()),
             _ => return Err(invalid_input("the state directory path is not canonical")),
         }
     }
-    for name in &missing {
-        validate_entry_name(name)?;
-        match mkdirat(&directory, name.as_os_str(), Mode::RWXU) {
+    let existing_count = names.len();
+    names.extend(missing);
+    let (state_name, ancestor_names) = names
+        .split_last()
+        .ok_or_else(|| invalid_input("the state directory cannot be the root directory"))?;
+
+    let mut directory = open_directory_no_follow(CWD, OsStr::new("/"))?;
+    let mut walked = PathBuf::from("/");
+    verify_ancestor(&fstat(&directory)?, user, &walked)?;
+    for (index, name) in ancestor_names.iter().enumerate() {
+        directory = open_or_create_directory(&directory, name, index >= existing_count)?;
+        walked.push(name);
+        verify_ancestor(&fstat(&directory)?, user, &walked)?;
+    }
+    let directory = open_or_create_directory(&directory, state_name, names.len() > existing_count)?;
+    walked.push(state_name);
+    let status = fstat(&directory)?;
+    require_directory(&status, &walked)?;
+    if status.st_uid != user.owner {
+        return Err(permission_denied(format!(
+            "{} is not owned by you",
+            walked.display()
+        )));
+    }
+    // The state directory is Noter's own, so it is made private rather than
+    // refused when others could write it.
+    fchmod(&directory, Mode::RWXU)?;
+    if permission_bits(&fstat(&directory)?) & GROUP_OR_OTHER_WRITE != 0 {
+        return Err(permission_denied(format!(
+            "{} could not be made private",
+            walked.display()
+        )));
+    }
+    Ok(UnixRecoveryDirectory {
+        directory,
+        path: state_root.to_path_buf(),
+    })
+}
+
+/// Opens `name` below `parent` without following a link, first creating it
+/// private when `create` is set.
+fn open_or_create_directory(parent: &File, name: &OsStr, create: bool) -> io::Result<File> {
+    validate_entry_name(name)?;
+    if create {
+        match mkdirat(parent, name, Mode::RWXU) {
             Ok(()) | Err(rustix::io::Errno::EXIST) => {}
             Err(error) => return Err(error.into()),
         }
-        directory = open_directory_no_follow(&directory, name)?;
-        verify_ancestor(&fstat(&directory)?, owner)?;
-        path.push(name);
     }
-    let status = fstat(&directory)?;
-    if status.st_uid != owner.as_raw() || permission_bits(&status) & GROUP_OR_OTHER_WRITE != 0 {
-        return Err(permission_denied(
-            "the state directory must be owned by you and not writable by others",
-        ));
-    }
-    Ok(UnixRecoveryDirectory { directory, path })
+    open_directory_no_follow(parent, name)
 }
 
 /// Splits `path` into its longest existing prefix and the names below it.
@@ -376,43 +389,79 @@ fn split_existing_prefix(path: &Path) -> io::Result<(PathBuf, Vec<OsString>)> {
     Ok((existing, missing))
 }
 
-/// Accepts a directory in the chain when neither another user nor a group
-/// can replace its entries: it is owned by the superuser or this user, and it
-/// is writable by others only with the sticky bit, which stops them renaming
-/// or removing entries they do not own.
-fn verify_ancestor(status: &Stat, owner: Uid) -> io::Result<()> {
-    if FileType::from_raw_mode(status.st_mode) != FileType::Directory {
-        return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            "a state directory component is not a directory",
-        ));
+/// The effective user and group this process acts as.
+#[derive(Clone, Copy)]
+struct User {
+    owner: u32,
+    group: u32,
+}
+
+impl User {
+    fn current() -> Self {
+        Self {
+            owner: geteuid().as_raw(),
+            group: getegid().as_raw(),
+        }
     }
-    if !ancestor_is_trusted(status.st_uid, permission_bits(status), owner.as_raw()) {
-        return Err(permission_denied(
-            "a directory on the path to the recovery state can be changed by another user",
-        ));
+}
+
+fn require_directory(status: &Stat, path: &Path) -> io::Result<()> {
+    if FileType::from_raw_mode(status.st_mode) == FileType::Directory {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            format!("{} is not a directory", path.display()),
+        ))
+    }
+}
+
+fn verify_ancestor(status: &Stat, user: User, path: &Path) -> io::Result<()> {
+    require_directory(status, path)?;
+    if !ancestor_is_trusted(status.st_uid, status.st_gid, permission_bits(status), user) {
+        return Err(permission_denied(format!(
+            "{} can be changed by another user",
+            path.display()
+        )));
     }
     Ok(())
 }
 
-const fn ancestor_is_trusted(directory_owner: u32, mode: u32, user: u32) -> bool {
-    let trusted_owner = directory_owner == 0 || directory_owner == user;
-    let shielded = mode & GROUP_OR_OTHER_WRITE == 0 || mode & STICKY != 0;
+/// Accepts a directory on the path when no other user can replace its
+/// entries. It must be owned by the superuser or this user. Others may write
+/// it only with the sticky bit, which stops them renaming or removing entries
+/// they do not own. A group may write it only when that group is this user's
+/// private group: the process's group, numbered like the user, as systems
+/// that give each user their own group create it.
+const fn ancestor_is_trusted(
+    directory_owner: u32,
+    directory_group: u32,
+    mode: u32,
+    user: User,
+) -> bool {
+    let trusted_owner = directory_owner == 0 || directory_owner == user.owner;
+    let private_group = directory_group == user.group && user.group == user.owner;
+    let group_safe = mode & GROUP_WRITE == 0 || private_group;
+    let others_safe = mode & OTHER_WRITE == 0;
+    let shielded = mode & STICKY != 0 || (group_safe && others_safe);
     trusted_owner && shielded
 }
 
 /// The permission bits of `status`; the mode field is narrower on macOS.
 #[cfg(target_os = "macos")]
-fn permission_bits(status: &Stat) -> u32 {
+fn macos_permission_bits(status: &Stat) -> u32 {
     u32::from(status.st_mode)
 }
+
+#[cfg(target_os = "macos")]
+use macos_permission_bits as permission_bits;
 
 #[cfg(not(target_os = "macos"))]
 const fn permission_bits(status: &Stat) -> u32 {
     status.st_mode
 }
 
-fn open_directory_no_follow(parent: &File, name: &OsStr) -> io::Result<File> {
+fn open_directory_no_follow(parent: impl AsFd, name: &OsStr) -> io::Result<File> {
     openat(
         parent,
         name,
@@ -438,20 +487,31 @@ fn validate_entry_name(name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn require_local_file_system(directory: &File) -> io::Result<()> {
-    // The magic numbers are 32-bit; a value that does not fit is unknown and
-    // therefore not trusted.
-    let kind = u32::try_from(rustix::fs::fstatfs(directory)?.f_type);
-    if kind.is_ok_and(|kind| !linux_file_system_is_shared(kind)) {
+fn require_local_file_system(directory: &File, path: &Path) -> io::Result<()> {
+    if file_system_is_local(directory)? {
         Ok(())
     } else {
-        Err(shared_file_system())
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("{} is on a network or shared file system", path.display()),
+        ))
     }
 }
 
-/// Network, cluster, and user-space file systems whose locking, rename, and
-/// durability cannot be verified from here.
+#[cfg(target_os = "linux")]
+fn linux_file_system_is_local(directory: &File) -> io::Result<bool> {
+    // The magic numbers are 32-bit; a value that does not fit is unknown and
+    // therefore not trusted.
+    let kind = u32::try_from(rustix::fs::fstatfs(directory)?.f_type);
+    Ok(kind.is_ok_and(|kind| !linux_file_system_is_shared(kind)))
+}
+
+#[cfg(target_os = "linux")]
+use linux_file_system_is_local as file_system_is_local;
+
+/// Network, cluster, shared-folder, and user-space file systems whose
+/// locking, rename, and durability cannot be verified from here, as named in
+/// Linux's `magic.h` and coreutils' file-system table.
 #[cfg(target_os = "linux")]
 const fn linux_file_system_is_shared(kind: u32) -> bool {
     matches!(
@@ -470,41 +530,51 @@ const fn linux_file_system_is_shared(kind: u32) -> bool {
             | 0x0116_1970 // GFS2
             | 0x7461_636F // OCFS2
             | 0x0BD0_0BD0 // Lustre
-            | 0x1983_0326 // OrangeFS
+            | 0x2003_0528 // OrangeFS
+            | 0x1983_0326 // BeeGFS
+            | 0x4750_4653 // GPFS
+            | 0xAAD7_AAEA // PanFS
+            | 0x0131_11A8 // IBRIX
+            | 0x6163_6673 // ACFS
+            | 0xBEEF_DEAD // SNFS
+            | 0x786F_4256 // VirtualBox shared folders
+            | 0xBACB_ACBC // VMware shared folders
+            | 0x7C7C_6673 // Parallels shared folders
     )
 }
 
 #[cfg(target_os = "macos")]
-fn require_local_file_system(directory: &File) -> io::Result<()> {
-    /// `MNT_LOCAL` from `<sys/mount.h>`: the file system is stored locally.
-    const MNT_LOCAL: u32 = 0x0000_1000;
-    if rustix::fs::fstatfs(directory)?.f_flags & MNT_LOCAL == 0 {
-        return Err(shared_file_system());
-    }
-    Ok(())
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn require_local_file_system(_directory: &File) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "the recovery directory's file system cannot be verified on this platform",
+fn macos_file_system_is_local(directory: &File) -> io::Result<bool> {
+    Ok(macos_mount_flags_are_local(
+        rustix::fs::fstatfs(directory)?.f_flags,
     ))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn shared_file_system() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        "the recovery directory is on a network or shared file system",
-    )
+/// Whether a mount's flags include `MNT_LOCAL` from `<sys/mount.h>`.
+#[cfg(target_os = "macos")]
+const fn macos_mount_flags_are_local(flags: u32) -> bool {
+    const MNT_LOCAL: u32 = 0x0000_1000;
+    flags & MNT_LOCAL == MNT_LOCAL
 }
+
+#[cfg(target_os = "macos")]
+use macos_file_system_is_local as file_system_is_local;
+
+/// Other Unix systems have no verified classification, so recovery is
+/// refused there.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const fn unsupported_file_system_is_local(_directory: &File) -> io::Result<bool> {
+    Ok(false)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+use unsupported_file_system_is_local as file_system_is_local;
 
 fn invalid_input(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
-fn permission_denied(message: &'static str) -> io::Error {
+fn permission_denied(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
 
@@ -528,15 +598,11 @@ mod tests {
         let state = temporary.path().join("a/b/state");
         let namespace = open(&state).unwrap();
 
-        let canonical = std::fs::canonicalize(temporary.path()).unwrap();
-        assert_eq!(namespace.state().path(), canonical.join("a/b/state"));
-        assert_eq!(
-            namespace.records().path(),
-            canonical.join("a/b/state/recovery/records")
-        );
+        assert_eq!(namespace.state().path(), state);
+        assert_eq!(namespace.records().path(), state.join("recovery/records"));
         assert_eq!(
             namespace.quarantine().path(),
-            canonical.join("a/b/state/recovery/quarantine")
+            state.join("recovery/quarantine")
         );
         for directory in ["recovery", "recovery/records", "recovery/quarantine"] {
             assert_eq!(mode(&state.join(directory)) & 0o077, 0, "{directory}");
@@ -677,17 +743,14 @@ mod tests {
     }
 
     #[test]
-    fn a_state_directory_others_can_write_is_rejected() {
+    fn a_state_directory_others_can_write_is_made_private() {
         let temporary = tempfile::tempdir().unwrap();
         let state = temporary.path().join("state");
         std::fs::create_dir(&state).unwrap();
-        std::fs::set_permissions(&state, PermissionsExt::from_mode(0o775)).unwrap();
+        std::fs::set_permissions(&state, PermissionsExt::from_mode(0o777)).unwrap();
 
-        assert_eq!(
-            open(&state).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        assert!(!state.join("recovery").exists(), "nothing is created first");
+        open(&state).unwrap();
+        assert_eq!(mode(&state), 0o700);
     }
 
     #[test]
@@ -696,9 +759,12 @@ mod tests {
         let shared = temporary.path().join("shared");
         std::fs::create_dir(&shared).unwrap();
         std::fs::set_permissions(&shared, PermissionsExt::from_mode(0o777)).unwrap();
+        let error = open(&shared.join("state")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        let canonical = std::fs::canonicalize(&shared).unwrap();
         assert_eq!(
-            open(&shared.join("state")).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
+            error.to_string(),
+            format!("{} can be changed by another user", canonical.display())
         );
         assert!(!shared.join("state").exists());
 
@@ -707,15 +773,27 @@ mod tests {
     }
 
     #[test]
-    fn ancestor_trust_requires_an_owner_and_protection_from_others() {
-        let me = 1000;
-        assert!(ancestor_is_trusted(0, 0o755, me));
-        assert!(ancestor_is_trusted(me, 0o700, me));
-        assert!(ancestor_is_trusted(0, 0o1777, me));
-        assert!(!ancestor_is_trusted(1001, 0o755, me));
-        assert!(!ancestor_is_trusted(me, 0o775, me));
-        assert!(!ancestor_is_trusted(me, 0o757, me));
-        assert!(!ancestor_is_trusted(1001, 0o1777, me));
+    fn ancestor_trust_requires_an_owner_and_protection_from_other_users() {
+        let private = User {
+            owner: 1000,
+            group: 1000,
+        };
+        let shared = User {
+            owner: 1000,
+            group: 100,
+        };
+        assert!(ancestor_is_trusted(0, 0, 0o755, private));
+        assert!(ancestor_is_trusted(1000, 1000, 0o700, private));
+        assert!(ancestor_is_trusted(0, 0, 0o1777, private));
+        assert!(!ancestor_is_trusted(1001, 1000, 0o755, private));
+        assert!(!ancestor_is_trusted(1001, 1001, 0o1777, private));
+        assert!(!ancestor_is_trusted(1000, 1000, 0o757, private));
+        // A group-writable directory is safe only in the user's private group.
+        assert!(ancestor_is_trusted(1000, 1000, 0o775, private));
+        assert!(!ancestor_is_trusted(1000, 1001, 0o775, private));
+        assert!(!ancestor_is_trusted(1000, 100, 0o775, shared));
+        assert!(ancestor_is_trusted(1000, 100, 0o755, shared));
+        assert!(ancestor_is_trusted(1000, 100, 0o1775, shared));
     }
 
     #[test]
@@ -738,9 +816,9 @@ mod tests {
         std::fs::create_dir(&target).unwrap();
         symlink(&target, temporary.path().join("link")).unwrap();
 
-        let namespace = open(&temporary.path().join("link/state")).unwrap();
-        let canonical = std::fs::canonicalize(&target).unwrap();
-        assert_eq!(namespace.state().path(), canonical.join("state"));
+        let requested = temporary.path().join("link/state");
+        let namespace = open(&requested).unwrap();
+        assert_eq!(namespace.state().path(), requested);
         assert!(target.join("state/recovery/records").is_dir());
     }
 
@@ -787,6 +865,15 @@ mod tests {
             );
             assert!(records.commit_parent(name).is_err());
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_mounts_marked_local_are_local() {
+        assert!(macos_mount_flags_are_local(0x0000_1000));
+        assert!(macos_mount_flags_are_local(0x0000_1001));
+        assert!(!macos_mount_flags_are_local(0));
+        assert!(!macos_mount_flags_are_local(0x0000_0800));
     }
 
     #[cfg(target_os = "linux")]

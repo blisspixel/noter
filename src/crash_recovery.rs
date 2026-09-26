@@ -1328,9 +1328,10 @@ mod tests {
     fn an_unsafe_state_root_is_refused_before_writing_and_says_why() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempdir().expect("tempdir");
-        let state = dir.path().join("state");
-        fs::create_dir(&state).expect("state directory");
-        fs::set_permissions(&state, PermissionsExt::from_mode(0o777)).expect("loosen");
+        let shared = dir.path().join("shared");
+        fs::create_dir(&shared).expect("shared directory");
+        fs::set_permissions(&shared, PermissionsExt::from_mode(0o777)).expect("loosen");
+        let state = shared.join("state");
 
         let session = CrashRecoverySession::open_in_state(&state);
         assert!(session.is_unavailable());
@@ -1343,7 +1344,11 @@ mod tests {
             message.contains("can be changed by another user"),
             "{message}"
         );
-        assert!(!state.join("recovery").exists());
+        assert!(
+            message.contains("shared"),
+            "the directory is named: {message}"
+        );
+        assert!(!state.exists());
 
         assert_eq!(
             CrashRecoverySession::unavailable().unavailable_message(),

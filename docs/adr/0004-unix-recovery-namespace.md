@@ -32,20 +32,30 @@ relative to held, verified directories:
    with `O_NOFOLLOW | O_DIRECTORY` and create missing components with
    `mkdirat` mode 0700 through the held parent.
 2. Accept an ancestor only when it is owned by the superuser or the current
-   user and is writable by group or others only with the sticky bit, which stops
-   them renaming or removing entries they do not own. Require the state directory
-   itself to be owned by the current user and not writable by others.
+   user and no other user can replace its entries: it is writable by others
+   only with the sticky bit, which stops them renaming or removing entries they
+   do not own, and by its group only with the sticky bit or when that group is
+   the user's private group (the process's group, numbered like the user, as
+   systems with a private group per user create it and a umask of 002 leaves it
+   writable). Require the state directory itself to be owned by the current
+   user; it is Noter's own directory, so a mode that lets others write it is
+   tightened to 0700.
 3. Create or open the recovery, records, and quarantine directories through the
    held parent without following links. Require the current user as owner and
    the state directory's device; tighten a looser mode to 0700 and, on macOS,
    strip any extended ACL and verify that none remains.
-4. Refuse a state directory on a network, cluster, or user-space file system:
-   known NFS, SMB, CIFS, Coda, AFS, NCP, Ceph, 9P, FUSE, GFS2, OCFS2, Lustre,
-   and OrangeFS magic numbers on Linux, and any mount without `MNT_LOCAL` on
-   macOS. Other Unix systems cannot be verified and are refused.
+4. Refuse a state directory on a known network, cluster, shared-folder, or
+   user-space file system: the NFS, SMB, CIFS, Coda, AFS, NCP, Ceph, 9P, FUSE,
+   GFS2, OCFS2, Lustre, OrangeFS, BeeGFS, GPFS, PanFS, IBRIX, ACFS, SNFS, and
+   VirtualBox, VMware, and Parallels shared-folder magic numbers on Linux, and
+   any mount without `MNT_LOCAL` on macOS. Linux cannot mark a file system as
+   local, so an unlisted network file system is not detected. Other Unix
+   systems cannot be verified and are refused.
 5. Hold the directory descriptors for the session. Create, open, list,
    classify, commit, remove, and sync every record, lease, and quarantine entry
-   relative to them. Refuse new content in a bound directory whose link count
+   relative to them. On macOS too, private creation uses `openat` in the held
+   directory; the path-based ACL-aware primitive is unnecessary because the
+   directory has no ACL for a new file to inherit. Refuse new content in a bound directory whose link count
    has fallen to zero, so a removed recovery tree fails persistence visibly
    instead of writing unreachable records.
 6. Retire an entry with `unlinkat` in its held directory, immediately after
@@ -75,9 +85,9 @@ are outside the threat model, as they are for every other per-user store.
 ## Consequences
 
 - A state root that another user can change, that contains a planted link below
-  its existing prefix, or that lives on a network file system makes recovery
-  unavailable for the session. The message names the reason, and ordinary saves
-  are unaffected.
+  its existing prefix, or that lives on a known network file system makes
+  recovery unavailable for the session. The message names the directory and
+  the reason, and ordinary saves are unaffected.
 - Renaming or replacing any directory above a bound recovery directory after
   startup cannot redirect recovery reads, writes, or removals.
 - Ancestor checks cover owner and mode bits, not ACLs on directories above the
@@ -91,8 +101,9 @@ are outside the threat model, as they are for every other per-user store.
 ## Evidence
 
 - `crates/noter-platform/src/unix_recovery_namespace.rs` tests: creation of a
-  private tree, tightening of loose modes, rejection of a state directory or
-  ancestor others can write and acceptance of a sticky one, refusal of links and
+  private tree, tightening of loose modes and of a state directory others can
+  write, rejection of an ancestor others can write with the directory named,
+  acceptance of a sticky one and of the user's private group, refusal of links and
   non-directories in the recovery tree, one-time resolution of a link in the
   existing prefix, operations that follow the bound directory after an ancestor
   rename, refusal to remove a replaced entry, refusal of new content in a

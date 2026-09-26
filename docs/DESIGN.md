@@ -687,12 +687,14 @@ directories.
 On Unix the whole namespace is bound
 ([ADR-0004](adr/0004-unix-recovery-namespace.md)). The state path is reopened
 from `/` without following links after its existing prefix is resolved once.
-Every ancestor must be owned by the superuser or the user and be writable by
-others only with the sticky bit, and the state directory must be the user's and
-not writable by others. The recovery, records, and quarantine directories are
+Every ancestor must be owned by the superuser or the user and must not let
+another user replace its entries: writable by others only with the sticky bit,
+and by its group only with the sticky bit or when that group is the user's
+private group. The state directory must be the user's and is tightened to 0700
+when others can write it. The recovery, records, and quarantine directories are
 created or opened through held descriptors, owned by the user, on the state
-directory's device, tightened to 0700, and stripped of ACLs on macOS. Network,
-cluster, and user-space file systems are refused. Every record, lease, and
+directory's device, tightened to 0700, and stripped of ACLs on macOS. Known
+network, cluster, shared-folder, and user-space file systems are refused. Every record, lease, and
 quarantine operation is relative to the held descriptors, a removed directory
 refuses new content, and retirement unlinks a name in its held private
 directory right after confirming that it still identifies the held object.
@@ -761,9 +763,8 @@ directory or undo a wrong unlink. New, Open,
 Restore, and Discard advance the scheduler epoch and publish it to the worker
 gate before releasing the prior lease. Save and every identity transition then
 send a FIFO fence and wait until every earlier persistence request has
-quiesced before deleting a record or releasing ownership. On Unix those steps run relative to the held
-private records directory, so only the same user's processes can race them.
-Lease acquisition or
+quiesced before deleting a record or releasing ownership. On Unix those steps run relative to the held private records directory, so
+only the same user's processes can race them. Lease acquisition or
 ownership-probe errors make recovery unavailable for that session or startup
 scan. Unknown ownership never exposes Restore or Discard. Stale UI
 acknowledgements are inert so they cannot delete a newer worker result.
