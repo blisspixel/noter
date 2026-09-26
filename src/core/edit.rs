@@ -313,20 +313,18 @@ impl EditTransaction {
     ) -> Result<Option<Self>, EditError> {
         validate_selection_str(selection_after, after, SelectionState::After)?;
         let before_len = before.byte_len();
-        let mut prefix_bytes = common_prefix_len(before.forward_chunks(), after.as_bytes());
-        if prefix_bytes == before_len && prefix_bytes == after.len() {
+        let shared_prefix_bytes = common_prefix_len(before.forward_chunks(), after.as_bytes());
+        if shared_prefix_bytes == before_len && shared_prefix_bytes == after.len() {
             return Ok(None);
         }
-        // Equal bytes are equal characters, so backing off to the previous
-        // boundary of `after` finds the shared character prefix of both.
-        while !after.is_char_boundary(prefix_bytes) {
-            prefix_bytes -= 1;
-        }
+        // Equal bytes are equal characters, so the last boundary of `after`
+        // within the shared run ends the shared character prefix of both.
+        let prefix_bytes = after.floor_char_boundary(shared_prefix_bytes);
         let limit = before_len.min(after.len()) - prefix_bytes;
-        let mut suffix_bytes = common_suffix_len(before.backward_chunks(), after.as_bytes(), limit);
-        while !after.is_char_boundary(after.len() - suffix_bytes) {
-            suffix_bytes -= 1;
-        }
+        let shared_suffix_bytes =
+            common_suffix_len(before.backward_chunks(), after.as_bytes(), limit);
+        let suffix_bytes =
+            after.len() - after.ceil_char_boundary(after.len() - shared_suffix_bytes);
 
         let before_end = before_len - suffix_bytes;
         let after_end = after.len() - suffix_bytes;
@@ -758,39 +756,40 @@ impl DiffSource for Rope {
 const DIFF_BLOCK_BYTES: usize = 64;
 
 /// Returns how many leading bytes `left` and `right` share.
+///
+/// Whole blocks are compared first. The first unequal or partial block holds
+/// the end of the shared run, so the byte comparison reads at most one block.
 fn shared_prefix(left: &[u8], right: &[u8]) -> usize {
-    let length = left.len().min(right.len());
-    let mut shared = 0;
-    while shared + DIFF_BLOCK_BYTES <= length
-        && left[shared..shared + DIFF_BLOCK_BYTES] == right[shared..shared + DIFF_BLOCK_BYTES]
-    {
-        shared += DIFF_BLOCK_BYTES;
-    }
+    let equal_blocks = left
+        .chunks_exact(DIFF_BLOCK_BYTES)
+        .zip(right.chunks_exact(DIFF_BLOCK_BYTES))
+        .take_while(|(a, b)| a == b)
+        .count();
+    let shared = equal_blocks * DIFF_BLOCK_BYTES;
     shared
-        + left[shared..length]
+        + left[shared..]
             .iter()
-            .zip(&right[shared..length])
+            .zip(&right[shared..])
+            .take(DIFF_BLOCK_BYTES)
             .take_while(|(a, b)| a == b)
             .count()
 }
 
-/// Returns how many trailing bytes `left` and `right` share.
+/// Returns how many trailing bytes `left` and `right` share, reading blocks
+/// from the end as [`shared_prefix`] reads them from the start.
 fn shared_suffix(left: &[u8], right: &[u8]) -> usize {
-    let length = left.len().min(right.len());
-    let left = &left[left.len() - length..];
-    let right = &right[right.len() - length..];
-    let mut shared = 0;
-    while shared + DIFF_BLOCK_BYTES <= length
-        && left[length - shared - DIFF_BLOCK_BYTES..length - shared]
-            == right[length - shared - DIFF_BLOCK_BYTES..length - shared]
-    {
-        shared += DIFF_BLOCK_BYTES;
-    }
+    let equal_blocks = left
+        .rchunks_exact(DIFF_BLOCK_BYTES)
+        .zip(right.rchunks_exact(DIFF_BLOCK_BYTES))
+        .take_while(|(a, b)| a == b)
+        .count();
+    let shared = equal_blocks * DIFF_BLOCK_BYTES;
     shared
-        + left[..length - shared]
+        + left[..left.len() - shared]
             .iter()
             .rev()
-            .zip(right[..length - shared].iter().rev())
+            .zip(right[..right.len() - shared].iter().rev())
+            .take(DIFF_BLOCK_BYTES)
             .take_while(|(a, b)| a == b)
             .count()
 }

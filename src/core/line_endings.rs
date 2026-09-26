@@ -304,11 +304,8 @@ impl LineEndingProfile {
         let window_start = start.saturating_sub(1);
         let before_window_end = (before_end + 1).min(before.len_bytes());
         let after_window_end = before_window_end - before_end + after_end;
-        let window = |rope: &Rope, end: usize| {
-            scan_line_endings(rope.bytes_at(window_start).take(end - window_start)).0
-        };
-        let removed = window(before, before_window_end);
-        let added = window(after, after_window_end);
+        let removed = counts_between(before, window_start, before_window_end);
+        let added = counts_between(after, window_start, after_window_end);
         let previous = self.counts();
         let counts = LineEndingCounts {
             lf: previous.lf + added.lf - removed.lf,
@@ -535,6 +532,12 @@ fn splits_crlf(text: &str, byte_offset: usize) -> bool {
         && text.as_bytes().get(byte_offset) == Some(&b'\n')
 }
 
+/// Counts the line endings in bytes `start..end` of `rope`, reading the range
+/// without context from outside it.
+fn counts_between(rope: &Rope, start: usize, end: usize) -> LineEndingCounts {
+    scan_line_endings(rope.bytes_at(start).take(end - start)).0
+}
+
 /// Counts line endings and records the first byte offset of each convention.
 fn scan_line_endings(bytes: impl Iterator<Item = u8>) -> (LineEndingCounts, [usize; 3]) {
     let mut counts = LineEndingCounts::default();
@@ -562,6 +565,26 @@ fn scan_line_endings(bytes: impl Iterator<Item = u8>) -> (LineEndingCounts, [usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn range_counts_read_exactly_the_requested_bytes() {
+        let rope = Rope::from_str("\n\r\n\r\n\r");
+        let counts = |start, end| {
+            let counts = counts_between(&rope, start, end);
+            (counts.lf, counts.crlf, counts.cr)
+        };
+        assert_eq!(counts(0, 6), (1, 2, 1));
+        assert_eq!(counts(1, 3), (0, 1, 0));
+        assert_eq!(
+            counts(2, 4),
+            (1, 0, 1),
+            "edges read without outside context"
+        );
+        assert_eq!(counts(3, 5), (0, 1, 0));
+        assert_eq!(counts(4, 4), (0, 0, 0));
+        assert_eq!(counts(5, 6), (0, 0, 1));
+        assert_eq!(counts(0, 1), (1, 0, 0));
+    }
 
     #[test]
     fn the_most_common_convention_wins_and_the_first_breaks_ties() {
