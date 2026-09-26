@@ -412,6 +412,16 @@ impl RecoveryStore {
         }
     }
 
+    #[cfg(not(unix))]
+    fn windows_remove_if_named_identity(
+        &self,
+        path: &Path,
+        expected: noter_platform::FileIdentity,
+    ) -> io::Result<()> {
+        self.windows_require_bound_entry(path)?;
+        windows_remove_if_named(path, expected)
+    }
+
     fn entry_is_file(&self, path: &Path) -> io::Result<bool> {
         #[cfg(unix)]
         {
@@ -462,10 +472,13 @@ impl RecoveryStore {
 
 #[cfg(not(unix))]
 fn windows_remove_if_identifies(path: &Path, expected: &File) -> io::Result<()> {
+    windows_remove_if_named(path, noter_platform::file_facts(expected)?.identity())
+}
+
+#[cfg(not(unix))]
+fn windows_remove_if_named(path: &Path, expected: noter_platform::FileIdentity) -> io::Result<()> {
     let named = noter_platform::open_existing_no_follow(path)?;
-    if noter_platform::file_facts(&named)?.identity()
-        != noter_platform::file_facts(expected)?.identity()
-    {
+    if noter_platform::file_facts(&named)?.identity() != expected {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "the recovery entry no longer identifies the opened file",
@@ -1136,7 +1149,7 @@ fn quarantine_bound_file_with(
     revalidate_path_identity(store, path, opened.facts, opened.encoded_len)?;
     let (destination, mut quarantine_file) = create_quarantine_copy(store, bytes)?;
     if let Err(error) = verify_exact_bytes(&mut quarantine_file, bytes) {
-        discard_created_entry(store, &destination, &quarantine_file);
+        discard_created_entry(store, &destination, quarantine_file);
         return Err(error);
     }
 
@@ -1174,7 +1187,7 @@ fn create_quarantine_copy(store: &RecoveryStore, bytes: &[u8]) -> io::Result<(Pa
             noter_platform::sync_file(&file)
         })();
         if let Err(error) = write_result {
-            discard_created_entry(store, &destination, &file);
+            discard_created_entry(store, &destination, file);
             return Err(error);
         }
         return Ok((destination, file));
@@ -1185,11 +1198,26 @@ fn create_quarantine_copy(store: &RecoveryStore, bytes: &[u8]) -> io::Result<(Pa
     ))
 }
 
-/// Best-effort removal of a quarantine copy this call just created: by handle
-/// where supported, otherwise only while the name still identifies it.
-fn discard_created_entry(store: &RecoveryStore, destination: &Path, file: &File) {
-    if noter_platform::delete_open_file(file).is_err() {
-        let _ = store.entry_remove_if_identifies(destination, file);
+/// Best-effort removal of an entry this call just created: by handle where
+/// supported, otherwise only while its name still identifies the file. Windows
+/// cannot remove a name while the file is open without delete sharing, so
+/// there the identity is captured and the file closed first.
+fn discard_created_entry(store: &RecoveryStore, destination: &Path, file: File) {
+    if noter_platform::delete_open_file(&file).is_ok() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        let _ = store.entry_remove_if_identifies(destination, &file);
+        drop(file);
+    }
+    #[cfg(not(unix))]
+    {
+        let Ok(facts) = noter_platform::file_facts(&file) else {
+            return;
+        };
+        drop(file);
+        let _ = store.windows_remove_if_named_identity(destination, facts.identity());
     }
 }
 
@@ -4575,7 +4603,12 @@ mod tests {
         store.release_live_lease(lease)?;
         assert!(!store.live_path(snapshot.instance_id()).exists());
         assert!(!store.live_guard_path(snapshot.instance_id()).exists());
-        fs::remove_file(&displaced)?;
+        // Windows release deletes both lease objects through their handles,
+        // including the renamed one.
+        match fs::remove_file(&displaced) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
         Ok(())
     }
 
@@ -5005,7 +5038,7 @@ mod tests {
         let path = store.quarantine_dir().join("partial.rec");
         let file = store.entry_create_private_new(&path)?;
 
-        discard_created_entry(&store, &path, &file);
+        discard_created_entry(&store, &path, file);
         assert!(!path.exists());
         Ok(())
     }

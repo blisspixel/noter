@@ -55,9 +55,11 @@ relative to held, verified directories:
    classify, commit, remove, and sync every record, lease, and quarantine entry
    relative to them. On macOS too, private creation uses `openat` in the held
    directory; the path-based ACL-aware primitive is unnecessary because the
-   directory has no ACL for a new file to inherit. Refuse new content in a bound directory whose link count
-   has fallen to zero, so a removed recovery tree fails persistence visibly
-   instead of writing unreachable records.
+   directory has no ACL for a new file to inherit. Linux and macOS refuse to
+   create entries in a removed directory, so a recovery tree removed while
+   Noter runs fails persistence visibly instead of writing unreachable
+   records. A link count is not a portable signal: APFS keeps a removed
+   directory's count above zero while a descriptor holds it.
 6. Retire an entry with `unlinkat` in its held directory, immediately after
    `fstatat` without following links confirms that the name still identifies
    the device and inode of the object Noter holds open.

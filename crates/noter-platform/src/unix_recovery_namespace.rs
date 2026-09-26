@@ -138,7 +138,6 @@ impl UnixRecoveryDirectory {
     /// other creation or permission failures.
     pub fn create_private_new(&self, name: &OsStr) -> io::Result<File> {
         validate_entry_name(name)?;
-        self.require_linked()?;
         // The directory is private and, on macOS, free of ACLs a new file
         // could inherit, so creation relative to it needs no path-based
         // ACL-aware primitive.
@@ -235,7 +234,6 @@ impl UnixRecoveryDirectory {
     /// the operating-system error when the descriptor cannot be duplicated.
     pub fn commit_parent(&self, destination_name: &OsStr) -> io::Result<UnixRecoveryCommitParent> {
         validate_entry_name(destination_name)?;
-        self.require_linked()?;
         Ok(UnixRecoveryCommitParent::from_bound_directory(
             self.directory.try_clone()?,
             self.path.clone(),
@@ -250,19 +248,6 @@ impl UnixRecoveryDirectory {
     /// Returns the operating-system error from `fsync`.
     pub fn sync(&self) -> io::Result<()> {
         fsync(&self.directory).map_err(io::Error::from)
-    }
-
-    /// Refuses new content in a directory that has been removed. Linux already
-    /// refuses entries there; this makes the refusal explicit and portable,
-    /// and a later scan could never find content written to it.
-    fn require_linked(&self) -> io::Result<()> {
-        if fstat(&self.directory)?.st_nlink == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "the recovery directory was removed while Noter was running",
-            ));
-        }
-        Ok(())
     }
 
     fn bind_private_child(&self, name: &OsStr, user: User, state: &Stat) -> io::Result<Self> {
@@ -701,9 +686,12 @@ mod tests {
                 .kind(),
             io::ErrorKind::NotFound
         );
+        // The operating system refuses entries in a removed directory, so a
+        // commit through its held descriptor cannot stage a record either.
+        let commit = records.commit_parent(OsStr::new("late")).unwrap();
         assert_eq!(
-            records
-                .commit_parent(OsStr::new("late"))
+            commit
+                .create_private_new(&records.path().join("late.stage"))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::NotFound
