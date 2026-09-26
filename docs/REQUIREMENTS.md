@@ -132,8 +132,8 @@ Feature presence alone is not verification.
   composition, emoji, combining marks, and bidirectional text without
   corruption or panic. Current status: text in any script round-trips byte for
   byte, and the window draws each character with a bundled or local system
-  font. Right-to-left reordering and complex-script shaping in the window wait
-  for the production text engine.
+  font and shapes each font run. Bidirectional reordering of mixed-direction
+  lines in the window waits for the production text engine.
 - **FR-021 Navigation:** Support expected character, word, line, document, and
   page movement with and without selection on each platform.
 - **FR-022 Clipboard:** Cut, Copy, Paste, Delete, and Select All share the same

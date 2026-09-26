@@ -10,20 +10,27 @@
 
 use eframe::egui;
 use skrifa::MetadataProvider;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 /// Font files larger than this are skipped; the largest common system fonts,
 /// such as Noto CJK collections, stay well below it.
 const MAX_FONT_FILE_BYTES: u64 = 96 * 1024 * 1024;
-/// Loaded fallback fonts stay resident, so their total size is bounded.
+/// Loaded fallback fonts stay resident for the life of the process, so their
+/// total size is bounded.
 const MAX_LOADED_BYTES: u64 = 192 * 1024 * 1024;
 /// Examining a font means reading it once. Characters no font covers must not
 /// make the search read every font on the system again and again.
 const MAX_EXAMINED_BYTES: u64 = 768 * 1024 * 1024;
-const MAX_DISCOVERED_FILES: usize = 4_096;
+const MAX_DISCOVERED_FILES: usize = 16_384;
+const MAX_VISITED_DIRECTORIES: usize = 2_048;
 const MAX_DIRECTORY_DEPTH: usize = 5;
+/// Strings up to this size are filtered on the calling thread against the
+/// characters already sent, so per-frame labels and input cost nothing once
+/// seen. Larger text goes to the worker whole.
+const MAX_FILTERED_TEXT_BYTES: usize = 4_096;
 
 /// File stems, lowercased, that cover the most scripts per byte on each
 /// platform. They are examined first; every other font follows.
@@ -84,16 +91,47 @@ const STYLE_WORDS: &[&str] = &[
 
 /// Queues text for glyph coverage and installs fonts that complete it.
 pub struct FontFallback {
-    context: egui::Context,
-    sender: Option<mpsc::Sender<String>>,
+    target: Target,
+    /// Characters already sent from short strings.
+    sent: HashSet<char>,
+}
+
+enum Target {
+    Window {
+        context: egui::Context,
+        sender: Option<mpsc::Sender<String>>,
+    },
+    #[cfg(test)]
+    Recorded(Vec<String>),
 }
 
 impl FontFallback {
     /// Returns a fallback that starts its worker on the first text needing it.
-    pub const fn new(context: egui::Context) -> Self {
+    pub fn new(context: egui::Context) -> Self {
         Self {
-            context,
-            sender: None,
+            target: Target::Window {
+                context,
+                sender: None,
+            },
+            sent: HashSet::new(),
+        }
+    }
+
+    /// Returns a fallback that records what it would send, for tests.
+    #[cfg(test)]
+    pub fn recording() -> Self {
+        Self {
+            target: Target::Recorded(Vec::new()),
+            sent: HashSet::new(),
+        }
+    }
+
+    /// The text sent so far by a recording fallback.
+    #[cfg(test)]
+    pub fn recorded(&self) -> &[String] {
+        match &self.target {
+            Target::Recorded(sent) => sent,
+            Target::Window { .. } => &[],
         }
     }
 
@@ -103,13 +141,51 @@ impl FontFallback {
         if text.is_ascii() {
             return;
         }
-        if self.sender.is_none() {
-            self.sender = spawn_worker(self.context.clone());
+        let owned = if text.len() <= MAX_FILTERED_TEXT_BYTES {
+            let unseen: String = text
+                .chars()
+                .filter(|&character| needs_glyph(character) && self.sent.insert(character))
+                .collect();
+            if unseen.is_empty() {
+                return;
+            }
+            unseen
+        } else {
+            text.to_owned()
+        };
+        self.send(owned);
+    }
+
+    /// Observes the text carried by typing, paste, and input-method events,
+    /// which reaches the screen in fields and composition drafts before any
+    /// document edit records it.
+    pub fn observe_input(&mut self, events: &[egui::Event]) {
+        for event in events {
+            match event {
+                egui::Event::Text(text)
+                | egui::Event::Paste(text)
+                | egui::Event::Ime(
+                    egui::ImeEvent::Preedit { text, .. } | egui::ImeEvent::Commit(text),
+                ) => self.observe(text),
+                _ => {}
+            }
         }
-        if let Some(sender) = &self.sender
-            && sender.send(text.to_owned()).is_err()
-        {
-            self.sender = None;
+    }
+
+    fn send(&mut self, text: String) {
+        match &mut self.target {
+            Target::Window { context, sender } => {
+                if sender.is_none() {
+                    *sender = spawn_worker(context.clone());
+                }
+                if let Some(active) = sender
+                    && active.send(text).is_err()
+                {
+                    *sender = None;
+                }
+            }
+            #[cfg(test)]
+            Target::Recorded(sent) => sent.push(text),
         }
     }
 }
@@ -119,7 +195,7 @@ fn spawn_worker(context: egui::Context) -> Option<mpsc::Sender<String>> {
     std::thread::Builder::new()
         .name("noter-fonts".to_owned())
         .spawn(move || {
-            let mut resolver = Resolver::new(bundled_coverage(), discover_candidates);
+            let mut resolver = Resolver::new(bundled_families(), discover_candidates);
             while let Ok(first) = receiver.recv() {
                 let mut missing = BTreeSet::new();
                 resolver.collect_missing(&first, &mut missing);
@@ -154,15 +230,21 @@ const fn fallback_family(family: egui::FontFamily) -> egui::epaint::text::Insert
     }
 }
 
-fn bundled_coverage() -> Vec<Coverage> {
-    let mut fonts = vec![Coverage::of(crate::theme::NOTER_PROPORTIONAL_FONT_BYTES, 0)];
-    fonts.extend(
-        egui::FontDefinitions::default()
-            .font_data
-            .values()
-            .map(|data| Coverage::of(&data.font, data.index)),
-    );
-    fonts
+/// The coverage of each bundled font family. A character needs a fallback
+/// when any family lacks it: the text editor draws in the monospace family,
+/// which does not include Inter.
+fn bundled_families() -> Vec<Vec<Coverage>> {
+    let definitions = crate::theme::noter_font_definitions();
+    [egui::FontFamily::Proportional, egui::FontFamily::Monospace]
+        .iter()
+        .map(|family| {
+            definitions.families[family]
+                .iter()
+                .filter_map(|name| definitions.font_data.get(name))
+                .map(|data| Coverage::of(&data.font, data.index))
+                .collect()
+        })
+        .collect()
 }
 
 /// Characters that draw as nothing, or that no general font is expected to
@@ -240,7 +322,8 @@ struct Candidate {
 
 /// Decides which font files to load for the characters it is shown.
 struct Resolver<D> {
-    covered: Vec<Coverage>,
+    /// Coverage per font family; loaded fallbacks join every family.
+    families: Vec<Vec<Coverage>>,
     unresolvable: BTreeSet<char>,
     discover: Option<D>,
     candidates: Vec<Candidate>,
@@ -249,9 +332,9 @@ struct Resolver<D> {
 }
 
 impl<D: FnOnce() -> Vec<PathBuf>> Resolver<D> {
-    const fn new(covered: Vec<Coverage>, discover: D) -> Self {
+    const fn new(families: Vec<Vec<Coverage>>, discover: D) -> Self {
         Self {
-            covered,
+            families,
             unresolvable: BTreeSet::new(),
             discover: Some(discover),
             candidates: Vec::new(),
@@ -264,11 +347,17 @@ impl<D: FnOnce() -> Vec<PathBuf>> Resolver<D> {
         for character in text.chars() {
             if needs_glyph(character)
                 && !self.unresolvable.contains(&character)
-                && !self.covered.iter().any(|font| font.contains(character))
+                && !self.drawable(character)
             {
                 missing.insert(character);
             }
         }
+    }
+
+    fn drawable(&self, character: char) -> bool {
+        self.families
+            .iter()
+            .all(|family| family.iter().any(|font| font.contains(character)))
     }
 
     fn resolve(&mut self, mut missing: BTreeSet<char>) -> Vec<LoadedFont> {
@@ -310,15 +399,16 @@ impl<D: FnOnce() -> Vec<PathBuf>> Resolver<D> {
         if known_useless {
             return None;
         }
-        let size = std::fs::metadata(&candidate.path).ok()?.len();
-        if size > MAX_FONT_FILE_BYTES {
+        let metadata = std::fs::metadata(&candidate.path).ok()?;
+        let size = metadata.len();
+        if !metadata.is_file() || size > MAX_FONT_FILE_BYTES {
             return None;
         }
         let first_read = candidate.coverage.is_none();
         if first_read && self.examined_bytes.saturating_add(size) > MAX_EXAMINED_BYTES {
             return None;
         }
-        let bytes = std::fs::read(&candidate.path).ok()?;
+        let bytes = read_bounded(&candidate.path)?;
         let size = bytes.len() as u64;
         if first_read {
             self.examined_bytes = self.examined_bytes.saturating_add(size);
@@ -334,21 +424,47 @@ impl<D: FnOnce() -> Vec<PathBuf>> Resolver<D> {
         missing.retain(|&c| !coverage.contains(c));
         candidate.loaded = true;
         self.loaded_bytes = self.loaded_bytes.saturating_add(size);
-        self.covered.push(coverage);
+        let name = format!("system:{}", candidate.path.display());
+        let (last, others) = self.families.split_last_mut()?;
+        for family in others {
+            family.push(Coverage {
+                ranges: coverage.ranges.clone(),
+            });
+        }
+        last.push(coverage);
+        // egui copies owned font bytes every time it rebuilds its fonts, which
+        // would keep two copies resident and copy them on the UI thread. A
+        // loaded fallback is never unloaded, so its bytes are leaked once and
+        // shared by reference; MAX_LOADED_BYTES bounds the total.
+        let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         Some(LoadedFont {
-            name: format!("system:{}", candidate.path.display()),
-            data: egui::FontData::from_owned(bytes),
+            name,
+            data: egui::FontData::from_static(bytes),
         })
     }
 }
 
+/// Reads a regular file of at most `MAX_FONT_FILE_BYTES`, even if it grows
+/// or is replaced after its size was checked.
+fn read_bounded(path: &Path) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_FONT_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= MAX_FONT_FILE_BYTES).then_some(bytes)
+}
+
 /// Lists local font files, most useful first.
 fn discover_candidates() -> Vec<PathBuf> {
-    let mut files = Vec::new();
+    let mut walk = FontWalk::default();
     for directory in font_directories() {
-        collect_font_files(&directory, 0, &mut files);
+        walk.collect(&directory, 0);
     }
-    rank_candidates(files)
+    rank_candidates(walk.files)
 }
 
 fn font_directories() -> Vec<PathBuf> {
@@ -378,33 +494,45 @@ fn font_directories() -> Vec<PathBuf> {
         if let Some(home) = &home {
             directories.push(home.join(".fonts"));
         }
-        directories.push(PathBuf::from("/usr/local/share/fonts"));
-        directories.push(PathBuf::from("/usr/share/fonts"));
+        let data_dirs = std::env::var_os("XDG_DATA_DIRS")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+        directories.extend(std::env::split_paths(&data_dirs).map(|path| path.join("fonts")));
     }
     directories
 }
 
-fn collect_font_files(directory: &Path, depth: usize, files: &mut Vec<PathBuf>) {
-    if depth > MAX_DIRECTORY_DEPTH {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        if files.len() >= MAX_DISCOVERED_FILES {
+/// A bounded walk of font directories. Symbolic links are followed, because
+/// distributions link font trees into place; the depth, directory, and file
+/// limits bound the walk even through a link cycle.
+#[derive(Default)]
+struct FontWalk {
+    files: Vec<PathBuf>,
+    visited_directories: usize,
+}
+
+impl FontWalk {
+    fn collect(&mut self, directory: &Path, depth: usize) {
+        if depth > MAX_DIRECTORY_DEPTH || self.visited_directories >= MAX_VISITED_DIRECTORIES {
             return;
         }
-        let path = entry.path();
-        let Ok(kind) = entry.file_type() else {
-            continue;
+        self.visited_directories += 1;
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
         };
-        if kind.is_dir() {
-            collect_font_files(&path, depth + 1, files);
-        } else if is_font_file(&path) {
-            files.push(path);
+        let mut entries: Vec<PathBuf> = entries
+            .filter_map(|entry| Some(entry.ok()?.path()))
+            .collect();
+        entries.sort();
+        for path in entries {
+            if self.files.len() >= MAX_DISCOVERED_FILES {
+                return;
+            }
+            if path.is_dir() {
+                self.collect(&path, depth + 1);
+            } else if is_font_file(&path) {
+                self.files.push(path);
+            }
         }
     }
 }
@@ -462,14 +590,33 @@ mod tests {
 
     #[test]
     fn bundled_fonts_cover_european_scripts_and_emoji_but_not_cjk() {
-        let bundled = bundled_coverage();
-        let covered = |c: char| bundled.iter().any(|font| font.contains(c));
+        let resolver = Resolver::new(bundled_families(), Vec::new);
+        assert_eq!(resolver.families.len(), 2);
         for character in ['a', 'ß', 'Ω', 'Я', '😀'] {
-            assert!(covered(character), "{character} should be bundled");
+            assert!(
+                resolver.drawable(character),
+                "{character} should be bundled"
+            );
         }
         for character in ['世', 'あ', '한', 'ع', 'ש', 'क', 'ก'] {
-            assert!(!covered(character), "{character} should need a system font");
+            assert!(
+                !resolver.drawable(character),
+                "{character} should need a system font"
+            );
         }
+    }
+
+    #[test]
+    fn a_character_only_the_proportional_family_has_still_needs_a_fallback() {
+        let families = bundled_families();
+        // IPA letters are in Inter, which only the proportional family uses,
+        // and in none of the monospace fonts the text editor draws with.
+        assert!(families[0].iter().any(|font| font.contains('ə')));
+        assert!(!families[1].iter().any(|font| font.contains('ə')));
+        let resolver = Resolver::new(families, Vec::new);
+        let mut missing = BTreeSet::new();
+        resolver.collect_missing("ə", &mut missing);
+        assert_eq!(missing, BTreeSet::from(['ə']));
     }
 
     #[test]
@@ -498,7 +645,7 @@ mod tests {
         std::fs::write(&useless, b"not a font").unwrap();
         std::fs::write(&inter, crate::theme::NOTER_PROPORTIONAL_FONT_BYTES).unwrap();
         let paths = vec![useless, inter.clone()];
-        let mut resolver = Resolver::new(Vec::new(), move || paths);
+        let mut resolver = Resolver::new(vec![Vec::new(), Vec::new()], move || paths);
 
         let mut missing = BTreeSet::new();
         resolver.collect_missing("plain ascii", &mut missing);
@@ -517,6 +664,7 @@ mod tests {
             crate::theme::NOTER_PROPORTIONAL_FONT_BYTES.len() as u64
         );
         assert!(resolver.candidates[1].loaded);
+        assert!(resolver.families.iter().all(|family| family.len() == 1));
         assert_eq!(resolver.candidates[0].coverage, Some(Coverage::default()));
 
         let mut missing = BTreeSet::new();
@@ -539,7 +687,7 @@ mod tests {
         let inter = directory.path().join("inter.ttf");
         std::fs::write(&inter, crate::theme::NOTER_PROPORTIONAL_FONT_BYTES).unwrap();
         let paths = vec![inter];
-        let mut resolver = Resolver::new(Vec::new(), move || paths);
+        let mut resolver = Resolver::new(vec![Vec::new(), Vec::new()], move || paths);
 
         assert!(resolver.resolve(BTreeSet::from(['世'])).is_empty());
         assert!(!resolver.candidates[0].loaded);
@@ -554,7 +702,7 @@ mod tests {
         let inter = directory.path().join("inter.ttf");
         std::fs::write(&inter, crate::theme::NOTER_PROPORTIONAL_FONT_BYTES).unwrap();
         let paths = vec![inter, directory.path().join("missing.ttf")];
-        let mut resolver = Resolver::new(Vec::new(), move || paths);
+        let mut resolver = Resolver::new(vec![Vec::new(), Vec::new()], move || paths);
         resolver.examined_bytes = MAX_EXAMINED_BYTES;
 
         assert!(resolver.resolve(BTreeSet::from(['é'])).is_empty());
@@ -588,17 +736,19 @@ mod tests {
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::write(deep.join("too-deep.ttf"), b"").unwrap();
 
-        let mut files = Vec::new();
-        collect_font_files(directory.path(), 0, &mut files);
-        let names: Vec<_> = files
+        let mut walk = FontWalk::default();
+        walk.collect(directory.path(), 0);
+        let names: Vec<_> = walk
+            .files
             .iter()
             .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["NotoSansArabic-Regular.ttf", "Upper.OTF", "c.ttc"]);
 
-        let mut none = Vec::new();
-        collect_font_files(&directory.path().join("absent"), 0, &mut none);
-        assert!(none.is_empty());
+        let mut absent = FontWalk::default();
+        absent.collect(&directory.path().join("absent"), 0);
+        assert!(absent.files.is_empty());
+        assert_eq!(absent.visited_directories, 1);
     }
 
     #[test]
@@ -646,13 +796,95 @@ mod tests {
         assert!(directories.iter().any(|path| path.ends_with(expected)));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn observe_ignores_ascii_and_installs_a_worker_for_other_text() {
-        let context = egui::Context::default();
-        let mut fallback = FontFallback::new(context);
+    fn discovery_follows_links_but_stops_at_cycles() {
+        let directory = tempfile::tempdir().unwrap();
+        let fonts = directory.path().join("fonts");
+        std::fs::create_dir(&fonts).unwrap();
+        std::fs::write(fonts.join("a.ttf"), b"").unwrap();
+        std::os::unix::fs::symlink(&fonts, fonts.join("loop")).unwrap();
+
+        let mut walk = FontWalk::default();
+        walk.collect(&fonts, 0);
+        assert_eq!(walk.visited_directories, MAX_DIRECTORY_DEPTH + 1);
+        assert_eq!(walk.files.len(), MAX_DIRECTORY_DEPTH + 1);
+    }
+
+    #[test]
+    fn walk_stops_at_the_directory_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("sub")).unwrap();
+        let mut walk = FontWalk {
+            visited_directories: MAX_VISITED_DIRECTORIES - 1,
+            ..FontWalk::default()
+        };
+        walk.collect(directory.path(), 0);
+        assert_eq!(walk.visited_directories, MAX_VISITED_DIRECTORIES);
+    }
+
+    #[test]
+    fn bounded_reads_accept_only_regular_files_within_the_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let font = directory.path().join("font.ttf");
+        std::fs::write(&font, b"bytes").unwrap();
+        assert_eq!(read_bounded(&font), Some(b"bytes".to_vec()));
+        assert_eq!(read_bounded(directory.path()), None);
+        assert_eq!(read_bounded(&directory.path().join("absent.ttf")), None);
+
+        let large = directory.path().join("large.ttf");
+        let file = std::fs::File::create(&large).unwrap();
+        file.set_len(MAX_FONT_FILE_BYTES + 1).unwrap();
+        assert_eq!(read_bounded(&large), None);
+    }
+
+    #[test]
+    fn short_text_sends_each_unseen_character_once() {
+        let mut fallback = FontFallback::recording();
         fallback.observe("ascii only");
-        assert!(fallback.sender.is_none());
+        fallback.observe("世界 \u{200D}");
+        fallback.observe("世界");
+        fallback.observe("界面");
+        assert_eq!(fallback.recorded(), ["世界", "面"]);
+
+        let long = "世".repeat(MAX_FILTERED_TEXT_BYTES);
+        fallback.observe(&long);
+        assert_eq!(fallback.recorded().last(), Some(&long));
+    }
+
+    #[test]
+    fn input_events_that_carry_text_are_observed() {
+        let mut fallback = FontFallback::recording();
+        fallback.observe_input(&[
+            egui::Event::Text("あ".to_owned()),
+            egui::Event::Paste("한".to_owned()),
+            egui::Event::Ime(egui::ImeEvent::Preedit {
+                text: "ع".to_owned(),
+                active_range_chars: None,
+            }),
+            egui::Event::Ime(egui::ImeEvent::Commit("ש".to_owned())),
+            egui::Event::Copy,
+        ]);
+        assert_eq!(fallback.recorded(), ["あ", "한", "ع", "ש"]);
+    }
+
+    #[test]
+    fn a_window_fallback_starts_its_worker_only_for_non_ascii_text() {
+        let mut fallback = FontFallback::new(egui::Context::default());
+        fallback.observe("ascii only");
+        assert!(matches!(
+            &fallback.target,
+            Target::Window { sender: None, .. }
+        ));
+        // Inter covers this character, so the worker never scans system fonts.
         fallback.observe("é");
-        assert!(fallback.sender.is_some());
+        assert!(matches!(
+            &fallback.target,
+            Target::Window {
+                sender: Some(_),
+                ..
+            }
+        ));
+        assert!(fallback.recorded().is_empty());
     }
 }

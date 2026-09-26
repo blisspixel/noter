@@ -8,16 +8,18 @@ that candidate is frozen for publication.
 
 ### Added
 
-- Draw every script the operating system has a font for in the window.
+- Draw text in any script the computer has a font for in the window.
   Chinese, Japanese, Korean, Arabic, Hebrew, Indic, Thai, and other text drew
   as replacement boxes because the bundled fonts cover only Latin, Greek,
   Cyrillic, and emoji. When a document or an edit contains characters those
   fonts lack, Noter now reads the system's local font directories on a
-  background thread and adds the fonts that cover them as fallbacks. Nothing
-  is downloaded, no font is read until a document needs one, and loaded fonts
-  are capped at 192 MiB. Right-to-left text is not yet reordered and complex
-  scripts are not yet shaped in the window; the terminal interface uses the
-  terminal's own shaping.
+  background thread and adds the fonts that cover them as fallbacks. Typed,
+  pasted, and input-method text and the file name are covered the same way.
+  Nothing is downloaded, no font is read until text needs one, and loaded
+  fonts are capped at 192 MiB. Each font run is shaped, but a line that mixes
+  left-to-right and right-to-left text is not yet ordered by the Unicode
+  bidirectional algorithm; the terminal interface uses the terminal's own
+  layout.
 
 ### Fixed
 

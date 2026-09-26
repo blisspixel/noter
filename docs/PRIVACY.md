@@ -38,15 +38,18 @@ Noter reads document content only when:
 - the user selects a recent-file entry created by an earlier explicit open; or
 - Noter validates a versioned recovery record that Noter created.
 
-Noter does not crawl folders, index unrelated files, inspect neighboring
-documents, or follow Markdown references to collect content.
+Noter does not crawl document folders, index unrelated files, inspect
+neighboring documents, or follow Markdown references to collect content. It
+lists its own recovery directories, and it lists font directories as described
+next.
 
-The one folder listing Noter performs is for fonts. When a document contains
-characters the bundled fonts cannot draw, the window lists font files
-(`.ttf`, `.otf`, `.ttc`, `.otc`) in the operating system's standard font
-directories and the user's own font directories, and reads the character maps
-of candidates until those characters are covered. It records nothing about
-them, and the text that prompted the search never leaves the process.
+When text contains characters the bundled fonts cannot draw, the window walks
+the operating system's standard font directories and the user's own font
+directories to a bounded depth, lists font files (`.ttf`, `.otf`, `.ttc`,
+`.otc`), and reads candidate files in full, one at a time, until those
+characters are covered. Fonts that cover them stay loaded for the session.
+Noter records nothing about the fonts it finds, and the text that prompted the
+search never leaves the process.
 
 ## 4. Local state
 

@@ -44,10 +44,10 @@ dossier.
   roadmap work; today the window edits files up to 8 MiB.
 - **Any Language:** Text in every script is kept byte for byte. The window
   draws scripts beyond Latin, Greek, and Cyrillic with fonts already on your
-  computer, loaded only when a document needs them; right-to-left reordering
-  and complex-script shaping in the window are roadmap work. The terminal
+  computer, loaded only when text needs them. Reordering lines that mix
+  left-to-right and right-to-left text is roadmap work. The terminal
   interface measures wide and combining characters and relies on the
-  terminal's own shaping.
+  terminal's own layout.
 - **One Document, Full Focus:** Single-document ergonomics instead of a
   workspace that wants to become a platform.
 

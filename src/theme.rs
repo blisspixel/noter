@@ -532,7 +532,7 @@ fn configure_fonts(context: &egui::Context) {
     context.set_fonts(noter_font_definitions());
 }
 
-fn noter_font_definitions() -> egui::FontDefinitions {
+pub fn noter_font_definitions() -> egui::FontDefinitions {
     let mut definitions = egui::FontDefinitions::default();
     definitions.font_data.insert(
         NOTER_PROPORTIONAL_FONT.to_owned(),

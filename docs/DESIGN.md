@@ -1004,20 +1004,34 @@ and accepts no scripts, shaders, assets, URLs, commands, or behavior overrides.
 
 The window bundles Inter and keeps egui's default fonts, which cover Latin,
 Greek, Cyrillic, and emoji. Every other script comes from fonts already on the
-computer, loaded only when text needs them. Opening, restoring, or editing text
-that contains characters no loaded font maps sends that text to one background
-thread. The thread lists font files in the platform's font directories (the
-Windows and per-user Windows font folders, the macOS system, library, and user
-font folders, or the XDG, home, and system font folders on Linux and the BSDs),
-ranks broad regular faces first, reads each candidate's character map, and adds
-only files that cover a missing character to both font families at the lowest
-priority. Characters no file covers are remembered so they never restart the
-search. Reads are bounded: files above 96 MiB are skipped, examination stops
-after 768 MiB, and resident fallback fonts stay under 192 MiB. The first frame
-may draw a replacement box for a character whose font is still loading; the
-thread requests a repaint when fonts arrive. egui lays out one glyph per
-character, so right-to-left runs are not reordered and complex scripts are not
-shaped until the production text engine in section 9.3 replaces it.
+computer, loaded only when text needs them (`src/font_fallback.rs`). Coverage
+is tracked per font family, because the text editor draws in the monospace
+family, which does not include Inter. Opened and restored documents, inserted
+edits, typing, paste, and input-method events, and the status bar file name are
+observed; text that contains a character some family cannot draw goes to one
+background thread. Short strings are filtered against characters already sent,
+so per-frame observation costs a scan of the string.
+
+The thread lists font files in the platform's font directories (the Windows
+and per-user Windows font folders, the macOS system, library, and user font
+folders, or the XDG data, home, and system font folders on Linux and the BSDs),
+following links within a bounded depth, directory count, and file count. It
+ranks broad regular faces first, reads each candidate once to learn its
+character map, and adds only files that cover a missing character to both
+families at the lowest priority. Only regular files are read, through a reader
+that stops at 96 MiB. Loaded font bytes are kept once for the life of the
+process, because egui would otherwise copy owned bytes on every font rebuild,
+and total under 192 MiB. Examination stops after 768 MiB; characters still
+uncovered then, or covered by no file, are remembered so they never restart the
+search. Collections contribute their first face. The first frame may draw a
+replacement box for a character whose font is still loading; the thread
+requests a repaint when fonts arrive.
+
+egui shapes each same-font run with HarfBuzz rules, so joining, ligatures, and
+a single-direction right-to-left run lay out correctly. It does not apply the
+Unicode bidirectional algorithm across runs or split runs by script, so a line
+that mixes directions is not reordered. That stays with the production text
+engine in section 9.3.
 
 ## 12. Native Markdown architecture
 

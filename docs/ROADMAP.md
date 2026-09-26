@@ -663,8 +663,9 @@ configuration retains egui's complete default fallback chain, including its
 emoji fonts, so pasted Unicode remains intact, and adds local system fonts as
 lowest-priority fallbacks when text needs a script those fonts lack, so CJK,
 Arabic, Hebrew, Indic, Thai, and other text draws instead of replacement boxes.
-It does not yet reorder right-to-left runs or shape complex scripts; that stays
-part of the text-engine gate below. The current renderer's emoji
+egui shapes each font run, but mixed-direction lines are not yet reordered by
+the Unicode bidirectional algorithm; that stays part of the text-engine gate
+below. The current renderer's emoji
 output is monochrome and is not accepted as final cross-platform appearance
 evidence. A status bar ordering inversion currently renders cursor coordinates
 before the active editor, introducing a 1-frame lag and forced repaint on caret
