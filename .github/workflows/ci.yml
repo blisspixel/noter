@@ -28,11 +28,20 @@ jobs:
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
+          targets: aarch64-apple-darwin, x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      # Platform code is compiled per target, so Linux alone misses macOS and
+      # Windows lints. BLAKE3's portable build avoids cross C compilers.
+      - name: cargo clippy for macOS and Windows
+        env:
+          CARGO_FEATURE_PURE: "1"
+        run: |
+          cargo clippy --locked --workspace --all-targets --all-features --target aarch64-apple-darwin -- -D warnings
+          cargo clippy --locked --workspace --all-targets --all-features --target x86_64-pc-windows-msvc -- -D warnings
       - name: rustdoc
         env:
           RUSTDOCFLAGS: -D warnings

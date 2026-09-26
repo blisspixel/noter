@@ -1129,6 +1129,7 @@ mod imp {
         OFlags::from_bits_retain(combine_disjoint_flag_bits(left.bits(), right.bits()))
     }
 
+    #[cfg(not(target_os = "macos"))]
     const fn unix_private_create_flags() -> OFlags {
         unix_combine_disjoint_flags(
             unix_combine_disjoint_flags(
@@ -2365,9 +2366,9 @@ mod imp {
         use super::{
             ExtendedAttribute, MetadataStamp, OFlags, unix_existing_read_flags,
             unix_metadata_payload_stamp_matches, unix_metadata_source_matches, unix_metadata_stamp,
-            unix_no_replace_is_unavailable, unix_private_create_flags,
-            unix_verify_destination_stamp, unix_verify_native_xattrs, unix_xattr_call_failed,
-            unix_xattr_read_should_retry, unix_xattr_size_exceeds_limit,
+            unix_no_replace_is_unavailable, unix_verify_destination_stamp,
+            unix_verify_native_xattrs, unix_xattr_call_failed, unix_xattr_read_should_retry,
+            unix_xattr_size_exceeds_limit,
         };
         #[cfg(target_os = "linux")]
         use super::{
@@ -2579,8 +2580,9 @@ mod imp {
 
         #[test]
         fn descriptor_relative_open_flag_policies_are_exact() {
+            #[cfg(not(target_os = "macos"))]
             assert_eq!(
-                unix_private_create_flags(),
+                super::unix_private_create_flags(),
                 OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC
             );
             assert_eq!(
