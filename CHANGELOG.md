@@ -6,6 +6,113 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+### Changed
+
+- Make each keystroke in the window cost the document core about a thirtieth
+  of what it did on large files. The edited text is compared with the document
+  chunk by chunk instead of being copied and compared character by character,
+  line endings are recounted only around the edit, and the document is hashed
+  for its unsaved state only when its length matches the saved length. The
+  median core cost at 8 MiB fell from about 30 ms to 1.0 ms
+  (`cargo bench --bench edit_latency`).
+
+### Added
+
+- Draw text in any script the computer has a font for in the window.
+  Chinese, Japanese, Korean, Arabic, Hebrew, Indic, Thai, and other text drew
+  as replacement boxes because the bundled fonts cover only Latin, Greek,
+  Cyrillic, and emoji. When a document or an edit contains characters those
+  fonts lack, Noter now reads the system's local font directories on a
+  background thread and adds the fonts that cover them as fallbacks. Typed,
+  pasted, and input-method text and the file name are covered the same way.
+  Nothing is downloaded, no font is read until text needs one, and loaded
+  fonts are capped at 192 MiB. Each font run is shaped, but a line that mixes
+  left-to-right and right-to-left text is not yet ordered by the Unicode
+  bidirectional algorithm; the terminal interface uses the terminal's own
+  layout.
+
+### Fixed
+
+- Explain a missing Linux window library instead of crashing. Without
+  `libxkbcommon-x11` the window aborted with a panic. Noter now checks the
+  keyboard, display-protocol, and OpenGL libraries the window loads for the
+  X11 or Wayland session it will use, names
+  any that are missing with the Debian, Fedora, and Arch packages that
+  provide them, suggests `noter --tui`, and exits with status 1. The packages
+  are listed in the installation guide.
+- Open the window on macOS. The terminal fallback treated every Unix system
+  without `DISPLAY` as headless, so macOS launches opened the terminal
+  interface or failed without a terminal. The fallback now applies only on
+  Linux and the BSDs, and only when standard input and output are interactive
+  terminals. `--gui` forces the window, and `noter update` prints its status
+  when no window can open.
+- Keep unsaved text in the terminal interface when saving fails. Answering yes
+  to the exit prompt used to exit even when the save hit a conflict, failed,
+  had an uncertain outcome, or the document was untitled. Exit now waits for a
+  committed write, and an untitled document asks for a name first.
+- Add Save As for named documents in the terminal interface (^O, prefilled with
+  the current name) so a document whose file changed on disk can still be
+  saved elsewhere. ^S saves in place. Save As asks before replacing an existing
+  file, a save that would split a hard link asks first, and after an uncertain
+  save outcome, saves to that file pause while other destinations stay
+  available.
+- Place the terminal caret, mouse clicks, and search results on character
+  boundaries. A click inside multibyte or wide text, or a search near
+  characters whose case folding changes length such as the Kelvin sign, could
+  previously land inside a character and stop the editor. Search now uses the
+  same Unicode case folding as the window, repeats advance to the next match,
+  and the status names the match number.
+- Scroll long lines horizontally in the terminal interface instead of wrapping
+  them across the layout, measure columns in terminal cells so wide characters
+  and tabs align, keep the view where the mouse wheel moved it until the next
+  key, and style Markdown without moving any character.
+- Decode terminal input across read boundaries. A character, key sequence,
+  or mouse report split between two reads used to turn into garbled text or
+  the wrong key. Unbound control keys no longer insert control characters,
+  Ctrl+J reaches Go To Line, and a bracketed paste arrives as one undoable
+  edit with the document's line endings, so a pasted Ctrl+O or Ctrl+S byte is
+  text instead of a command.
+- Restore the terminal after a panic in the terminal interface. Release
+  builds abort on panic, which skipped the code that leaves raw mode, so the
+  shell was left without echo. A load failure also no longer leaves the
+  alternate screen on, a resized terminal is redrawn without a keypress, and
+  a hung-up terminal ends the session.
+- Keep unsaved terminal text through a crash or a lost terminal. The terminal
+  interface now shares the window's private crash recovery: dirty text is
+  written after a short idle pause, on macOS, Linux, and the BSDs a closed
+  terminal or dropped SSH session writes it before exit, and the next
+  untitled launch offers Restore, Discard, or Later. It also shares the
+  window's bounded Undo, which groups typing into steps the same way.
+  Applying an edit no longer copies and compares the whole document; drawing
+  the screen still reads it, which remains open performance work.
+
+- Make the installer scripts work. The documented one-line commands pointed
+  at `releases/latest/download/install.sh` and `install.ps1`, which were
+  never published, and GitHub's `latest` skips prereleases, so both failed.
+  The README and installation guide now download the script from the
+  repository to read before running. The scripts find the newest release
+  including prereleases, verify the checksum, check the binary's version,
+  install by renaming a staged copy, and gain `--uninstall`. A checkout again
+  builds from source by default, as documented, with `--binary` to download
+  instead. The PowerShell script keeps `%VARIABLE%` entries in the user
+  `PATH` unexpanded, no longer closes the calling session, replaces a running
+  `noter.exe`, and verifies checksums under PowerShell 7 as well as 5.1.
+  Both scripts run entirely from a function, so a partial download executes
+  nothing.
+
+### Security
+
+- Restore mutation testing for terminal text safety. A broad `[Tt]erminal`
+  exclusion added in beta.1 removed every mutant whose name or path mentioned
+  a terminal, including all of the new terminal-safe drawing module. The
+  exclusion now names only the interactive terminal primitives that need a
+  real terminal.
+- Draw document text, file names, typed input, and messages in the terminal
+  interface through one terminal-safe path. Control characters, including
+  escape sequences that could set the window title or write the clipboard
+  through OSC 52, C1 controls, and bidirectional overrides, now appear as a
+  visible replacement character instead of reaching the terminal.
+
 ## 0.1.0-beta.1 - 2026-09-24
 
 ### Added

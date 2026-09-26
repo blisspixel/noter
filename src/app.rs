@@ -40,6 +40,7 @@ use crate::editor_settings::{
     apply_editor_zoom,
 };
 use crate::find_ui::{FindBar, FindBarAction, ReplaceScope};
+use crate::font_fallback::FontFallback;
 use crate::go_to_line_ui::{GoToLineAction, GoToLineDialog};
 use crate::idle_screen::IdleScreen;
 use crate::keyboard_nav::{
@@ -55,8 +56,8 @@ const ABOUT_SUMMARY: &str = "A focused editor for plain text and Markdown files.
 const ABOUT_MARKDOWN_STATUS: &str = "Markdown Mode provides a formatted, direct editing surface while keeping ordinary Markdown source authoritative on disk.";
 const ABOUT_PRIVACY: &str = "Noter has no accounts, telemetry, or background network activity.";
 const ABOUT_LINK_BEHAVIOR: &str = "The project link opens in your default browser.";
-const UPDATE_STATUS: &str = "Noter does not check for updates in the background. Open the releases page to compare this version with published builds.";
-const RELEASES_URL: &str = "https://github.com/blisspixel/noter/releases";
+pub const UPDATE_STATUS: &str = "Noter does not check for updates in the background. Open the releases page to compare this version with published builds.";
+pub const RELEASES_URL: &str = "https://github.com/blisspixel/noter/releases";
 /// Names the window opened by `noter update` while its status is still shown.
 const UPDATE_WINDOW_TITLE: &str = "Update status";
 const UNCERTAIN_SAVE_ABANDON_GUIDANCE: &str = "Cancel this dialog and reconcile every uncertain save outcome before attempting another save. Your current text remains editable.";
@@ -124,7 +125,19 @@ pub struct LaunchOptions {
     pub show_updates: bool,
     pub screenshot_path: Option<PathBuf>,
     pub screenshot_idle: bool,
-    pub tui: bool,
+    pub interface: InterfaceRequest,
+}
+
+/// The interface the command line asked for.
+///
+/// `Auto` lets the launch environment decide; the explicit variants come from
+/// `--gui` and `--tui` and are never overridden.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum InterfaceRequest {
+    #[default]
+    Auto,
+    Gui,
+    Tui,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -613,6 +626,8 @@ pub struct NoterApp {
     external_memory_at_risk: bool,
     last_external_inspect_at: Option<f64>,
     crash_recovery: CrashRecoverySession,
+    /// Present only in a real window, so tests never scan system fonts.
+    font_fallback: Option<FontFallback>,
     #[cfg(test)]
     test_recovery_root: Option<tempfile::TempDir>,
     #[cfg(feature = "screenshot-qa")]
@@ -675,6 +690,7 @@ impl NoterApp {
             external_memory_at_risk: false,
             last_external_inspect_at: None,
             crash_recovery,
+            font_fallback: None,
             #[cfg(test)]
             test_recovery_root: None,
             #[cfg(feature = "screenshot-qa")]
@@ -702,6 +718,7 @@ impl NoterApp {
         selected_theme.apply(&cc.egui_ctx);
 
         let mut app = Self::with_crash_recovery(CrashRecoverySession::open_default());
+        app.font_fallback = Some(FontFallback::new(cc.egui_ctx.clone()));
         app.theme = selected_theme;
         app.text_wrap = TextWrap::from_storage(cc.storage);
         app.editor_zoom = EditorZoom::from_storage(cc.storage);
@@ -778,6 +795,7 @@ impl NoterApp {
 
     fn install_prepared_document(&mut self, document: Document) {
         self.text = String::from(document.rope());
+        self.observe_glyphs_in_text();
         self.document = document;
         self.history.reset(self.document.revision());
         self.selection = Selection::caret(0);
@@ -2878,6 +2896,9 @@ impl NoterApp {
                                 .into_owned()
                         },
                     );
+                    if let Some(fonts) = &mut self.font_fallback {
+                        fonts.observe(&document_label);
+                    }
                     let document_response = ui.label(document_label);
                     if let Some(path) = self.document.path() {
                         document_response.on_hover_text(path.display().to_string());
@@ -3162,10 +3183,9 @@ impl NoterApp {
             self.restore_editor_after_failed_change(&error);
             return;
         }
-        let before = String::from(self.document.rope());
-        let transaction = EditTransaction::between(
+        let transaction = EditTransaction::between_rope(
             self.document.revision(),
-            &before,
+            self.document.rope(),
             &self.text,
             self.selection,
             outcome.selection,
@@ -3188,9 +3208,15 @@ impl NoterApp {
     ) {
         match record(&mut self.document, transaction) {
             Ok(applied) => {
+                if let Some(fonts) = &mut self.font_fallback {
+                    for edit in transaction.edits() {
+                        fonts.observe(edit.inserted());
+                    }
+                }
                 self.selection = applied.selection();
                 let history_outcome = self.history.record(applied);
-                self.text = String::from(self.document.rope());
+                // The transaction is the difference between the rope and this
+                // text, so after it applies the two are already equal.
                 self.markdown_issue_cache = None;
                 self.crash_recovery
                     .on_edited(&self.document, self.selection);
@@ -3214,6 +3240,12 @@ impl NoterApp {
             self.markdown_editor.reset();
             self.pending_selection_restore = Some(self.selection);
             self.error_msg = Some(markdown_limit_message(self.text.len(), limit));
+        }
+    }
+
+    fn observe_glyphs_in_text(&mut self) {
+        if let Some(fonts) = &mut self.font_fallback {
+            fonts.observe(&self.text);
         }
     }
 
@@ -3635,6 +3667,9 @@ impl NoterApp {
 
     #[allow(clippy::too_many_lines)]
     fn render_frame(&mut self, ui: &mut egui::Ui) {
+        if let Some(fonts) = &mut self.font_fallback {
+            ui.input(|input| fonts.observe_input(&input.events));
+        }
         // Inspect before dispatching commands so a focus-regain observation can
         // protect the retained in-memory revision in this same input frame.
         let blocking_modal_before_inspection = self.blocking_modal_open();
@@ -3933,27 +3968,7 @@ impl NoterApp {
             });
             match self.crash_recovery.restore_active_offer() {
                 Ok((document, selection)) => {
-                    self.text = String::from(document.rope());
-                    self.document = document;
-                    self.history.reset(self.document.revision());
-                    self.selection = valid_selection_or_end(&self.text, selection);
-                    self.pending_selection_restore = Some(self.selection);
-                    self.advance_document_editor();
-                    self.find_bar.reset();
-                    self.go_to_line.reset();
-                    self.markdown_editor.reset();
-                    self.markdown_issue_cache = None;
-                    self.error_msg = None;
-                    self.reset_external_conflict_state();
-                    self.view = DocumentView::Text;
-                    if let Some(view) = preferred_view {
-                        self.select_document_view(view);
-                    }
-                    self.crash_recovery
-                        .on_edited(&self.document, self.selection);
-                    // Remaining offers stay on disk for a later untitled launch.
-                    // Presenting the next one now would replace this restored document.
-                    self.crash_recovery.defer_startup_offers();
+                    self.install_restored_document(document, selection, preferred_view);
                 }
                 Err(message) => {
                     self.error_msg = Some(message);
@@ -3964,6 +3979,36 @@ impl NoterApp {
         } else if discard {
             self.crash_recovery.discard_active_offer();
         }
+    }
+
+    fn install_restored_document(
+        &mut self,
+        document: Document,
+        selection: Selection,
+        preferred_view: Option<DocumentView>,
+    ) {
+        self.text = String::from(document.rope());
+        self.observe_glyphs_in_text();
+        self.document = document;
+        self.history.reset(self.document.revision());
+        self.selection = valid_selection_or_end(&self.text, selection);
+        self.pending_selection_restore = Some(self.selection);
+        self.advance_document_editor();
+        self.find_bar.reset();
+        self.go_to_line.reset();
+        self.markdown_editor.reset();
+        self.markdown_issue_cache = None;
+        self.error_msg = None;
+        self.reset_external_conflict_state();
+        self.view = DocumentView::Text;
+        if let Some(view) = preferred_view {
+            self.select_document_view(view);
+        }
+        self.crash_recovery
+            .on_edited(&self.document, self.selection);
+        // Remaining offers stay on disk for a later untitled launch.
+        // Presenting the next one now would replace this restored document.
+        self.crash_recovery.defer_startup_offers();
     }
 
     fn editor_id(&self) -> egui::Id {
@@ -7798,6 +7843,62 @@ mod tests {
             .expect("the committed IME transaction should be recoverable");
         assert_eq!(String::from(document.rope()), "a漢c");
         assert_eq!(selection, Selection::caret(4));
+    }
+
+    #[test]
+    fn opened_restored_typed_and_named_text_reaches_the_font_fallback() -> std::io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("文档.txt");
+        fs::write(&path, "中文 ascii")?;
+        let context = egui::Context::default();
+        theme::configure_styles(&context);
+        let mut app = NoterApp {
+            font_fallback: Some(FontFallback::recording()),
+            ..NoterApp::default()
+        };
+        let recorded = |app: &NoterApp| app.font_fallback.as_ref().unwrap().recorded().concat();
+
+        app.open_path(&path, None);
+        assert_eq!(recorded(&app), "中文");
+
+        let _ = show_document_test_frame(&mut app, &context, 0.0, Vec::new());
+        assert_eq!(recorded(&app), "中文档", "the status bar file name");
+
+        let _ = show_document_test_frame(
+            &mut app,
+            &context,
+            0.1,
+            vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                text: "かな".to_owned(),
+                active_range_chars: None,
+            })],
+        );
+        assert_eq!(recorded(&app), "中文档かな", "an input-method draft");
+
+        let restored = Document::from_bytes("한국어".as_bytes()).expect("fixture should load");
+        app.install_restored_document(restored, Selection::caret(0), None);
+        assert_eq!(recorded(&app), "中文档かな한국어");
+        Ok(())
+    }
+
+    #[test]
+    fn inserted_text_reaches_the_font_fallback_through_the_edit_path() {
+        let mut app = NoterApp {
+            font_fallback: Some(FontFallback::recording()),
+            ..NoterApp::default()
+        };
+        app.text = "مرحبا".to_owned();
+        app.record_editor_change(EditorFrameOutcome {
+            changed: true,
+            selection: Selection::caret(app.text.len()),
+            origin: EditOrigin::Paste,
+            observed_at: EditTimestamp::default(),
+        });
+        assert_eq!(String::from(app.document.rope()), "مرحبا");
+        assert_eq!(
+            app.font_fallback.as_ref().unwrap().recorded().concat(),
+            "مرحبا"
+        );
     }
 
     #[test]

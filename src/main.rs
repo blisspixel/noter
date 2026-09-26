@@ -8,8 +8,11 @@
 mod app;
 mod bounded_text_input;
 mod crash_recovery;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod display_runtime;
 mod editor_settings;
 mod find_ui;
+mod font_fallback;
 mod go_to_line_ui;
 mod idle_screen;
 mod keyboard_nav;
@@ -20,11 +23,11 @@ mod tui;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use app::{DocumentView, LaunchOptions, NoterApp};
+use app::{DocumentView, InterfaceRequest, LaunchOptions, NoterApp, RELEASES_URL, UPDATE_STATUS};
 use noter::core::file_observation::preflight_regular_file;
 use theme::AppTheme;
 
-const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --tui\n  --theme system|light|dark|green|amber\n  --view text|markdown\n  -h, --help\n  -V, --version\n\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` opens the local update status window and makes no network\nrequest. Option values are case-insensitive.";
+const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --gui\n  --tui\n  --theme system|light|dark|green|amber\n  --view text|markdown\n  -h, --help\n  -V, --version\n\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` shows the local update status and makes no network request.\nOption values are case-insensitive.\n\nWithout --gui or --tui, Noter opens a window. On non-macOS Unix, such as\nLinux or BSD, with no DISPLAY, WAYLAND_DISPLAY, or WAYLAND_SOCKET and a\nterminal on standard input and output, it opens the terminal interface\ninstead, and `noter update` prints its status.";
 const THEME_ERROR_VALUES: &str = "system, light, dark, green, or amber";
 
 fn main() -> eframe::Result {
@@ -63,17 +66,18 @@ fn main() -> eframe::Result {
         std::process::exit(2);
     }
 
-    let headless = cfg!(unix)
-        && std::env::var_os("DISPLAY").is_none()
-        && std::env::var_os("WAYLAND_DISPLAY").is_none();
-
-    if launch.tui || headless {
-        if headless && !launch.tui {
-            write_line(
-                std::io::stderr().lock(),
-                "noter: graphical display server not found; launching TUI mode",
-            );
+    let interface = choose_interface(launch.interface, LaunchEnvironment::current());
+    if interface == Interface::TerminalFallback {
+        if launch.show_updates {
+            write_line(std::io::stdout().lock(), &update_status_text());
+            return Ok(());
         }
+        write_line(
+            std::io::stderr().lock(),
+            "noter: no graphical display found; opening the terminal interface",
+        );
+    }
+    if interface != Interface::Window {
         if let Err(error) = tui::run(&launch) {
             write_line(
                 std::io::stderr().lock(),
@@ -82,6 +86,21 @@ fn main() -> eframe::Result {
             std::process::exit(1);
         }
         return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let named = |name: &str| display_variable_names_server(std::env::var_os(name).as_deref());
+        let wayland = named("WAYLAND_DISPLAY") || named("WAYLAND_SOCKET");
+        let backend = display_runtime::DisplayBackend::from_environment(wayland);
+        let missing = display_runtime::missing(backend, noter_platform::unix_shared_library_loads);
+        if !missing.is_empty() {
+            write_line(
+                std::io::stderr().lock(),
+                &format!("noter: {}", display_runtime::describe(&missing)),
+            );
+            std::process::exit(1);
+        }
     }
 
     let screenshot_qa = launch.screenshot_path.is_some();
@@ -163,7 +182,9 @@ fn parse_launch_request(args: impl IntoIterator<Item = OsString>) -> Result<Laun
         {
             return Ok(LaunchRequest::Version);
         } else if !options_finished && argument == OsStr::new("--tui") {
-            options.tui = true;
+            options.interface = combine_interface(options.interface, InterfaceRequest::Tui)?;
+        } else if !options_finished && argument == OsStr::new("--gui") {
+            options.interface = combine_interface(options.interface, InterfaceRequest::Gui)?;
         } else if !options_finished && argument == OsStr::new("--theme") {
             let value = args
                 .next()
@@ -208,6 +229,92 @@ fn parse_launch_request(args: impl IntoIterator<Item = OsString>) -> Result<Laun
         return Err("`--screenshot-idle` requires `--screenshot PATH`".to_owned());
     }
     Ok(LaunchRequest::Run(options))
+}
+
+/// Accepts a repeated interface option but rejects contradictory ones.
+fn combine_interface(
+    current: InterfaceRequest,
+    requested: InterfaceRequest,
+) -> Result<InterfaceRequest, String> {
+    if current == InterfaceRequest::Auto || current == requested {
+        Ok(requested)
+    } else {
+        Err("`--gui` and `--tui` cannot be combined".to_owned())
+    }
+}
+
+/// The interface a launch actually opens.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Interface {
+    Window,
+    Terminal,
+    /// The terminal interface chosen because no window can be shown.
+    TerminalFallback,
+}
+
+/// Launch facts that decide the interface when the command line does not.
+#[derive(Clone, Copy, Debug)]
+struct LaunchEnvironment {
+    /// Windows can only be shown through an X11 or Wayland display server.
+    ///
+    /// This holds for Linux, the BSDs, and other non-macOS Unix systems. It
+    /// does not hold for macOS, whose native window server needs no
+    /// `DISPLAY`, or for Windows.
+    needs_display_server: bool,
+    display_server_present: bool,
+    /// Standard input and standard output are both interactive terminals.
+    interactive_terminal: bool,
+}
+
+impl LaunchEnvironment {
+    fn current() -> Self {
+        let named = |name: &str| display_variable_names_server(std::env::var_os(name).as_deref());
+        Self {
+            needs_display_server: cfg!(all(unix, not(target_os = "macos"))),
+            display_server_present: named("DISPLAY")
+                || named("WAYLAND_DISPLAY")
+                || named("WAYLAND_SOCKET"),
+            interactive_terminal: noter_platform::is_terminal_stdin()
+                && noter_platform::is_terminal_stdout(),
+        }
+    }
+}
+
+/// Returns whether a display variable names a server.
+///
+/// An empty value names nothing, and toolkits fail to connect with it exactly
+/// as if the variable were unset.
+fn display_variable_names_server(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
+}
+
+/// Chooses the interface for one launch.
+///
+/// An explicit request always wins. Otherwise the window opens unless it
+/// cannot: only a display-server platform with no display, launched from an
+/// interactive terminal, falls back to the terminal interface. Without a
+/// terminal the window path runs and reports its own failure, because a
+/// terminal interface with no terminal would fail less clearly.
+const fn choose_interface(request: InterfaceRequest, environment: LaunchEnvironment) -> Interface {
+    match request {
+        InterfaceRequest::Tui => Interface::Terminal,
+        InterfaceRequest::Auto
+            if environment.needs_display_server
+                && !environment.display_server_present
+                && environment.interactive_terminal =>
+        {
+            Interface::TerminalFallback
+        }
+        InterfaceRequest::Gui | InterfaceRequest::Auto => Interface::Window,
+    }
+}
+
+/// The update status for a launch that cannot show the status window.
+fn update_status_text() -> String {
+    format!(
+        "noter {}\n{UPDATE_STATUS}\nReleases: {RELEASES_URL}",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// Rejects a startup document argument that cannot name an openable file.
@@ -296,6 +403,112 @@ mod tests {
 
     fn parse(arguments: &[&str]) -> Result<LaunchRequest, String> {
         parse_launch_request(arguments.iter().map(OsString::from))
+    }
+
+    fn run_options(arguments: &[&str]) -> LaunchOptions {
+        match parse(arguments) {
+            Ok(LaunchRequest::Run(options)) => options,
+            other => panic!("the arguments should launch the application: {other:?}"),
+        }
+    }
+
+    const fn environment(
+        needs_display_server: bool,
+        display_server_present: bool,
+        interactive_terminal: bool,
+    ) -> LaunchEnvironment {
+        LaunchEnvironment {
+            needs_display_server,
+            display_server_present,
+            interactive_terminal,
+        }
+    }
+
+    #[test]
+    fn platforms_without_display_servers_always_open_the_window() {
+        // macOS and Windows show windows without an X11 or Wayland server.
+        for display_server_present in [false, true] {
+            for interactive_terminal in [false, true] {
+                let launch = environment(false, display_server_present, interactive_terminal);
+                assert_eq!(
+                    choose_interface(InterfaceRequest::Auto, launch),
+                    Interface::Window
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn display_server_platforms_fall_back_only_from_a_headless_terminal() {
+        assert_eq!(
+            choose_interface(InterfaceRequest::Auto, environment(true, false, true)),
+            Interface::TerminalFallback
+        );
+        // A desktop session opens the window even from a terminal.
+        assert_eq!(
+            choose_interface(InterfaceRequest::Auto, environment(true, true, true)),
+            Interface::Window
+        );
+        // A launcher without a terminal cannot host the terminal interface.
+        assert_eq!(
+            choose_interface(InterfaceRequest::Auto, environment(true, false, false)),
+            Interface::Window
+        );
+    }
+
+    #[test]
+    fn explicit_interface_requests_are_never_overridden() {
+        for needs in [false, true] {
+            for present in [false, true] {
+                for terminal in [false, true] {
+                    let launch = environment(needs, present, terminal);
+                    assert_eq!(
+                        choose_interface(InterfaceRequest::Gui, launch),
+                        Interface::Window
+                    );
+                    assert_eq!(
+                        choose_interface(InterfaceRequest::Tui, launch),
+                        Interface::Terminal
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn interface_options_parse_and_reject_contradictions() {
+        assert_eq!(run_options(&[]).interface, InterfaceRequest::Auto);
+        assert_eq!(run_options(&["--gui"]).interface, InterfaceRequest::Gui);
+        assert_eq!(
+            run_options(&["--tui", "--tui"]).interface,
+            InterfaceRequest::Tui
+        );
+        for arguments in [["--gui", "--tui"], ["--tui", "--gui"]] {
+            assert_eq!(
+                parse(&arguments).expect_err("contradictory interfaces must fail"),
+                "`--gui` and `--tui` cannot be combined"
+            );
+        }
+        // After `--`, an interface option is a document name.
+        let options = run_options(&["--", "--gui"]);
+        assert_eq!(options.interface, InterfaceRequest::Auto);
+        assert_eq!(options.initial_path, Some(PathBuf::from("--gui")));
+    }
+
+    #[test]
+    fn empty_display_variables_name_no_server() {
+        assert!(!display_variable_names_server(None));
+        assert!(!display_variable_names_server(Some(OsStr::new(""))));
+        assert!(display_variable_names_server(Some(OsStr::new(":0"))));
+        assert!(display_variable_names_server(Some(OsStr::new("wayland-0"))));
+    }
+
+    #[test]
+    fn headless_update_status_names_version_policy_and_releases() {
+        let text = update_status_text();
+        assert!(text.starts_with(&format!("noter {}\n", env!("CARGO_PKG_VERSION"))));
+        assert!(text.contains(UPDATE_STATUS));
+        assert!(text.ends_with(&format!("Releases: {RELEASES_URL}")));
     }
 
     #[test]

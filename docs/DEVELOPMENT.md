@@ -64,6 +64,14 @@ python scripts/check_release_config.py
 python -m unittest discover -s scripts -p "test_*.py"
 ```
 
+The terminal interface needs a real terminal for raw mode, paste, restoration,
+and hangup recovery. On macOS or Linux, check a built binary with:
+
+```sh
+cargo build --locked
+python3 scripts/check_tui_pty.py target/debug/noter
+```
+
 CI also runs rustdoc, dependency policy and advisory checks, enforced coverage,
 native tests on Windows, macOS, and Linux, and the declared mutation scopes. A
 local pass does not replace exact-commit CI evidence. Commands and thresholds
@@ -95,12 +103,22 @@ cargo-about. Commit the regenerated inventory with the dependency change.
 The tracked screenshots are generated from Noter's real native renderer and the
 non-sensitive demo file at [`assets/noter-demo.md`](assets/noter-demo.md). The
 five-capture contract pairs the identical document in Light Text and Markdown
-modes, then records Dark, Green Screen, and Amber Screen Markdown. After an
-intentional UI change, regenerate the complete set on Windows:
+modes, then records Dark, Green Screen, and Amber Screen Markdown. The
+approval covers every source file, so any source change requires a fresh set.
+Regenerate the complete set on Windows:
 
 ```powershell
 python scripts\update_readme_screenshots.py
 python scripts\check_readme_assets.py
+```
+
+or on Linux under a virtual X display with Mesa, which renders at one device
+pixel per point:
+
+```sh
+Xvfb :97 -screen 0 1600x1000x24 &
+DISPLAY=:97 python3 scripts/update_readme_screenshots.py
+python3 scripts/check_readme_assets.py
 ```
 
 Review all five images at full size before committing them. Confirm Text and

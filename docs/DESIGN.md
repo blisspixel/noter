@@ -1002,6 +1002,37 @@ rejected extension reconstructs standard Dark visuals instead of applying a
 partial or unreadable palette. The future custom-theme loader is declarative
 and accepts no scripts, shaders, assets, URLs, commands, or behavior overrides.
 
+The window bundles Inter and keeps egui's default fonts, which cover Latin,
+Greek, Cyrillic, and emoji. Every other script comes from fonts already on the
+computer, loaded only when text needs them (`src/font_fallback.rs`). Coverage
+is tracked per font family, because the text editor draws in the monospace
+family, which does not include Inter. Opened and restored documents, inserted
+edits, typing, paste, and input-method events, and the status bar file name are
+observed; text that contains a character some family cannot draw goes to one
+background thread. Short strings are filtered against characters already sent,
+so per-frame observation costs a scan of the string.
+
+The thread lists font files in the platform's font directories (the Windows
+and per-user Windows font folders, the macOS system, library, and user font
+folders, or the XDG data, home, and system font folders on Linux and the BSDs),
+following links within a bounded depth, directory count, and file count. It
+ranks broad regular faces first, reads each candidate once to learn its
+character map, and adds only files that cover a missing character to both
+families at the lowest priority. Only regular files are read, through a reader
+that stops at 96 MiB. Loaded font bytes are kept once for the life of the
+process, because egui would otherwise copy owned bytes on every font rebuild,
+and total under 192 MiB. Examination stops after 768 MiB; characters still
+uncovered then, or covered by no file, are remembered so they never restart the
+search. Collections contribute their first face. The first frame may draw a
+replacement box for a character whose font is still loading; the thread
+requests a repaint when fonts arrive.
+
+egui shapes each same-font run with HarfBuzz rules, so joining, ligatures, and
+a single-direction right-to-left run lay out correctly. It does not apply the
+Unicode bidirectional algorithm across runs or split runs by script, so a line
+that mixes directions is not reordered. That stays with the production text
+engine in section 9.3.
+
 ## 12. Native Markdown architecture
 
 Markdown Mode and Text Mode share one authoritative Markdown source. Text Mode
@@ -1353,6 +1384,21 @@ Removal requires an equally bounded literal matcher that returns original byte
 ranges, supports the documented Unicode case behavior, and retains linear
 worst-case matching.
 
+The terminal interface uses [unicode-width 0.2.2](https://crates.io/crates/unicode-width/0.2.2)
+to measure terminal cells under Unicode Standard Annex #11, so wide East Asian
+characters, combining marks, the caret, and mouse columns line up. Default
+features are disabled, which leaves out the ambiguous-width CJK variant that
+ordinary terminals do not use. Version 0.2.2 is the newest registry release as
+reviewed on 2026-09-26. It is MIT or Apache-2.0 licensed, declares Rust 1.66,
+has no dependencies and no build script, and adds no filesystem, process, or
+network capability. It was already in the lockfile through a build-only path,
+so direct use adds no lock entry, but it is new to the runtime graph and the
+third-party notice inventory. The change that introduced it, including the
+terminal renderer rewrite, left the stripped Linux x86-64 release binary 4,352
+bytes smaller (14,387,008 to 14,382,656 bytes, measured locally on 2026-09-26
+from `f83ac24` and its successor). Removal requires an equivalent East Asian
+Width table that tracks new Unicode versions.
+
 Those statements describe third-party dependency licenses. Noter itself is
 licensed only under Apache-2.0, as declared by both package manifests and the
 root [LICENSE](../LICENSE).
@@ -1424,31 +1470,63 @@ implementation starts before the M5 feasibility entry criteria are satisfied.
 
 ## 19. Terminal User Interface (TUI) architecture
 
-Noter's TUI frontend (`src/tui/`) provides a fast, lightweight terminal
-interface ("Like Nano... but better") that directly consumes the UI-independent
-`src/core/` domain model without duplicating any logic:
+The terminal interface is the `src/tui/` module in the binary crate. It
+renders with plain ANSI escape sequences over the raw-mode and terminal-size
+primitives in `crates/noter-platform`. It has no terminal UI library dependency
+and no separate Cargo feature.
 
-- **100% Shared Trust Kernel:** Text loading, strict UTF-8 validation, newline
-  preservation, BLAKE3 content fingerprints, `EditTransaction`, `UndoHistory`,
-  the atomic replacement save protocol, `LifecycleState`, `ConflictState`, and
-  `RecoveryStore` are completely shared between GUI and TUI modes.
-- **Rendering Stack:** Built on `crossterm` and `ratatui`. Immediate-mode
-  terminal double-buffering emits minimal ANSI diffs, preventing flicker over
-  local consoles and remote SSH sessions.
-- **Dual Shortcut Mapping:** Modern shortcuts (`Ctrl+S` Save, `Ctrl+Q` Quit,
-  `Ctrl+Z` Undo, `Ctrl+F` Find, `Ctrl+M` Mode) and classic Nano shortcuts
-  (`Ctrl+O` WriteOut, `Ctrl+X` Exit, `Alt+U` Undo, `Ctrl+W` WhereIs) are
-  honored simultaneously.
-- **Full Mouse Support:** Click to position caret, drag to select text, and
-  wheel scroll.
-- **Terminal Themes:** TrueColor (24-bit RGB) and ANSI fallbacks for all 5
-  built-in themes, including Green Screen and Amber Screen phosphor CRT palettes.
-- **Modular Cargo Feature Flags:** `default = ["gui", "tui"]`. Building with
-  `--no-default-features --features tui` produces a minimal, dependency-light
-  headless binary under 3 MB suitable for servers, Docker, and SSH environments.
-- **CLI Auto-Detection:** Automatically engages TUI mode when invoked with
-  `--tui` or in headless environments where no graphical display server
-  (`DISPLAY` or `WAYLAND_DISPLAY`) is available.
+Current state:
+
+- **Shared core:** loading, strict UTF-8 validation, line-ending preservation,
+  content fingerprints, `EditTransaction`, and the atomic save protocol come
+  from `src/core/` through `Document`. Save, Save As, replace confirmation, and
+  hard-link confirmation use the same `Document` calls as the GUI, and a save
+  that does not commit never exits or discards text.
+- **Uncertain outcomes:** the GUI blocks every save until the user reconciles
+  an uncertain outcome in its save-recovery flow. The TUI has no such flow, so
+  it pauses saves to the uncertain path only and leaves Save As to other
+  destinations available, so the text can always be written somewhere.
+- **Undo and recovery:** edits are single-range `EditTransaction`s built
+  from the changed bytes only, recorded in the core `UndoHistory` with the
+  window's coalescing rules. Crash recovery uses the same
+  `CrashRecoverySession` and private store as the window: dirty text is
+  persisted after the idle debounce, a committed save or an explicit exit
+  without saving removes the record, and an untitled launch offers Restore,
+  Discard, or Later. On Unix the TUI ignores `SIGHUP`, so a closed terminal
+  or dropped SSH session ends input instead of the process, and the text is
+  written to recovery before exit. The TUI does not yet watch the file for
+  external changes while idle or offer Reload.
+- **Shortcuts:** `Ctrl+S` Save, `Ctrl+O` Save As (prefilled with the current
+  name), `Ctrl+X`, `Ctrl+Q`, or `Ctrl+C` Exit, `Ctrl+W` or `Ctrl+F` Find,
+  `Ctrl+K` Cut Line, `Ctrl+U` Paste, `Ctrl+Z` Undo, `Ctrl+Y` Redo, `Ctrl+E`
+  Markdown styling, `Ctrl+T` Theme, `Ctrl+G` Help.
+- **Mouse:** click to place the caret, wheel to scroll, and clickable shortcut
+  legend. There is no drag selection.
+- **Terminal-safe drawing:** document text, file names, typed input, and
+  messages all pass through `src/core/terminal_text.rs`. Control characters,
+  C1 controls, bidirectional formatting characters, and Unicode line and
+  paragraph separators are drawn as U+FFFD, and tabs expand to four-column
+  stops. Each row is cut to the terminal width, long lines scroll
+  horizontally, and columns are measured in terminal cells.
+- **Input:** `src/tui/input.rs` holds back an incomplete UTF-8 character,
+  control sequence, or bracketed paste until the next read completes it, and
+  drops unbound control bytes instead of inserting them. A paste is one edit
+  whose line endings follow the document, through the core insertion policy.
+- **Terminal restoration:** the document loads before the terminal changes
+  mode. A guard leaves the alternate screen, mouse reporting, and bracketed
+  paste on every return path, and because release builds abort on panic, a
+  panic hook also restores the terminal settings from a copy the platform
+  crate provides. On Unix the loop waits for input with `poll` so it can
+  redraw after a resize; on Windows reads block until input arrives.
+- **Lines and search:** line and column decisions use the core logical-line
+  split rather than rope line indexing, which also breaks at Unicode
+  separators. Find uses the core literal search with Unicode case folding and
+  highlights the engine's exact source ranges.
+- **Color:** 24-bit color for the Light, Dark, Green Screen, and Amber Screen
+  palettes; System uses Dark.
+- **Launch:** `--tui` selects it explicitly. Without `--gui` or `--tui`, only
+  non-macOS Unix launches with no display server and a terminal on standard
+  input and output fall back to it (see `choose_interface` in `src/main.rs`).
 
 ## 20. 120Hz/ProMotion rendering and virtualized rope editor
 

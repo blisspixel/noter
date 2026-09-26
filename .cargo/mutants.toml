@@ -48,13 +48,15 @@ exclude_re = [
     "replace (imp::(unix|windows)_)?attach_parent_console -> bool with true",
     "windows_bind_console_stream",
     "in imp::windows_attach_parent_console",
-    # Terminal raw mode, terminal dimensions, and interactive stream queries.
-    # The trust kernel mutation gate is scoped to durable file persistence,
-    # recovery namespaces, and ACL security. Terminal raw mode and geometry
-    # queries interface with interactive console host subsystems (ConPTY /
-    # termios) which cannot be exercised without an interactive TTY in headless
-    # CI runners where test processes execute with redirected I/O pipes.
-    "[Tt]erminal",
+    # Interactive terminal primitives. CI test processes run with redirected
+    # pipes and no controlling terminal, so raw mode, window size, terminal
+    # detection, input waits, hangup disposition, and settings restoration
+    # cannot be observed there; they need a pseudo-terminal. These are named
+    # exactly so pure terminal logic, such as src/core/terminal_text.rs, stays
+    # in the mutation scope.
+    "(enable_raw_terminal|terminal_size|is_terminal_std(in|out)|wait_for_terminal_input|ignore_terminal_hangup|TerminalRestorer|TerminalRawGuard)",
+    # The dlopen flag bits are disjoint, so OR and XOR are identical.
+    "replace \\| with \\^ in imp::unix_shared_library_opens",
 ]
 all_features = true
 test_workspace = true

@@ -68,8 +68,11 @@ Feature presence alone is not verification.
   editing interface (`noter --tui` or headless display auto-detection) backed
   by the identical `src/core/` trust kernel (revisions, atomic durable save,
   bounded undo/redo, crash recovery, and conflict handling). The TUI provides
-  dual modern and classic shortcuts, mouse selection, terminal theme rendering,
-  and rendered terminal Markdown preview.
+  dual modern and classic shortcuts, mouse caret placement, terminal theme
+  rendering, and rendered terminal Markdown preview. A save that does not
+  commit never exits or discards text. Status: save, Save As, conflict
+  reporting, bounded undo, and crash recovery are shared; idle external-change
+  inspection and Reload are not yet available in the TUI.
 - **FR-012 Strict UTF-8:** Accept UTF-8 with or without a UTF-8 BOM. Reject
   invalid UTF-8 without replacement characters. A future explicit import flow
   may create a new untitled converted document, but it must never overwrite the
@@ -127,7 +130,10 @@ Feature presence alone is not verification.
 
 - **FR-020 Text input:** Support Unicode keyboard input, dead keys, CJK IME
   composition, emoji, combining marks, and bidirectional text without
-  corruption or panic.
+  corruption or panic. Current status: text in any script round-trips byte for
+  byte, and the window draws each character with a bundled or local system
+  font and shapes each font run. Bidirectional reordering of mixed-direction
+  lines in the window waits for the production text engine.
 - **FR-021 Navigation:** Support expected character, word, line, document, and
   page movement with and without selection on each platform.
 - **FR-022 Clipboard:** Cut, Copy, Paste, Delete, and Select All share the same

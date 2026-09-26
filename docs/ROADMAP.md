@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-08-30
+**Updated:** 2026-09-26
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -24,8 +24,9 @@ criteria and evidence land on one immutable green commit.
 | --- | --- | --- | --- |
 | `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1 through M4 and M6 partial | Prior crate checkpoint |
 | `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups on supported local state roots | Recovery, clipboard, overwrite confirm, first-contact honesty, and alpha evidence | **Published 2026-08-29** |
-| `0.1.0-beta.1` | **Production editor path:** native TUI mode, fluid Markdown, standalone installers, measured performance | M5 feasibility gate, M6 fluid Markdown, M7 TUI & installers | **Published 2026-09-24** |
-| `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.1 |
+| `0.1.0-beta.1` | Terminal interface preview, installer scripts, caret and Markdown Enter refinements | Planned M4-H1, M5 gate, and M6 continuous editing did not land | **Published 2026-09-25** |
+| `0.1.0-beta.2` | **Beta hardening:** the beta.1 surfaces made safe, then the production editor path | Terminal save, input, drawing, and recovery safety; Linux library check; working installers; then M4-H1, M5 gate, M6 continuous editing | In progress |
+| `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.2 |
 | `0.1.0` | First public-quality release | Every v0.1 requirement in REQUIREMENTS has evidence | After successful RC dogfood |
 | `0.2.x` and later | Post-release work only after explicit ratification | Deferred non-goals from REQUIREMENTS become in-scope only by decision | Not planned yet |
 
@@ -82,8 +83,17 @@ does not expand unsafe UI surface.
    tip on 2026-08-29 with archives, a Windows MSI, checksums, four
    target-specific SBOMs, and GitHub build provenance for every asset.
 
-### Toward `0.1.0-beta.1`
+### Toward `0.1.0-beta.2`
 
+8a. **Done in tree: beta hardening** of what beta.1 shipped. The launch
+    decision opens the window on macOS; the terminal interface no longer
+    exits after a failed save, draws untrusted text inertly, keeps the caret
+    on characters, decodes input across reads, restores the terminal after a
+    panic, and shares the window's bounded Undo and crash recovery, checked
+    in a real pseudo-terminal by `scripts/check_tui_pty.py` on Linux and
+    macOS CI; a missing Linux window library is named instead of aborting;
+    the installer scripts work. Exact-head CI evidence
+    is recorded when the branch merges.
 9. **Complete M4-H1 recovery namespace binding:** verify and retain the state and
    recovery directory identities and access policy, route operations through
    held directory handles, reject unsupported roots before writing recovery
@@ -121,7 +131,16 @@ does not expand unsafe UI surface.
 | M6 | Native Markdown editor and quality engine | In progress |
 | M7 | Cross-platform distribution and first public-quality release | Planned |
 
-## Current checkpoint: `0.1.0-alpha.2` correctness alpha
+## Current checkpoint: `0.1.0-beta.1`
+
+`0.1.0-beta.1` was published on 2026-09-25 with a terminal interface preview
+and installer scripts, but without the M4-H1, M5, and M6 work this roadmap had
+placed before it. A later review found that the preview could lose text on a
+failed save, had no crash recovery, and wrote untrusted text to the terminal,
+and that the documented installer commands failed. Item 8a records the
+hardening in progress; the version table records the correction.
+
+## Previous checkpoint: `0.1.0-alpha.2` correctness alpha
 
 The current product checkpoint is a dogfoodable correctness alpha, not a claim
 of public-release completeness. Kill-process recovery, clipboard parity,
@@ -633,15 +652,29 @@ large-file requirements needed by both text and native Markdown editing.
 ### Current state
 
 The trust-kernel loader remains bounded at 64 MiB, but the current egui editor
-mirrors the complete document as a `String` and diffs old and new contents on
-every keystroke. A local Windows measurement found a 665.3 MiB process peak when
+mirrors the complete document as a `String`. Each keystroke now compares that
+mirror with the rope chunk by chunk in fast block comparisons, applies the one
+changed range, updates the line-ending profile from the changed bytes (a
+document whose two most common conventions tie still rescans to break the tie),
+and hashes content for the dirty flag only when its length matches the saved
+length. `cargo bench --bench edit_latency` measured the trust kernel's median
+cost per keystroke at 0.09 ms for 1 MiB, 1.0 ms for 8 MiB, and 6.9 ms for
+50 MiB on the Linux development container, where the previous path, which
+copied the rope, compared character by character, rescanned line endings, and
+rehashed the document, measured about 30 ms at 8 MiB. egui's own layout of
+the mirror is not included and remains the dominant cost. A local Windows measurement found a 665.3 MiB process peak when
 a 64 MiB file reached that widget path. The current interface therefore refuses
 files above 8 MiB before creating the mirror, preserves the open document, and
 explains the limit. The same 64 MiB run then peaked at 196 MiB without entering
 the editor. This is defensive containment, not M5 completion; the release still
 requires a measured 50 MiB editable path. The current bundled Inter
 configuration retains egui's complete default fallback chain, including its
-emoji fonts, so pasted Unicode remains intact. The current renderer's emoji
+emoji fonts, so pasted Unicode remains intact, and adds local system fonts as
+lowest-priority fallbacks when text needs a script those fonts lack, so CJK,
+Arabic, Hebrew, Indic, Thai, and other text draws instead of replacement boxes.
+egui shapes each font run, but mixed-direction lines are not yet reordered by
+the Unicode bidirectional algorithm; that stays part of the text-engine gate
+below. The current renderer's emoji
 output is monochrome and is not accepted as final cross-platform appearance
 evidence. A status bar ordering inversion currently renders cursor coordinates
 before the active editor, introducing a 1-frame lag and forced repaint on caret

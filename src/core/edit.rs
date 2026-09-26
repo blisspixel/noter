@@ -263,35 +263,75 @@ impl EditTransaction {
         observed_at: EditTimestamp,
     ) -> Result<Option<Self>, EditError> {
         validate_selection_str(selection_before, before, SelectionState::Before)?;
+        Self::between_source(
+            base_revision,
+            &before,
+            after,
+            selection_before,
+            selection_after,
+            origin,
+            observed_at,
+        )
+    }
+
+    /// Returns the same transaction as [`Self::between`] for a rope before
+    /// image, comparing it chunk by chunk instead of copying it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-selection error if either selection is outside its
+    /// corresponding source or is not on a UTF-8 boundary.
+    pub fn between_rope(
+        base_revision: Revision,
+        before: &Rope,
+        after: &str,
+        selection_before: Selection,
+        selection_after: Selection,
+        origin: EditOrigin,
+        observed_at: EditTimestamp,
+    ) -> Result<Option<Self>, EditError> {
+        validate_selection_rope(selection_before, before, SelectionState::Before)?;
+        Self::between_source(
+            base_revision,
+            before,
+            after,
+            selection_before,
+            selection_after,
+            origin,
+            observed_at,
+        )
+    }
+
+    fn between_source(
+        base_revision: Revision,
+        before: &impl DiffSource,
+        after: &str,
+        selection_before: Selection,
+        selection_after: Selection,
+        origin: EditOrigin,
+        observed_at: EditTimestamp,
+    ) -> Result<Option<Self>, EditError> {
         validate_selection_str(selection_after, after, SelectionState::After)?;
-        if before == after {
+        let before_len = before.byte_len();
+        let shared_prefix_bytes = common_prefix_len(before.forward_chunks(), after.as_bytes());
+        if shared_prefix_bytes == before_len && shared_prefix_bytes == after.len() {
             return Ok(None);
         }
+        // Equal bytes are equal characters, so the last boundary of `after`
+        // within the shared run ends the shared character prefix of both.
+        let prefix_bytes = after.floor_char_boundary(shared_prefix_bytes);
+        let limit = before_len.min(after.len()) - prefix_bytes;
+        let shared_suffix_bytes =
+            common_suffix_len(before.backward_chunks(), after.as_bytes(), limit);
+        let suffix_bytes =
+            after.len() - after.ceil_char_boundary(after.len() - shared_suffix_bytes);
 
-        let prefix_bytes = before
-            .chars()
-            .zip(after.chars())
-            .take_while(|(left, right)| left == right)
-            .map(|(character, _)| character.len_utf8())
-            .sum::<usize>();
-        let mut suffix_bytes = 0;
-        for (left, right) in before[prefix_bytes..]
-            .chars()
-            .rev()
-            .zip(after[prefix_bytes..].chars().rev())
-        {
-            if left != right {
-                break;
-            }
-            suffix_bytes += left.len_utf8();
-        }
-
-        let before_end = before.len() - suffix_bytes;
+        let before_end = before_len - suffix_bytes;
         let after_end = after.len() - suffix_bytes;
         let edit = TextEdit::replace(
             TextRange::new(prefix_bytes, before_end),
             &after[prefix_bytes..after_end],
-            &before[prefix_bytes..before_end],
+            before.text(prefix_bytes, before_end),
         );
         Ok(Some(Self::new(
             base_revision,
@@ -663,6 +703,130 @@ fn validate_edit(
     Ok(())
 }
 
+/// A before image that a minimal difference can be computed against.
+trait DiffSource {
+    fn byte_len(&self) -> usize;
+    fn forward_chunks(&self) -> impl Iterator<Item = &[u8]>;
+    fn backward_chunks(&self) -> impl Iterator<Item = &[u8]>;
+    /// Copies the source between two character boundaries.
+    fn text(&self, start: usize, end: usize) -> String;
+}
+
+impl DiffSource for &str {
+    fn byte_len(&self) -> usize {
+        self.len()
+    }
+
+    fn forward_chunks(&self) -> impl Iterator<Item = &[u8]> {
+        std::iter::once(self.as_bytes())
+    }
+
+    fn backward_chunks(&self) -> impl Iterator<Item = &[u8]> {
+        std::iter::once(self.as_bytes())
+    }
+
+    fn text(&self, start: usize, end: usize) -> String {
+        self[start..end].to_owned()
+    }
+}
+
+impl DiffSource for Rope {
+    fn byte_len(&self) -> usize {
+        self.len_bytes()
+    }
+
+    fn forward_chunks(&self) -> impl Iterator<Item = &[u8]> {
+        self.chunks().map(str::as_bytes)
+    }
+
+    fn backward_chunks(&self) -> impl Iterator<Item = &[u8]> {
+        self.chunks_at_byte(self.len_bytes())
+            .0
+            .reversed()
+            .map(str::as_bytes)
+    }
+
+    fn text(&self, start: usize, end: usize) -> String {
+        self.byte_slice(start..end).to_string()
+    }
+}
+
+/// Bytes compared per slice comparison before falling back to single bytes.
+/// Slice equality compiles to a vectorized memory comparison.
+const DIFF_BLOCK_BYTES: usize = 64;
+
+/// Returns how many leading bytes `left` and `right` share.
+///
+/// Whole blocks are compared first. The first unequal or partial block holds
+/// the end of the shared run, so the byte comparison reads at most one block.
+fn shared_prefix(left: &[u8], right: &[u8]) -> usize {
+    let equal_blocks = left
+        .chunks_exact(DIFF_BLOCK_BYTES)
+        .zip(right.chunks_exact(DIFF_BLOCK_BYTES))
+        .take_while(|(a, b)| a == b)
+        .count();
+    let shared = equal_blocks * DIFF_BLOCK_BYTES;
+    shared
+        + left[shared..]
+            .iter()
+            .zip(&right[shared..])
+            .take(DIFF_BLOCK_BYTES)
+            .take_while(|(a, b)| a == b)
+            .count()
+}
+
+/// Returns how many trailing bytes `left` and `right` share, reading blocks
+/// from the end as [`shared_prefix`] reads them from the start.
+fn shared_suffix(left: &[u8], right: &[u8]) -> usize {
+    let equal_blocks = left
+        .rchunks_exact(DIFF_BLOCK_BYTES)
+        .zip(right.rchunks_exact(DIFF_BLOCK_BYTES))
+        .take_while(|(a, b)| a == b)
+        .count();
+    let shared = equal_blocks * DIFF_BLOCK_BYTES;
+    shared
+        + left[..left.len() - shared]
+            .iter()
+            .rev()
+            .zip(right[..right.len() - shared].iter().rev())
+            .take(DIFF_BLOCK_BYTES)
+            .take_while(|(a, b)| a == b)
+            .count()
+}
+
+/// Returns how many leading bytes the chunked source shares with `after`.
+fn common_prefix_len<'a>(chunks: impl Iterator<Item = &'a [u8]>, after: &[u8]) -> usize {
+    let mut matched = 0;
+    for chunk in chunks {
+        let shared = shared_prefix(chunk, &after[matched..]);
+        matched += shared;
+        if shared < chunk.len() {
+            break;
+        }
+    }
+    matched
+}
+
+/// Returns how many trailing bytes, at most `limit`, the chunked source
+/// shares with `after`. Chunks arrive from the end of the source.
+fn common_suffix_len<'a>(
+    chunks: impl Iterator<Item = &'a [u8]>,
+    after: &[u8],
+    limit: usize,
+) -> usize {
+    let mut matched = 0;
+    for chunk in chunks {
+        let remaining = limit - matched;
+        let chunk = &chunk[chunk.len().saturating_sub(remaining)..];
+        let shared = shared_suffix(chunk, &after[..after.len() - matched]);
+        matched += shared;
+        if shared < chunk.len() || matched == limit {
+            break;
+        }
+    }
+    matched
+}
+
 fn validate_selection_str(
     selection: Selection,
     source: &str,
@@ -873,6 +1037,170 @@ mod tests {
 
         assert_eq!(transaction.intent(), EditIntent::Insert);
         assert_eq!(applied.inverse().intent(), EditIntent::Insert);
+    }
+
+    /// The character-by-character difference the chunked comparison replaces.
+    fn reference_difference(before: &str, after: &str) -> Option<(TextRange, String, String)> {
+        if before == after {
+            return None;
+        }
+        let prefix: usize = before
+            .chars()
+            .zip(after.chars())
+            .take_while(|(left, right)| left == right)
+            .map(|(character, _)| character.len_utf8())
+            .sum();
+        let suffix: usize = before[prefix..]
+            .chars()
+            .rev()
+            .zip(after[prefix..].chars().rev())
+            .take_while(|(left, right)| left == right)
+            .map(|(character, _)| character.len_utf8())
+            .sum();
+        Some((
+            TextRange::new(prefix, before.len() - suffix),
+            after[prefix..after.len() - suffix].to_owned(),
+            before[prefix..before.len() - suffix].to_owned(),
+        ))
+    }
+
+    fn observed_difference(transaction: &EditTransaction) -> (TextRange, String, String) {
+        assert_eq!(transaction.edits().len(), 1);
+        let edit = &transaction.edits()[0];
+        (
+            edit.range(),
+            edit.inserted().to_owned(),
+            edit.removed().to_owned(),
+        )
+    }
+
+    fn differences(before: &str, after: &str) -> [Option<(TextRange, String, String)>; 2] {
+        let caret = Selection::caret(0);
+        let from_str = EditTransaction::between(
+            Revision::INITIAL,
+            before,
+            after,
+            caret,
+            caret,
+            EditOrigin::TextInput,
+            EditTimestamp::default(),
+        )
+        .expect("carets at zero are valid");
+        let from_rope = EditTransaction::between_rope(
+            Revision::INITIAL,
+            &Rope::from_str(before),
+            after,
+            caret,
+            caret,
+            EditOrigin::TextInput,
+            EditTimestamp::default(),
+        )
+        .expect("carets at zero are valid");
+        [
+            from_str.as_ref().map(observed_difference),
+            from_rope.as_ref().map(observed_difference),
+        ]
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn chunked_difference_matches_the_character_difference(
+            base in proptest::collection::vec(proptest::sample::select(vec!["a", "b", "é", "世", "😀", "\r\n", "\n"]), 0..1_200),
+            start in 0usize..1_200,
+            removed in 0usize..80,
+            inserted in proptest::collection::vec(proptest::sample::select(vec!["a", "é", "世", "😀", "\n"]), 0..6),
+        ) {
+            let before: String = base.concat();
+            let mut after = base.clone();
+            let start = start.min(after.len());
+            let end = (start + removed).min(after.len());
+            after.splice(start..end, inserted);
+            let after: String = after.concat();
+            let expected = reference_difference(&before, &after);
+            proptest::prop_assert_eq!(differences(&before, &after), [expected.clone(), expected]);
+        }
+    }
+
+    #[test]
+    fn chunked_difference_handles_block_and_chunk_boundaries() {
+        let long = "x".repeat(5_000);
+        for position in [0, 1, 63, 64, 65, 127, 128, 1_000, 4_999] {
+            for (before, after) in [
+                (
+                    long.clone(),
+                    format!("{}y{}", &long[..position], &long[position..]),
+                ),
+                (
+                    long.clone(),
+                    format!("{}{}", &long[..position], &long[position + 1..]),
+                ),
+                (
+                    long.clone(),
+                    format!("{}é{}", &long[..position], &long[position + 1..]),
+                ),
+            ] {
+                let expected = reference_difference(&before, &after);
+                assert!(expected.is_some());
+                assert_eq!(differences(&before, &after), [expected.clone(), expected]);
+            }
+        }
+        let rope = Rope::from_str(&long);
+        assert!(
+            rope.chunks().count() > 2,
+            "the rope must span several chunks"
+        );
+        assert_eq!(differences(&long, &long), [None, None]);
+        assert_eq!(
+            differences("", "é"),
+            [reference_difference("", "é"), reference_difference("", "é")]
+        );
+        assert_eq!(
+            differences("é", ""),
+            [reference_difference("é", ""), reference_difference("é", "")]
+        );
+    }
+
+    #[test]
+    fn a_shared_run_that_splits_a_character_backs_off_to_its_boundary() {
+        // "é" is C3 A9 and "ê" is C3 AA: the first byte matches, the character does not.
+        let expected = Some((TextRange::new(1, 3), "ê".to_owned(), "é".to_owned()));
+        assert_eq!(differences("aé", "aê"), [expected.clone(), expected]);
+        // "é" and "ʩ" (CA A9) share only their last byte.
+        let expected = Some((TextRange::new(0, 2), "ʩ".to_owned(), "é".to_owned()));
+        assert_eq!(differences("éz", "ʩz"), [expected.clone(), expected]);
+    }
+
+    #[test]
+    fn rope_difference_validates_its_selections() {
+        let rope = Rope::from_str("é");
+        assert_eq!(
+            EditTransaction::between_rope(
+                Revision::INITIAL,
+                &rope,
+                "é",
+                Selection::caret(1),
+                Selection::caret(0),
+                EditOrigin::TextInput,
+                EditTimestamp::default(),
+            ),
+            Err(EditError::InvalidBoundary { offset: 1 })
+        );
+        assert_eq!(
+            EditTransaction::between_rope(
+                Revision::INITIAL,
+                &rope,
+                "é",
+                Selection::caret(0),
+                Selection::caret(3),
+                EditOrigin::TextInput,
+                EditTimestamp::default(),
+            ),
+            Err(EditError::InvalidSelection {
+                state: SelectionState::After,
+                position: 3,
+                source_len: 2,
+            })
+        );
     }
 
     #[test]

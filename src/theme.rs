@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 pub const THEME_STORAGE_KEY: &str = "noter.theme";
 const NOTER_PROPORTIONAL_FONT: &str = "Inter Variable";
-const NOTER_PROPORTIONAL_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/InterVariable.ttf");
+pub const NOTER_PROPORTIONAL_FONT_BYTES: &[u8] =
+    include_bytes!("../assets/fonts/InterVariable.ttf");
 const ENHANCED_TEXT_CONTRAST: f64 = 7.0;
 const TEXT_CONTRAST: f64 = 4.5;
 const CONTROL_CONTRAST: f64 = 3.0;
@@ -531,7 +532,7 @@ fn configure_fonts(context: &egui::Context) {
     context.set_fonts(noter_font_definitions());
 }
 
-fn noter_font_definitions() -> egui::FontDefinitions {
+pub fn noter_font_definitions() -> egui::FontDefinitions {
     let mut definitions = egui::FontDefinitions::default();
     definitions.font_data.insert(
         NOTER_PROPORTIONAL_FONT.to_owned(),
