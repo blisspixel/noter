@@ -49,6 +49,21 @@ pub struct PreparedSaveAs {
 }
 
 impl PreparedSaveAs {
+    /// Returns the selected destination.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Returns whether the selected entry existed when it was inspected.
+    ///
+    /// A front end without a native save dialog uses this to ask before an
+    /// existing file is replaced.
+    #[must_use]
+    pub const fn replaces_existing(&self) -> bool {
+        matches!(self.expected, TargetExpectation::Existing(_))
+    }
+
     /// Returns the observed hard-link count when the selected entry existed.
     #[must_use]
     pub const fn hard_link_count(&self) -> Option<u64> {
@@ -729,6 +744,24 @@ mod tests {
         assert!(matches!(outcome, SaveOutcome::Committed { .. }));
         assert!(!document.is_dirty());
         assert_eq!(fs::read(&path)?, document.to_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_save_as_reports_whether_it_replaces_an_existing_file() -> Result<(), NoterError> {
+        let parent = tempdir()?;
+        let existing = parent.path().join("existing.txt");
+        fs::write(&existing, b"keep me")?;
+        let document = Document::new();
+
+        let replacing = document.prepare_save_as(&existing)?;
+        let creating = document.prepare_save_as(parent.path().join("new.txt"))?;
+
+        assert_eq!(replacing.path(), existing.as_path());
+        assert!(replacing.replaces_existing());
+        assert_eq!(replacing.hard_link_count(), Some(1));
+        assert!(!creating.replaces_existing());
+        assert_eq!(creating.hard_link_count(), None);
         Ok(())
     }
 

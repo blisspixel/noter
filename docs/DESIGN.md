@@ -1424,31 +1424,37 @@ implementation starts before the M5 feasibility entry criteria are satisfied.
 
 ## 19. Terminal User Interface (TUI) architecture
 
-Noter's TUI frontend (`src/tui/`) provides a fast, lightweight terminal
-interface ("Like Nano... but better") that directly consumes the UI-independent
-`src/core/` domain model without duplicating any logic:
+The terminal interface is one module, `src/tui.rs`, in the binary crate. It
+renders with plain ANSI escape sequences over the raw-mode and terminal-size
+primitives in `crates/noter-platform`. It has no terminal UI library dependency
+and no separate Cargo feature.
 
-- **100% Shared Trust Kernel:** Text loading, strict UTF-8 validation, newline
-  preservation, BLAKE3 content fingerprints, `EditTransaction`, `UndoHistory`,
-  the atomic replacement save protocol, `LifecycleState`, `ConflictState`, and
-  `RecoveryStore` are completely shared between GUI and TUI modes.
-- **Rendering Stack:** Built on `crossterm` and `ratatui`. Immediate-mode
-  terminal double-buffering emits minimal ANSI diffs, preventing flicker over
-  local consoles and remote SSH sessions.
-- **Dual Shortcut Mapping:** Modern shortcuts (`Ctrl+S` Save, `Ctrl+Q` Quit,
-  `Ctrl+Z` Undo, `Ctrl+F` Find, `Ctrl+M` Mode) and classic Nano shortcuts
-  (`Ctrl+O` WriteOut, `Ctrl+X` Exit, `Alt+U` Undo, `Ctrl+W` WhereIs) are
-  honored simultaneously.
-- **Full Mouse Support:** Click to position caret, drag to select text, and
-  wheel scroll.
-- **Terminal Themes:** TrueColor (24-bit RGB) and ANSI fallbacks for all 5
-  built-in themes, including Green Screen and Amber Screen phosphor CRT palettes.
-- **Modular Cargo Feature Flags:** `default = ["gui", "tui"]`. Building with
-  `--no-default-features --features tui` produces a minimal, dependency-light
-  headless binary under 3 MB suitable for servers, Docker, and SSH environments.
-- **CLI Auto-Detection:** Automatically engages TUI mode when invoked with
-  `--tui` or in headless environments where no graphical display server
-  (`DISPLAY` or `WAYLAND_DISPLAY`) is available.
+Current state:
+
+- **Shared core:** loading, strict UTF-8 validation, line-ending preservation,
+  content fingerprints, `EditTransaction`, and the atomic save protocol come
+  from `src/core/` through `Document`. Save, Save As, replace confirmation, and
+  hard-link confirmation use the same `Document` calls as the GUI, and a save
+  that does not commit never exits or discards text.
+- **Uncertain outcomes:** the GUI blocks every save until the user reconciles
+  an uncertain outcome in its save-recovery flow. The TUI has no such flow, so
+  it pauses saves to the uncertain path only and leaves Save As to other
+  destinations available, so the text can always be written somewhere.
+- **Not yet shared:** the TUI keeps its own undo stacks instead of
+  `UndoHistory`, and it does not persist crash recovery, inspect external
+  changes while idle, or offer Reload. These are beta hardening work in the
+  roadmap.
+- **Shortcuts:** `Ctrl+S` Save, `Ctrl+O` Save As (prefilled with the current
+  name), `Ctrl+X`, `Ctrl+Q`, or `Ctrl+C` Exit, `Ctrl+W` or `Ctrl+F` Find,
+  `Ctrl+K` Cut Line, `Ctrl+U` Paste, `Ctrl+Z` Undo, `Ctrl+Y` Redo, `Ctrl+E`
+  Markdown styling, `Ctrl+T` Theme, `Ctrl+G` Help.
+- **Mouse:** click to place the caret, wheel to scroll, and clickable shortcut
+  legend. There is no drag selection.
+- **Color:** 24-bit color for the Light, Dark, Green Screen, and Amber Screen
+  palettes; System uses Dark.
+- **Launch:** `--tui` selects it explicitly. Without `--gui` or `--tui`, only
+  non-macOS Unix launches with no display server and a terminal on standard
+  input and output fall back to it (see `choose_interface` in `src/main.rs`).
 
 ## 20. 120Hz/ProMotion rendering and virtualized rope editor
 

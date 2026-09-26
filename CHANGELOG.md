@@ -14,6 +14,16 @@ that candidate is frozen for publication.
   Linux and the BSDs, and only when standard input and output are interactive
   terminals. `--gui` forces the window, and `noter update` prints its status
   when no window can open.
+- Keep unsaved text in the terminal interface when saving fails. Answering yes
+  to the exit prompt used to exit even when the save hit a conflict, failed,
+  had an uncertain outcome, or the document was untitled. Exit now waits for a
+  committed write, and an untitled document asks for a name first.
+- Add Save As for named documents in the terminal interface (^O, prefilled with
+  the current name) so a document whose file changed on disk can still be
+  saved elsewhere. ^S saves in place. Save As asks before replacing an existing
+  file, a save that would split a hard link asks first, and after an uncertain
+  save outcome, saves to that file pause while other destinations stay
+  available.
 
 ## 0.1.0-beta.1 - 2026-09-24
 

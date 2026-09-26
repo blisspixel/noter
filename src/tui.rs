@@ -4,8 +4,11 @@
 //! by Noter's authoritative core document engine and platform primitives.
 //!
 //! Features:
-//! - Dual shortcuts: Nano (^O `WriteOut`, ^X Exit, ^W `WhereIs`, ^K Cut, ^U Paste, ^J Jump, ^G Help)
-//!   and Modern (Ctrl+S, Ctrl+Q, Ctrl+F, Ctrl+Z, Ctrl+Y, Ctrl+E, Ctrl+T, Ctrl+A).
+//! - Dual shortcuts: Nano (^O Save As with a prefilled name, ^X Exit, ^W `WhereIs`, ^K Cut,
+//!   ^U Paste, ^J Jump, ^G Help) and Modern (Ctrl+S, Ctrl+Q, Ctrl+F, Ctrl+Z, Ctrl+Y, Ctrl+E,
+//!   Ctrl+T, Ctrl+A).
+//! - Saving never exits or discards text unless the write committed. Replacing an existing
+//!   file or splitting a hard link asks first.
 //! - Phosphor CRT themes (Green Screen and Amber Screen) matching Noter's desktop visuals.
 //! - Fluid formatted Markdown viewing toggle (^E).
 //! - Terminal mouse support (click to set caret, scroll wheel to scroll lines, clickable legend).
@@ -13,14 +16,15 @@
 
 use std::fmt::Write as FmtWrite;
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use noter::core::document::Document;
+use noter::core::document::{Document, PreparedSaveAs};
 use noter::core::edit::{EditOrigin, EditTimestamp, EditTransaction, Selection};
 use noter::core::navigation::{
     LineNavigationError, MoveDirection, MoveUnit, line_end_offset, line_start_offset, move_caret,
 };
 use noter::core::save::SaveOutcome;
+use noter::error::NoterError;
 
 use crate::app::{DocumentView, LaunchOptions};
 use crate::theme::AppTheme;
@@ -68,9 +72,41 @@ pub enum TuiEvent {
 pub enum PromptMode {
     None,
     SaveAs,
+    /// The Save As destination exists; replacing it needs a yes.
+    ConfirmReplace,
+    /// The destination has other hard links that keep the previous text.
+    ConfirmHardLink(u64),
     Find,
     GoToLine,
     ExitConfirm,
+}
+
+/// What happens once the save in progress commits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AfterSave {
+    Stay,
+    Exit,
+}
+
+/// A save that is waiting for the user to answer a confirmation.
+#[derive(Clone, Debug)]
+pub enum PendingSave {
+    /// Save in place, splitting the document's hard link.
+    SplitHardLinkInPlace,
+    /// Save As over an existing file.
+    Replace(PreparedSaveAs),
+    /// Save As over an existing file, splitting its hard link.
+    SplitHardLink(PreparedSaveAs),
+}
+
+/// The result of one save step.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SaveStep {
+    Committed,
+    /// Nothing was written, or the outcome is uncertain; the text stays open.
+    NotSaved,
+    /// A prompt now asks for a file name or a confirmation.
+    AwaitingInput,
 }
 
 /// ANSI color definition for TUI rendering.
@@ -165,6 +201,14 @@ pub struct TuiSession {
     pub undo_history: Vec<EditTransaction>,
     pub redo_history: Vec<EditTransaction>,
     pub should_exit: bool,
+    pub after_save: AfterSave,
+    pub pending_save: Option<PendingSave>,
+    /// Paths where an earlier save may or may not have reached disk.
+    ///
+    /// Writing there again would hide which version is on disk, so saves to
+    /// these paths are refused for the rest of the session. Other destinations
+    /// stay available so the text is never trapped.
+    pub uncertain_paths: Vec<PathBuf>,
 }
 
 impl TuiSession {
@@ -200,6 +244,9 @@ impl TuiSession {
             undo_history: Vec::new(),
             redo_history: Vec::new(),
             should_exit: false,
+            after_save: AfterSave::Stay,
+            pending_save: None,
+            uncertain_paths: Vec::new(),
         })
     }
 
@@ -384,55 +431,186 @@ impl TuiSession {
         }
     }
 
-    /// Saves the current document (^O or ^S).
-    pub fn save(&mut self) {
-        if self.document.path().is_none() {
-            self.prompt = PromptMode::SaveAs;
-            self.prompt_input.clear();
-            return;
+    /// Saves the document in place (^S), or asks for a name when untitled.
+    pub fn save(&mut self) -> SaveStep {
+        let Some(target) = self.document.path().map(std::path::Path::to_path_buf) else {
+            return self.open_save_as();
+        };
+        if self.is_uncertain(Some(&target)) {
+            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            return SaveStep::NotSaved;
         }
-
         match self.document.save() {
-            Ok(SaveOutcome::Committed { observation, .. }) => {
-                self.set_status(format!("Wrote {} bytes", observation.length()));
+            Err(NoterError::HardLinkedTarget(link_count)) => {
+                self.pending_save = Some(PendingSave::SplitHardLinkInPlace);
+                self.prompt = PromptMode::ConfirmHardLink(link_count);
+                SaveStep::AwaitingInput
+            }
+            result => self.report_save(target, result),
+        }
+    }
+
+    /// Opens the Save As prompt (^O), prefilled with the current path.
+    pub fn open_save_as(&mut self) -> SaveStep {
+        self.prompt_input = self
+            .document
+            .path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.prompt = PromptMode::SaveAs;
+        SaveStep::AwaitingInput
+    }
+
+    /// Resolves the name typed into the Save As prompt.
+    pub fn submit_save_as(&mut self) -> SaveStep {
+        if self.prompt_input.trim().is_empty() {
+            self.set_status("Enter a file name, or press Esc to cancel");
+            return SaveStep::AwaitingInput;
+        }
+        self.prompt = PromptMode::None;
+        // The prompt shows the current path lossily; unchanged input means
+        // that exact path, even when its name is not valid UTF-8.
+        let path = match self.document.path() {
+            Some(current) if current.to_string_lossy() == self.prompt_input.as_str() => {
+                current.to_path_buf()
+            }
+            _ => PathBuf::from(&self.prompt_input),
+        };
+        let prepared = match self.document.prepare_save_as(&path) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.set_status(format!("Not saved: {error}"));
+                return SaveStep::NotSaved;
+            }
+        };
+        if self.is_uncertain(Some(&path)) {
+            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            return SaveStep::NotSaved;
+        }
+        // Saving to the document's own path is an ordinary save: the core
+        // compares against the saved baseline and reports an external change
+        // as a conflict, so there is nothing new to confirm.
+        let is_current_path = self.document.path() == Some(path.as_path());
+        if prepared.replaces_existing() && !is_current_path {
+            self.pending_save = Some(PendingSave::Replace(prepared));
+            self.prompt = PromptMode::ConfirmReplace;
+            return SaveStep::AwaitingInput;
+        }
+        self.save_prepared(prepared, false)
+    }
+
+    fn is_uncertain(&self, path: Option<&std::path::Path>) -> bool {
+        path.is_some_and(|path| {
+            self.uncertain_paths
+                .iter()
+                .any(|uncertain| uncertain == path)
+        })
+    }
+
+    /// Answers the replace or hard-link confirmation that is showing.
+    pub fn confirm_pending_save(&mut self, confirmed: bool) -> SaveStep {
+        self.prompt = PromptMode::None;
+        let Some(pending) = self.pending_save.take() else {
+            return SaveStep::NotSaved;
+        };
+        if !confirmed {
+            self.set_status("Not saved");
+            return SaveStep::NotSaved;
+        }
+        match pending {
+            PendingSave::SplitHardLinkInPlace => {
+                let Some(target) = self.document.path().map(std::path::Path::to_path_buf) else {
+                    return SaveStep::NotSaved;
+                };
+                let result = self.document.save_confirming_hard_link_replacement();
+                self.report_save(target, result)
+            }
+            PendingSave::Replace(prepared) => self.save_prepared(prepared, false),
+            PendingSave::SplitHardLink(prepared) => self.save_prepared(prepared, true),
+        }
+    }
+
+    fn save_prepared(&mut self, prepared: PreparedSaveAs, hard_link_confirmed: bool) -> SaveStep {
+        let target = prepared.path().to_path_buf();
+        let result = if hard_link_confirmed {
+            self.document
+                .save_prepared_as_confirming_hard_link_replacement(prepared.clone())
+        } else {
+            self.document.save_prepared_as(prepared.clone())
+        };
+        if let Err(NoterError::HardLinkedTarget(link_count)) = result {
+            self.pending_save = Some(PendingSave::SplitHardLink(prepared));
+            self.prompt = PromptMode::ConfirmHardLink(link_count);
+            return SaveStep::AwaitingInput;
+        }
+        self.report_save(target, result)
+    }
+
+    /// Turns a save result into status text and the next step.
+    fn report_save(
+        &mut self,
+        target: PathBuf,
+        result: Result<SaveOutcome, NoterError>,
+    ) -> SaveStep {
+        match result {
+            Ok(SaveOutcome::Committed {
+                observation,
+                warnings,
+                ..
+            }) => {
+                let warning_count = warnings.cleanup().len() + warnings.durability().len();
+                if warning_count == 0 {
+                    self.set_status(format!("Wrote {} bytes", observation.length()));
+                } else {
+                    self.set_status(format!(
+                        "Wrote {} bytes with {warning_count} storage warning(s)",
+                        observation.length()
+                    ));
+                }
+                SaveStep::Committed
             }
             Ok(SaveOutcome::Conflict { .. }) => {
-                self.set_status("Conflict: file was modified externally");
+                self.set_status(
+                    "Not saved: the file changed on disk. Use ^O Save As to keep this text under a new name.",
+                );
+                SaveStep::NotSaved
             }
-            Ok(SaveOutcome::CommitStateUnknown { .. }) => {
-                self.set_status("Save outcome uncertain; inspect directory");
+            Ok(SaveOutcome::NotCommitted { error, .. }) => {
+                self.set_status(format!("Not saved: {}", error.message()));
+                SaveStep::NotSaved
             }
-            Ok(SaveOutcome::NotCommitted { .. }) => {
-                self.set_status("Save failed: not committed");
+            Ok(SaveOutcome::CommitStateUnknown {
+                recovery_artifact, ..
+            }) => {
+                if !self.is_uncertain(Some(&target)) {
+                    self.uncertain_paths.push(target);
+                }
+                self.set_status(format!(
+                    "Save outcome unknown: {}. {UNCERTAIN_SAVE_GUIDANCE}",
+                    recovery_artifact.message()
+                ));
+                SaveStep::NotSaved
             }
-            Err(e) => {
-                self.set_status(format!("Save error: {e}"));
+            Err(error) => {
+                self.set_status(format!("Not saved: {error}"));
+                SaveStep::NotSaved
             }
         }
     }
 
-    /// Saves the document to a new path.
-    pub fn save_as(&mut self, path: &Path) {
-        match self.document.save_as(path) {
-            Ok(SaveOutcome::Committed { observation, .. }) => {
-                self.set_status(format!(
-                    "Wrote {} bytes to {}",
-                    observation.length(),
-                    path.display()
-                ));
+    /// Applies a save step to a pending exit.
+    ///
+    /// Exit happens only after a commit. Any other result cancels the pending
+    /// exit so the text stays open.
+    pub fn finish_save(&mut self, step: SaveStep) {
+        match step {
+            SaveStep::Committed => {
+                if self.after_save == AfterSave::Exit {
+                    self.should_exit = true;
+                }
             }
-            Ok(SaveOutcome::Conflict { .. }) => {
-                self.set_status("Conflict: destination file changed");
-            }
-            Ok(SaveOutcome::CommitStateUnknown { .. }) => {
-                self.set_status("Save As outcome uncertain; inspect directory");
-            }
-            Ok(SaveOutcome::NotCommitted { .. }) => {
-                self.set_status("Save As failed: not committed");
-            }
-            Err(e) => {
-                self.set_status(format!("Save As error: {e}"));
-            }
+            SaveStep::NotSaved => self.after_save = AfterSave::Stay,
+            SaveStep::AwaitingInput => {}
         }
     }
 
@@ -500,6 +678,10 @@ impl TuiSession {
         }
     }
 }
+
+/// Shown when an earlier save may have reached disk.
+const UNCERTAIN_SAVE_GUIDANCE: &str =
+    "Check that file on disk. Saving to it is paused; ^O Save As can write another file.";
 
 /// Parses raw input bytes into high-level TUI events.
 #[allow(clippy::too_many_lines)]
@@ -785,6 +967,10 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
             "Save As: {} (Enter to save, Esc to cancel)",
             session.prompt_input
         ),
+        PromptMode::ConfirmReplace => "That file exists. Replace it? (y)es, (n)o".to_owned(),
+        PromptMode::ConfirmHardLink(link_count) => format!(
+            "This file has {link_count} hard links. Save here only; the others keep the old text? (y)es, (n)o"
+        ),
         PromptMode::Find => format!("Find: {} (Enter next, Esc cancel)", session.prompt_input),
         PromptMode::GoToLine => format!(
             "Go to line: {} (Enter jump, Esc cancel)",
@@ -825,7 +1011,7 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
 
     // 4. Shortcut Legend (Rows rows - 1 and rows)
     let leg1 =
-        " ^G Help       ^O Save       ^W Where Is   ^K Cut Line   ^U Paste      ^J Jump Line ";
+        " ^G Help       ^O Save As    ^W Where Is   ^K Cut Line   ^U Paste      ^J Jump Line ";
     let leg2 =
         " ^X Exit       ^S Save       ^F Find       ^Z Undo       ^Y Redo       ^E Markdown  ";
     let leg1_pad = (cols as usize).saturating_sub(leg1.chars().count());
@@ -1008,7 +1194,8 @@ fn render_help_overlay(out: &mut String, cols: u16, rows: u16, palette: &TuiPale
         "║    Scroll Wheel         : Scroll lines up/down               ║",
         "║                                                              ║",
         "║  Editing & Actions:                                          ║",
-        "║    ^O or ^S             : Save file                          ║",
+        "║    ^S                   : Save file                          ║",
+        "║    ^O                   : Save As (asks before replacing)    ║",
         "║    ^X or ^Q             : Exit editor (prompts if modified)  ║",
         "║    ^W or ^F             : Find text in document              ║",
         "║    ^K                   : Cut current line                   ║",
@@ -1109,8 +1296,10 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
             if let TuiEvent::Key(key) = event {
                 match key {
                     TuiKey::Char('y' | 'Y') => {
-                        session.save();
-                        session.should_exit = true;
+                        session.prompt = PromptMode::None;
+                        session.after_save = AfterSave::Exit;
+                        let step = session.save();
+                        session.finish_save(step);
                     }
                     TuiKey::Char('n' | 'N') => {
                         session.should_exit = true;
@@ -1124,15 +1313,29 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
             }
             return;
         }
+        PromptMode::ConfirmReplace | PromptMode::ConfirmHardLink(_) => {
+            if let TuiEvent::Key(key) = event {
+                let answer = match key {
+                    TuiKey::Char('y' | 'Y') => Some(true),
+                    TuiKey::Char('n' | 'N') | TuiKey::Escape => Some(false),
+                    _ => None,
+                };
+                if let Some(confirmed) = answer {
+                    let step = session.confirm_pending_save(confirmed);
+                    session.finish_save(step);
+                }
+            }
+            return;
+        }
         PromptMode::SaveAs => {
             match event {
                 TuiEvent::Key(TuiKey::Enter) => {
-                    let path = PathBuf::from(&session.prompt_input);
-                    session.save_as(&path);
-                    session.prompt = PromptMode::None;
+                    let step = session.submit_save_as();
+                    session.finish_save(step);
                 }
                 TuiEvent::Key(TuiKey::Escape) => {
                     session.prompt = PromptMode::None;
+                    session.finish_save(SaveStep::NotSaved);
                     session.set_status("Save As cancelled");
                 }
                 TuiEvent::Key(TuiKey::Backspace) => {
@@ -1217,7 +1420,7 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
                     if col < 15 {
                         session.show_help = true;
                     } else if col < 29 {
-                        session.save();
+                        session.open_save_as();
                     } else if col < 43 {
                         session.prompt = PromptMode::Find;
                         session.prompt_input.clear();
@@ -1252,7 +1455,10 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
             TuiKey::Ctrl('c' | 'x' | 'q') => {
                 trigger_exit(session);
             }
-            TuiKey::Ctrl('o' | 's') => {
+            TuiKey::Ctrl('o') => {
+                session.open_save_as();
+            }
+            TuiKey::Ctrl('s') => {
                 session.save();
             }
             TuiKey::Ctrl('w' | 'f') => {
@@ -1610,6 +1816,274 @@ mod tests {
         // Exit clean document: should exit immediately
         handle_event(&mut session, TuiEvent::Key(TuiKey::Ctrl('q')), 80, 24);
         assert!(session.should_exit);
+    }
+
+    fn key(session: &mut TuiSession, key: TuiKey) {
+        handle_event(session, TuiEvent::Key(key), 80, 24);
+    }
+
+    fn type_text(session: &mut TuiSession, text: &str) {
+        for character in text.chars() {
+            key(session, TuiKey::Char(character));
+        }
+    }
+
+    fn session_for(path: &std::path::Path) -> TuiSession {
+        TuiSession::new(&LaunchOptions {
+            initial_path: Some(path.to_path_buf()),
+            ..LaunchOptions::default()
+        })
+        .expect("fixture document should load")
+    }
+
+    #[test]
+    fn exit_with_save_leaves_only_after_the_write_commits() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "first").unwrap();
+        let mut session = session_for(&path);
+        session.caret_byte = 5;
+        type_text(&mut session, " edit");
+
+        key(&mut session, TuiKey::Ctrl('x'));
+        assert_eq!(session.prompt, PromptMode::ExitConfirm);
+        key(&mut session, TuiKey::Char('y'));
+
+        assert!(session.should_exit);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first edit");
+    }
+
+    #[test]
+    fn exit_with_save_stays_open_when_the_file_changed_on_disk() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "first").unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "mine ");
+        std::fs::write(&path, "someone else").unwrap();
+
+        key(&mut session, TuiKey::Ctrl('x'));
+        key(&mut session, TuiKey::Char('y'));
+
+        assert!(
+            !session.should_exit,
+            "a conflict must never discard the text"
+        );
+        assert_eq!(session.after_save, AfterSave::Stay);
+        assert!(session.document.is_dirty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "someone else");
+        assert!(
+            session
+                .status_message
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("Save As"))
+        );
+    }
+
+    #[test]
+    fn untitled_exit_asks_for_a_name_then_exits_after_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("new.txt");
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        type_text(&mut session, "draft");
+
+        key(&mut session, TuiKey::Ctrl('x'));
+        key(&mut session, TuiKey::Char('y'));
+        assert!(!session.should_exit);
+        assert_eq!(session.prompt, PromptMode::SaveAs);
+
+        type_text(&mut session, &path.to_string_lossy());
+        key(&mut session, TuiKey::Enter);
+
+        assert!(session.should_exit);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "draft");
+    }
+
+    #[test]
+    fn cancelling_the_save_as_name_cancels_a_pending_exit() {
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        type_text(&mut session, "draft");
+        key(&mut session, TuiKey::Ctrl('x'));
+        key(&mut session, TuiKey::Char('y'));
+
+        key(&mut session, TuiKey::Escape);
+
+        assert!(!session.should_exit);
+        assert_eq!(session.after_save, AfterSave::Stay);
+        assert_eq!(session.text(), "draft");
+    }
+
+    #[test]
+    fn save_as_asks_before_replacing_an_existing_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let existing = directory.path().join("existing.txt");
+        std::fs::write(&existing, "keep me").unwrap();
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        type_text(&mut session, "replacement");
+
+        key(&mut session, TuiKey::Ctrl('o'));
+        type_text(&mut session, &existing.to_string_lossy());
+        key(&mut session, TuiKey::Enter);
+        assert_eq!(session.prompt, PromptMode::ConfirmReplace);
+        key(&mut session, TuiKey::Char('n'));
+        assert_eq!(std::fs::read_to_string(&existing).unwrap(), "keep me");
+        assert_eq!(session.document.path(), None);
+
+        key(&mut session, TuiKey::Ctrl('o'));
+        type_text(&mut session, &existing.to_string_lossy());
+        key(&mut session, TuiKey::Enter);
+        key(&mut session, TuiKey::Char('y'));
+        assert_eq!(std::fs::read_to_string(&existing).unwrap(), "replacement");
+        assert_eq!(session.document.path(), Some(existing.as_path()));
+        assert!(!session.document.is_dirty());
+    }
+
+    #[test]
+    fn save_as_is_prefilled_for_titled_documents_and_rejects_an_empty_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "text").unwrap();
+        let mut session = session_for(&path);
+
+        key(&mut session, TuiKey::Ctrl('o'));
+        assert_eq!(session.prompt, PromptMode::SaveAs);
+        assert_eq!(session.prompt_input, path.to_string_lossy());
+
+        session.prompt_input.clear();
+        key(&mut session, TuiKey::Enter);
+        assert_eq!(session.prompt, PromptMode::SaveAs);
+    }
+
+    fn storage_error(message: &str) -> noter::core::save::StorageError {
+        noter::core::save::StorageError::new(noter::core::save::SaveStage::Replace, message)
+    }
+
+    #[test]
+    fn an_uncertain_save_pauses_that_path_but_leaves_others_available() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        let fresh = directory.path().join("fresh.txt");
+        std::fs::write(&path, "text").unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "edit ");
+        session.after_save = AfterSave::Exit;
+
+        let step = session.report_save(
+            path.clone(),
+            Ok(SaveOutcome::CommitStateUnknown {
+                revision: session.document.revision(),
+                error: storage_error("rename reported failure"),
+                recovery_artifact: storage_error("a private copy was kept"),
+            }),
+        );
+        session.finish_save(step);
+
+        assert_eq!(step, SaveStep::NotSaved);
+        assert!(!session.should_exit);
+        assert_eq!(session.uncertain_paths, vec![path.clone()]);
+        assert_eq!(session.save(), SaveStep::NotSaved);
+        session.prompt_input = path.to_string_lossy().into_owned();
+        assert_eq!(session.submit_save_as(), SaveStep::NotSaved);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "text");
+
+        session.prompt_input = fresh.to_string_lossy().into_owned();
+        assert_eq!(session.submit_save_as(), SaveStep::Committed);
+        assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "edit text");
+        // The document now lives at the new path, which is not uncertain.
+        type_text(&mut session, "more ");
+        assert_eq!(session.save(), SaveStep::Committed);
+    }
+
+    #[test]
+    fn a_save_that_did_not_commit_cancels_a_pending_exit() {
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        session.after_save = AfterSave::Exit;
+
+        let step = session.report_save(
+            PathBuf::from("note.txt"),
+            Ok(SaveOutcome::NotCommitted {
+                revision: session.document.revision(),
+                error: storage_error("disk full"),
+                cleanup_error: None,
+            }),
+        );
+        session.finish_save(step);
+
+        assert_eq!(step, SaveStep::NotSaved);
+        assert!(!session.should_exit);
+        assert_eq!(session.after_save, AfterSave::Stay);
+        assert!(
+            session
+                .status_message
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("disk full"))
+        );
+        assert!(session.uncertain_paths.is_empty());
+    }
+
+    #[test]
+    fn save_as_to_the_current_path_still_detects_an_external_change() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "first").unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "mine ");
+        std::fs::write(&path, "someone else").unwrap();
+        key(&mut session, TuiKey::Ctrl('s'));
+
+        // The conflict status points at ^O, which is prefilled with this path.
+        key(&mut session, TuiKey::Ctrl('o'));
+        key(&mut session, TuiKey::Enter);
+
+        assert_eq!(session.prompt, PromptMode::None);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "someone else");
+        assert!(session.document.is_dirty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_linked_saves_ask_before_splitting_the_link() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        let other_name = directory.path().join("other-name.txt");
+        std::fs::write(&path, "shared").unwrap();
+        std::fs::hard_link(&path, &other_name).unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "new ");
+
+        assert_eq!(session.save(), SaveStep::AwaitingInput);
+        assert_eq!(session.prompt, PromptMode::ConfirmHardLink(2));
+        key(&mut session, TuiKey::Char('n'));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "shared");
+
+        session.save();
+        key(&mut session, TuiKey::Char('y'));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new shared");
+        assert_eq!(std::fs::read_to_string(&other_name).unwrap(), "shared");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_as_over_a_hard_linked_file_confirms_replace_then_the_split() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target.txt");
+        let other_name = directory.path().join("other-name.txt");
+        std::fs::write(&target, "shared").unwrap();
+        std::fs::hard_link(&target, &other_name).unwrap();
+        let mut session = TuiSession::new(&LaunchOptions::default()).unwrap();
+        type_text(&mut session, "mine");
+
+        key(&mut session, TuiKey::Ctrl('o'));
+        type_text(&mut session, &target.to_string_lossy());
+        key(&mut session, TuiKey::Enter);
+        assert_eq!(session.prompt, PromptMode::ConfirmReplace);
+        key(&mut session, TuiKey::Char('y'));
+        assert_eq!(session.prompt, PromptMode::ConfirmHardLink(2));
+        key(&mut session, TuiKey::Char('y'));
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "mine");
+        assert_eq!(std::fs::read_to_string(&other_name).unwrap(), "shared");
+        assert!(session.pending_save.is_none());
     }
 
     #[test]
