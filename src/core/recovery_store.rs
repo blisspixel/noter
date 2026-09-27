@@ -2427,6 +2427,29 @@ impl WindowsRecoveryArtifactAccess<'_> {
             Self::PathOnly => noter_platform::open_for_reconciliation(path),
         }
     }
+
+    fn install_new_from_verified_stage(
+        self,
+        stage: &Path,
+        destination: &Path,
+        artifact: &OpenRecoveryArtifact,
+    ) -> io::Result<CommitReceipt<InstallNewOutcome>> {
+        match self {
+            Self::Bound(store) => {
+                let (stage_directory, _) = store.windows_bound_entry(stage)?;
+                let (destination_directory, name) = store.windows_bound_entry(destination)?;
+                if !std::ptr::eq(stage_directory, destination_directory) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "the recovery stage and destination must share a bound directory",
+                    ));
+                }
+                destination_directory.install_new_from_open(&artifact.file, name)
+            }
+            #[cfg(test)]
+            Self::PathOnly => noter_platform::install_new(stage, destination),
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -2631,31 +2654,16 @@ fn reconcile_windows_recovery_replace(
     }
 
     if destination_state.is_none() && stage_is_intended && backup_state == Some(expected) {
-        drop((stage_artifact, backup_artifact));
-        let completion = noter_platform::install_new(stage, destination);
-        return match completion {
-            Ok(receipt) => {
-                let (_outcome, parent_sync) = receipt.into_parts();
-                finalize_reconciled_windows_recovery(
-                    access,
-                    paths,
-                    intended,
-                    expected,
-                    &platform_error,
-                    false,
-                )
-                .map(|()| RecoveryParentSync::bound(parent_sync))
-            }
-            Err(completion_error) => finalize_reconciled_windows_recovery(
-                access,
-                paths,
-                intended,
-                expected,
-                &completion_error,
-                false,
-            )
-            .map(|()| RecoveryParentSync::UnsupportedAfterReconciliation),
-        };
+        drop(backup_artifact);
+        let artifact = stage_artifact.expect("the verified intended stage must be open");
+        return complete_missing_windows_recovery_destination(
+            access,
+            paths,
+            artifact,
+            intended,
+            expected,
+            &platform_error,
+        );
     }
 
     Err(uncertain_windows_recovery_failure(
@@ -2664,6 +2672,43 @@ fn reconcile_windows_recovery_replace(
         &platform_error,
         "the replacement failure left an unexplained path state",
     ))
+}
+
+#[cfg(windows)]
+fn complete_missing_windows_recovery_destination(
+    access: WindowsRecoveryArtifactAccess<'_>,
+    paths: RecoveryStagedPaths<'_>,
+    artifact: OpenRecoveryArtifact,
+    intended: IntendedWindowsRecoveryContent,
+    expected: RecoveryArtifactObservation,
+    platform_error: &io::Error,
+) -> Result<RecoveryParentSync, RecoveryCommitFailure> {
+    let completion =
+        access.install_new_from_verified_stage(paths.stage, paths.destination, &artifact);
+    drop(artifact);
+    match completion {
+        Ok(receipt) => {
+            let (_outcome, parent_sync) = receipt.into_parts();
+            finalize_reconciled_windows_recovery(
+                access,
+                paths,
+                intended,
+                expected,
+                platform_error,
+                false,
+            )
+            .map(|()| RecoveryParentSync::bound(parent_sync))
+        }
+        Err(completion_error) => finalize_reconciled_windows_recovery(
+            access,
+            paths,
+            intended,
+            expected,
+            &completion_error,
+            false,
+        )
+        .map(|()| RecoveryParentSync::UnsupportedAfterReconciliation),
+    }
 }
 
 #[cfg(windows)]
@@ -3667,6 +3712,70 @@ mod tests {
         assert_eq!(fs::read(&destination)?, intended);
         assert!(!stage.exists());
         assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bound_reconciliation_installs_verified_stage_when_destination_is_absent() -> io::Result<()> {
+        let parent = tempdir()?;
+        let store = RecoveryStore::open(parent.path())?;
+        let stage = store.records_dir().join("record.stage");
+        let destination = store.records_dir().join("record.rec");
+        let backup = store.records_dir().join("record.backup");
+        let intended = snapshot_at(63, 9, 21, b"intended recovery").encode();
+        let predecessor = snapshot_at(63, 8, 20, b"predecessor recovery").encode();
+        fs::write(&stage, &intended)?;
+        fs::write(&backup, &predecessor)?;
+        let access = WindowsRecoveryArtifactAccess::Bound(&store);
+        let intended_observation =
+            inspect_windows_recovery_artifact(access, &stage)?.expect("the stage exists");
+        let expected =
+            inspect_windows_recovery_artifact(access, &backup)?.expect("the backup exists");
+
+        let parent_sync = reconcile_windows_recovery_replace(
+            access,
+            RecoveryStagedPaths {
+                stage: &stage,
+                destination: &destination,
+                backup: &backup,
+            },
+            IntendedWindowsRecoveryContent::from_observation(intended_observation),
+            expected,
+            io::Error::other("injected partial replacement"),
+        )
+        .map_err(|failure| failure.error)?;
+        assert_eq!(
+            parent_sync.sync()?,
+            noter_platform::ParentSyncOutcome::Unsupported
+        );
+        assert_eq!(fs::read(&destination)?, intended);
+        assert!(!stage.exists());
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bound_completion_refuses_a_stage_from_another_recovery_directory() -> io::Result<()> {
+        let parent = tempdir()?;
+        let store = RecoveryStore::open(parent.path())?;
+        let stage = store.quarantine_dir().join("record.stage");
+        let destination = store.records_dir().join("record.rec");
+        fs::write(&stage, b"quarantined bytes")?;
+        let access = WindowsRecoveryArtifactAccess::Bound(&store);
+        let artifact = open_windows_recovery_artifact_for_cleanup(access, &stage)?
+            .expect("the quarantine stage exists");
+
+        assert_eq!(
+            access
+                .install_new_from_verified_stage(&stage, &destination, &artifact)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(fs::read(&stage)?, b"quarantined bytes");
+        assert!(!destination.exists());
         Ok(())
     }
 

@@ -689,9 +689,9 @@ stage relative to the held records directory without replacing an existing
 name. Startup and owned-artifact enumeration run through the held directory
 handle with bounded entries. Replacement stage, destination, and backup
 observations open relative to the held records directory. Ratification and
-cleanup operate on their exact opened files. Existing-record replacement,
-failure-completion mutation, and synchronization remain pathname-based inside
-the held, delete-protected
+cleanup operate on their exact opened files. Failure completion installs the
+opened stage relative to that directory. Existing-record replacement and
+synchronization remain pathname-based inside the held, delete-protected
 directories. Fixed-drive classification does not prove that a profile is not
 synchronized or redirected.
 Store entry operations refuse paths outside the held records and quarantine

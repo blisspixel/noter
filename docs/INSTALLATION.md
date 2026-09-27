@@ -311,10 +311,10 @@ rejects reparse and cross-volume components, retains its directory handles,
 rejects state ACLs with unprivileged mutation rights, and hardens the recovery
 subtree to a protected inheritable user-and-SYSTEM DACL before writing recovery
 bytes. Record entry opens, creation, classification, new-record installation,
-enumeration, and replacement observations use the retained directory handles.
-Existing-record replacement, failure-completion mutation, and synchronization
-still use paths within those protected directories. A fixed local profile is
-not proof that the directory is unsynchronized or unredirected.
+enumeration, replacement observations, and partial-replacement completion use
+the retained directory handles. Existing-record replacement and synchronization
+still use paths within those protected directories. A fixed local profile does
+not prove that the directory is unsynchronized or unredirected.
 
 The current unreleased Linux and macOS builds bind the recovery namespace. If a
 directory on the path to the state directory can be changed by another user,

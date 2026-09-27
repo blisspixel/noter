@@ -625,7 +625,8 @@ rebound pathname cannot delete the replacement. Startup and owned-artifact
 enumeration run through the held directory handle with their entry limits.
 Replacement stage, destination, and backup observations now open relative to
 the held records directory; ratification blocks competing mutation, and cleanup
-removes the opened object.
+removes the opened object. Failure completion installs the opened stage relative
+to the same held directory.
 
 The first Windows foundation validates the drive-rooted state path on fixed
 NTFS, rejects reparse and cross-volume directory components, verifies stable
@@ -638,8 +639,8 @@ lease or quarantine creation are handle-relative and have native fixtures for
 exclusive private creation, regular-file and directory classification, final
 links, name replacement after open, and rejection of an unbound parent or
 invalid stage destination before writing.
-Existing-record replacement, failure-completion mutation, synchronization,
-and redirected or synchronized-root detection keep M4-H1 in progress.
+Existing-record replacement, synchronization, and redirected or
+synchronized-root detection keep M4-H1 in progress.
 
 The Unix cleanup ADR was required either to provide a genuinely object-bound
 retirement strategy or to retain and safely neutralize the exact opened object
