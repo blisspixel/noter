@@ -47,7 +47,7 @@ use crate::{CommitReceipt, InstallNewOutcome, ParentSyncReceipt, combine_disjoin
 const RECORDS_DIRECTORY_NAME: &str = "records";
 const QUARANTINE_DIRECTORY_NAME: &str = "quarantine";
 const FILE_SYSTEM_NAME_CAPACITY: usize = 32;
-const DIRECTORY_ENUMERATION_BUFFER_BYTES: usize = 64 * 1024;
+const DIRECTORY_ENUMERATION_BUFFER_BYTES: usize = 65_536;
 
 /// Stable preferred Windows identity of one retained directory handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
