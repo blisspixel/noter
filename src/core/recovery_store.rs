@@ -19,7 +19,9 @@ use noter_platform::{CommitReceipt, ReplaceExistingOutcome};
 #[cfg(unix)]
 use noter_platform::{UnixRecoveryDirectory, UnixRecoveryNamespace};
 #[cfg(windows)]
-use noter_platform::{WindowsRecoveryDirectory, WindowsRecoveryNamespace};
+use noter_platform::{
+    WindowsRecoveryDirectory, WindowsRecoveryEntryName, WindowsRecoveryNamespace,
+};
 
 use super::recovery::{
     RECOVERY_MAGIC, RECOVERY_SCHEMA_VERSION, RecoveryInstanceId, RecoveryQuarantineReason,
@@ -299,8 +301,9 @@ pub struct RecoveryStore {
 }
 
 /// Recovery entries are reached through the held directories of the bound
-/// namespace on Unix. Windows creation and opens are handle-relative; its
-/// remaining operations use paths inside held, delete-protected directories.
+/// namespace on Unix. Windows entry creation, opens, and classification are
+/// handle-relative; its remaining operations use paths inside held,
+/// delete-protected directories.
 impl RecoveryStore {
     #[cfg(windows)]
     fn windows_bound_entry<'a>(
@@ -466,7 +469,12 @@ impl RecoveryStore {
             let (directory, name) = self.unix_bound_entry(path)?;
             directory.is_regular_file(name)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let (directory, name) = self.windows_bound_entry(path)?;
+            directory.is_regular_file(name)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             self.windows_require_bound_entry(path)?;
             fs::symlink_metadata(path).map(|metadata| metadata.file_type().is_file())
@@ -680,7 +688,7 @@ impl RecoveryStore {
         }
         #[cfg(windows)]
         {
-            write_atomic_private_windows(&destination, snapshot.instance_id(), &encoded)
+            write_atomic_private_windows(self, &destination, snapshot.instance_id(), &encoded)
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -2000,19 +2008,24 @@ fn unix_recovery_stage_path(parent: &Path, instance_id: RecoveryInstanceId) -> P
 
 #[cfg(windows)]
 fn write_atomic_private_windows(
+    store: &RecoveryStore,
     destination: &Path,
     instance_id: RecoveryInstanceId,
     bytes: &[u8],
 ) -> io::Result<()> {
-    write_atomic_private_windows_with(
+    let (_, destination_name) = store.windows_bound_entry(destination)?;
+    WindowsRecoveryEntryName::new(destination_name)?;
+    write_atomic_private_with_sync_and_create(
         destination,
         instance_id,
         bytes,
+        |stage| store.entry_create_private_new(stage),
         noter_platform::replace_existing,
+        RecoveryParentSync::sync,
     )
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn write_atomic_private_windows_with(
     destination: &Path,
     instance_id: RecoveryInstanceId,
@@ -2032,7 +2045,7 @@ fn write_atomic_private_windows_with(
     )
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn write_atomic_private_with_sync(
     destination: &Path,
     instance_id: RecoveryInstanceId,
@@ -2044,12 +2057,35 @@ fn write_atomic_private_with_sync(
     ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
     sync_parent: impl FnOnce(RecoveryParentSync) -> io::Result<noter_platform::ParentSyncOutcome>,
 ) -> io::Result<()> {
+    write_atomic_private_with_sync_and_create(
+        destination,
+        instance_id,
+        bytes,
+        noter_platform::create_private_new_file,
+        replace,
+        sync_parent,
+    )
+}
+
+#[cfg(any(windows, test))]
+fn write_atomic_private_with_sync_and_create(
+    destination: &Path,
+    instance_id: RecoveryInstanceId,
+    bytes: &[u8],
+    create: impl FnOnce(&Path) -> io::Result<File>,
+    replace: impl FnOnce(
+        &Path,
+        &Path,
+        Option<&Path>,
+    ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
+    sync_parent: impl FnOnce(RecoveryParentSync) -> io::Result<noter_platform::ParentSyncOutcome>,
+) -> io::Result<()> {
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)?;
 
     let stage = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Stage)?;
     let backup = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Backup)?;
-    let write_result = commit_staged_record_with(&stage, destination, &backup, bytes, replace);
+    let write_result =
+        commit_staged_record_with(&stage, destination, &backup, bytes, create, replace);
 
     // Every post-create failure retains only the deterministic per-instance
     // slots. Pathname cleanup could remove a rebound object, while the next
@@ -2126,13 +2162,14 @@ fn commit_staged_record_with(
     destination: &Path,
     backup: &Path,
     bytes: &[u8],
+    create: impl FnOnce(&Path) -> io::Result<File>,
     replace: impl FnOnce(
         &Path,
         &Path,
         Option<&Path>,
     ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
 ) -> Result<RecoveryCommitSuccess, RecoveryCommitFailure> {
-    let mut file = noter_platform::create_private_new_file(stage)?;
+    let mut file = create(stage)?;
     file.write_all(bytes)?;
     file.flush()?;
     noter_platform::sync_file(&file)?;
@@ -3358,6 +3395,42 @@ mod tests {
                 .contains("injected parent barrier failure")
         );
         assert_eq!(fs::read(&destination)?, bytes);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn staged_windows_write_refuses_an_unbound_parent_without_side_effects() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let outside = dir.path().join("outside").join("record.rec");
+        let snapshot = snapshot_at(60, 23, 31, b"private recovery");
+
+        assert_eq!(
+            write_atomic_private_windows(
+                &store,
+                &outside,
+                snapshot.instance_id(),
+                &snapshot.encode(),
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(!outside.parent().expect("parent").exists());
+        let invalid_name = store.records_dir().join("record.rec:stream");
+        assert_eq!(
+            write_atomic_private_windows(
+                &store,
+                &invalid_name,
+                snapshot.instance_id(),
+                &snapshot.encode(),
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(fs::read_dir(store.records_dir())?.next().is_none());
         Ok(())
     }
 

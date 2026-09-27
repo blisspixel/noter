@@ -618,7 +618,8 @@ removal on macOS, handle-relative record, lease, and quarantine operations,
 identity-checked retirement in a private directory, and native fixtures for
 group and other write access, ancestor rebind, final-entry swaps, links, and
 removal. Windows store entry operations now refuse paths outside the held
-directories; routine opens and lease or quarantine creation use those handles.
+directories; routine opens, staged record creation, and lease or quarantine
+creation use those handles.
 Windows cleanup deletes an opened file after any required identity check, so a
 rebound pathname cannot delete the replacement.
 
@@ -627,11 +628,14 @@ NTFS, rejects reparse and cross-volume directory components, verifies stable
 preferred identities, retains every traversed and recovery-directory handle
 without delete sharing, rejects state DACLs that grant unprivileged mutation,
 and applies an exact protected inheritable user-and-SYSTEM DACL to the owned
-recovery subtree. Routine store entry opens and lease or quarantine creation
-are handle-relative and have native fixtures for exclusive private creation,
-final links, and name replacement after open. Record staging and
-reconciliation, enumeration, replacement, quarantine installation, sync, and
-redirected or synchronized-root detection keep M4-H1 in progress.
+recovery subtree. Routine store entry opens, startup entry classification,
+staged record creation, and lease or quarantine creation are handle-relative
+and have native fixtures for exclusive private creation, regular-file and
+directory classification, final links, name replacement after open, and
+rejection of an unbound parent or invalid stage destination before writing.
+Stage observation and installation, reconciliation, enumeration, replacement,
+quarantine installation, sync, and redirected or synchronized-root detection
+keep M4-H1 in progress.
 
 The Unix cleanup ADR was required either to provide a genuinely object-bound
 retirement strategy or to retain and safely neutralize the exact opened object

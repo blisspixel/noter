@@ -8,13 +8,21 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Classify Windows recovery entries through the held directory. Startup
+  inspection skips directories and final reparse points without following a
+  raced parent pathname.
+- Create staged Windows recovery snapshots relative to the held records
+  directory. An outside destination or invalid entry name is refused without
+  creating a stage or parent directory. Stage observation and installation
+  remain pathname-based work in M4-H1.
 - Delete Windows recovery entries through their opened handles. If a checked
   entry name is replaced before cleanup, the replacement is preserved.
 - Open routine Windows crash-recovery entries and create lease or quarantine
   entries relative to the held records and quarantine directories. A final
   link is refused, private creation stays exclusive, and an opened file retains
-  its identity across a name change. Record staging, reconciliation,
-  enumeration, replacement, and synchronization remain in M4-H1 work.
+  its identity across a name change. Stage observation and installation,
+  reconciliation, enumeration, replacement, and synchronization remain in
+  M4-H1 work.
 - Bind crash recovery to verified, held directories on Linux and macOS. Noter
   reopens the state directory from `/` without following links and refuses it
   when another user could change a directory on the way, when the state
