@@ -57,16 +57,12 @@ impl fmt::Write for BoundedTextWriter {
         let prefix_limit = self
             .maximum_bytes
             .saturating_sub(self.truncation_suffix.len());
-        let mut boundary = self.output.len().min(prefix_limit);
-        while !self.output.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
+        let boundary = self
+            .output
+            .floor_char_boundary(self.output.len().min(prefix_limit));
         self.output.truncate(boundary);
         let available = prefix_limit.saturating_sub(self.output.len());
-        let mut boundary = available.min(value.len());
-        while !value.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
+        let boundary = value.floor_char_boundary(available.min(value.len()));
         self.output.push_str(&value[..boundary]);
         self.truncated = true;
         Ok(())
@@ -190,6 +186,11 @@ mod tests {
     fn destination_label_truncates_a_full_parent_at_a_character_boundary() {
         assert_eq!(
             bounded_destination_label(Path::new("note.md")),
+            Some("note.md".to_owned())
+        );
+        let root_child = Path::new(std::path::MAIN_SEPARATOR_STR).join("note.md");
+        assert_eq!(
+            bounded_destination_label(&root_child),
             Some("note.md".to_owned())
         );
         let parent = "p".repeat(MAX_SAVE_RECOVERY_LABEL_BYTES - 1);

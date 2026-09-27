@@ -1192,6 +1192,7 @@ mod imp {
         const ACL_FIRST_ENTRY: libc::c_int = 0;
         const ACL_NEXT_ENTRY: libc::c_int = -1;
         const ACL_EXTENDED_DENY: libc::c_int = 2;
+        const MAX_MACOS_ACL_ENTRIES: usize = 128;
 
         unsafe extern "C" {
             fn acl_get_fd(fd: libc::c_int) -> Acl;
@@ -1215,7 +1216,7 @@ mod imp {
         let result = (|| {
             let mut entry = std::ptr::null_mut();
             let mut entry_id = ACL_FIRST_ENTRY;
-            loop {
+            for _ in 0..=MAX_MACOS_ACL_ENTRIES {
                 // SAFETY: acl remains live, and entry points to writable
                 // storage for the entry descriptor returned by the ACL API.
                 if unsafe { acl_get_entry(acl, entry_id, &raw mut entry) } != 0 {
@@ -1237,6 +1238,10 @@ mod imp {
                 }
                 entry_id = ACL_NEXT_ENTRY;
             }
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a directory access control list exceeds the macOS entry limit",
+            ))
         })();
         // SAFETY: acl is the live allocation returned above and is released
         // exactly once, including when entry iteration fails.
@@ -2560,6 +2565,20 @@ mod imp {
                 if !status.success() {
                     return Err(io::Error::other(format!(
                         "chmod failed to create the ancestor ACL fixture: {status}"
+                    )));
+                }
+            }
+            // An allow rule after two deny entries must still be found.
+            for rule in ["everyone deny delete", "everyone deny write"] {
+                let status = std::process::Command::new("/bin/chmod")
+                    .arg("+a#")
+                    .arg("0")
+                    .arg(rule)
+                    .arg(&granted)
+                    .status()?;
+                if !status.success() {
+                    return Err(io::Error::other(format!(
+                        "chmod failed to order the ancestor ACL fixture: {status}"
                     )));
                 }
             }
