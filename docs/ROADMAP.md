@@ -631,10 +631,10 @@ and applies an exact protected inheritable user-and-SYSTEM DACL to the owned
 recovery subtree. Routine store entry opens, staged record creation, and lease
 or quarantine creation are handle-relative and have native fixtures for
 exclusive private creation, final links, name replacement after open, and
-rejection of an unbound staging parent without side effects. Stage observation
-and installation, reconciliation, enumeration, replacement, quarantine
-installation, sync, and redirected or synchronized-root detection keep M4-H1
-in progress.
+rejection of an unbound parent or invalid stage destination before writing.
+Stage observation and installation, reconciliation, enumeration, replacement,
+quarantine installation, sync, and redirected or synchronized-root detection
+keep M4-H1 in progress.
 
 The Unix cleanup ADR was required either to provide a genuinely object-bound
 retirement strategy or to retain and safely neutralize the exact opened object

@@ -9,9 +9,9 @@ that candidate is frozen for publication.
 ### Security
 
 - Create staged Windows recovery snapshots relative to the held records
-  directory. A destination outside that directory is refused without creating
-  a stage or parent directory. Stage observation and installation remain
-  pathname-based work in M4-H1.
+  directory. An outside destination or invalid entry name is refused without
+  creating a stage or parent directory. Stage observation and installation
+  remain pathname-based work in M4-H1.
 - Delete Windows recovery entries through their opened handles. If a checked
   entry name is replaced before cleanup, the replacement is preserved.
 - Open routine Windows crash-recovery entries and create lease or quarantine

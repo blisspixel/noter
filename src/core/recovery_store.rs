@@ -19,7 +19,9 @@ use noter_platform::{CommitReceipt, ReplaceExistingOutcome};
 #[cfg(unix)]
 use noter_platform::{UnixRecoveryDirectory, UnixRecoveryNamespace};
 #[cfg(windows)]
-use noter_platform::{WindowsRecoveryDirectory, WindowsRecoveryNamespace};
+use noter_platform::{
+    WindowsRecoveryDirectory, WindowsRecoveryEntryName, WindowsRecoveryNamespace,
+};
 
 use super::recovery::{
     RECOVERY_MAGIC, RECOVERY_SCHEMA_VERSION, RecoveryInstanceId, RecoveryQuarantineReason,
@@ -2005,7 +2007,8 @@ fn write_atomic_private_windows(
     instance_id: RecoveryInstanceId,
     bytes: &[u8],
 ) -> io::Result<()> {
-    store.windows_bound_entry(destination)?;
+    let (_, destination_name) = store.windows_bound_entry(destination)?;
+    WindowsRecoveryEntryName::new(destination_name)?;
     write_atomic_private_with_sync_and_create(
         destination,
         instance_id,
@@ -3409,6 +3412,19 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
         assert!(!outside.parent().expect("parent").exists());
+        let invalid_name = store.records_dir().join("record.rec:stream");
+        assert_eq!(
+            write_atomic_private_windows(
+                &store,
+                &invalid_name,
+                snapshot.instance_id(),
+                &snapshot.encode(),
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(fs::read_dir(store.records_dir())?.next().is_none());
         Ok(())
     }
 
