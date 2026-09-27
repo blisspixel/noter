@@ -539,10 +539,11 @@ or still-interactive save preserves the document and returns to a safe explicit
 decision. Indeterminate-save recovery guidance survives these decisions and
 Cancel. Independent in-memory records retain every unresolved destination and
 instruction instead of allowing a later Save As to replace earlier evidence.
-An indeterminate outcome stops every Save and Save As before destination work
-until the user explicitly reconciles each record. New, Open, and notice
-dismissal never release the block. A confirmation removes one record without
-writing or retrying. Each bounded record reserves its vector slot, selected
+In the window, an indeterminate outcome stops every Save and Save As before
+destination work until the user explicitly reconciles each record. New, Open,
+and notice dismissal never release the block. A confirmation removes one
+record without writing or retrying. Each bounded record reserves its vector
+slot, selected
 destination, 1-KiB display label, and 4-KiB diagnostic before mutation; encoded
 paths above 128 KiB are refused before save work, the ledger retains at most 16
 records, and the scroll-bounded surfaces expose the destination plus an explicit
@@ -550,11 +551,17 @@ path-copy action. Non-Unicode paths use a labeled reversible hexadecimal
 operating-system representation rather than lossy replacement text. The
 confirmation repeats the diagnostic and path action; removing the last record
 clears only its stale block error. Save availability is a constant-time
-in-memory decision with no repaint-time filesystem inspection. Exhaustive
-transition tests and a
-fixed-seed 512-case command-sequence property compare the reducer with an
-independent model. A pure external-change classifier and conflict reducer now
-compare the trusted load or save baseline with focus-regain and bounded
+in-memory decision with no repaint-time filesystem inspection.
+
+The TUI still pauses only saves to the uncertain path and permits Save As
+elsewhere; beta.2 must give it the same bounded records, global save block,
+exact path-copy
+action, and explicit per-record reconciliation before the next save.
+
+Exhaustive transition tests and a fixed-seed 512-case command-sequence property
+compare the reducer with an independent model. A pure external-change
+classifier and conflict reducer now compare the trusted load or save baseline
+with focus-regain and bounded
 focused-timer inspections. Changed, deleted, special, and unreadable outcomes
 prompt Reload Disk Version, Keep Editing, or Save As. Keep Editing never
 rebaselines the expectation, so ordinary Save still fails closed through the
