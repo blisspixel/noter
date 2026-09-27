@@ -1,4 +1,3 @@
-use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -20,6 +19,13 @@ use noter::core::line_endings::LineEndingProfile;
 use noter::core::markdown::count_markdown_diagnostics;
 use noter::core::revision::Revision;
 use noter::core::save::{FileObservation, SaveOutcome, SaveStage, TargetState};
+#[cfg(test)]
+use noter::core::save_recovery::MAX_SAVE_RECOVERY_LABEL_BYTES;
+use noter::core::save_recovery::{
+    MAX_SAVE_RECOVERY_DESTINATION_BYTES, MAX_SAVE_RECOVERY_MESSAGE_BYTES,
+    MAX_SAVE_RECOVERY_RECORDS, bounded_destination_label, recovery_path_clipboard_text,
+    write_save_recovery_message,
+};
 use noter::core::search::SearchDirection;
 use noter::core::undo::{HistoryApplyOutcome, HistoryRecordOutcome, UndoHistory};
 use noter::error::NoterError;
@@ -84,14 +90,9 @@ const INTERACTIVE_TEXT_MAX_LABEL: &str = "8 MiB";
 // so concurrent writers surface without thrashing large-file fingerprint work.
 const EXTERNAL_INSPECT_INTERVAL_SECS: f64 = 15.0;
 const EXTERNAL_CHANGE_SAVE_BLOCK_MESSAGE: &str = "Ordinary Save is paused while an external file change needs a decision. Choose Reload Disk Version, Keep Editing, or Save As first.";
-const MAX_SAVE_RECOVERY_RECORDS: usize = 16;
-const MAX_SAVE_RECOVERY_MESSAGE_BYTES: usize = 4 << 10;
-const MAX_SAVE_RECOVERY_DESTINATION_BYTES: usize = 128 << 10;
-const MAX_SAVE_RECOVERY_LABEL_BYTES: usize = 1 << 10;
 const SAVE_RECOVERY_BLOCK_MESSAGE: &str = "Another save cannot start while an uncertain save outcome remains. Inspect the destination and retained recovery artifact, preserve the version you need, and explicitly reconcile the listed outcome first.";
 const SAVE_RECOVERY_RESERVATION_FAILURE_MESSAGE: &str = "Save stopped before writing because Noter could not safely retain the recovery evidence required if the commit outcome became uncertain. Preserve and reconcile any listed recovery artifacts before retrying.";
 const SAVE_RECOVERY_PATH_LIMIT_MESSAGE: &str = "Save stopped before writing because the selected destination path is too large to retain safely if the commit outcome becomes uncertain.";
-const SAVE_RECOVERY_TRUNCATION_SUFFIX: &str = "... Recovery detail was shortened to bound memory. Do not save again. Inspect the destination and every retained `.noter-save-*.tmp` sibling before explicit reconciliation.";
 const TEXT_INPUT_LIMIT_PREFIX: &str =
     "Input was limited to keep this document within its supported";
 const MARKDOWN_INPUT_LIMIT_MESSAGE: &str = "Markdown Mode limited this input to keep the source within its 1 MiB safety budget. Text within the remaining budget was preserved.";
@@ -4124,108 +4125,6 @@ impl NoterApp {
     }
 }
 
-struct BoundedTextWriter {
-    output: String,
-    maximum_bytes: usize,
-    truncation_suffix: &'static str,
-    truncated: bool,
-}
-
-impl BoundedTextWriter {
-    fn new(output: String, maximum_bytes: usize, truncation_suffix: &'static str) -> Self {
-        debug_assert!(output.capacity() >= maximum_bytes);
-        debug_assert!(truncation_suffix.len() <= maximum_bytes);
-        Self {
-            output,
-            maximum_bytes,
-            truncation_suffix,
-            truncated: false,
-        }
-    }
-
-    fn finish(mut self) -> String {
-        if self.truncated {
-            self.output.push_str(self.truncation_suffix);
-        }
-        debug_assert!(self.output.len() <= self.maximum_bytes);
-        self.output
-    }
-}
-
-impl fmt::Write for BoundedTextWriter {
-    fn write_str(&mut self, value: &str) -> fmt::Result {
-        if self.truncated {
-            return Ok(());
-        }
-        if self.output.len().saturating_add(value.len()) <= self.maximum_bytes {
-            self.output.push_str(value);
-            return Ok(());
-        }
-
-        let prefix_limit = self
-            .maximum_bytes
-            .saturating_sub(self.truncation_suffix.len());
-        if self.output.len() > prefix_limit {
-            let mut boundary = prefix_limit;
-            while !self.output.is_char_boundary(boundary) {
-                boundary -= 1;
-            }
-            self.output.truncate(boundary);
-        }
-        let available = prefix_limit.saturating_sub(self.output.len());
-        let mut boundary = available.min(value.len());
-        while !value.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
-        self.output.push_str(&value[..boundary]);
-        self.truncated = true;
-        Ok(())
-    }
-}
-
-fn bounded_destination_label(path: &Path) -> Option<String> {
-    let mut output = String::new();
-    output
-        .try_reserve_exact(MAX_SAVE_RECOVERY_LABEL_BYTES)
-        .ok()?;
-    let mut writer = BoundedTextWriter::new(output, MAX_SAVE_RECOVERY_LABEL_BYTES, "...");
-    match (path.parent().and_then(Path::file_name), path.file_name()) {
-        (Some(parent), Some(name)) => {
-            let _ = write!(
-                writer,
-                "{}{}{}",
-                parent.to_string_lossy(),
-                std::path::MAIN_SEPARATOR,
-                name.to_string_lossy()
-            );
-        }
-        (_, Some(name)) => {
-            let _ = write!(writer, "{}", name.to_string_lossy());
-        }
-        _ => {
-            let _ = write!(writer, "{}", path.display());
-        }
-    }
-    Some(writer.finish())
-}
-
-fn write_save_recovery_message(
-    output: String,
-    recovery_artifact: &noter::core::save::StorageError,
-    error: &noter::core::save::StorageError,
-) -> String {
-    let mut writer = BoundedTextWriter::new(
-        output,
-        MAX_SAVE_RECOVERY_MESSAGE_BYTES,
-        SAVE_RECOVERY_TRUNCATION_SUFFIX,
-    );
-    let _ = write!(
-        writer,
-        "Save state is uncertain. Noter has stopped every save until you explicitly reconcile this outcome. Recovery follow-up: {recovery_artifact}. Commit detail: {error}"
-    );
-    writer.finish()
-}
-
 fn show_save_recovery_records(
     ui: &mut egui::Ui,
     recoveries: &[SaveRecovery],
@@ -4301,49 +4200,6 @@ fn show_save_recovery_copy_action(ui: &mut egui::Ui, recovery: &SaveRecovery) {
     }
 }
 
-fn recovery_path_clipboard_text(path: &Path) -> String {
-    if let Some(path) = path.to_str() {
-        return path.to_owned();
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt as _;
-
-        hex_encoded_path("unix-path-bytes:", path.as_os_str().as_bytes())
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt as _;
-
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let units = path.as_os_str().encode_wide();
-        let unit_count = units.clone().count();
-        let mut output = String::new();
-        output
-            .try_reserve_exact(
-                "windows-path-utf16:"
-                    .len()
-                    .saturating_add(unit_count.saturating_mul(4)),
-            )
-            .expect("bounded recovery paths fit the clipboard representation");
-        output.push_str("windows-path-utf16:");
-        for unit in units {
-            for shift in [12, 8, 4, 0] {
-                output.push(char::from(HEX[usize::from((unit >> shift) & 0x0f)]));
-            }
-        }
-        output
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        hex_encoded_path(
-            "platform-path-encoding:",
-            path.as_os_str().as_encoded_bytes(),
-        )
-    }
-}
-
 const fn document_input_event_survives_modal_transition(event: &egui::Event) -> bool {
     matches!(
         event,
@@ -4353,21 +4209,6 @@ const fn document_input_event_survives_modal_transition(event: &egui::Event) -> 
             | egui::Event::Key { pressed: true, .. }
             | egui::Event::Ime(_)
     )
-}
-
-#[cfg(not(windows))]
-fn hex_encoded_path(prefix: &str, bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::new();
-    output
-        .try_reserve_exact(prefix.len().saturating_add(bytes.len().saturating_mul(2)))
-        .expect("bounded recovery paths fit the clipboard representation");
-    output.push_str(prefix);
-    for byte in bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    output
 }
 
 fn persistence_status_label(document: &Document, external_memory_at_risk: bool) -> &'static str {

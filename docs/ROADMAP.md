@@ -553,10 +553,12 @@ confirmation repeats the diagnostic and path action; removing the last record
 clears only its stale block error. Save availability is a constant-time
 in-memory decision with no repaint-time filesystem inspection.
 
-The TUI still pauses only saves to the uncertain path and permits Save As
-elsewhere; beta.2 must give it the same bounded records, global save block,
-exact path-copy
-action, and explicit per-record reconciliation before the next save.
+The TUI now retains the same bounded records and pauses every Save and Save As
+after an uncertain outcome. `^R` opens each record's destination and retained
+diagnostic. The user can request an exact path copy through terminal clipboard
+support, then explicitly reconcile one record at a time without a write or
+retry. Native pseudo-terminal evidence and exact-head CI remain before this is
+verified for beta.2.
 
 Exhaustive transition tests and a fixed-seed 512-case command-sequence property
 compare the reducer with an independent model. A pure external-change

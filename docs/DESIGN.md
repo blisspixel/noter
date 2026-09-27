@@ -1503,10 +1503,14 @@ Current state:
   from `src/core/` through `Document`. Save, Save As, replace confirmation, and
   hard-link confirmation use the same `Document` calls as the GUI, and a save
   that does not commit never exits or discards text.
-- **Uncertain outcomes:** the GUI blocks every save until the user reconciles
-  an uncertain outcome in its save-recovery flow. The TUI has no such flow, so
-  it pauses saves to the uncertain path only and leaves Save As to other
-  destinations available, so the text can always be written somewhere.
+- **Uncertain outcomes:** the GUI and TUI share bounded evidence and exact path
+  representation. Before any save inspects or mutates its destination, the TUI
+  reserves a record slot, selected path, short label, and diagnostic buffer.
+  An uncertain outcome pauses all saves and exit. `Ctrl+R` opens a full-screen
+  record with scrollable diagnostic, exact path copy through an explicit OSC 52
+  request, and per-record reconciliation. Reconciliation removes only the
+  in-memory record without retrying a write. Terminals may decline clipboard
+  requests, so the short destination label remains visible for inspection.
 - **Undo and recovery:** edits are single-range `EditTransaction`s built
   from the changed bytes only, recorded in the core `UndoHistory` with the
   window's coalescing rules. Crash recovery uses the same
@@ -1520,7 +1524,8 @@ Current state:
 - **Shortcuts:** `Ctrl+S` Save, `Ctrl+O` Save As (prefilled with the current
   name), `Ctrl+X`, `Ctrl+Q`, or `Ctrl+C` Exit, `Ctrl+W` or `Ctrl+F` Find,
   `Ctrl+K` Cut Line, `Ctrl+U` Paste, `Ctrl+Z` Undo, `Ctrl+Y` Redo, `Ctrl+E`
-  Markdown styling, `Ctrl+T` Theme, `Ctrl+G` Help.
+  Markdown styling, `Ctrl+T` Theme, `Ctrl+R` Save Reconciliation,
+  `Ctrl+G` Help.
 - **Mouse:** click to place the caret, wheel to scroll, and clickable shortcut
   legend. There is no drag selection.
 - **Terminal-safe drawing:** document text, file names, typed input, and

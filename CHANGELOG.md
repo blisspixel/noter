@@ -51,6 +51,11 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Pause every terminal Save and Save As after an uncertain commit. `^R` now
+  shows a bounded record for each unresolved destination, its recovery detail,
+  an explicit exact path-copy action, and a per-record reconciliation decision.
+  Saving and exit resume only after the user has inspected and reconciled all
+  records; reconciliation does not write or retry.
 - Explain a missing Linux window library instead of crashing. Without
   `libxkbcommon-x11` the window aborted with a panic. Noter now checks the
   keyboard, display-protocol, and OpenGL libraries the window loads for the
