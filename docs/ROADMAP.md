@@ -635,9 +635,9 @@ and applies an exact protected inheritable user-and-SYSTEM DACL to the owned
 recovery subtree. Routine store entry opens, startup entry classification,
 staged record creation, new-record installation from the opened stage, and
 lease or quarantine creation are handle-relative and have native fixtures for
-exclusive private creation, regular-file and
-directory classification, final links, name replacement after open, and
-rejection of an unbound parent or invalid stage destination before writing.
+exclusive private creation, regular-file and directory classification, final
+links, name replacement after open, and rejection of an unbound parent or
+invalid stage destination before writing.
 Existing-record replacement, failure-completion mutation, synchronization,
 and redirected or synchronized-root detection keep M4-H1 in progress.
 
