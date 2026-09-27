@@ -13,9 +13,10 @@ that candidate is frozen for publication.
   when another user could change a directory on the way, when the state
   directory is not yours, when a recovery directory is a link, or when it is on
   a known network or shared-folder file system. Noter's state and recovery
-  directories are made private, and on macOS their access control lists are
-  removed. A directory writable by your own private group, as a umask of 002
-  leaves it, is accepted. Every record, lease, and quarantine operation runs
+  directories are made private. On macOS their access control lists are
+  removed, and an ancestor with an ACL grant is refused while deny-only ACLs
+  remain accepted. A directory writable by your own private group, as a umask
+  of 002 leaves it, is accepted. Every record, lease, and quarantine operation runs
   through the held directories, so
   renaming a parent directory cannot redirect recovery content, and a recovery
   tree removed while Noter runs fails persistence visibly instead of losing

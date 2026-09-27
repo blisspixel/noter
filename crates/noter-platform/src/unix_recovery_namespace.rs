@@ -8,8 +8,8 @@
 //! directory is owned by this user and closed to writes by others, the
 //! recovery subtree is private to this user and on the state directory's
 //! device, the state and recovery directories have no extended ACL on macOS,
-//! and the file system is not a known
-//! network or shared one.
+//! ancestors have no granting ACL, and the file system is not a known network
+//! or shared one.
 //!
 //! Every entry operation is relative to a held descriptor, so renaming or
 //! replacing any ancestor after binding cannot redirect recovery content.
@@ -304,11 +304,11 @@ fn bind_state_directory(state_root: &Path, user: User) -> io::Result<UnixRecover
 
     let mut directory = open_directory_no_follow(CWD, OsStr::new("/"))?;
     let mut walked = PathBuf::from("/");
-    verify_ancestor(&fstat(&directory)?, user, &walked)?;
+    verify_ancestor(&directory, user, &walked)?;
     for (index, name) in ancestor_names.iter().enumerate() {
         directory = open_or_create_directory(&directory, name, index >= existing_count)?;
         walked.push(name);
-        verify_ancestor(&fstat(&directory)?, user, &walked)?;
+        verify_ancestor(&directory, user, &walked)?;
     }
     let directory = open_or_create_directory(&directory, state_name, names.len() > existing_count)?;
     walked.push(state_name);
@@ -391,10 +391,26 @@ impl User {
     }
 }
 
-fn verify_ancestor(status: &Stat, user: User, path: &Path) -> io::Result<()> {
-    if !ancestor_is_trusted(status.st_uid, status.st_gid, permission_bits(status), user) {
+fn verify_ancestor(directory: &File, user: User, path: &Path) -> io::Result<()> {
+    let status = fstat(directory)?;
+    if !ancestor_is_trusted(status.st_uid, status.st_gid, permission_bits(&status), user) {
         return Err(permission_denied(format!(
             "{} can be changed by another user",
+            path.display()
+        )));
+    }
+    #[cfg(target_os = "macos")]
+    macos_verify_ancestor_acl(directory, path)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_verify_ancestor_acl(directory: &File, path: &Path) -> io::Result<()> {
+    // An allow ACL can grant namespace writes despite safe mode bits. Deny-only
+    // ACLs, including those on default home folders, do not grant access.
+    if crate::imp::macos_open_file_has_allow_acl(directory)? {
+        return Err(permission_denied(format!(
+            "{} has an access control list that grants access",
             path.display()
         )));
     }

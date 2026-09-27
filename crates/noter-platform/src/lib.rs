@@ -1179,6 +1179,73 @@ mod imp {
         Ok(())
     }
 
+    /// Reports whether an open directory has any ACL entry that grants access.
+    /// Deny-only ACLs are common on macOS home directories and do not grant
+    /// another principal authority over the recovery namespace.
+    #[cfg(target_os = "macos")]
+    #[allow(unsafe_code)]
+    pub fn macos_open_file_has_allow_acl(file: &File) -> io::Result<bool> {
+        use std::os::fd::AsRawFd;
+
+        type Acl = *mut libc::c_void;
+        type AclEntry = *mut libc::c_void;
+        const ACL_FIRST_ENTRY: libc::c_int = 0;
+        const ACL_NEXT_ENTRY: libc::c_int = -1;
+        const ACL_EXTENDED_DENY: libc::c_int = 2;
+
+        unsafe extern "C" {
+            fn acl_get_fd(fd: libc::c_int) -> Acl;
+            fn acl_get_entry(acl: Acl, entry_id: libc::c_int, entry: *mut AclEntry) -> libc::c_int;
+            fn acl_get_tag_type(entry: AclEntry, tag: *mut libc::c_int) -> libc::c_int;
+            fn acl_free(object: *mut libc::c_void) -> libc::c_int;
+        }
+
+        // SAFETY: the borrowed descriptor remains open, and the returned ACL
+        // is owned here until the single acl_free call below.
+        let acl = unsafe { acl_get_fd(file.as_raw_fd()) };
+        if acl.is_null() {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(libc::ENOENT) {
+                Ok(false)
+            } else {
+                Err(error)
+            };
+        }
+
+        let result = (|| {
+            let mut entry = std::ptr::null_mut();
+            let mut entry_id = ACL_FIRST_ENTRY;
+            loop {
+                // SAFETY: acl remains live, and entry points to writable
+                // storage for the entry descriptor returned by the ACL API.
+                if unsafe { acl_get_entry(acl, entry_id, &raw mut entry) } != 0 {
+                    let error = io::Error::last_os_error();
+                    return if error.raw_os_error() == Some(libc::EINVAL) {
+                        Ok(false)
+                    } else {
+                        Err(error)
+                    };
+                }
+                let mut tag = 0;
+                // SAFETY: entry is a live descriptor within acl and tag points
+                // to writable storage for the returned tag type.
+                if unsafe { acl_get_tag_type(entry, &raw mut tag) } != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if tag != ACL_EXTENDED_DENY {
+                    return Ok(true);
+                }
+                entry_id = ACL_NEXT_ENTRY;
+            }
+        })();
+        // SAFETY: acl is the live allocation returned above and is released
+        // exactly once, including when entry iteration fails.
+        if unsafe { acl_free(acl.cast()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        result
+    }
+
     pub fn unix_open_for_cleanup(path: &Path) -> io::Result<File> {
         unix_open_existing_no_follow(path)
     }
@@ -2470,6 +2537,49 @@ mod imp {
                 read_macos_acl_snapshot(&File::open(namespace.state().path())?)?,
                 MacosAclSnapshot::Absent
             );
+            Ok(())
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn recovery_ancestors_accept_deny_acls_but_refuse_allow_acls() -> io::Result<()> {
+            let directory = tempdir()?;
+            let denied = directory.path().join("deny-only");
+            let granted = directory.path().join("allow");
+            std::fs::create_dir(&denied)?;
+            std::fs::create_dir(&granted)?;
+            for (path, rule) in [
+                (&denied, "everyone deny delete"),
+                (&granted, "everyone allow read,file_inherit"),
+            ] {
+                let status = std::process::Command::new("/bin/chmod")
+                    .arg("+a")
+                    .arg(rule)
+                    .arg(path)
+                    .status()?;
+                if !status.success() {
+                    return Err(io::Error::other(format!(
+                        "chmod failed to create the ancestor ACL fixture: {status}"
+                    )));
+                }
+            }
+            let denied_file = File::open(&denied)?;
+            let granted_file = File::open(&granted)?;
+            assert!(!super::macos_open_file_has_allow_acl(&denied_file)?);
+            assert!(super::macos_open_file_has_allow_acl(&granted_file)?);
+
+            crate::UnixRecoveryNamespace::open_or_create(
+                &denied.join("state"),
+                std::ffi::OsStr::new("recovery"),
+            )?;
+            let error = crate::UnixRecoveryNamespace::open_or_create(
+                &granted.join("state"),
+                std::ffi::OsStr::new("recovery"),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(error.to_string().contains("access control list"));
+            assert!(!granted.join("state").exists());
             Ok(())
         }
 

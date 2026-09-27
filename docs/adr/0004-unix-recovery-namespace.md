@@ -37,7 +37,9 @@ relative to held, verified directories:
    do not own, and by its group only with the sticky bit or when that group is
    the user's private group (the process's group, numbered like the user, as
    systems with a private group per user create it and a umask of 002 leaves it
-   writable). Require the state directory itself to be owned by the current
+   writable). On macOS, inspect each held ancestor's ACL and refuse any allow
+   entry while accepting deny-only ACLs, including those on default home
+   folders. Require the state directory itself to be owned by the current
    user; it is Noter's own directory, so a mode that lets others write it is
    tightened to 0700. On macOS, remove its extended ACL and verify absence
    before binding child directories.
@@ -93,10 +95,9 @@ are outside the threat model, as they are for every other per-user store.
   the reason, and ordinary saves are unaffected.
 - Renaming or replacing any directory above a bound recovery directory after
   startup cannot redirect recovery reads, writes, or removals.
-- Ancestor checks cover owner and mode bits, not ACLs on directories above the
-  state directory. Default macOS home folders carry a deny-only ACL, and
-  rejecting all ancestor ACLs would disable recovery there; an ancestor ACL that
-  grants another user write access is not detected.
+- An ancestor ACL with an allow entry is refused on macOS, even when it grants
+  only the current user access. Deny-only ACLs remain accepted so default home
+  folders can retain recovery.
 - The Windows namespace keeps pathname operations inside its held,
   delete-protected directories and now refuses any path outside them. Moving
   those operations onto handle-relative Windows calls remains M4-H1 work.
@@ -107,7 +108,9 @@ are outside the threat model, as they are for every other per-user store.
   private tree, tightening of loose modes and of a state directory others can
   write, macOS removal of an inherited state-directory ACL, rejection of an
   ancestor others can write with the directory named,
-  acceptance of a sticky one and of the user's private group, refusal of links and
+  acceptance of a sticky one and of the user's private group, native macOS
+  acceptance of a deny-only ancestor ACL and refusal of an allow ACL before
+  state creation, refusal of links and
   non-directories in the recovery tree, one-time resolution of a link in the
   existing prefix, operations that follow the bound directory after an ancestor
   rename, refusal to remove a replaced entry, refusal of new content in a
