@@ -183,6 +183,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bounded_writer_keeps_exact_capacity_and_shortens_utf8_on_overflow() {
+        let mut exact = BoundedTextWriter::new(String::with_capacity(12), 12, "...");
+        write!(exact, "hello world!").unwrap();
+        assert_eq!(exact.finish(), "hello world!");
+
+        let mut partial = BoundedTextWriter::new(String::with_capacity(12), 12, "...");
+        write!(partial, "abcdefgh").unwrap();
+        write!(partial, "ééé").unwrap();
+        write!(partial, "ignored").unwrap();
+        assert_eq!(partial.finish(), "abcdefgh...");
+
+        let mut existing = BoundedTextWriter::new(String::with_capacity(12), 12, "...");
+        write!(existing, "abcdefghij").unwrap();
+        write!(existing, "xyz").unwrap();
+        assert_eq!(existing.finish(), "abcdefghi...");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_path_hex_preserves_each_byte() {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let bytes = [0x00, 0x0f, 0x10, 0x7f, 0x80, 0xab, 0xff];
+        let path = Path::new(std::ffi::OsStr::from_bytes(&bytes));
+        assert_eq!(
+            recovery_path_clipboard_text(path),
+            "unix-path-bytes:000f107f80abff"
+        );
+    }
+
+    #[test]
     fn destination_label_truncates_a_full_parent_at_a_character_boundary() {
         assert_eq!(
             bounded_destination_label(Path::new("note.md")),
