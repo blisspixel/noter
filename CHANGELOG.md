@@ -8,6 +8,9 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Inspect Windows recovery replacement stages, destinations, and backups
+  through the held records directory. Reconciliation holds the exact opened
+  destination while checking it and deletes only opened stage or backup files.
 - Enumerate Windows recovery entries through the held directory handle, with
   the existing startup and cleanup entry limits. A parent path change cannot
   redirect the scan to another directory.
