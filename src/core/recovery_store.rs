@@ -301,8 +301,9 @@ pub struct RecoveryStore {
 }
 
 /// Recovery entries are reached through the held directories of the bound
-/// namespace on Unix. Windows creation and opens are handle-relative; its
-/// remaining operations use paths inside held, delete-protected directories.
+/// namespace on Unix. Windows entry creation, opens, and classification are
+/// handle-relative; its remaining operations use paths inside held,
+/// delete-protected directories.
 impl RecoveryStore {
     #[cfg(windows)]
     fn windows_bound_entry<'a>(
@@ -468,7 +469,12 @@ impl RecoveryStore {
             let (directory, name) = self.unix_bound_entry(path)?;
             directory.is_regular_file(name)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let (directory, name) = self.windows_bound_entry(path)?;
+            directory.is_regular_file(name)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             self.windows_require_bound_entry(path)?;
             fs::symlink_metadata(path).map(|metadata| metadata.file_type().is_file())

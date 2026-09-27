@@ -1,8 +1,9 @@
 //! Windows recovery-directory namespace binding.
 //!
 //! This module binds the state and recovery directories to retained handles.
-//! Its entry creation and open methods are relative to those handles. Stage
-//! installation, replacement, and root classification remain separate M4-H1 work.
+//! Its entry creation, open, and classification methods are relative to those
+//! handles. Stage installation, replacement, and root classification remain
+//! separate M4-H1 work.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -118,6 +119,30 @@ impl WindowsRecoveryDirectory {
         open_entry_relative(&self.handle, name, true)
     }
 
+    /// Classifies an entry through the retained directory without following a
+    /// final reparse point. Directories and reparse points are not files.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is invalid, the entry is missing, or
+    /// its attributes cannot be inspected.
+    pub fn is_regular_file(&self, name: &OsStr) -> io::Result<bool> {
+        let share = combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
+            FILE_SHARE_DELETE,
+        );
+        let options =
+            combine_disjoint_flag_bits(FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT);
+        let file = open_entry_relative_with(
+            &self.handle,
+            name,
+            combine_disjoint_flag_bits(FILE_READ_ATTRIBUTES, SYNCHRONIZE),
+            share,
+            options,
+        )?;
+        regular_entry_handle(&file)
+    }
+
     /// Exclusively creates one owner-restricted entry relative to this handle.
     ///
     /// # Errors
@@ -130,6 +155,38 @@ impl WindowsRecoveryDirectory {
 }
 
 fn open_entry_relative(directory: &File, name: &OsStr, for_cleanup: bool) -> io::Result<File> {
+    let access = if for_cleanup {
+        combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(GENERIC_READ, DELETE),
+            SYNCHRONIZE,
+        )
+    } else {
+        combine_disjoint_flag_bits(GENERIC_READ, SYNCHRONIZE)
+    };
+    let share = if for_cleanup {
+        combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_DELETE)
+    } else {
+        combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
+            FILE_SHARE_DELETE,
+        )
+    };
+    let options = combine_disjoint_flag_bits(
+        combine_disjoint_flag_bits(FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT),
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    );
+    let file = open_entry_relative_with(directory, name, access, share, options)?;
+    verify_regular_entry_handle(&file)?;
+    Ok(file)
+}
+
+fn open_entry_relative_with(
+    directory: &File,
+    name: &OsStr,
+    access: u32,
+    share: u32,
+    options: u32,
+) -> io::Result<File> {
     let name = WindowsRecoveryEntryName::new(name)?;
     let mut units: Vec<u16> = name.as_os_str().encode_wide().collect();
     let byte_length = units
@@ -157,26 +214,6 @@ fn open_entry_relative(directory: &File, name: &OsStr, for_cleanup: bool) -> io:
     };
     let mut handle: HANDLE = std::ptr::null_mut();
     let mut status_block = IO_STATUS_BLOCK::default();
-    let access = if for_cleanup {
-        combine_disjoint_flag_bits(
-            combine_disjoint_flag_bits(GENERIC_READ, DELETE),
-            SYNCHRONIZE,
-        )
-    } else {
-        combine_disjoint_flag_bits(GENERIC_READ, SYNCHRONIZE)
-    };
-    let share = if for_cleanup {
-        combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_DELETE)
-    } else {
-        combine_disjoint_flag_bits(
-            combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
-            FILE_SHARE_DELETE,
-        )
-    };
-    let options = combine_disjoint_flag_bits(
-        combine_disjoint_flag_bits(FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT),
-        FILE_SYNCHRONOUS_IO_NONALERT,
-    );
     // SAFETY: `directory` stays open throughout the call. `units` is a live
     // validated UTF-16 component with an exact byte length; the object name,
     // attributes, output handle, and status block all point to initialized
@@ -214,7 +251,6 @@ fn open_entry_relative(directory: &File, name: &OsStr, for_cleanup: bool) -> io:
     // has not been wrapped or closed. File takes over its sole ownership.
     #[allow(unsafe_code)]
     let file = unsafe { File::from_raw_handle(handle) };
-    verify_regular_entry_handle(&file)?;
     Ok(file)
 }
 
@@ -223,6 +259,16 @@ fn nt_open_handle_usable(handle: HANDLE) -> bool {
 }
 
 fn verify_regular_entry_handle(file: &File) -> io::Result<()> {
+    if !regular_entry_handle(file)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery entry must be an ordinary file",
+        ));
+    }
+    Ok(())
+}
+
+fn regular_entry_handle(file: &File) -> io::Result<bool> {
     let mut basic = FILE_BASIC_INFO::default();
     let size = u32::try_from(size_of::<FILE_BASIC_INFO>()).map_err(|_| {
         io::Error::new(
@@ -246,13 +292,7 @@ fn verify_regular_entry_handle(file: &File) -> io::Result<()> {
     }
     let rejected =
         combine_disjoint_flag_bits(FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT);
-    if basic.FileAttributes & rejected != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "recovery entry must be an ordinary file",
-        ));
-    }
-    Ok(())
+    Ok(basic.FileAttributes & rejected == 0)
 }
 
 /// Retained Windows handles for the recovery directory hierarchy.
@@ -266,7 +306,7 @@ fn verify_regular_entry_handle(file: &File) -> io::Result<()> {
 /// created directories receive that policy at creation time. Fixed-drive
 /// classification does not prove that the profile is unsynchronized or local.
 ///
-/// Entry creation and open methods use these handles. Stage installation,
+/// Entry creation, open, and classification methods use these handles. Stage installation,
 /// reconciliation, enumeration, rename, quarantine installation, and
 /// synchronization still require handle-relative operations to complete the
 /// namespace contract.
@@ -959,6 +999,18 @@ mod tests {
         fs::write(&record, b"record")?;
         fs::write(&quarantined, b"quarantine")?;
         fs::write(&disposable, b"delete")?;
+        assert!(
+            namespace
+                .records()
+                .is_regular_file(OsStr::new("entry.rec"))?
+        );
+        let directory = namespace.records().path().join("folder.rec");
+        fs::create_dir(&directory)?;
+        assert!(
+            !namespace
+                .records()
+                .is_regular_file(OsStr::new("folder.rec"))?
+        );
 
         let mut opened = namespace.records().open_existing(OsStr::new("entry.rec"))?;
         let mut bytes = Vec::new();
@@ -989,6 +1041,11 @@ mod tests {
 
         let link = namespace.records().path().join("link.rec");
         symlink_file(&quarantined, &link)?;
+        assert!(
+            !namespace
+                .records()
+                .is_regular_file(OsStr::new("link.rec"))?
+        );
         assert_eq!(
             namespace
                 .records()
@@ -1017,6 +1074,14 @@ mod tests {
             namespace
                 .records()
                 .open_existing(OsStr::new("missing.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            namespace
+                .records()
+                .is_regular_file(OsStr::new("missing.rec"))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::NotFound

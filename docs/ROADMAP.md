@@ -628,9 +628,10 @@ NTFS, rejects reparse and cross-volume directory components, verifies stable
 preferred identities, retains every traversed and recovery-directory handle
 without delete sharing, rejects state DACLs that grant unprivileged mutation,
 and applies an exact protected inheritable user-and-SYSTEM DACL to the owned
-recovery subtree. Routine store entry opens, staged record creation, and lease
-or quarantine creation are handle-relative and have native fixtures for
-exclusive private creation, final links, name replacement after open, and
+recovery subtree. Routine store entry opens, startup entry classification,
+staged record creation, and lease or quarantine creation are handle-relative
+and have native fixtures for exclusive private creation, regular-file and
+directory classification, final links, name replacement after open, and
 rejection of an unbound parent or invalid stage destination before writing.
 Stage observation and installation, reconciliation, enumeration, replacement,
 quarantine installation, sync, and redirected or synchronized-root detection

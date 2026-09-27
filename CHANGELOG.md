@@ -8,6 +8,9 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Classify Windows recovery entries through the held directory. Startup
+  inspection skips directories and final reparse points without following a
+  raced parent pathname.
 - Create staged Windows recovery snapshots relative to the held records
   directory. An outside destination or invalid entry name is refused without
   creating a stage or parent directory. Stage observation and installation

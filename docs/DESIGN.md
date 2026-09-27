@@ -678,10 +678,11 @@ user; SYSTEM and Administrators may mutate it, while every other principal is
 limited to read and execute access. Noter's recovery, records, and quarantine
 directories are created or tightened through retained handles to an exact
 protected inheritable user-and-SYSTEM DACL. Every held directory denies delete
-sharing for the namespace lifetime. The store's routine entry opens, staged
-record creation, and lease or quarantine creation are relative to the held
-records or quarantine directory, validate a single entry component, and refuse
-final reparse points.
+sharing for the namespace lifetime. The store's routine entry opens, startup
+entry classification, staged record creation, and lease or quarantine creation
+are relative to the held records or quarantine directory, validate a single
+entry component, and refuse final reparse points. Classification treats
+directories and final reparse points as non-files.
 Private creation applies the owner-and-SYSTEM descriptor at creation time and
 verifies it on the opened handle. Stage observation and installation,
 reconciliation, enumeration, replacement, quarantine installation, and
