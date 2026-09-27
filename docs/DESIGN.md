@@ -678,13 +678,17 @@ user; SYSTEM and Administrators may mutate it, while every other principal is
 limited to read and execute access. Noter's recovery, records, and quarantine
 directories are created or tightened through retained handles to an exact
 protected inheritable user-and-SYSTEM DACL. Every held directory denies delete
-sharing for the namespace lifetime. Record enumeration, creation, replacement,
-and quarantine are still pathname-based, and fixed-drive classification does
-not prove that a profile is not synchronized or redirected. Record cleanup
-opens the named file without following reparse points and deletes that opened
-object after any required identity check; it cannot delete a replacement name
-that races the check. All record operations refuse paths outside the held
-records and quarantine directories.
+sharing for the namespace lifetime. The store's routine entry opens and lease
+or quarantine creation are relative to the held records or quarantine
+directory, validate a single entry component, and refuse final reparse points.
+Private creation applies the owner-and-SYSTEM descriptor at creation time and
+verifies it on the opened handle. Record staging and reconciliation,
+enumeration, replacement, quarantine installation, and synchronization remain
+pathname-based inside the held, delete-protected directories. Fixed-drive
+classification does not prove that a profile is not synchronized or redirected.
+Store entry operations refuse paths outside the held records and quarantine
+directories. Cleanup deletes the opened file after any required identity check,
+so a name replacement racing that check cannot be deleted instead.
 
 On Unix the whole namespace is bound
 ([ADR-0004](adr/0004-unix-recovery-namespace.md)). The state path is reopened
@@ -702,7 +706,7 @@ network, cluster, shared-folder, and user-space file systems are refused. Every 
 quarantine operation is relative to the held descriptors, a removed directory
 refuses new content, and retirement unlinks a name in its held private
 directory right after confirming that it still identifies the held object.
-M4-H1 remains in progress until Windows record operations become
+M4-H1 remains in progress until the remaining Windows record operations become
 handle-relative and redirected or synchronized roots are detected, with native
 evidence.
 
