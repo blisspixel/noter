@@ -368,20 +368,13 @@ impl RecoveryStore {
     /// Refuses a pathname outside the held records and quarantine directories.
     #[cfg(not(unix))]
     fn windows_require_bound_directory(&self, directory: &Path) -> io::Result<()> {
-        #[cfg(windows)]
-        {
-            self.windows_bound_directory(directory).map(|_| ())
-        }
-        #[cfg(not(windows))]
-        {
-            if directory == self.records_dir() || directory == self.quarantine_dir() {
-                Ok(())
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "the path is outside the bound recovery directories",
-                ))
-            }
+        if directory == self.records_dir() || directory == self.quarantine_dir() {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the path is outside the bound recovery directories",
+            ))
         }
     }
 
