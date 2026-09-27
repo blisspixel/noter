@@ -618,8 +618,8 @@ removal on macOS, handle-relative record, lease, and quarantine operations,
 identity-checked retirement in a private directory, and native fixtures for
 group and other write access, ancestor rebind, final-entry swaps, links, and
 removal. Windows store entry operations now refuse paths outside the held
-directories; routine opens, staged record creation, and lease or quarantine
-creation use those handles.
+directories; routine opens, staged record creation, new-record installation
+from the opened stage, and lease or quarantine creation use those handles.
 Windows cleanup deletes an opened file after any required identity check, so a
 rebound pathname cannot delete the replacement.
 
@@ -629,11 +629,12 @@ preferred identities, retains every traversed and recovery-directory handle
 without delete sharing, rejects state DACLs that grant unprivileged mutation,
 and applies an exact protected inheritable user-and-SYSTEM DACL to the owned
 recovery subtree. Routine store entry opens, startup entry classification,
-staged record creation, and lease or quarantine creation are handle-relative
-and have native fixtures for exclusive private creation, regular-file and
+staged record creation, new-record installation from the opened stage, and
+lease or quarantine creation are handle-relative and have native fixtures for
+exclusive private creation, regular-file and
 directory classification, final links, name replacement after open, and
 rejection of an unbound parent or invalid stage destination before writing.
-Stage observation and installation, reconciliation, enumeration, replacement,
+Stage observation, reconciliation, enumeration, existing-record replacement,
 quarantine installation, sync, and redirected or synchronized-root detection
 keep M4-H1 in progress.
 

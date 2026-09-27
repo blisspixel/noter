@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use getrandom::fill as fill_random;
 #[cfg(any(windows, test))]
-use noter_platform::{CommitReceipt, ReplaceExistingOutcome};
+use noter_platform::{CommitReceipt, InstallNewOutcome, ReplaceExistingOutcome};
 #[cfg(unix)]
 use noter_platform::{UnixRecoveryDirectory, UnixRecoveryNamespace};
 #[cfg(windows)]
@@ -2020,6 +2020,10 @@ fn write_atomic_private_windows(
         instance_id,
         bytes,
         |stage| store.entry_create_private_new(stage),
+        |file, _, destination| {
+            let (directory, name) = store.windows_bound_entry(destination)?;
+            directory.install_new_from_open(file, name)
+        },
         noter_platform::replace_existing,
         RecoveryParentSync::sync,
     )
@@ -2062,6 +2066,7 @@ fn write_atomic_private_with_sync(
         instance_id,
         bytes,
         noter_platform::create_private_new_file,
+        |_, stage, destination| noter_platform::install_new(stage, destination),
         replace,
         sync_parent,
     )
@@ -2073,6 +2078,7 @@ fn write_atomic_private_with_sync_and_create(
     instance_id: RecoveryInstanceId,
     bytes: &[u8],
     create: impl FnOnce(&Path) -> io::Result<File>,
+    install: impl FnOnce(&File, &Path, &Path) -> io::Result<CommitReceipt<InstallNewOutcome>>,
     replace: impl FnOnce(
         &Path,
         &Path,
@@ -2084,8 +2090,15 @@ fn write_atomic_private_with_sync_and_create(
 
     let stage = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Stage)?;
     let backup = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Backup)?;
-    let write_result =
-        commit_staged_record_with(&stage, destination, &backup, bytes, create, replace);
+    let write_result = commit_staged_record_with(
+        &stage,
+        destination,
+        &backup,
+        bytes,
+        create,
+        install,
+        replace,
+    );
 
     // Every post-create failure retains only the deterministic per-instance
     // slots. Pathname cleanup could remove a rebound object, while the next
@@ -2163,6 +2176,7 @@ fn commit_staged_record_with(
     backup: &Path,
     bytes: &[u8],
     create: impl FnOnce(&Path) -> io::Result<File>,
+    install: impl FnOnce(&File, &Path, &Path) -> io::Result<CommitReceipt<InstallNewOutcome>>,
     replace: impl FnOnce(
         &Path,
         &Path,
@@ -2173,12 +2187,14 @@ fn commit_staged_record_with(
     file.write_all(bytes)?;
     file.flush()?;
     noter_platform::sync_file(&file)?;
-    drop(file);
 
     if destination.exists() {
+        drop(file);
         finish_replace_with(stage, destination, backup, replace)
     } else {
-        match noter_platform::install_new(stage, destination) {
+        let install_result = install(&file, stage, destination);
+        drop(file);
+        match install_result {
             Ok(receipt) => {
                 let (_outcome, parent_sync) = receipt.into_parts();
                 // A platform fallback may retain one keyed hard-link stage.
@@ -3431,6 +3447,37 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
         assert!(fs::read_dir(store.records_dir())?.next().is_none());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn opened_stage_install_collision_replaces_the_raced_record() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let snapshot = snapshot_at(61, 24, 32, b"intended recovery");
+        let encoded = snapshot.encode();
+        let destination = store.live_path(snapshot.instance_id());
+
+        write_atomic_private_with_sync_and_create(
+            &destination,
+            snapshot.instance_id(),
+            &encoded,
+            |stage| store.entry_create_private_new(stage),
+            |file, _, destination| {
+                let mut raced = store.entry_create_private_new(destination)?;
+                raced.write_all(b"raced recovery")?;
+                noter_platform::sync_file(&raced)?;
+                drop(raced);
+                let (directory, name) = store.windows_bound_entry(destination)?;
+                directory.install_new_from_open(file, name)
+            },
+            noter_platform::replace_existing,
+            RecoveryParentSync::sync,
+        )?;
+
+        assert_eq!(fs::read(&destination)?, encoded);
+        assert_eq!(fs::read_dir(store.records_dir())?.count(), 1);
         Ok(())
     }
 
