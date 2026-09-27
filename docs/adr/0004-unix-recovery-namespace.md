@@ -39,8 +39,9 @@ relative to held, verified directories:
    [Linux ACL masks](https://man7.org/linux/man-pages/man5/acl.5.html) can make
    the group mode bits represent a named user's write grant. Refuse non-sticky
    group-writable ancestors even when their group number matches the user.
-   On macOS, inspect each held ancestor's ACL within the platform's 128-entry
-   bound and refuse any allow entry while accepting deny-only ACLs, including
+   On macOS, inspect each held ancestor's ACL within the
+   [platform's 128-entry bound](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/kauth.h)
+   and refuse any allow entry while accepting deny-only ACLs, including
    those on default home
    folders. Require the state directory itself to be owned by the current
    user; it is Noter's own directory, so a mode that lets others write it is
