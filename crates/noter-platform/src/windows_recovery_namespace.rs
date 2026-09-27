@@ -1,8 +1,8 @@
-//! Windows recovery-directory namespace binding foundation.
+//! Windows recovery-directory namespace binding.
 //!
 //! This module binds the state and recovery directories to retained handles.
-//! It does not yet expose handle-relative record operations, so completing the
-//! recovery namespace protocol remains separate work.
+//! Record creation and opens are relative to those handles. Enumeration,
+//! replacement, and root classification remain separate M4-H1 work.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};

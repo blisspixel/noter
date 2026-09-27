@@ -299,8 +299,8 @@ pub struct RecoveryStore {
 }
 
 /// Recovery entries are reached through the held directories of the bound
-/// namespace on Unix, and by pathname inside the held, delete-protected
-/// directories on Windows.
+/// namespace on Unix. Windows creation and opens are handle-relative; its
+/// remaining operations use paths inside held, delete-protected directories.
 impl RecoveryStore {
     #[cfg(windows)]
     fn windows_bound_entry<'a>(
@@ -549,8 +549,9 @@ impl RecoveryStore {
     /// The state, recovery, records, and quarantine directories are validated
     /// and retained before recovery content can be written. On Unix every
     /// record, lease, and quarantine operation then goes through the held
-    /// directories; Windows keeps pathname operations inside its held,
-    /// delete-protected directories.
+    /// directories. Windows creation and opens are handle-relative while its
+    /// remaining pathname operations stay inside held, delete-protected
+    /// directories.
     ///
     /// # Errors
     ///
