@@ -25,7 +25,7 @@ use rustix::fs::{
     AtFlags, CWD, Dir, FileType, Mode, OFlags, Stat, fchmod, fstat, fsync, mkdirat, openat, statat,
     unlinkat,
 };
-use rustix::process::{getegid, geteuid};
+use rustix::process::geteuid;
 
 use crate::UnixRecoveryCommitParent;
 
@@ -379,21 +379,19 @@ fn split_existing_prefix(path: &Path) -> io::Result<(PathBuf, Vec<OsString>)> {
 #[derive(Clone, Copy)]
 struct User {
     owner: u32,
-    group: u32,
 }
 
 impl User {
     fn current() -> Self {
         Self {
             owner: geteuid().as_raw(),
-            group: getegid().as_raw(),
         }
     }
 }
 
 fn verify_ancestor(directory: &File, user: User, path: &Path) -> io::Result<()> {
     let status = fstat(directory)?;
-    if !ancestor_is_trusted(status.st_uid, status.st_gid, permission_bits(&status), user) {
+    if !ancestor_is_trusted(status.st_uid, permission_bits(&status), user) {
         return Err(permission_denied(format!(
             "{} can be changed by another user",
             path.display()
@@ -420,18 +418,13 @@ fn macos_verify_ancestor_acl(directory: &File, path: &Path) -> io::Result<()> {
 /// Accepts a directory on the path when no other user can replace its
 /// entries. It must be owned by the superuser or this user. Others may write
 /// it only with the sticky bit, which stops them renaming or removing entries
-/// they do not own. A group may write it only when that group is this user's
-/// private group: the process's group, numbered like the user, as systems
-/// that give each user their own group create it.
-const fn ancestor_is_trusted(
-    directory_owner: u32,
-    directory_group: u32,
-    mode: u32,
-    user: User,
-) -> bool {
+/// they do not own. Matching the user's group number cannot establish that no
+/// other account belongs to that group, and Linux ACL masks can make the group
+/// mode bits reflect a named user's write grant, so non-sticky group writes are
+/// refused even when the group number matches the user number.
+const fn ancestor_is_trusted(directory_owner: u32, mode: u32, user: User) -> bool {
     let trusted_owner = directory_owner == 0 || directory_owner == user.owner;
-    let private_group = directory_group == user.group && user.group == user.owner;
-    let group_safe = mode & GROUP_WRITE == 0 || private_group;
+    let group_safe = mode & GROUP_WRITE == 0;
     let others_safe = mode & OTHER_WRITE == 0;
     let shielded = mode & STICKY != 0 || (group_safe && others_safe);
     trusted_owner && shielded
@@ -766,27 +759,70 @@ mod tests {
     }
 
     #[test]
+    fn a_group_writable_ancestor_is_rejected_unless_it_is_sticky() {
+        let temporary = tempfile::tempdir().unwrap();
+        let shared = temporary.path().join("group-writable");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, PermissionsExt::from_mode(0o775)).unwrap();
+        let error = open(&shared.join("state")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(!shared.join("state").exists());
+
+        std::fs::set_permissions(&shared, PermissionsExt::from_mode(0o1775)).unwrap();
+        open(&shared.join("state")).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_named_user_acl_write_grant_cannot_hide_in_group_mode_bits() {
+        use xattr::FileExt as _;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let shared = temporary.path().join("acl-shared");
+        std::fs::create_dir(&shared).unwrap();
+        let other_user = geteuid().as_raw().checked_add(1).unwrap();
+        // Linux's POSIX ACL xattr is a version followed by tag, permission,
+        // and qualifier entries. The named user and mask grant write access.
+        let mut acl = 2_u32.to_le_bytes().to_vec();
+        for (tag, permissions, qualifier) in [
+            (1_u16, 7_u16, u32::MAX),
+            (2, 7, other_user),
+            (4, 5, u32::MAX),
+            (16, 7, u32::MAX),
+            (32, 5, u32::MAX),
+        ] {
+            acl.extend_from_slice(&tag.to_le_bytes());
+            acl.extend_from_slice(&permissions.to_le_bytes());
+            acl.extend_from_slice(&qualifier.to_le_bytes());
+        }
+        let directory = File::open(&shared).unwrap();
+        directory
+            .set_xattr("system.posix_acl_access", &acl)
+            .unwrap();
+        assert_eq!(mode(&shared) & 0o777, 0o775);
+        assert!(
+            directory
+                .get_xattr("system.posix_acl_access")
+                .unwrap()
+                .is_some()
+        );
+
+        let error = open(&shared.join("state")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(!shared.join("state").exists());
+    }
+
+    #[test]
     fn ancestor_trust_requires_an_owner_and_protection_from_other_users() {
-        let private = User {
-            owner: 1000,
-            group: 1000,
-        };
-        let shared = User {
-            owner: 1000,
-            group: 100,
-        };
-        assert!(ancestor_is_trusted(0, 0, 0o755, private));
-        assert!(ancestor_is_trusted(1000, 1000, 0o700, private));
-        assert!(ancestor_is_trusted(0, 0, 0o1777, private));
-        assert!(!ancestor_is_trusted(1001, 1000, 0o755, private));
-        assert!(!ancestor_is_trusted(1001, 1001, 0o1777, private));
-        assert!(!ancestor_is_trusted(1000, 1000, 0o757, private));
-        // A group-writable directory is safe only in the user's private group.
-        assert!(ancestor_is_trusted(1000, 1000, 0o775, private));
-        assert!(!ancestor_is_trusted(1000, 1001, 0o775, private));
-        assert!(!ancestor_is_trusted(1000, 100, 0o775, shared));
-        assert!(ancestor_is_trusted(1000, 100, 0o755, shared));
-        assert!(ancestor_is_trusted(1000, 100, 0o1775, shared));
+        let user = User { owner: 1000 };
+        assert!(ancestor_is_trusted(0, 0o755, user));
+        assert!(ancestor_is_trusted(1000, 0o700, user));
+        assert!(ancestor_is_trusted(0, 0o1777, user));
+        assert!(!ancestor_is_trusted(1001, 0o755, user));
+        assert!(!ancestor_is_trusted(1001, 0o1777, user));
+        assert!(!ancestor_is_trusted(1000, 0o757, user));
+        assert!(!ancestor_is_trusted(1000, 0o775, user));
+        assert!(ancestor_is_trusted(1000, 0o1775, user));
     }
 
     #[test]

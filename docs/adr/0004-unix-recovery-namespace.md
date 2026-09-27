@@ -34,11 +34,13 @@ relative to held, verified directories:
 2. Accept an ancestor only when it is owned by the superuser or the current
    user and no other user can replace its entries: it is writable by others
    only with the sticky bit, which stops them renaming or removing entries they
-   do not own, and by its group only with the sticky bit or when that group is
-   the user's private group (the process's group, numbered like the user, as
-   systems with a private group per user create it and a umask of 002 leaves it
-   writable). On macOS, inspect each held ancestor's ACL and refuse any allow
-   entry while accepting deny-only ACLs, including those on default home
+   do not own. A group number matching the user's number does not establish
+   that no other account belongs to it;
+   [Linux ACL masks](https://man7.org/linux/man-pages/man5/acl.5.html) can make
+   the group mode bits represent a named user's write grant. Refuse non-sticky
+   group-writable ancestors even when their group number matches the user.
+   On macOS, inspect each held ancestor's ACL and refuse any allow entry while
+   accepting deny-only ACLs, including those on default home
    folders. Require the state directory itself to be owned by the current
    user; it is Noter's own directory, so a mode that lets others write it is
    tightened to 0700. On macOS, remove its extended ACL and verify absence
@@ -89,10 +91,10 @@ are outside the threat model, as they are for every other per-user store.
 
 ## Consequences
 
-- A state root that another user can change, that contains a planted link below
-  its existing prefix, or that lives on a known network file system makes
-  recovery unavailable for the session. The message names the directory and
-  the reason, and ordinary saves are unaffected.
+- Recovery is unavailable for a state root with an ancestor another user can
+  change, including through non-sticky group writes, a planted link below its
+  existing prefix, or a known network file system. The message names the
+  directory and the reason, and ordinary saves are unaffected.
 - Renaming or replacing any directory above a bound recovery directory after
   startup cannot redirect recovery reads, writes, or removals.
 - An ancestor ACL with an allow entry is refused on macOS, even when it grants
@@ -108,9 +110,10 @@ are outside the threat model, as they are for every other per-user store.
   private tree, tightening of loose modes and of a state directory others can
   write, macOS removal of an inherited state-directory ACL, rejection of an
   ancestor others can write with the directory named,
-  acceptance of a sticky one and of the user's private group, native macOS
-  acceptance of a deny-only ancestor ACL and refusal of an allow ACL before
-  state creation, refusal of links and
+  acceptance of a sticky one and refusal of non-sticky group writes, a native
+  Linux named-user ACL fixture whose write mask appears as group mode bits,
+  native macOS acceptance of a deny-only ancestor ACL and refusal of an allow ACL
+  before state creation, refusal of links and
   non-directories in the recovery tree, one-time resolution of a link in the
   existing prefix, operations that follow the bound directory after an ancestor
   rename, refusal to remove a replaced entry, refusal of new content in a

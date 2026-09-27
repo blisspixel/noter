@@ -688,10 +688,12 @@ On Unix the whole namespace is bound
 ([ADR-0004](adr/0004-unix-recovery-namespace.md)). The state path is reopened
 from `/` without following links after its existing prefix is resolved once.
 Every ancestor must be owned by the superuser or the user and must not let
-another user replace its entries: writable by others only with the sticky bit,
-and by its group only with the sticky bit or when that group is the user's
-private group. The state directory must be the user's and is tightened to 0700
-when others can write it. The recovery, records, and quarantine directories are
+another user replace its entries: group or other writes require the sticky
+bit. A matching group number does not prove that no other account belongs to
+it, and Linux ACL masks can hide named-user grants behind those mode bits.
+On macOS, ancestor ACLs may contain only deny entries. The state directory
+must be the user's and is tightened to 0700 when others can write it. The
+recovery, records, and quarantine directories are
 created or opened through held descriptors, owned by the user, on the state
 directory's device, tightened to 0700, and stripped of ACLs on macOS. Known
 network, cluster, shared-folder, and user-space file systems are refused. Every record, lease, and

@@ -15,10 +15,10 @@ that candidate is frozen for publication.
   a known network or shared-folder file system. Noter's state and recovery
   directories are made private. On macOS their access control lists are
   removed, and an ancestor with an ACL grant is refused while deny-only ACLs
-  remain accepted. A directory writable by your own private group, as a umask
-  of 002 leaves it, is accepted. Every record, lease, and quarantine operation runs
-  through the held directories, so
-  renaming a parent directory cannot redirect recovery content, and a recovery
+  remain accepted. A group-writable ancestor requires the sticky bit, even
+  when its group number matches the user's. Every record, lease, and
+  quarantine operation runs through the held directories, so renaming a parent
+  directory cannot redirect recovery content, and a recovery
   tree removed while Noter runs fails persistence visibly instead of losing
   snapshots. When recovery is refused, the message names the directory and the
   reason. On Windows, recovery file operations refuse paths outside the held
