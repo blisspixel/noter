@@ -35,8 +35,9 @@ use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
 use crate::combine_disjoint_flag_bits;
 use crate::imp::{
-    windows_create_private_directory, windows_tighten_private_directory_security,
-    windows_verify_owner_controlled_state_directory, windows_verify_private_directory_security,
+    windows_create_private_directory, windows_create_private_new_at,
+    windows_tighten_private_directory_security, windows_verify_owner_controlled_state_directory,
+    windows_verify_private_directory_security,
 };
 
 const RECORDS_DIRECTORY_NAME: &str = "records";
@@ -115,6 +116,16 @@ impl WindowsRecoveryDirectory {
     /// opened with deletion access without following its final reparse point.
     pub fn open_for_cleanup(&self, name: &OsStr) -> io::Result<File> {
         open_entry_relative(&self.handle, name, true)
+    }
+
+    /// Exclusively creates one owner-restricted entry relative to this handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without writing recovery bytes when the name is
+    /// invalid, already exists, or private security cannot be established.
+    pub fn create_private_new(&self, name: &OsStr) -> io::Result<File> {
+        windows_create_private_new_at(&self.handle, name)
     }
 }
 
@@ -255,7 +266,7 @@ fn verify_regular_entry_handle(file: &File) -> io::Result<()> {
 /// created directories receive that policy at creation time. Fixed-drive
 /// classification does not prove that the profile is unsynchronized or local.
 ///
-/// Record reads and cleanup opens use these handles. Creation, enumeration,
+/// Record creation, reads, and cleanup opens use these handles. Enumeration,
 /// rename, quarantine installation, and synchronization still require their
 /// handle-relative operations to complete the namespace contract.
 pub struct WindowsRecoveryNamespace {
@@ -761,7 +772,7 @@ fn invalid_entry_name_error() -> io::Error {
 mod tests {
     use std::ffi::OsStr;
     use std::fs::{self, File};
-    use std::io::{self, Read};
+    use std::io::{self, Read, Write};
     use std::os::windows::fs::{symlink_dir, symlink_file};
     use std::path::Path;
 
@@ -1001,6 +1012,36 @@ mod tests {
         );
         assert_eq!(fs::read(&quarantined)?, b"quarantine");
         assert!(super::verify_regular_entry_handle(&File::open("NUL")?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn private_entry_creation_is_exclusive_and_relative_to_the_held_directory() -> io::Result<()> {
+        let parent = tempdir()?;
+        let state = parent.path().join("state");
+        let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
+        let name = OsStr::new("created.rec");
+        let path = namespace.records().path().join(name);
+        let mut created = namespace.records().create_private_new(name)?;
+        created.write_all(b"private record")?;
+        assert_eq!(
+            namespace
+                .records()
+                .create_private_new(name)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&path)?, b"private record");
+        assert!(!namespace.quarantine().path().join(name).exists());
+        assert_eq!(
+            namespace
+                .records()
+                .create_private_new(OsStr::new("..\\escape.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
         Ok(())
     }
 

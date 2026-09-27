@@ -408,7 +408,12 @@ impl RecoveryStore {
             let (directory, name) = self.unix_bound_entry(path)?;
             directory.create_private_new(name)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let (directory, name) = self.windows_bound_entry(path)?;
+            directory.create_private_new(name)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             self.windows_require_bound_entry(path)?;
             noter_platform::create_private_new_file(path)
