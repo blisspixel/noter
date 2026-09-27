@@ -686,9 +686,10 @@ directories and final reparse points as non-files.
 Private creation applies the owner-and-SYSTEM descriptor at creation time and
 verifies it on the opened handle. New-record installation renames the opened
 stage relative to the held records directory without replacing an existing
-name. Stage observation, existing-record replacement and reconciliation,
-enumeration, quarantine installation, and synchronization remain pathname-based
-inside the held, delete-protected
+name. Startup and owned-artifact enumeration run through the held directory
+handle with bounded entries. Stage observation, existing-record replacement
+and reconciliation, quarantine installation, and synchronization remain
+pathname-based inside the held, delete-protected
 directories. Fixed-drive classification does not prove that a profile is not
 synchronized or redirected.
 Store entry operations refuse paths outside the held records and quarantine

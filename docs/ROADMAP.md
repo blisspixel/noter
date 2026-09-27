@@ -621,7 +621,8 @@ removal. Windows store entry operations now refuse paths outside the held
 directories; routine opens, staged record creation, new-record installation
 from the opened stage, and lease or quarantine creation use those handles.
 Windows cleanup deletes an opened file after any required identity check, so a
-rebound pathname cannot delete the replacement.
+rebound pathname cannot delete the replacement. Startup and owned-artifact
+enumeration run through the held directory handle with their entry limits.
 
 The first Windows foundation validates the drive-rooted state path on fixed
 NTFS, rejects reparse and cross-volume directory components, verifies stable
@@ -634,7 +635,7 @@ lease or quarantine creation are handle-relative and have native fixtures for
 exclusive private creation, regular-file and
 directory classification, final links, name replacement after open, and
 rejection of an unbound parent or invalid stage destination before writing.
-Stage observation, reconciliation, enumeration, existing-record replacement,
+Stage observation, reconciliation, existing-record replacement,
 quarantine installation, sync, and redirected or synchronized-root detection
 keep M4-H1 in progress.
 

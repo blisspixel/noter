@@ -10,10 +10,11 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::mem::{offset_of, size_of};
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Component, Path, PathBuf, Prefix};
+use std::sync::Mutex;
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
@@ -21,14 +22,15 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation, NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
-    GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError,
-    UNICODE_STRING,
+    ERROR_NO_MORE_FILES, GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE,
+    RtlNtStatusToDosError, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
-    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FILE_TYPE_DISK, FileBasicInfo, FileIdInfo, GetDriveTypeW,
+    FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, FileBasicInfo,
+    FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo, GetDriveTypeW,
     GetFileInformationByHandleEx, GetFileType, GetVolumeInformationByHandleW, READ_CONTROL,
     SYNCHRONIZE, WRITE_DAC,
 };
@@ -45,6 +47,7 @@ use crate::{CommitReceipt, InstallNewOutcome, ParentSyncReceipt, combine_disjoin
 const RECORDS_DIRECTORY_NAME: &str = "records";
 const QUARANTINE_DIRECTORY_NAME: &str = "quarantine";
 const FILE_SYSTEM_NAME_CAPACITY: usize = 32;
+const DIRECTORY_ENUMERATION_BUFFER_BYTES: usize = 65_536;
 
 /// Stable preferred Windows identity of one retained directory handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -85,6 +88,7 @@ pub struct WindowsRecoveryDirectory {
     // This handle intentionally has no public accessor. Holding it without
     // FILE_SHARE_DELETE prevents pathname retirement while the namespace lives.
     handle: File,
+    enumeration_lock: Mutex<()>,
     identity: WindowsDirectoryIdentity,
     path: PathBuf,
 }
@@ -152,6 +156,21 @@ impl WindowsRecoveryDirectory {
     /// invalid, already exists, or private security cannot be established.
     pub fn create_private_new(&self, name: &OsStr) -> io::Result<File> {
         windows_create_private_new_at(&self.handle, name)
+    }
+
+    /// Lists at most `limit` entry names through the held directory handle.
+    /// The enumeration cursor is shared by calls on one handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory cannot be enumerated or Windows
+    /// returns an invalid directory-entry buffer.
+    pub fn entry_names(&self, limit: usize) -> io::Result<Vec<OsString>> {
+        let _guard = self
+            .enumeration_lock
+            .lock()
+            .map_err(|_| io::Error::other("recovery directory enumeration lock is unavailable"))?;
+        entry_names_from_handle(&self.handle, limit)
     }
 
     /// Installs the exact opened stage under a new name in this directory.
@@ -222,6 +241,120 @@ impl WindowsRecoveryDirectory {
             InstallNewOutcome::Clean,
             ParentSyncReceipt::windows_unsupported(),
         ))
+    }
+}
+
+fn malformed_directory_entries() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "Windows returned malformed recovery directory entries",
+    )
+}
+
+fn directory_entry_u32(bytes: &[u8], offset: usize) -> io::Result<u32> {
+    let field = bytes
+        .get(offset..offset + size_of::<u32>())
+        .ok_or_else(malformed_directory_entries)?;
+    let mut value = [0_u8; size_of::<u32>()];
+    value.copy_from_slice(field);
+    Ok(u32::from_ne_bytes(value))
+}
+
+fn parse_directory_entry_batch(bytes: &[u8], limit: usize) -> io::Result<Vec<OsString>> {
+    let mut names = Vec::new();
+    let name_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
+    let next_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, NextEntryOffset);
+    let name_length_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileNameLength);
+    let mut offset = 0_usize;
+    loop {
+        let entry = bytes
+            .get(offset..)
+            .ok_or_else(malformed_directory_entries)?;
+        let next = usize::try_from(directory_entry_u32(entry, next_offset)?)
+            .map_err(|_| malformed_directory_entries())?;
+        let name_length = usize::try_from(directory_entry_u32(entry, name_length_offset)?)
+            .map_err(|_| malformed_directory_entries())?;
+        if next != 0 && next >= entry.len() {
+            return Err(malformed_directory_entries());
+        }
+        if next != 0 && !next.is_multiple_of(8) {
+            return Err(malformed_directory_entries());
+        }
+        let record_length = if next == 0 { entry.len() } else { next };
+        let name_end = name_offset
+            .checked_add(name_length)
+            .ok_or_else(malformed_directory_entries)?;
+        if name_length == 0
+            || !name_length.is_multiple_of(size_of::<u16>())
+            || name_end > record_length
+        {
+            return Err(malformed_directory_entries());
+        }
+        let name_bytes = &entry[name_offset..name_end];
+        let units: Vec<u16> = name_bytes
+            .chunks_exact(size_of::<u16>())
+            .map(|unit| u16::from_ne_bytes([unit[0], unit[1]]))
+            .collect();
+        let name = OsString::from_wide(&units);
+        if name != "." && name != ".." {
+            names.push(name);
+            if names.len() == limit {
+                return Ok(names);
+            }
+        }
+        if next == 0 {
+            return Ok(names);
+        }
+        offset = offset
+            .checked_add(next)
+            .ok_or_else(malformed_directory_entries)?;
+    }
+}
+
+fn entry_names_from_handle(directory: &File, limit: usize) -> io::Result<Vec<OsString>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut names = Vec::new();
+    let mut buffer = vec![0_u64; DIRECTORY_ENUMERATION_BUFFER_BYTES / size_of::<u64>()];
+    let mut information_class = FileIdBothDirectoryRestartInfo;
+    let buffer_size = u32::try_from(DIRECTORY_ENUMERATION_BUFFER_BYTES)
+        .map_err(|_| malformed_directory_entries())?;
+    loop {
+        buffer.fill(0);
+        // SAFETY: the aligned, initialized buffer is writable for its exact
+        // byte length. The directory handle and buffer remain live for this
+        // synchronous query, and Windows retains neither pointer.
+        #[allow(unsafe_code)]
+        let success = unsafe {
+            GetFileInformationByHandleEx(
+                directory.as_raw_handle(),
+                information_class,
+                buffer.as_mut_ptr().cast(),
+                buffer_size,
+            )
+        };
+        if success == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_NO_MORE_FILES.cast_signed()) {
+                return Ok(names);
+            }
+            return Err(error);
+        }
+        // SAFETY: the allocation contains exactly this many initialized bytes;
+        // the parser bounds-checks every record and name before decoding them.
+        #[allow(unsafe_code)]
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                buffer.as_ptr().cast::<u8>(),
+                DIRECTORY_ENUMERATION_BUFFER_BYTES,
+            )
+        };
+        names.extend(parse_directory_entry_batch(bytes, limit - names.len())?);
+        if names.len() == limit {
+            return Ok(names);
+        }
+        information_class = FileIdBothDirectoryInfo;
     }
 }
 
@@ -648,6 +781,7 @@ fn bind_existing_directory(
     }
     Ok(WindowsRecoveryDirectory {
         handle,
+        enumeration_lock: Mutex::new(()),
         identity,
         path: path.to_path_buf(),
     })
@@ -665,6 +799,7 @@ fn bind_state_directory(path: &Path, expected_volume: u64) -> io::Result<Windows
     windows_verify_owner_controlled_state_directory(&handle)?;
     Ok(WindowsRecoveryDirectory {
         handle,
+        enumeration_lock: Mutex::new(()),
         identity,
         path: path.to_path_buf(),
     })
@@ -688,6 +823,7 @@ fn bind_private_directory(
     }
     Ok(WindowsRecoveryDirectory {
         handle,
+        enumeration_lock: Mutex::new(()),
         identity,
         path: path.to_path_buf(),
     })
@@ -882,10 +1018,12 @@ fn invalid_entry_name_error() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::fs::{self, File};
     use std::io::{self, Read, Write};
-    use std::os::windows::fs::{symlink_dir, symlink_file};
+    use std::mem::{offset_of, size_of};
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::fs::{OpenOptionsExt, symlink_dir, symlink_file};
     use std::path::Path;
 
     use tempfile::tempdir;
@@ -893,8 +1031,9 @@ mod tests {
     use super::{
         DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, ParsedStatePath,
         WindowsRecoveryEntryName, WindowsRecoveryNamespace, classify_directory_creation_error,
-        classify_directory_open_error, directory_attributes_are_safe, nt_open_handle_usable,
-        open_directory_no_follow, verify_fixed_drive, verify_ntfs,
+        classify_directory_open_error, directory_attributes_are_safe, entry_names_from_handle,
+        nt_open_handle_usable, open_directory_no_follow, parse_directory_entry_batch,
+        verify_fixed_drive, verify_ntfs,
     };
     use crate::InstallNewOutcome;
     use crate::imp::{
@@ -903,7 +1042,9 @@ mod tests {
     };
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_ID_BOTH_DIR_INFO, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
     };
 
     #[test]
@@ -1238,6 +1379,137 @@ mod tests {
                 .kind(),
             io::ErrorKind::InvalidInput
         );
+        Ok(())
+    }
+
+    #[test]
+    fn held_directory_enumeration_is_bounded_and_restarts_after_a_partial_read() -> io::Result<()> {
+        let parent = tempdir()?;
+        let state = parent.path().join("state");
+        let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
+        let records = namespace.records();
+        assert!(records.entry_names(1)?.is_empty());
+        let expected: Vec<_> = (0..200)
+            .map(|index| format!("{index:03}-{}", "x".repeat(140)))
+            .collect();
+        for name in &expected {
+            fs::create_dir(records.path().join(name))?;
+        }
+        assert!(records.entry_names(0)?.is_empty());
+        assert_eq!(records.entry_names(199)?.len(), 199);
+        let mut actual: Vec<_> = records
+            .entry_names(201)?
+            .into_iter()
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        actual.sort();
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn directory_entry_parser_rejects_invalid_record_lengths() -> io::Result<()> {
+        let mut bytes = vec![0_u8; 256.max(size_of::<FILE_ID_BOTH_DIR_INFO>())];
+        let name_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
+        let name_length_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileNameLength);
+        bytes[name_offset..name_offset + 2].copy_from_slice(&u16::from(b'a').to_ne_bytes());
+        bytes[name_length_offset..name_length_offset + 4].copy_from_slice(&2_u32.to_ne_bytes());
+        assert_eq!(
+            parse_directory_entry_batch(&bytes, 1)?,
+            vec![OsString::from("a")]
+        );
+
+        for invalid_name_length in [0_u32, 3, 1024] {
+            bytes[name_length_offset..name_length_offset + 4]
+                .copy_from_slice(&invalid_name_length.to_ne_bytes());
+            assert_eq!(
+                parse_directory_entry_batch(&bytes, 1).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        bytes[name_length_offset..name_length_offset + 4].copy_from_slice(&2_u32.to_ne_bytes());
+        for invalid_next_offset in [1_u32, 8, 110, 256, 264, u32::MAX] {
+            bytes[..4].copy_from_slice(&invalid_next_offset.to_ne_bytes());
+            assert_eq!(
+                parse_directory_entry_batch(&bytes, 1).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn directory_entry_parser_preserves_wide_names_and_rejects_unsafe_components() -> io::Result<()>
+    {
+        let names = [
+            vec![0x6f22],
+            vec![0xd800, 0xdf48],
+            vec![u16::from(b'a'), 0x0001],
+            vec![0xd800],
+        ];
+        let name_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
+        let name_length_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileNameLength);
+        let mut bytes = Vec::new();
+        for (index, units) in names.iter().enumerate() {
+            let record_length = (name_offset + units.len() * size_of::<u16>()).next_multiple_of(8);
+            let start = bytes.len();
+            bytes.resize(start + record_length, 0);
+            if index + 1 < names.len() {
+                bytes[start..start + 4].copy_from_slice(
+                    &u32::try_from(record_length)
+                        .map_err(io::Error::other)?
+                        .to_ne_bytes(),
+                );
+            }
+            bytes[start + name_length_offset..start + name_length_offset + 4].copy_from_slice(
+                &u32::try_from(units.len() * size_of::<u16>())
+                    .map_err(io::Error::other)?
+                    .to_ne_bytes(),
+            );
+            for (unit_index, unit) in units.iter().enumerate() {
+                let position = start + name_offset + unit_index * size_of::<u16>();
+                bytes[position..position + 2].copy_from_slice(&unit.to_ne_bytes());
+            }
+        }
+
+        let expected: Vec<_> = names
+            .iter()
+            .map(|units| OsString::from_wide(units))
+            .collect();
+        assert_eq!(parse_directory_entry_batch(&bytes, names.len())?, expected);
+        for name in &expected[..2] {
+            assert!(WindowsRecoveryEntryName::new(name).is_ok());
+        }
+        for name in &expected[2..] {
+            assert_eq!(
+                WindowsRecoveryEntryName::new(name).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn enumeration_uses_the_opened_directory_after_path_rebind() -> io::Result<()> {
+        let parent = tempdir()?;
+        let original = parent.path().join("original");
+        let moved = parent.path().join("moved");
+        fs::create_dir(&original)?;
+        fs::write(original.join("original.rec"), b"original")?;
+        let directory = fs::OpenOptions::new()
+            .access_mode(FILE_LIST_DIRECTORY)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&original)?;
+        fs::rename(&original, &moved)?;
+        fs::create_dir(&original)?;
+        fs::write(original.join("decoy.rec"), b"decoy")?;
+
+        assert_eq!(
+            entry_names_from_handle(&directory, 10)?,
+            vec![OsStr::new("original.rec")]
+        );
+        assert_eq!(fs::read(original.join("decoy.rec"))?, b"decoy");
         Ok(())
     }
 
