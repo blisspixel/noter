@@ -25,9 +25,10 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
-    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK,
-    FileBasicInfo, FileIdInfo, GetDriveTypeW, GetFileInformationByHandleEx, GetFileType,
-    GetVolumeInformationByHandleW, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_TYPE_DISK, FileBasicInfo, FileIdInfo, GetDriveTypeW,
+    GetFileInformationByHandleEx, GetFileType, GetVolumeInformationByHandleW, READ_CONTROL,
+    SYNCHRONIZE, WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
@@ -146,18 +147,25 @@ fn open_entry_relative(directory: &File, name: &OsStr, for_cleanup: bool) -> io:
     let mut handle: HANDLE = std::ptr::null_mut();
     let mut status_block = IO_STATUS_BLOCK::default();
     let access = if for_cleanup {
-        GENERIC_READ | DELETE | SYNCHRONIZE
+        combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(GENERIC_READ, DELETE),
+            SYNCHRONIZE,
+        )
     } else {
-        GENERIC_READ | SYNCHRONIZE
+        combine_disjoint_flag_bits(GENERIC_READ, SYNCHRONIZE)
     };
     let share = if for_cleanup {
-        FILE_SHARE_READ | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE
+        combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_DELETE)
     } else {
-        FILE_SHARE_READ
-            | FILE_SHARE_WRITE
-            | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE
+        combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
+            FILE_SHARE_DELETE,
+        )
     };
-    let options = FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT;
+    let options = combine_disjoint_flag_bits(
+        combine_disjoint_flag_bits(FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT),
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    );
     // SAFETY: `directory` stays open throughout the call. `units` is a live
     // validated UTF-16 component with an exact byte length; the object name,
     // attributes, output handle, and status block all point to initialized
@@ -179,19 +187,13 @@ fn open_entry_relative(directory: &File, name: &OsStr, for_cleanup: bool) -> io:
         )
     };
     if status != 0 {
-        if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
-            // SAFETY: an unexpected non-success return nevertheless supplied
-            // one owned handle. Close it instead of leaking it on this path.
-            #[allow(unsafe_code)]
-            drop(unsafe { File::from_raw_handle(handle) });
-        }
         // SAFETY: the status value is returned by the preceding native call;
         // this conversion has no pointer or lifetime obligations.
         #[allow(unsafe_code)]
         let code = unsafe { RtlNtStatusToDosError(status) };
         return Err(io::Error::from_raw_os_error(code.cast_signed()));
     }
-    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+    if !nt_open_handle_usable(handle) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Windows returned an unusable recovery entry handle",
@@ -203,6 +205,10 @@ fn open_entry_relative(directory: &File, name: &OsStr, for_cleanup: bool) -> io:
     let file = unsafe { File::from_raw_handle(handle) };
     verify_regular_entry_handle(&file)?;
     Ok(file)
+}
+
+fn nt_open_handle_usable(handle: HANDLE) -> bool {
+    !handle.is_null() && handle != INVALID_HANDLE_VALUE
 }
 
 fn verify_regular_entry_handle(file: &File) -> io::Result<()> {
@@ -227,7 +233,9 @@ fn verify_regular_entry_handle(file: &File) -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
-    if basic.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+    let rejected =
+        combine_disjoint_flag_bits(FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT);
+    if basic.FileAttributes & rejected != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery entry must be an ordinary file",
@@ -762,16 +770,24 @@ mod tests {
     use super::{
         DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, ParsedStatePath,
         WindowsRecoveryEntryName, WindowsRecoveryNamespace, classify_directory_creation_error,
-        classify_directory_open_error, directory_attributes_are_safe, open_directory_no_follow,
-        verify_fixed_drive, verify_ntfs,
+        classify_directory_open_error, directory_attributes_are_safe, nt_open_handle_usable,
+        open_directory_no_follow, verify_fixed_drive, verify_ntfs,
     };
     use crate::imp::{
         windows_create_owner_controlled_readable_directory_for_test,
         windows_verify_private_directory_security,
     };
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
     };
+
+    #[test]
+    fn native_open_handle_check_rejects_both_failure_sentinels() {
+        assert!(!nt_open_handle_usable(std::ptr::null_mut()));
+        assert!(!nt_open_handle_usable(INVALID_HANDLE_VALUE));
+        assert!(nt_open_handle_usable(std::ptr::dangling_mut()));
+    }
 
     #[test]
     fn entry_names_accept_only_unambiguous_single_components() {
