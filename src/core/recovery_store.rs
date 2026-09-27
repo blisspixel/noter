@@ -428,8 +428,7 @@ impl RecoveryStore {
         }
         #[cfg(not(unix))]
         {
-            self.windows_require_bound_entry(path)?;
-            let opened = noter_platform::open_for_cleanup(path)?;
+            let opened = self.entry_open_for_cleanup(path)?;
             noter_platform::delete_open_file(&opened)
         }
     }
@@ -444,8 +443,10 @@ impl RecoveryStore {
         }
         #[cfg(not(unix))]
         {
-            self.windows_require_bound_entry(path)?;
-            windows_remove_if_identifies(path, expected)
+            self.windows_remove_if_named_identity(
+                path,
+                noter_platform::file_facts(expected)?.identity(),
+            )
         }
     }
 
@@ -455,8 +456,8 @@ impl RecoveryStore {
         path: &Path,
         expected: noter_platform::FileIdentity,
     ) -> io::Result<()> {
-        self.windows_require_bound_entry(path)?;
-        windows_remove_if_named(path, expected)
+        let opened = self.entry_open_for_cleanup(path)?;
+        windows_remove_if_named_with(&opened, expected, || Ok(()))
     }
 
     fn entry_is_file(&self, path: &Path) -> io::Result<bool> {
@@ -508,30 +509,19 @@ impl RecoveryStore {
 }
 
 #[cfg(not(unix))]
-fn windows_remove_if_identifies(path: &Path, expected: &File) -> io::Result<()> {
-    windows_remove_if_named(path, noter_platform::file_facts(expected)?.identity())
-}
-
-#[cfg(not(unix))]
-fn windows_remove_if_named(path: &Path, expected: noter_platform::FileIdentity) -> io::Result<()> {
-    windows_remove_if_named_with(path, expected, || Ok(()))
-}
-
-#[cfg(not(unix))]
 fn windows_remove_if_named_with(
-    path: &Path,
+    named: &File,
     expected: noter_platform::FileIdentity,
     after_open: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
-    let named = noter_platform::open_for_cleanup(path)?;
-    if noter_platform::file_facts(&named)?.identity() != expected {
+    if noter_platform::file_facts(named)?.identity() != expected {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "the recovery entry no longer identifies the opened file",
         ));
     }
     after_open()?;
-    noter_platform::delete_open_file(&named)
+    noter_platform::delete_open_file(named)
 }
 
 fn recovery_directory_error_is_missing(kind: io::ErrorKind) -> bool {
@@ -5023,10 +5013,12 @@ mod tests {
         fs::write(&named_path, b"original")?;
         let expected = noter_platform::file_facts(&File::open(&named_path)?)?.identity();
 
-        windows_remove_if_named_with(&named_path, expected, || {
+        let opened = store.entry_open_for_cleanup(&named_path)?;
+        windows_remove_if_named_with(&opened, expected, || {
             fs::rename(&named_path, &moved_path)?;
             fs::write(&named_path, b"replacement")
         })?;
+        drop(opened);
 
         assert_eq!(fs::read(&named_path)?, b"replacement");
         assert!(!moved_path.exists());
