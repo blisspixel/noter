@@ -963,6 +963,16 @@ mod tests {
         let mut bytes = Vec::new();
         opened.read_to_end(&mut bytes)?;
         assert_eq!(bytes, b"record");
+        let raced_path = namespace.records().path().join("raced.rec");
+        let moved_path = namespace.records().path().join("moved.rec");
+        fs::write(&raced_path, b"original")?;
+        let mut raced = namespace.records().open_existing(OsStr::new("raced.rec"))?;
+        fs::rename(&raced_path, &moved_path)?;
+        fs::write(&raced_path, b"replacement")?;
+        bytes.clear();
+        raced.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, b"original");
+        assert_eq!(fs::read(&raced_path)?, b"replacement");
         let mut opened = namespace
             .quarantine()
             .open_for_cleanup(OsStr::new("entry.rec"))?;
