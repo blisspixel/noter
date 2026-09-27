@@ -14,12 +14,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use getrandom::fill as fill_random;
-#[cfg(windows)]
-use noter_platform::WindowsRecoveryNamespace;
 #[cfg(any(windows, test))]
 use noter_platform::{CommitReceipt, ReplaceExistingOutcome};
 #[cfg(unix)]
 use noter_platform::{UnixRecoveryDirectory, UnixRecoveryNamespace};
+#[cfg(windows)]
+use noter_platform::{WindowsRecoveryDirectory, WindowsRecoveryNamespace};
 
 use super::recovery::{
     RECOVERY_MAGIC, RECOVERY_SCHEMA_VERSION, RecoveryInstanceId, RecoveryQuarantineReason,
@@ -295,13 +295,34 @@ pub struct RecoveryStore {
     #[cfg(unix)]
     namespace: Arc<UnixRecoveryNamespace>,
     #[cfg(windows)]
-    _namespace_guard: Arc<WindowsRecoveryNamespace>,
+    namespace: Arc<WindowsRecoveryNamespace>,
 }
 
 /// Recovery entries are reached through the held directories of the bound
 /// namespace on Unix, and by pathname inside the held, delete-protected
 /// directories on Windows.
 impl RecoveryStore {
+    #[cfg(windows)]
+    fn windows_bound_entry<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> io::Result<(&'a WindowsRecoveryDirectory, &'a std::ffi::OsStr)> {
+        let name = path.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "a recovery entry needs a name")
+        })?;
+        let parent = path.parent().unwrap_or_else(|| Path::new(""));
+        [self.namespace.records(), self.namespace.quarantine()]
+            .into_iter()
+            .find(|bound| bound.path() == parent)
+            .map(|bound| (bound, name))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the path is outside the bound recovery directories",
+                )
+            })
+    }
+
     #[cfg(unix)]
     fn unix_bound_directory(&self, directory: &Path) -> io::Result<&UnixRecoveryDirectory> {
         [self.namespace.records(), self.namespace.quarantine()]
@@ -352,7 +373,12 @@ impl RecoveryStore {
             let (directory, name) = self.unix_bound_entry(path)?;
             directory.open_existing(name)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let (directory, name) = self.windows_bound_entry(path)?;
+            directory.open_existing(name)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             self.windows_require_bound_entry(path)?;
             noter_platform::open_existing_no_follow(path)
@@ -364,7 +390,12 @@ impl RecoveryStore {
         {
             self.entry_open_existing(path)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let (directory, name) = self.windows_bound_entry(path)?;
+            directory.open_for_cleanup(name)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             self.windows_require_bound_entry(path)?;
             noter_platform::open_for_cleanup(path)
@@ -529,8 +560,8 @@ impl RecoveryStore {
                 std::ffi::OsStr::new(RECOVERY_STATE_SUBDIR),
             )?;
             Ok(Self {
-                root: state_root.join(RECOVERY_STATE_SUBDIR),
-                _namespace_guard: Arc::new(namespace),
+                root: namespace.recovery().path().to_path_buf(),
+                namespace: Arc::new(namespace),
             })
         }
         #[cfg(unix)]
@@ -4993,6 +5024,22 @@ mod tests {
 
         assert_eq!(fs::read(&named_path)?, b"replacement");
         assert!(!moved_path.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bound_entry_opens_accept_an_alternate_state_path_spelling() -> io::Result<()> {
+        let dir = tempdir()?;
+        let state = dir.path().join("state");
+        let alternate = PathBuf::from(state.to_string_lossy().replace('\\', "/"));
+        let store = RecoveryStore::open_in_state(alternate)?;
+        let path = store.records_dir().join("entry.rec");
+        fs::write(&path, b"bound entry")?;
+        let mut opened = store.entry_open_existing(&path)?;
+        let mut bytes = Vec::new();
+        opened.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, b"bound entry");
         Ok(())
     }
 
