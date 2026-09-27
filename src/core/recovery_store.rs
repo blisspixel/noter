@@ -306,6 +306,19 @@ pub struct RecoveryStore {
 /// delete-protected directories.
 impl RecoveryStore {
     #[cfg(windows)]
+    fn windows_bound_directory(&self, directory: &Path) -> io::Result<&WindowsRecoveryDirectory> {
+        [self.namespace.records(), self.namespace.quarantine()]
+            .into_iter()
+            .find(|bound| bound.path() == directory)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the path is outside the bound recovery directories",
+                )
+            })
+    }
+
+    #[cfg(windows)]
     fn windows_bound_entry<'a>(
         &'a self,
         path: &'a Path,
@@ -355,13 +368,20 @@ impl RecoveryStore {
     /// Refuses a pathname outside the held records and quarantine directories.
     #[cfg(not(unix))]
     fn windows_require_bound_directory(&self, directory: &Path) -> io::Result<()> {
-        if directory == self.records_dir() || directory == self.quarantine_dir() {
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "the path is outside the bound recovery directories",
-            ))
+        #[cfg(windows)]
+        {
+            self.windows_bound_directory(directory).map(|_| ())
+        }
+        #[cfg(not(windows))]
+        {
+            if directory == self.records_dir() || directory == self.quarantine_dir() {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the path is outside the bound recovery directories",
+                ))
+            }
         }
     }
 
@@ -492,7 +512,16 @@ impl RecoveryStore {
                 .map(|name| Ok(directory.join(name)))
                 .collect())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            Ok(self
+                .windows_bound_directory(directory)?
+                .entry_names(limit)?
+                .into_iter()
+                .map(|name| Ok(directory.join(name)))
+                .collect())
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             self.windows_require_bound_directory(directory)?;
             Ok(fs::read_dir(directory)?
