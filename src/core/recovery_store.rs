@@ -4846,6 +4846,128 @@ mod tests {
     }
 
     #[test]
+    fn startup_directory_limit_counts_non_file_entries() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        for index in 0..=MAX_STARTUP_RECOVERY_DIRECTORY_ENTRIES {
+            fs::create_dir(store.records_dir().join(format!("directory-{index:04}")))?;
+        }
+
+        let scan = store.scan_startup()?;
+
+        assert!(scan.is_empty());
+        assert!(scan.directory_limit_reached());
+        assert!(scan.has_omissions());
+        Ok(())
+    }
+
+    #[test]
+    fn startup_scan_skips_directories_without_quarantining_them() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let directory = store.records_dir().join("folder.rec");
+        fs::create_dir(&directory)?;
+
+        assert!(!store.entry_is_file(&directory)?);
+        assert_eq!(startup_entry_is_file(&store, &directory)?, Some(false));
+        let scan = store.scan_startup()?;
+        assert!(scan.is_empty());
+        assert!(directory.is_dir());
+        assert!(store.quarantine_dir().read_dir()?.next().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_entry_operations_reject_paths_outside_bound_directories() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let outside = dir.path().join("outside.rec");
+        fs::write(&outside, b"outside recovery")?;
+        let expected = noter_platform::open_existing_no_follow(&outside)?;
+
+        assert_eq!(
+            store.entry_paths(dir.path(), 1).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            store.entry_open_existing(&outside).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            store.entry_open_for_cleanup(&outside).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            store.entry_create_private_new(&outside).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            store.entry_is_file(&outside).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            store.entry_remove(&outside).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            store
+                .entry_remove_if_identifies(&outside, &expected)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            store.sync_entry_directory(&outside).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        #[cfg(not(unix))]
+        assert_eq!(
+            store
+                .windows_remove_if_named_identity(
+                    &outside,
+                    noter_platform::file_facts(&expected)?.identity()
+                )
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(fs::read(&outside)?, b"outside recovery");
+        Ok(())
+    }
+
+    #[test]
+    fn identity_checked_entry_removal_rejects_a_different_file() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let expected_path = store.records_dir().join("expected.rec");
+        let named_path = store.records_dir().join("named.rec");
+        fs::write(&expected_path, b"expected")?;
+        fs::write(&named_path, b"named")?;
+        let expected = store.entry_open_for_cleanup(&expected_path)?;
+
+        assert_eq!(
+            store
+                .entry_remove_if_identifies(&named_path, &expected)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        #[cfg(not(unix))]
+        assert_eq!(
+            store
+                .windows_remove_if_named_identity(
+                    &named_path,
+                    noter_platform::file_facts(&expected)?.identity()
+                )
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(fs::read(&named_path)?, b"named");
+        Ok(())
+    }
+
+    #[test]
     fn startup_file_and_quarantine_result_bounds_are_surfaced() -> io::Result<()> {
         let dir = tempdir()?;
         let store = RecoveryStore::open(dir.path())?;
