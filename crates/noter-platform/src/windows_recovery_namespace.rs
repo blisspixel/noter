@@ -2,13 +2,14 @@
 //!
 //! This module binds the state and recovery directories to retained handles.
 //! Its entry creation, open, and classification methods are relative to those
-//! handles. Stage installation, replacement, and root classification remain
+//! handles. New-record installation also uses the opened stage and held
+//! directory. Existing-record replacement and root classification remain
 //! separate M4-H1 work.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::mem::size_of;
+use std::mem::{offset_of, size_of};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
@@ -16,8 +17,8 @@ use std::path::{Component, Path, PathBuf, Prefix};
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
-    NtCreateFile,
+    FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
+    FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation, NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError,
@@ -34,12 +35,12 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
-use crate::combine_disjoint_flag_bits;
 use crate::imp::{
     windows_create_private_directory, windows_create_private_new_at,
     windows_tighten_private_directory_security, windows_verify_owner_controlled_state_directory,
     windows_verify_private_directory_security,
 };
+use crate::{CommitReceipt, InstallNewOutcome, ParentSyncReceipt, combine_disjoint_flag_bits};
 
 const RECORDS_DIRECTORY_NAME: &str = "records";
 const QUARANTINE_DIRECTORY_NAME: &str = "quarantine";
@@ -151,6 +152,76 @@ impl WindowsRecoveryDirectory {
     /// invalid, already exists, or private security cannot be established.
     pub fn create_private_new(&self, name: &OsStr) -> io::Result<File> {
         windows_create_private_new_at(&self.handle, name)
+    }
+
+    /// Installs the exact opened stage under a new name in this directory.
+    /// An existing destination is never replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without consuming the stage when the name is invalid,
+    /// the destination exists, or the rename cannot complete.
+    pub fn install_new_from_open(
+        &self,
+        stage: &File,
+        destination: &OsStr,
+    ) -> io::Result<CommitReceipt<InstallNewOutcome>> {
+        let name = WindowsRecoveryEntryName::new(destination)?;
+        let units: Vec<u16> = name.as_os_str().encode_wide().collect();
+        let name_bytes = units
+            .len()
+            .checked_mul(size_of::<u16>())
+            .ok_or_else(invalid_entry_name_error)?;
+        let file_name_length = u32::try_from(name_bytes).map_err(|_| invalid_entry_name_error())?;
+        let required_bytes = offset_of!(FILE_RENAME_INFORMATION, FileName)
+            .checked_add(name_bytes)
+            .and_then(|length| length.checked_add(size_of::<u16>()))
+            .map(|length| length.max(size_of::<FILE_RENAME_INFORMATION>()))
+            .ok_or_else(invalid_entry_name_error)?;
+        let word_count = required_bytes.div_ceil(size_of::<usize>());
+        let mut buffer = vec![0_usize; word_count];
+        let buffer_bytes = u32::try_from(
+            buffer
+                .len()
+                .checked_mul(size_of::<usize>())
+                .ok_or_else(invalid_entry_name_error)?,
+        )
+        .map_err(|_| invalid_entry_name_error())?;
+        let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+        let mut status_block = IO_STATUS_BLOCK::default();
+        // SAFETY: the usize allocation is at least as aligned as
+        // FILE_RENAME_INFORMATION and large enough for its header and validated
+        // UTF-16 component. The source file, destination directory, buffer,
+        // and writable status block remain live for this synchronous call.
+        // The kernel does not retain pointers.
+        #[allow(unsafe_code)]
+        let status = unsafe {
+            (*info).Anonymous.ReplaceIfExists = false;
+            (*info).RootDirectory = self.handle.as_raw_handle();
+            (*info).FileNameLength = file_name_length;
+            std::ptr::copy_nonoverlapping(
+                units.as_ptr(),
+                std::ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
+                units.len(),
+            );
+            NtSetInformationFile(
+                stage.as_raw_handle(),
+                &raw mut status_block,
+                info.cast(),
+                buffer_bytes,
+                FileRenameInformation,
+            )
+        };
+        if status != 0 {
+            // SAFETY: this status came directly from the preceding native call.
+            #[allow(unsafe_code)]
+            let code = unsafe { RtlNtStatusToDosError(status) };
+            return Err(io::Error::from_raw_os_error(code.cast_signed()));
+        }
+        Ok(CommitReceipt::new(
+            InstallNewOutcome::Clean,
+            ParentSyncReceipt::windows_unsupported(),
+        ))
     }
 }
 
@@ -825,6 +896,7 @@ mod tests {
         classify_directory_open_error, directory_attributes_are_safe, nt_open_handle_usable,
         open_directory_no_follow, verify_fixed_drive, verify_ntfs,
     };
+    use crate::InstallNewOutcome;
     use crate::imp::{
         windows_create_owner_controlled_readable_directory_for_test,
         windows_verify_private_directory_security,
@@ -1114,6 +1186,54 @@ mod tests {
             namespace
                 .records()
                 .create_private_new(OsStr::new("..\\escape.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn opened_stage_installs_exclusively_relative_to_the_held_directory() -> io::Result<()> {
+        let parent = tempdir()?;
+        let state = parent.path().join("state");
+        let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
+        let records = namespace.records();
+        let stage_path = records.path().join("stage.rec");
+        let moved_path = records.path().join("moved.rec");
+        let destination = records.path().join("installed.rec");
+        let mut opened_stage = records.create_private_new(OsStr::new("stage.rec"))?;
+        opened_stage.write_all(b"verified stage")?;
+        opened_stage.sync_all()?;
+
+        fs::rename(&stage_path, &moved_path)?;
+        fs::write(&stage_path, b"rebound stage name")?;
+        let receipt = records.install_new_from_open(&opened_stage, OsStr::new("installed.rec"))?;
+        let (outcome, parent_sync) = receipt.into_parts();
+        assert!(matches!(outcome, InstallNewOutcome::Clean));
+        assert!(matches!(
+            parent_sync.sync()?,
+            crate::ParentSyncOutcome::Unsupported
+        ));
+        assert_eq!(fs::read(&destination)?, b"verified stage");
+        assert_eq!(fs::read(&stage_path)?, b"rebound stage name");
+        assert!(!moved_path.exists());
+
+        let collision_path = records.path().join("collision.rec");
+        let mut collision = records.create_private_new(OsStr::new("collision.rec"))?;
+        collision.write_all(b"preserved stage")?;
+        assert_eq!(
+            records
+                .install_new_from_open(&collision, OsStr::new("installed.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&destination)?, b"verified stage");
+        assert_eq!(fs::read(&collision_path)?, b"preserved stage");
+        assert_eq!(
+            records
+                .install_new_from_open(&collision, OsStr::new("stream.rec:alt"))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidInput

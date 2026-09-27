@@ -684,9 +684,11 @@ are relative to the held records or quarantine directory, validate a single
 entry component, and refuse final reparse points. Classification treats
 directories and final reparse points as non-files.
 Private creation applies the owner-and-SYSTEM descriptor at creation time and
-verifies it on the opened handle. Stage observation and installation,
-reconciliation, enumeration, replacement, quarantine installation, and
-synchronization remain pathname-based inside the held, delete-protected
+verifies it on the opened handle. New-record installation renames the opened
+stage relative to the held records directory without replacing an existing
+name. Stage observation, existing-record replacement and reconciliation,
+enumeration, quarantine installation, and synchronization remain pathname-based
+inside the held, delete-protected
 directories. Fixed-drive classification does not prove that a profile is not
 synchronized or redirected.
 Store entry operations refuse paths outside the held records and quarantine
