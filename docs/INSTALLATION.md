@@ -306,13 +306,15 @@ path is group-writable, ACL-shared, redirected, synchronized, network-hosted,
 removable, or on a weak filesystem, recovery is unverified. Keep important work
 saved and backed up, and do not rely on recovery from that state root.
 
-The current unreleased Windows build begins M4-H1 by validating the fixed NTFS
-directory chain, rejecting reparse and cross-volume components, retaining its
-directory handles, rejecting state ACLs with unprivileged mutation rights, and
-hardening the recovery subtree to a protected inheritable user-and-SYSTEM DACL
-before writing recovery bytes. This foundation does not yet route record
-operations through directory handles or prove that a fixed local profile is not
-synchronized or redirected.
+The current unreleased Windows build validates the fixed NTFS directory chain,
+rejects reparse and cross-volume components, retains its directory handles,
+rejects state ACLs with unprivileged mutation rights, and hardens the recovery
+subtree to a protected inheritable user-and-SYSTEM DACL before writing recovery
+bytes. Record entry opens, creation, classification, new-record installation,
+enumeration, and replacement observations use the retained directory handles.
+Existing-record replacement, failure-completion mutation, and synchronization
+still use paths within those protected directories. A fixed local profile is
+not proof that the directory is unsynchronized or unredirected.
 
 The current unreleased Linux and macOS builds bind the recovery namespace. If a
 directory on the path to the state directory can be changed by another user,
