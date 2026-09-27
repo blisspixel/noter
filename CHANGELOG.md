@@ -8,6 +8,8 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Delete Windows recovery entries through their opened handles. If a checked
+  entry name is replaced before cleanup, the replacement is preserved.
 - Bind crash recovery to verified, held directories on Linux and macOS. Noter
   reopens the state directory from `/` without following links and refuses it
   when another user could change a directory on the way, when the state
