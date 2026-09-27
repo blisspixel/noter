@@ -1022,6 +1022,7 @@ mod tests {
     use std::fs::{self, File};
     use std::io::{self, Read, Write};
     use std::mem::{offset_of, size_of};
+    use std::os::windows::ffi::OsStringExt;
     use std::os::windows::fs::{OpenOptionsExt, symlink_dir, symlink_file};
     use std::path::Path;
 
@@ -1432,6 +1433,57 @@ mod tests {
             assert_eq!(
                 parse_directory_entry_batch(&bytes, 1).unwrap_err().kind(),
                 io::ErrorKind::InvalidData
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn directory_entry_parser_preserves_wide_names_and_rejects_unsafe_components() -> io::Result<()>
+    {
+        let names = [
+            vec![0x6f22],
+            vec![0xd800, 0xdf48],
+            vec![u16::from(b'a'), 0x0001],
+            vec![0xd800],
+        ];
+        let name_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
+        let name_length_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileNameLength);
+        let mut bytes = Vec::new();
+        for (index, units) in names.iter().enumerate() {
+            let record_length = (name_offset + units.len() * size_of::<u16>()).next_multiple_of(8);
+            let start = bytes.len();
+            bytes.resize(start + record_length, 0);
+            if index + 1 < names.len() {
+                bytes[start..start + 4].copy_from_slice(
+                    &u32::try_from(record_length)
+                        .map_err(io::Error::other)?
+                        .to_ne_bytes(),
+                );
+            }
+            bytes[start + name_length_offset..start + name_length_offset + 4].copy_from_slice(
+                &u32::try_from(units.len() * size_of::<u16>())
+                    .map_err(io::Error::other)?
+                    .to_ne_bytes(),
+            );
+            for (unit_index, unit) in units.iter().enumerate() {
+                let position = start + name_offset + unit_index * size_of::<u16>();
+                bytes[position..position + 2].copy_from_slice(&unit.to_ne_bytes());
+            }
+        }
+
+        let expected: Vec<_> = names
+            .iter()
+            .map(|units| OsString::from_wide(units))
+            .collect();
+        assert_eq!(parse_directory_entry_batch(&bytes, names.len())?, expected);
+        for name in &expected[..2] {
+            assert!(WindowsRecoveryEntryName::new(name).is_ok());
+        }
+        for name in &expected[2..] {
+            assert_eq!(
+                WindowsRecoveryEntryName::new(name).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
             );
         }
         Ok(())
