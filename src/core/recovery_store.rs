@@ -2072,7 +2072,6 @@ fn write_atomic_private_with_sync_and_create(
     sync_parent: impl FnOnce(RecoveryParentSync) -> io::Result<noter_platform::ParentSyncOutcome>,
 ) -> io::Result<()> {
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)?;
 
     let stage = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Stage)?;
     let backup = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Backup)?;
@@ -3392,7 +3391,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn staged_windows_write_refuses_an_unbound_parent_before_creation() -> io::Result<()> {
+    fn staged_windows_write_refuses_an_unbound_parent_without_side_effects() -> io::Result<()> {
         let dir = tempdir()?;
         let store = RecoveryStore::open(dir.path())?;
         let outside = dir.path().join("outside").join("record.rec");
