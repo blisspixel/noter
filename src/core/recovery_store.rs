@@ -393,7 +393,8 @@ impl RecoveryStore {
         #[cfg(not(unix))]
         {
             self.windows_require_bound_entry(path)?;
-            fs::remove_file(path)
+            let opened = noter_platform::open_for_cleanup(path)?;
+            noter_platform::delete_open_file(&opened)
         }
     }
 
@@ -477,15 +478,24 @@ fn windows_remove_if_identifies(path: &Path, expected: &File) -> io::Result<()> 
 
 #[cfg(not(unix))]
 fn windows_remove_if_named(path: &Path, expected: noter_platform::FileIdentity) -> io::Result<()> {
-    let named = noter_platform::open_existing_no_follow(path)?;
+    windows_remove_if_named_with(path, expected, || Ok(()))
+}
+
+#[cfg(not(unix))]
+fn windows_remove_if_named_with(
+    path: &Path,
+    expected: noter_platform::FileIdentity,
+    after_open: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    let named = noter_platform::open_for_cleanup(path)?;
     if noter_platform::file_facts(&named)?.identity() != expected {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "the recovery entry no longer identifies the opened file",
         ));
     }
-    drop(named);
-    fs::remove_file(path)
+    after_open()?;
+    noter_platform::delete_open_file(&named)
 }
 
 fn recovery_directory_error_is_missing(kind: io::ErrorKind) -> bool {
@@ -1198,10 +1208,9 @@ fn create_quarantine_copy(store: &RecoveryStore, bytes: &[u8]) -> io::Result<(Pa
     ))
 }
 
-/// Best-effort removal of an entry this call just created: by handle where
-/// supported, otherwise only while its name still identifies the file. Windows
-/// cannot remove a name while the file is open without delete sharing, so
-/// there the identity is captured and the file closed first.
+/// Best-effort removal of an entry this call just created. If the original
+/// handle lacks deletion access, reopen the same named object for handle-bound
+/// deletion only while its identity still matches.
 fn discard_created_entry(store: &RecoveryStore, destination: &Path, file: File) {
     if noter_platform::delete_open_file(&file).is_ok() {
         return;
@@ -4964,6 +4973,26 @@ mod tests {
             io::ErrorKind::InvalidData
         );
         assert_eq!(fs::read(&named_path)?, b"named");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn identity_checked_removal_never_deletes_a_rebound_name() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let named_path = store.records_dir().join("named.rec");
+        let moved_path = store.records_dir().join("moved.rec");
+        fs::write(&named_path, b"original")?;
+        let expected = noter_platform::file_facts(&File::open(&named_path)?)?.identity();
+
+        windows_remove_if_named_with(&named_path, expected, || {
+            fs::rename(&named_path, &moved_path)?;
+            fs::write(&named_path, b"replacement")
+        })?;
+
+        assert_eq!(fs::read(&named_path)?, b"replacement");
+        assert!(!moved_path.exists());
         Ok(())
     }
 

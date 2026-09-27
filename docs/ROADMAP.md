@@ -618,7 +618,8 @@ removal on macOS, handle-relative record, lease, and quarantine operations,
 identity-checked retirement in a private directory, and native fixtures for
 group and other write access, ancestor rebind, final-entry swaps, links, and
 removal. Windows record operations now refuse paths outside the held
-directories.
+directories. Windows cleanup deletes an opened file after any required
+identity check, so a rebinding of its pathname cannot delete the replacement.
 
 The first Windows foundation validates the drive-rooted state path on fixed
 NTFS, rejects reparse and cross-volume directory components, verifies stable
