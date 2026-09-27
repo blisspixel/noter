@@ -7,7 +7,8 @@
 //! superuser or this user and cannot be changed by other users, the state
 //! directory is owned by this user and closed to writes by others, the
 //! recovery subtree is private to this user and on the state directory's
-//! device with no extended ACL on macOS, and the file system is not a known
+//! device, the state and recovery directories have no extended ACL on macOS,
+//! and the file system is not a known
 //! network or shared one.
 //!
 //! Every entry operation is relative to a held descriptor, so renaming or
@@ -320,6 +321,8 @@ fn bind_state_directory(state_root: &Path, user: User) -> io::Result<UnixRecover
     }
     // The state directory is Noter's own, so it is made private rather than
     // refused when others could write it.
+    #[cfg(target_os = "macos")]
+    crate::imp::macos_restrict_open_file_acl_to_owner(&directory)?;
     fchmod(&directory, Mode::RWXU)?;
     if permission_bits(&fstat(&directory)?) & GROUP_OR_OTHER_WRITE != 0 {
         return Err(permission_denied(format!(

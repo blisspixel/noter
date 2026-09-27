@@ -2443,6 +2443,38 @@ mod imp {
 
         #[cfg(target_os = "macos")]
         #[test]
+        fn recovery_state_directory_loses_an_inherited_acl() -> io::Result<()> {
+            let directory = tempdir()?;
+            let state = directory.path().join("state");
+            std::fs::create_dir(&state)?;
+            let status = std::process::Command::new("/bin/chmod")
+                .args(["+a", "everyone allow read,file_inherit"])
+                .arg(&state)
+                .status()?;
+            if !status.success() {
+                return Err(io::Error::other(format!(
+                    "chmod failed to create the state ACL fixture: {status}"
+                )));
+            }
+            assert!(matches!(
+                read_macos_acl_snapshot(&File::open(&state)?)?,
+                MacosAclSnapshot::Present(_)
+            ));
+
+            let namespace = crate::UnixRecoveryNamespace::open_or_create(
+                &state,
+                std::ffi::OsStr::new("recovery"),
+            )?;
+
+            assert_eq!(
+                read_macos_acl_snapshot(&File::open(namespace.state().path())?)?,
+                MacosAclSnapshot::Absent
+            );
+            Ok(())
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
         fn private_creation_and_owner_restriction_remove_inherited_acl() -> io::Result<()> {
             const PRIVATE_MODE: u32 = 0o600;
             const PERMISSION_BITS: u32 = 0o7777;

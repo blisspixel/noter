@@ -662,7 +662,7 @@ owner-controlled per-user directory. Group-writable or ACL-shared directories
 and redirected, synchronized, network, removable, or weak-filesystem state roots
 are outside that prerelease boundary. Alpha.2 restricts individual recovery
 files but does not yet verify or bind the enclosing recovery-directory namespace;
-M4-H1 closes that gap before beta.1. Preferences may use eframe storage
+M4-H1 closes that gap for beta.2. Preferences may use eframe storage
 (`app.ron`); recovery records do not. The library modules are
 `core::recovery` (pure schedule and integrity) and `core::recovery_store`
 (durable private files). The binary adapter `crash_recovery` opens

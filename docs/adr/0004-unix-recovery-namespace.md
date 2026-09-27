@@ -39,7 +39,8 @@ relative to held, verified directories:
    systems with a private group per user create it and a umask of 002 leaves it
    writable). Require the state directory itself to be owned by the current
    user; it is Noter's own directory, so a mode that lets others write it is
-   tightened to 0700.
+   tightened to 0700. On macOS, remove its extended ACL and verify absence
+   before binding child directories.
 3. Create or open the recovery, records, and quarantine directories through the
    held parent without following links. Require the current user as owner and
    the state directory's device; tighten a looser mode to 0700 and, on macOS,
@@ -104,7 +105,8 @@ are outside the threat model, as they are for every other per-user store.
 
 - `crates/noter-platform/src/unix_recovery_namespace.rs` tests: creation of a
   private tree, tightening of loose modes and of a state directory others can
-  write, rejection of an ancestor others can write with the directory named,
+  write, macOS removal of an inherited state-directory ACL, rejection of an
+  ancestor others can write with the directory named,
   acceptance of a sticky one and of the user's private group, refusal of links and
   non-directories in the recovery tree, one-time resolution of a link in the
   existing prefix, operations that follow the bound directory after an ancestor

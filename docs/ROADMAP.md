@@ -593,7 +593,7 @@ navigation remain a beta.1 gate and are not claimed by the alpha.2 prerelease.
 
 ### M4-H1: Recovery namespace binding
 
-**Status:** In progress and required before beta.1.
+**Status:** In progress and required before beta.2.
 
 Open or create the platform state root, recovery root, records directory, and
 quarantine directory without following links. Verify stable directory identity,
@@ -931,9 +931,9 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 
 ## Immediate backlog (maps to version train)
 
-The alpha.2 correctness work is complete and published. M4-H1 recovery
-namespace binding is the next safety prerequisite. The beta.1 editor feasibility
-gate follows it.
+The alpha.2 correctness work is complete and published. Beta.1 shipped as a
+preview, and beta.2 hardening is in progress. M4-H1 recovery namespace binding
+is the next safety prerequisite; the M5 editor feasibility gate follows it.
 
 1. **Done:** Markdown keyboard navigation parity with Text Mode; pure word /
    Home-End / document policy and long-session history fixture.
@@ -950,11 +950,11 @@ gate follows it.
    [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) stays paired
    with the immutable implementation commit, and `v0.1.0-alpha.2` was tagged at
    the protected-main head `dbb419f` after that exact commit passed CI.
-6. **In progress, before `0.1.0-beta.1`:** M4-H1 recovery namespace binding.
+6. **In progress, before `0.1.0-beta.2`:** M4-H1 recovery namespace binding.
    Complete handle-relative Windows record operations and redirected-root
-   classification, add the Linux and macOS namespace adapters, close the Unix
-   cleanup contract, and record every native adversarial fixture.
-7. **Then, `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
+   classification, and record every remaining native adversarial fixture.
+   The Linux and macOS namespace adapters and Unix cleanup contract are in tree.
+7. **Then, `0.1.0-beta.2`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
    production editor contract is stable.
 8. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
