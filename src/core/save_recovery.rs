@@ -57,13 +57,11 @@ impl fmt::Write for BoundedTextWriter {
         let prefix_limit = self
             .maximum_bytes
             .saturating_sub(self.truncation_suffix.len());
-        if self.output.len() > prefix_limit {
-            let mut boundary = prefix_limit;
-            while !self.output.is_char_boundary(boundary) {
-                boundary -= 1;
-            }
-            self.output.truncate(boundary);
+        let mut boundary = self.output.len().min(prefix_limit);
+        while !self.output.is_char_boundary(boundary) {
+            boundary -= 1;
         }
+        self.output.truncate(boundary);
         let available = prefix_limit.saturating_sub(self.output.len());
         let mut boundary = available.min(value.len());
         while !value.is_char_boundary(boundary) {
@@ -135,7 +133,7 @@ pub fn recovery_path_clipboard_text(path: &Path) -> String {
     {
         use std::os::unix::ffi::OsStrExt as _;
 
-        hex_encoded_path("unix-path-bytes:", path.as_os_str().as_bytes())
+        unix_hex_encoded_path("unix-path-bytes:", path.as_os_str().as_bytes())
     }
     #[cfg(windows)]
     {
@@ -162,7 +160,7 @@ pub fn recovery_path_clipboard_text(path: &Path) -> String {
     }
     #[cfg(not(any(unix, windows)))]
     {
-        hex_encoded_path(
+        unix_hex_encoded_path(
             "platform-path-encoding:",
             path.as_os_str().as_encoded_bytes(),
         )
@@ -170,7 +168,7 @@ pub fn recovery_path_clipboard_text(path: &Path) -> String {
 }
 
 #[cfg(not(windows))]
-fn hex_encoded_path(prefix: &str, bytes: &[u8]) -> String {
+fn unix_hex_encoded_path(prefix: &str, bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::new();
     output
@@ -182,4 +180,39 @@ fn hex_encoded_path(prefix: &str, bytes: &[u8]) -> String {
         output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn destination_label_truncates_a_full_parent_at_a_character_boundary() {
+        assert_eq!(
+            bounded_destination_label(Path::new("note.md")),
+            Some("note.md".to_owned())
+        );
+        let parent = "p".repeat(MAX_SAVE_RECOVERY_LABEL_BYTES - 1);
+        let path = Path::new(&parent).join("note.md");
+        let label = bounded_destination_label(&path).unwrap();
+        assert_eq!(
+            label,
+            format!("{}...", "p".repeat(MAX_SAVE_RECOVERY_LABEL_BYTES - 3))
+        );
+
+        let unicode_parent = "é".repeat(MAX_SAVE_RECOVERY_LABEL_BYTES / 2 - 1);
+        let unicode_path = Path::new(&unicode_parent).join("note.md");
+        let unicode_label = bounded_destination_label(&unicode_path).unwrap();
+        assert!(unicode_label.starts_with(&"é".repeat((MAX_SAVE_RECOVERY_LABEL_BYTES - 3) / 2)));
+        assert!(unicode_label.ends_with("..."));
+        assert!(unicode_label.len() <= MAX_SAVE_RECOVERY_LABEL_BYTES);
+
+        let prefix = "p".repeat(MAX_SAVE_RECOVERY_LABEL_BYTES - 23);
+        let value_path = Path::new(&prefix).join("é".repeat(32));
+        let value_label = bounded_destination_label(&value_path).unwrap();
+        assert!(value_label.starts_with(&prefix));
+        assert!(value_label.ends_with("..."));
+        assert!(!value_label.contains('\u{fffd}'));
+        assert!(value_label.len() <= MAX_SAVE_RECOVERY_LABEL_BYTES);
+    }
 }
