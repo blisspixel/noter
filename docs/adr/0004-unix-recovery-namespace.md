@@ -39,8 +39,9 @@ relative to held, verified directories:
    [Linux ACL masks](https://man7.org/linux/man-pages/man5/acl.5.html) can make
    the group mode bits represent a named user's write grant. Refuse non-sticky
    group-writable ancestors even when their group number matches the user.
-   On macOS, inspect each held ancestor's ACL and refuse any allow entry while
-   accepting deny-only ACLs, including those on default home
+   On macOS, inspect each held ancestor's ACL within the platform's 128-entry
+   bound and refuse any allow entry while accepting deny-only ACLs, including
+   those on default home
    folders. Require the state directory itself to be owned by the current
    user; it is Noter's own directory, so a mode that lets others write it is
    tightened to 0700. On macOS, remove its extended ACL and verify absence
@@ -113,7 +114,7 @@ are outside the threat model, as they are for every other per-user store.
   acceptance of a sticky one and refusal of non-sticky group writes, a native
   Linux named-user ACL fixture whose write mask appears as group mode bits,
   native macOS acceptance of a deny-only ancestor ACL and refusal of an allow ACL
-  before state creation, refusal of links and
+  after two deny entries before state creation, refusal of links and
   non-directories in the recovery tree, one-time resolution of a link in the
   existing prefix, operations that follow the bound directory after an ancestor
   rename, refusal to remove a replaced entry, refusal of new content in a
