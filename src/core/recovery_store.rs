@@ -680,7 +680,7 @@ impl RecoveryStore {
         }
         #[cfg(windows)]
         {
-            write_atomic_private_windows(&destination, snapshot.instance_id(), &encoded)
+            write_atomic_private_windows(self, &destination, snapshot.instance_id(), &encoded)
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -2000,19 +2000,23 @@ fn unix_recovery_stage_path(parent: &Path, instance_id: RecoveryInstanceId) -> P
 
 #[cfg(windows)]
 fn write_atomic_private_windows(
+    store: &RecoveryStore,
     destination: &Path,
     instance_id: RecoveryInstanceId,
     bytes: &[u8],
 ) -> io::Result<()> {
-    write_atomic_private_windows_with(
+    store.windows_bound_entry(destination)?;
+    write_atomic_private_with_sync_and_create(
         destination,
         instance_id,
         bytes,
+        |stage| store.entry_create_private_new(stage),
         noter_platform::replace_existing,
+        RecoveryParentSync::sync,
     )
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn write_atomic_private_windows_with(
     destination: &Path,
     instance_id: RecoveryInstanceId,
@@ -2032,11 +2036,34 @@ fn write_atomic_private_windows_with(
     )
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn write_atomic_private_with_sync(
     destination: &Path,
     instance_id: RecoveryInstanceId,
     bytes: &[u8],
+    replace: impl FnOnce(
+        &Path,
+        &Path,
+        Option<&Path>,
+    ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
+    sync_parent: impl FnOnce(RecoveryParentSync) -> io::Result<noter_platform::ParentSyncOutcome>,
+) -> io::Result<()> {
+    write_atomic_private_with_sync_and_create(
+        destination,
+        instance_id,
+        bytes,
+        noter_platform::create_private_new_file,
+        replace,
+        sync_parent,
+    )
+}
+
+#[cfg(any(windows, test))]
+fn write_atomic_private_with_sync_and_create(
+    destination: &Path,
+    instance_id: RecoveryInstanceId,
+    bytes: &[u8],
+    create: impl FnOnce(&Path) -> io::Result<File>,
     replace: impl FnOnce(
         &Path,
         &Path,
@@ -2049,7 +2076,8 @@ fn write_atomic_private_with_sync(
 
     let stage = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Stage)?;
     let backup = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Backup)?;
-    let write_result = commit_staged_record_with(&stage, destination, &backup, bytes, replace);
+    let write_result =
+        commit_staged_record_with(&stage, destination, &backup, bytes, create, replace);
 
     // Every post-create failure retains only the deterministic per-instance
     // slots. Pathname cleanup could remove a rebound object, while the next
@@ -2126,13 +2154,14 @@ fn commit_staged_record_with(
     destination: &Path,
     backup: &Path,
     bytes: &[u8],
+    create: impl FnOnce(&Path) -> io::Result<File>,
     replace: impl FnOnce(
         &Path,
         &Path,
         Option<&Path>,
     ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
 ) -> Result<RecoveryCommitSuccess, RecoveryCommitFailure> {
-    let mut file = noter_platform::create_private_new_file(stage)?;
+    let mut file = create(stage)?;
     file.write_all(bytes)?;
     file.flush()?;
     noter_platform::sync_file(&file)?;
@@ -3358,6 +3387,29 @@ mod tests {
                 .contains("injected parent barrier failure")
         );
         assert_eq!(fs::read(&destination)?, bytes);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn staged_windows_write_refuses_an_unbound_parent_before_creation() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let outside = dir.path().join("outside").join("record.rec");
+        let snapshot = snapshot_at(60, 23, 31, b"private recovery");
+
+        assert_eq!(
+            write_atomic_private_windows(
+                &store,
+                &outside,
+                snapshot.instance_id(),
+                &snapshot.encode(),
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(!outside.parent().expect("parent").exists());
         Ok(())
     }
 

@@ -1,8 +1,8 @@
 //! Windows recovery-directory namespace binding.
 //!
 //! This module binds the state and recovery directories to retained handles.
-//! Its entry creation and open methods are relative to those handles. Record
-//! staging, replacement, and root classification remain separate M4-H1 work.
+//! Its entry creation and open methods are relative to those handles. Stage
+//! installation, replacement, and root classification remain separate M4-H1 work.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -266,7 +266,7 @@ fn verify_regular_entry_handle(file: &File) -> io::Result<()> {
 /// created directories receive that policy at creation time. Fixed-drive
 /// classification does not prove that the profile is unsynchronized or local.
 ///
-/// Entry creation and open methods use these handles. Record staging,
+/// Entry creation and open methods use these handles. Stage installation,
 /// reconciliation, enumeration, rename, quarantine installation, and
 /// synchronization still require handle-relative operations to complete the
 /// namespace contract.

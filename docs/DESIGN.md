@@ -678,14 +678,16 @@ user; SYSTEM and Administrators may mutate it, while every other principal is
 limited to read and execute access. Noter's recovery, records, and quarantine
 directories are created or tightened through retained handles to an exact
 protected inheritable user-and-SYSTEM DACL. Every held directory denies delete
-sharing for the namespace lifetime. The store's routine entry opens and lease
-or quarantine creation are relative to the held records or quarantine
-directory, validate a single entry component, and refuse final reparse points.
+sharing for the namespace lifetime. The store's routine entry opens, staged
+record creation, and lease or quarantine creation are relative to the held
+records or quarantine directory, validate a single entry component, and refuse
+final reparse points.
 Private creation applies the owner-and-SYSTEM descriptor at creation time and
-verifies it on the opened handle. Record staging and reconciliation,
-enumeration, replacement, quarantine installation, and synchronization remain
-pathname-based inside the held, delete-protected directories. Fixed-drive
-classification does not prove that a profile is not synchronized or redirected.
+verifies it on the opened handle. Stage observation and installation,
+reconciliation, enumeration, replacement, quarantine installation, and
+synchronization remain pathname-based inside the held, delete-protected
+directories. Fixed-drive classification does not prove that a profile is not
+synchronized or redirected.
 Store entry operations refuse paths outside the held records and quarantine
 directories. Cleanup deletes the opened file after any required identity check,
 so a name replacement racing that check cannot be deleted instead.
