@@ -14,12 +14,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use getrandom::fill as fill_random;
-#[cfg(windows)]
-use noter_platform::WindowsRecoveryNamespace;
 #[cfg(any(windows, test))]
 use noter_platform::{CommitReceipt, ReplaceExistingOutcome};
 #[cfg(unix)]
 use noter_platform::{UnixRecoveryDirectory, UnixRecoveryNamespace};
+#[cfg(windows)]
+use noter_platform::{WindowsRecoveryDirectory, WindowsRecoveryNamespace};
 
 use super::recovery::{
     RECOVERY_MAGIC, RECOVERY_SCHEMA_VERSION, RecoveryInstanceId, RecoveryQuarantineReason,
@@ -295,13 +295,34 @@ pub struct RecoveryStore {
     #[cfg(unix)]
     namespace: Arc<UnixRecoveryNamespace>,
     #[cfg(windows)]
-    _namespace_guard: Arc<WindowsRecoveryNamespace>,
+    namespace: Arc<WindowsRecoveryNamespace>,
 }
 
 /// Recovery entries are reached through the held directories of the bound
-/// namespace on Unix, and by pathname inside the held, delete-protected
-/// directories on Windows.
+/// namespace on Unix. Windows creation and opens are handle-relative; its
+/// remaining operations use paths inside held, delete-protected directories.
 impl RecoveryStore {
+    #[cfg(windows)]
+    fn windows_bound_entry<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> io::Result<(&'a WindowsRecoveryDirectory, &'a std::ffi::OsStr)> {
+        let name = path.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "a recovery entry needs a name")
+        })?;
+        let parent = path.parent().unwrap_or_else(|| Path::new(""));
+        [self.namespace.records(), self.namespace.quarantine()]
+            .into_iter()
+            .find(|bound| bound.path() == parent)
+            .map(|bound| (bound, name))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the path is outside the bound recovery directories",
+                )
+            })
+    }
+
     #[cfg(unix)]
     fn unix_bound_directory(&self, directory: &Path) -> io::Result<&UnixRecoveryDirectory> {
         [self.namespace.records(), self.namespace.quarantine()]
@@ -352,7 +373,12 @@ impl RecoveryStore {
             let (directory, name) = self.unix_bound_entry(path)?;
             directory.open_existing(name)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let (directory, name) = self.windows_bound_entry(path)?;
+            directory.open_existing(name)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             self.windows_require_bound_entry(path)?;
             noter_platform::open_existing_no_follow(path)
@@ -364,7 +390,12 @@ impl RecoveryStore {
         {
             self.entry_open_existing(path)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let (directory, name) = self.windows_bound_entry(path)?;
+            directory.open_for_cleanup(name)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             self.windows_require_bound_entry(path)?;
             noter_platform::open_for_cleanup(path)
@@ -377,7 +408,12 @@ impl RecoveryStore {
             let (directory, name) = self.unix_bound_entry(path)?;
             directory.create_private_new(name)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let (directory, name) = self.windows_bound_entry(path)?;
+            directory.create_private_new(name)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             self.windows_require_bound_entry(path)?;
             noter_platform::create_private_new_file(path)
@@ -392,8 +428,7 @@ impl RecoveryStore {
         }
         #[cfg(not(unix))]
         {
-            self.windows_require_bound_entry(path)?;
-            let opened = noter_platform::open_for_cleanup(path)?;
+            let opened = self.entry_open_for_cleanup(path)?;
             noter_platform::delete_open_file(&opened)
         }
     }
@@ -408,8 +443,10 @@ impl RecoveryStore {
         }
         #[cfg(not(unix))]
         {
-            self.windows_require_bound_entry(path)?;
-            windows_remove_if_identifies(path, expected)
+            self.windows_remove_if_named_identity(
+                path,
+                noter_platform::file_facts(expected)?.identity(),
+            )
         }
     }
 
@@ -419,8 +456,8 @@ impl RecoveryStore {
         path: &Path,
         expected: noter_platform::FileIdentity,
     ) -> io::Result<()> {
-        self.windows_require_bound_entry(path)?;
-        windows_remove_if_named(path, expected)
+        let opened = self.entry_open_for_cleanup(path)?;
+        windows_remove_if_named_with(&opened, expected, || Ok(()))
     }
 
     fn entry_is_file(&self, path: &Path) -> io::Result<bool> {
@@ -472,30 +509,19 @@ impl RecoveryStore {
 }
 
 #[cfg(not(unix))]
-fn windows_remove_if_identifies(path: &Path, expected: &File) -> io::Result<()> {
-    windows_remove_if_named(path, noter_platform::file_facts(expected)?.identity())
-}
-
-#[cfg(not(unix))]
-fn windows_remove_if_named(path: &Path, expected: noter_platform::FileIdentity) -> io::Result<()> {
-    windows_remove_if_named_with(path, expected, || Ok(()))
-}
-
-#[cfg(not(unix))]
 fn windows_remove_if_named_with(
-    path: &Path,
+    named: &File,
     expected: noter_platform::FileIdentity,
     after_open: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
-    let named = noter_platform::open_for_cleanup(path)?;
-    if noter_platform::file_facts(&named)?.identity() != expected {
+    if noter_platform::file_facts(named)?.identity() != expected {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "the recovery entry no longer identifies the opened file",
         ));
     }
     after_open()?;
-    noter_platform::delete_open_file(&named)
+    noter_platform::delete_open_file(named)
 }
 
 fn recovery_directory_error_is_missing(kind: io::ErrorKind) -> bool {
@@ -513,8 +539,9 @@ impl RecoveryStore {
     /// The state, recovery, records, and quarantine directories are validated
     /// and retained before recovery content can be written. On Unix every
     /// record, lease, and quarantine operation then goes through the held
-    /// directories; Windows keeps pathname operations inside its held,
-    /// delete-protected directories.
+    /// directories. Windows creation and opens are handle-relative while its
+    /// remaining pathname operations stay inside held, delete-protected
+    /// directories.
     ///
     /// # Errors
     ///
@@ -529,8 +556,8 @@ impl RecoveryStore {
                 std::ffi::OsStr::new(RECOVERY_STATE_SUBDIR),
             )?;
             Ok(Self {
-                root: state_root.join(RECOVERY_STATE_SUBDIR),
-                _namespace_guard: Arc::new(namespace),
+                root: namespace.recovery().path().to_path_buf(),
+                namespace: Arc::new(namespace),
             })
         }
         #[cfg(unix)]
@@ -4986,13 +5013,31 @@ mod tests {
         fs::write(&named_path, b"original")?;
         let expected = noter_platform::file_facts(&File::open(&named_path)?)?.identity();
 
-        windows_remove_if_named_with(&named_path, expected, || {
+        let opened = store.entry_open_for_cleanup(&named_path)?;
+        windows_remove_if_named_with(&opened, expected, || {
             fs::rename(&named_path, &moved_path)?;
             fs::write(&named_path, b"replacement")
         })?;
+        drop(opened);
 
         assert_eq!(fs::read(&named_path)?, b"replacement");
         assert!(!moved_path.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bound_entry_opens_accept_an_alternate_state_path_spelling() -> io::Result<()> {
+        let dir = tempdir()?;
+        let state = dir.path().join("state");
+        let alternate = PathBuf::from(state.to_string_lossy().replace('\\', "/"));
+        let store = RecoveryStore::open_in_state(alternate)?;
+        let path = store.records_dir().join("entry.rec");
+        fs::write(&path, b"bound entry")?;
+        let mut opened = store.entry_open_existing(&path)?;
+        let mut bytes = Vec::new();
+        opened.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, b"bound entry");
         Ok(())
     }
 

@@ -617,17 +617,21 @@ chain from `/`, owner and mode checks, local file system classification, ACL
 removal on macOS, handle-relative record, lease, and quarantine operations,
 identity-checked retirement in a private directory, and native fixtures for
 group and other write access, ancestor rebind, final-entry swaps, links, and
-removal. Windows record operations now refuse paths outside the held
-directories. Windows cleanup deletes an opened file after any required
-identity check, so a rebinding of its pathname cannot delete the replacement.
+removal. Windows store entry operations now refuse paths outside the held
+directories; routine opens and lease or quarantine creation use those handles.
+Windows cleanup deletes an opened file after any required identity check, so a
+rebound pathname cannot delete the replacement.
 
 The first Windows foundation validates the drive-rooted state path on fixed
 NTFS, rejects reparse and cross-volume directory components, verifies stable
 preferred identities, retains every traversed and recovery-directory handle
 without delete sharing, rejects state DACLs that grant unprivileged mutation,
 and applies an exact protected inheritable user-and-SYSTEM DACL to the owned
-recovery subtree. It does not claim handle-relative record operations or
-redirected or synchronized-root detection; those keep M4-H1 in progress.
+recovery subtree. Routine store entry opens and lease or quarantine creation
+are handle-relative and have native fixtures for exclusive private creation,
+final links, and name replacement after open. Record staging and
+reconciliation, enumeration, replacement, quarantine installation, sync, and
+redirected or synchronized-root detection keep M4-H1 in progress.
 
 The Unix cleanup ADR was required either to provide a genuinely object-bound
 retirement strategy or to retain and safely neutralize the exact opened object
@@ -961,8 +965,9 @@ is the next safety prerequisite; the M5 editor feasibility gate follows it.
    with the immutable implementation commit, and `v0.1.0-alpha.2` was tagged at
    the protected-main head `dbb419f` after that exact commit passed CI.
 6. **In progress, before `0.1.0-beta.2`:** M4-H1 recovery namespace binding.
-   Complete handle-relative Windows record operations and redirected-root
-   classification, and record every remaining native adversarial fixture.
+   Complete the remaining handle-relative Windows record operations and
+   redirected-root classification, and record every remaining native
+   adversarial fixture.
    The Linux and macOS namespace adapters and Unix cleanup contract are in tree.
 7. **Then, `0.1.0-beta.2`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the

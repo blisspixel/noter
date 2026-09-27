@@ -22,7 +22,8 @@ pub use unix_recovery_namespace::{UnixRecoveryDirectory, UnixRecoveryNamespace};
 
 #[cfg(windows)]
 pub use windows_recovery_namespace::{
-    WindowsDirectoryIdentity, WindowsRecoveryEntryName, WindowsRecoveryNamespace,
+    WindowsDirectoryIdentity, WindowsRecoveryDirectory, WindowsRecoveryEntryName,
+    WindowsRecoveryNamespace,
 };
 
 #[cfg(unix)]
@@ -3010,6 +3011,7 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
+    use std::ffi::OsStr;
     use std::fs::{File, OpenOptions};
     use std::io;
     use std::mem::size_of;
@@ -3018,10 +3020,16 @@ mod imp {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::path::Path;
 
+    use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT,
+        FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+    };
     use windows_sys::Win32::Foundation::{
         ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER,
         ERROR_NOT_SUPPORTED, ERROR_SUCCESS, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE, HANDLE,
-        INVALID_HANDLE_VALUE, LocalFree,
+        INVALID_HANDLE_VALUE, LocalFree, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError,
+        UNICODE_STRING,
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
@@ -3055,11 +3063,13 @@ mod imp {
         STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleMode,
         SetStdHandle,
     };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     use super::{
         CommitReceipt, FileChangeToken, FileFacts, FileIdentity, IdentityQuality,
         InstallNewOutcome, ParentSyncOutcome, ParentSyncReceipt, ReplaceExistingOutcome,
+        WindowsRecoveryEntryName,
     };
 
     /// Reports whether one raw standard-stream handle has a destination.
@@ -3603,6 +3613,99 @@ mod imp {
             |file| windows_verify_private_file_security(file, &policy.owner_sid, &policy.dacl_sddl),
             windows_delete_open_file,
         )
+    }
+
+    pub fn windows_create_private_new_at(directory: &File, name: &OsStr) -> io::Result<File> {
+        let name = WindowsRecoveryEntryName::new(name)?;
+        let policy = windows_private_security_policy()?;
+        let descriptor = windows_security_descriptor_from_sddl(&policy.descriptor_sddl)?;
+        let file = windows_create_private_new_at_with_security(
+            directory,
+            name.as_os_str(),
+            descriptor.raw,
+        )?;
+        windows_finalize_private_creation(
+            file,
+            |file| windows_verify_private_file_security(file, &policy.owner_sid, &policy.dacl_sddl),
+            windows_delete_open_file,
+        )
+    }
+
+    fn windows_create_private_new_at_with_security(
+        directory: &File,
+        name: &OsStr,
+        descriptor: PSECURITY_DESCRIPTOR,
+    ) -> io::Result<File> {
+        let mut units: Vec<u16> = name.encode_wide().collect();
+        let length = units
+            .len()
+            .checked_mul(size_of::<u16>())
+            .and_then(|length| u16::try_from(length).ok())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "recovery entry name is too long",
+                )
+            })?;
+        let unicode_name = UNICODE_STRING {
+            Length: length,
+            MaximumLength: length,
+            Buffer: units.as_mut_ptr(),
+        };
+        let attributes = OBJECT_ATTRIBUTES {
+            Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Windows object attributes are too large",
+                )
+            })?,
+            RootDirectory: directory.as_raw_handle(),
+            ObjectName: &raw const unicode_name,
+            Attributes: OBJ_CASE_INSENSITIVE,
+            SecurityDescriptor: descriptor.cast(),
+            SecurityQualityOfService: std::ptr::null(),
+        };
+        let mut handle: HANDLE = std::ptr::null_mut();
+        let mut status_block = IO_STATUS_BLOCK::default();
+        let options = windows_combine_disjoint_flags(
+            windows_combine_disjoint_flags(FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT),
+            FILE_SYNCHRONOUS_IO_NONALERT,
+        );
+        let access = windows_combine_disjoint_flags(WINDOWS_PRIVATE_FILE_ACCESS, SYNCHRONIZE);
+        // SAFETY: `directory` remains open; the validated UTF-16 name, private
+        // security descriptor, object attributes, and writable outputs remain
+        // live for the entire synchronous call. FILE_CREATE is exclusive.
+        #[allow(unsafe_code)]
+        let status = unsafe {
+            NtCreateFile(
+                &raw mut handle,
+                access,
+                &raw const attributes,
+                &raw mut status_block,
+                std::ptr::null(),
+                FILE_ATTRIBUTE_NORMAL,
+                WINDOWS_PRIVATE_FILE_SHARE,
+                FILE_CREATE,
+                options,
+                std::ptr::null(),
+                0,
+            )
+        };
+        if status != 0 {
+            // SAFETY: the preceding native call supplied the NTSTATUS value.
+            #[allow(unsafe_code)]
+            let code = unsafe { RtlNtStatusToDosError(status) };
+            return Err(io::Error::from_raw_os_error(code.cast_signed()));
+        }
+        if !windows_raw_handle_is_bound(handle) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Windows returned an unusable created recovery handle",
+            ));
+        }
+        // SAFETY: a successful NtCreateFile returned a unique owned handle.
+        #[allow(unsafe_code)]
+        Ok(unsafe { File::from_raw_handle(handle) })
     }
 
     fn windows_private_security_policy() -> io::Result<WindowsPrivateSecurityPolicy> {

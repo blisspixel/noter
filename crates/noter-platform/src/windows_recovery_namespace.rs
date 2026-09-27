@@ -1,8 +1,8 @@
-//! Windows recovery-directory namespace binding foundation.
+//! Windows recovery-directory namespace binding.
 //!
 //! This module binds the state and recovery directories to retained handles.
-//! It does not yet expose handle-relative record operations, so completing the
-//! recovery namespace protocol remains separate work.
+//! Its entry creation and open methods are relative to those handles. Record
+//! staging, replacement, and root classification remain separate M4-H1 work.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -10,22 +10,34 @@ use std::io;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Component, Path, PathBuf, Prefix};
 
-use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_LIST_DIRECTORY,
-    FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, FileBasicInfo,
-    FileIdInfo, GetDriveTypeW, GetFileInformationByHandleEx, GetFileType,
-    GetVolumeInformationByHandleW, READ_CONTROL, WRITE_DAC,
+use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows_sys::Wdk::Storage::FileSystem::{
+    FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    NtCreateFile,
 };
+use windows_sys::Win32::Foundation::{
+    GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError,
+    UNICODE_STRING,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_TYPE_DISK, FileBasicInfo, FileIdInfo, GetDriveTypeW,
+    GetFileInformationByHandleEx, GetFileType, GetVolumeInformationByHandleW, READ_CONTROL,
+    SYNCHRONIZE, WRITE_DAC,
+};
+use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
 use crate::combine_disjoint_flag_bits;
 use crate::imp::{
-    windows_create_private_directory, windows_tighten_private_directory_security,
-    windows_verify_owner_controlled_state_directory, windows_verify_private_directory_security,
+    windows_create_private_directory, windows_create_private_new_at,
+    windows_tighten_private_directory_security, windows_verify_owner_controlled_state_directory,
+    windows_verify_private_directory_security,
 };
 
 const RECORDS_DIRECTORY_NAME: &str = "records";
@@ -65,18 +77,182 @@ impl WindowsRecoveryEntryName {
     }
 }
 
+/// A retained, verified Windows directory used for recovery entry operations.
 #[derive(Debug)]
-struct BoundWindowsDirectory {
+pub struct WindowsRecoveryDirectory {
     // This handle intentionally has no public accessor. Holding it without
     // FILE_SHARE_DELETE prevents pathname retirement while the namespace lives.
     handle: File,
     identity: WindowsDirectoryIdentity,
+    path: PathBuf,
 }
 
-impl BoundWindowsDirectory {
+impl WindowsRecoveryDirectory {
     const fn handle(&self) -> &File {
         &self.handle
     }
+
+    /// Returns the spelling of this directory when it was bound.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Opens one entry relative to this retained directory handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entry name is invalid, missing, or cannot be
+    /// opened without following its final reparse point.
+    pub fn open_existing(&self, name: &OsStr) -> io::Result<File> {
+        open_entry_relative(&self.handle, name, false)
+    }
+
+    /// Opens one entry for exact handle-bound cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entry name is invalid, missing, or cannot be
+    /// opened with deletion access without following its final reparse point.
+    pub fn open_for_cleanup(&self, name: &OsStr) -> io::Result<File> {
+        open_entry_relative(&self.handle, name, true)
+    }
+
+    /// Exclusively creates one owner-restricted entry relative to this handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without writing recovery bytes when the name is
+    /// invalid, already exists, or private security cannot be established.
+    pub fn create_private_new(&self, name: &OsStr) -> io::Result<File> {
+        windows_create_private_new_at(&self.handle, name)
+    }
+}
+
+fn open_entry_relative(directory: &File, name: &OsStr, for_cleanup: bool) -> io::Result<File> {
+    let name = WindowsRecoveryEntryName::new(name)?;
+    let mut units: Vec<u16> = name.as_os_str().encode_wide().collect();
+    let byte_length = units
+        .len()
+        .checked_mul(size_of::<u16>())
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(invalid_entry_name_error)?;
+    let unicode_name = UNICODE_STRING {
+        Length: byte_length,
+        MaximumLength: byte_length,
+        Buffer: units.as_mut_ptr(),
+    };
+    let object_attributes = OBJECT_ATTRIBUTES {
+        Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows object attributes are too large",
+            )
+        })?,
+        RootDirectory: directory.as_raw_handle(),
+        ObjectName: &raw const unicode_name,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        SecurityDescriptor: std::ptr::null(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let mut handle: HANDLE = std::ptr::null_mut();
+    let mut status_block = IO_STATUS_BLOCK::default();
+    let access = if for_cleanup {
+        combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(GENERIC_READ, DELETE),
+            SYNCHRONIZE,
+        )
+    } else {
+        combine_disjoint_flag_bits(GENERIC_READ, SYNCHRONIZE)
+    };
+    let share = if for_cleanup {
+        combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_DELETE)
+    } else {
+        combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
+            FILE_SHARE_DELETE,
+        )
+    };
+    let options = combine_disjoint_flag_bits(
+        combine_disjoint_flag_bits(FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT),
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    );
+    // SAFETY: `directory` stays open throughout the call. `units` is a live
+    // validated UTF-16 component with an exact byte length; the object name,
+    // attributes, output handle, and status block all point to initialized
+    // writable or readable storage for the duration of this synchronous call.
+    #[allow(unsafe_code)]
+    let status = unsafe {
+        NtCreateFile(
+            &raw mut handle,
+            access,
+            &raw const object_attributes,
+            &raw mut status_block,
+            std::ptr::null(),
+            FILE_ATTRIBUTE_NORMAL,
+            share,
+            FILE_OPEN,
+            options,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status != 0 {
+        // SAFETY: the status value is returned by the preceding native call;
+        // this conversion has no pointer or lifetime obligations.
+        #[allow(unsafe_code)]
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        return Err(io::Error::from_raw_os_error(code.cast_signed()));
+    }
+    if !nt_open_handle_usable(handle) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows returned an unusable recovery entry handle",
+        ));
+    }
+    // SAFETY: a successful NtCreateFile returns one owned file handle, which
+    // has not been wrapped or closed. File takes over its sole ownership.
+    #[allow(unsafe_code)]
+    let file = unsafe { File::from_raw_handle(handle) };
+    verify_regular_entry_handle(&file)?;
+    Ok(file)
+}
+
+fn nt_open_handle_usable(handle: HANDLE) -> bool {
+    !handle.is_null() && handle != INVALID_HANDLE_VALUE
+}
+
+fn verify_regular_entry_handle(file: &File) -> io::Result<()> {
+    let mut basic = FILE_BASIC_INFO::default();
+    let size = u32::try_from(size_of::<FILE_BASIC_INFO>()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "FILE_BASIC_INFO size does not fit the Windows API parameter",
+        )
+    })?;
+    // SAFETY: `file` remains open and `basic` is writable for exactly `size`
+    // bytes. The native function does not retain either pointer.
+    #[allow(unsafe_code)]
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&raw mut basic).cast(),
+            size,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let rejected =
+        combine_disjoint_flag_bits(FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT);
+    if basic.FileAttributes & rejected != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery entry must be an ordinary file",
+        ));
+    }
+    Ok(())
 }
 
 /// Retained Windows handles for the recovery directory hierarchy.
@@ -90,15 +266,16 @@ impl BoundWindowsDirectory {
 /// created directories receive that policy at creation time. Fixed-drive
 /// classification does not prove that the profile is unsynchronized or local.
 ///
-/// This type is a namespace foundation. Record creation, enumeration, rename,
-/// quarantine, synchronization, and retirement are not yet routed through
-/// these handles.
+/// Entry creation and open methods use these handles. Record staging,
+/// reconciliation, enumeration, rename, quarantine installation, and
+/// synchronization still require handle-relative operations to complete the
+/// namespace contract.
 pub struct WindowsRecoveryNamespace {
-    state: BoundWindowsDirectory,
-    recovery: BoundWindowsDirectory,
-    records: BoundWindowsDirectory,
-    quarantine: BoundWindowsDirectory,
-    _traversal_guards: Vec<BoundWindowsDirectory>,
+    state: WindowsRecoveryDirectory,
+    recovery: WindowsRecoveryDirectory,
+    records: WindowsRecoveryDirectory,
+    quarantine: WindowsRecoveryDirectory,
+    _traversal_guards: Vec<WindowsRecoveryDirectory>,
 }
 
 impl WindowsRecoveryNamespace {
@@ -178,6 +355,24 @@ impl WindowsRecoveryNamespace {
     #[must_use]
     pub const fn quarantine_identity(&self) -> WindowsDirectoryIdentity {
         self.quarantine.identity
+    }
+
+    /// The held recovery directory.
+    #[must_use]
+    pub const fn recovery(&self) -> &WindowsRecoveryDirectory {
+        &self.recovery
+    }
+
+    /// The held records directory.
+    #[must_use]
+    pub const fn records(&self) -> &WindowsRecoveryDirectory {
+        &self.records
+    }
+
+    /// The held quarantine directory.
+    #[must_use]
+    pub const fn quarantine(&self) -> &WindowsRecoveryDirectory {
+        &self.quarantine
     }
 }
 
@@ -331,7 +526,7 @@ fn verify_ntfs(handle: &File) -> io::Result<()> {
 fn bind_existing_directory(
     path: &Path,
     expected_volume: Option<u64>,
-) -> io::Result<BoundWindowsDirectory> {
+) -> io::Result<WindowsRecoveryDirectory> {
     let handle = open_directory_no_follow(path, DirectorySharePolicy::Traversal)?;
     let identity = verify_directory_handle(&handle)?;
     if expected_volume.is_some_and(|volume| volume != identity.volume_serial) {
@@ -340,10 +535,14 @@ fn bind_existing_directory(
             "recovery state directory crossed a volume boundary",
         ));
     }
-    Ok(BoundWindowsDirectory { handle, identity })
+    Ok(WindowsRecoveryDirectory {
+        handle,
+        identity,
+        path: path.to_path_buf(),
+    })
 }
 
-fn bind_state_directory(path: &Path, expected_volume: u64) -> io::Result<BoundWindowsDirectory> {
+fn bind_state_directory(path: &Path, expected_volume: u64) -> io::Result<WindowsRecoveryDirectory> {
     let handle = open_or_create_private_directory(path)?;
     let identity = verify_directory_handle(&handle)?;
     if identity.volume_serial != expected_volume {
@@ -353,10 +552,17 @@ fn bind_state_directory(path: &Path, expected_volume: u64) -> io::Result<BoundWi
         ));
     }
     windows_verify_owner_controlled_state_directory(&handle)?;
-    Ok(BoundWindowsDirectory { handle, identity })
+    Ok(WindowsRecoveryDirectory {
+        handle,
+        identity,
+        path: path.to_path_buf(),
+    })
 }
 
-fn bind_private_directory(path: &Path, expected_volume: u64) -> io::Result<BoundWindowsDirectory> {
+fn bind_private_directory(
+    path: &Path,
+    expected_volume: u64,
+) -> io::Result<WindowsRecoveryDirectory> {
     let handle = open_or_create_private_directory(path)?;
     let identity = verify_directory_handle(&handle)?;
     if identity.volume_serial != expected_volume {
@@ -369,7 +575,11 @@ fn bind_private_directory(path: &Path, expected_volume: u64) -> io::Result<Bound
         windows_verify_owner_controlled_state_directory(&handle)?;
         windows_tighten_private_directory_security(&handle)?;
     }
-    Ok(BoundWindowsDirectory { handle, identity })
+    Ok(WindowsRecoveryDirectory {
+        handle,
+        identity,
+        path: path.to_path_buf(),
+    })
 }
 
 fn open_or_create_private_directory(path: &Path) -> io::Result<File> {
@@ -563,8 +773,8 @@ fn invalid_entry_name_error() -> io::Error {
 mod tests {
     use std::ffi::OsStr;
     use std::fs::{self, File};
-    use std::io;
-    use std::os::windows::fs::symlink_dir;
+    use std::io::{self, Read, Write};
+    use std::os::windows::fs::{symlink_dir, symlink_file};
     use std::path::Path;
 
     use tempfile::tempdir;
@@ -572,16 +782,24 @@ mod tests {
     use super::{
         DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, ParsedStatePath,
         WindowsRecoveryEntryName, WindowsRecoveryNamespace, classify_directory_creation_error,
-        classify_directory_open_error, directory_attributes_are_safe, open_directory_no_follow,
-        verify_fixed_drive, verify_ntfs,
+        classify_directory_open_error, directory_attributes_are_safe, nt_open_handle_usable,
+        open_directory_no_follow, verify_fixed_drive, verify_ntfs,
     };
     use crate::imp::{
         windows_create_owner_controlled_readable_directory_for_test,
         windows_verify_private_directory_security,
     };
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
     };
+
+    #[test]
+    fn native_open_handle_check_rejects_both_failure_sentinels() {
+        assert!(!nt_open_handle_usable(std::ptr::null_mut()));
+        assert!(!nt_open_handle_usable(INVALID_HANDLE_VALUE));
+        assert!(nt_open_handle_usable(std::ptr::dangling_mut()));
+    }
 
     #[test]
     fn entry_names_accept_only_unambiguous_single_components() {
@@ -727,6 +945,114 @@ mod tests {
             state.join("recovery").join("records").join("entry"),
             b"bound child operation",
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn entries_open_relative_to_held_directories_and_reject_final_links() -> io::Result<()> {
+        let parent = tempdir()?;
+        let state = parent.path().join("state");
+        let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
+        let record = namespace.records().path().join("entry.rec");
+        let quarantined = namespace.quarantine().path().join("entry.rec");
+        let disposable = namespace.quarantine().path().join("delete.rec");
+        fs::write(&record, b"record")?;
+        fs::write(&quarantined, b"quarantine")?;
+        fs::write(&disposable, b"delete")?;
+
+        let mut opened = namespace.records().open_existing(OsStr::new("entry.rec"))?;
+        let mut bytes = Vec::new();
+        opened.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, b"record");
+        let raced_path = namespace.records().path().join("raced.rec");
+        let moved_path = namespace.records().path().join("moved.rec");
+        fs::write(&raced_path, b"original")?;
+        let mut raced = namespace.records().open_existing(OsStr::new("raced.rec"))?;
+        fs::rename(&raced_path, &moved_path)?;
+        fs::write(&raced_path, b"replacement")?;
+        bytes.clear();
+        raced.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, b"original");
+        assert_eq!(fs::read(&raced_path)?, b"replacement");
+        let mut opened = namespace
+            .quarantine()
+            .open_for_cleanup(OsStr::new("entry.rec"))?;
+        bytes.clear();
+        opened.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, b"quarantine");
+        let delete_handle = namespace
+            .quarantine()
+            .open_for_cleanup(OsStr::new("delete.rec"))?;
+        crate::delete_open_file(&delete_handle)?;
+        drop(delete_handle);
+        assert!(!disposable.exists());
+
+        let link = namespace.records().path().join("link.rec");
+        symlink_file(&quarantined, &link)?;
+        assert_eq!(
+            namespace
+                .records()
+                .open_existing(OsStr::new("link.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            namespace
+                .records()
+                .open_for_cleanup(OsStr::new("link.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            namespace
+                .records()
+                .open_existing(OsStr::new("..\\entry.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            namespace
+                .records()
+                .open_existing(OsStr::new("missing.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read(&quarantined)?, b"quarantine");
+        assert!(super::verify_regular_entry_handle(&File::open("NUL")?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn private_entry_creation_is_exclusive_and_relative_to_the_held_directory() -> io::Result<()> {
+        let parent = tempdir()?;
+        let state = parent.path().join("state");
+        let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
+        let name = OsStr::new("created.rec");
+        let path = namespace.records().path().join(name);
+        let mut created = namespace.records().create_private_new(name)?;
+        created.write_all(b"private record")?;
+        assert_eq!(
+            namespace
+                .records()
+                .create_private_new(name)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&path)?, b"private record");
+        assert!(!namespace.quarantine().path().join(name).exists());
+        assert_eq!(
+            namespace
+                .records()
+                .create_private_new(OsStr::new("..\\escape.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
         Ok(())
     }
 
