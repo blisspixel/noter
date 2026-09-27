@@ -30,6 +30,11 @@ use noter::core::navigation::{
     LineNavigationError, MoveDirection, MoveUnit, line_start_offset, move_caret,
 };
 use noter::core::save::SaveOutcome;
+use noter::core::save_recovery::{
+    MAX_SAVE_RECOVERY_DESTINATION_BYTES, MAX_SAVE_RECOVERY_MESSAGE_BYTES,
+    MAX_SAVE_RECOVERY_RECORDS, bounded_destination_label, recovery_path_clipboard_text,
+    write_save_recovery_message,
+};
 use noter::core::search::{LiteralSearch, MatchCase, SearchDirection};
 use noter::core::terminal_text::{
     cell_width, column_of, display_width, fit_line, offset_at_column, push_display,
@@ -42,7 +47,6 @@ use noter::error::NoterError;
 use crate::app::{DocumentView, LaunchOptions};
 use crate::crash_recovery::{
     CrashRecoverySession, RECOVERY_CLEANUP_FAILURE_MESSAGE, RECOVERY_PERSIST_FAILURE_MESSAGE,
-    RECOVERY_UNAVAILABLE_MESSAGE,
 };
 
 mod input;
@@ -64,6 +68,8 @@ pub enum PromptMode {
     ExitConfirm,
     /// Unsaved text from an earlier session is waiting in private recovery.
     RecoveryOffer,
+    /// An uncertain save requires explicit inspection and confirmation.
+    ReconcileSave(usize),
 }
 
 /// The answer to a startup recovery offer.
@@ -88,11 +94,27 @@ pub enum AfterSave {
 #[derive(Clone, Debug)]
 pub enum PendingSave {
     /// Save in place, splitting the document's hard link.
-    SplitHardLinkInPlace,
+    SplitHardLinkInPlace(SaveRecoveryReservation),
     /// Save As over an existing file.
-    Replace(PreparedSaveAs),
+    Replace(PreparedSaveAs, SaveRecoveryReservation),
     /// Save As over an existing file, splitting its hard link.
-    SplitHardLink(PreparedSaveAs),
+    SplitHardLink(PreparedSaveAs, SaveRecoveryReservation),
+}
+
+/// One unresolved save outcome retained independently until reconciliation.
+#[derive(Clone, Debug)]
+pub struct SaveRecoveryRecord {
+    destination: PathBuf,
+    destination_label: String,
+    message: String,
+}
+
+/// Storage reserved before a save can inspect or mutate its destination.
+#[derive(Clone, Debug)]
+pub struct SaveRecoveryReservation {
+    destination: PathBuf,
+    destination_label: String,
+    message: String,
 }
 
 /// The result of one save step.
@@ -207,12 +229,11 @@ pub struct TuiSession {
     pub should_exit: bool,
     pub after_save: AfterSave,
     pub pending_save: Option<PendingSave>,
-    /// Paths where an earlier save may or may not have reached disk.
-    ///
-    /// Writing there again would hide which version is on disk, so saves to
-    /// these paths are refused for the rest of the session. Other destinations
-    /// stay available so the text is never trapped.
-    pub uncertain_paths: Vec<PathBuf>,
+    /// Independent unresolved save outcomes that block all later saves.
+    pub save_recoveries: Vec<SaveRecoveryRecord>,
+    /// Next terminal clipboard request, emitted only after an explicit copy.
+    pending_clipboard: Option<String>,
+    reconcile_scroll: usize,
 }
 
 impl TuiSession {
@@ -257,7 +278,9 @@ impl TuiSession {
             should_exit: false,
             after_save: AfterSave::Stay,
             pending_save: None,
-            uncertain_paths: Vec::new(),
+            save_recoveries: Vec::new(),
+            pending_clipboard: None,
+            reconcile_scroll: 0,
         };
         if options.initial_path.is_some() {
             session.recovery.defer_startup_offers();
@@ -266,7 +289,8 @@ impl TuiSession {
             session.prompt = PromptMode::RecoveryOffer;
         }
         if session.recovery.is_unavailable() {
-            session.set_status(RECOVERY_UNAVAILABLE_MESSAGE);
+            let message = session.recovery.unavailable_message();
+            session.set_status(&message);
         }
         Ok(session)
     }
@@ -541,25 +565,32 @@ impl TuiSession {
 
     /// Saves the document in place (^S), or asks for a name when untitled.
     pub fn save(&mut self) -> SaveStep {
-        let Some(target) = self.document.path().map(std::path::Path::to_path_buf) else {
-            return self.open_save_as();
-        };
-        if self.is_uncertain(Some(&target)) {
+        if self.save_is_blocked() {
             self.set_status(UNCERTAIN_SAVE_GUIDANCE);
             return SaveStep::NotSaved;
         }
+        let Some(target) = self.document.path().map(std::path::Path::to_path_buf) else {
+            return self.open_save_as();
+        };
+        let Some(reservation) = self.reserve_save_recovery(target) else {
+            return SaveStep::NotSaved;
+        };
         match self.document.save() {
             Err(NoterError::HardLinkedTarget(link_count)) => {
-                self.pending_save = Some(PendingSave::SplitHardLinkInPlace);
+                self.pending_save = Some(PendingSave::SplitHardLinkInPlace(reservation));
                 self.prompt = PromptMode::ConfirmHardLink(link_count);
                 SaveStep::AwaitingInput
             }
-            result => self.report_save(target, result),
+            result => self.report_save(reservation, result),
         }
     }
 
     /// Opens the Save As prompt (^O), prefilled with the current path.
     pub fn open_save_as(&mut self) -> SaveStep {
+        if self.save_is_blocked() {
+            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            return SaveStep::NotSaved;
+        }
         self.prompt_input = self
             .document
             .path()
@@ -571,6 +602,11 @@ impl TuiSession {
 
     /// Resolves the name typed into the Save As prompt.
     pub fn submit_save_as(&mut self) -> SaveStep {
+        if self.save_is_blocked() {
+            self.prompt = PromptMode::None;
+            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            return SaveStep::NotSaved;
+        }
         if self.prompt_input.trim().is_empty() {
             self.set_status("Enter a file name, or press Esc to cancel");
             return SaveStep::AwaitingInput;
@@ -584,6 +620,9 @@ impl TuiSession {
             }
             _ => PathBuf::from(&self.prompt_input),
         };
+        let Some(reservation) = self.reserve_save_recovery(path.clone()) else {
+            return SaveStep::NotSaved;
+        };
         let prepared = match self.document.prepare_save_as(&path) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -591,33 +630,97 @@ impl TuiSession {
                 return SaveStep::NotSaved;
             }
         };
-        if self.is_uncertain(Some(&path)) {
-            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
-            return SaveStep::NotSaved;
-        }
         // Saving to the document's own path is an ordinary save: the core
         // compares against the saved baseline and reports an external change
         // as a conflict, so there is nothing new to confirm.
         let is_current_path = self.document.path() == Some(path.as_path());
         if prepared.replaces_existing() && !is_current_path {
-            self.pending_save = Some(PendingSave::Replace(prepared));
+            self.pending_save = Some(PendingSave::Replace(prepared, reservation));
             self.prompt = PromptMode::ConfirmReplace;
             return SaveStep::AwaitingInput;
         }
-        self.save_prepared(prepared, false)
+        self.save_prepared(prepared, reservation, false)
     }
 
-    fn is_uncertain(&self, path: Option<&std::path::Path>) -> bool {
-        path.is_some_and(|path| {
-            self.uncertain_paths
-                .iter()
-                .any(|uncertain| uncertain == path)
+    const fn save_is_blocked(&self) -> bool {
+        !self.save_recoveries.is_empty()
+    }
+
+    fn reserve_save_recovery(&mut self, destination: PathBuf) -> Option<SaveRecoveryReservation> {
+        if self.save_recoveries.len() >= MAX_SAVE_RECOVERY_RECORDS
+            || self.save_recoveries.try_reserve(1).is_err()
+        {
+            self.set_status("Save stopped: uncertain-save evidence cannot be retained");
+            return None;
+        }
+        if destination.as_os_str().as_encoded_bytes().len() > MAX_SAVE_RECOVERY_DESTINATION_BYTES {
+            self.set_status("Save stopped: destination path is too large to retain safely");
+            return None;
+        }
+        let Some(destination_label) = bounded_destination_label(&destination) else {
+            self.set_status("Save stopped: destination label cannot be retained");
+            return None;
+        };
+        let mut message = String::new();
+        if message
+            .try_reserve_exact(MAX_SAVE_RECOVERY_MESSAGE_BYTES)
+            .is_err()
+        {
+            self.set_status("Save stopped: uncertain-save diagnostic cannot be retained");
+            return None;
+        }
+        Some(SaveRecoveryReservation {
+            destination,
+            destination_label,
+            message,
         })
+    }
+
+    fn open_save_reconciliation(&mut self) {
+        if self.save_recoveries.is_empty() {
+            self.set_status("No uncertain save outcomes to reconcile");
+            return;
+        }
+        self.prompt = PromptMode::ReconcileSave(0);
+        self.reconcile_scroll = 0;
+    }
+
+    fn reconcile_save(&mut self, index: usize) {
+        if index >= self.save_recoveries.len() {
+            self.prompt = PromptMode::None;
+            return;
+        }
+        self.save_recoveries.remove(index);
+        self.reconcile_scroll = 0;
+        if self.save_recoveries.is_empty() {
+            self.prompt = PromptMode::None;
+            if self
+                .status_message
+                .as_ref()
+                .is_some_and(|(message, _)| message == UNCERTAIN_SAVE_GUIDANCE)
+            {
+                self.status_message = None;
+            }
+        } else {
+            self.prompt = PromptMode::ReconcileSave(index.min(self.save_recoveries.len() - 1));
+        }
+    }
+
+    fn copy_recovery_destination(&mut self, index: usize) {
+        if let Some(recovery) = self.save_recoveries.get(index) {
+            self.pending_clipboard = Some(recovery_path_clipboard_text(&recovery.destination));
+            self.set_status("Exact path copy requested; terminal clipboard support varies");
+        }
     }
 
     /// Answers the replace or hard-link confirmation that is showing.
     pub fn confirm_pending_save(&mut self, confirmed: bool) -> SaveStep {
         self.prompt = PromptMode::None;
+        if self.save_is_blocked() {
+            self.pending_save = None;
+            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            return SaveStep::NotSaved;
+        }
         let Some(pending) = self.pending_save.take() else {
             return SaveStep::NotSaved;
         };
@@ -626,20 +729,29 @@ impl TuiSession {
             return SaveStep::NotSaved;
         }
         match pending {
-            PendingSave::SplitHardLinkInPlace => {
-                let Some(target) = self.document.path().map(std::path::Path::to_path_buf) else {
-                    return SaveStep::NotSaved;
-                };
+            PendingSave::SplitHardLinkInPlace(reservation) => {
                 let result = self.document.save_confirming_hard_link_replacement();
-                self.report_save(target, result)
+                self.report_save(reservation, result)
             }
-            PendingSave::Replace(prepared) => self.save_prepared(prepared, false),
-            PendingSave::SplitHardLink(prepared) => self.save_prepared(prepared, true),
+            PendingSave::Replace(prepared, reservation) => {
+                self.save_prepared(prepared, reservation, false)
+            }
+            PendingSave::SplitHardLink(prepared, reservation) => {
+                self.save_prepared(prepared, reservation, true)
+            }
         }
     }
 
-    fn save_prepared(&mut self, prepared: PreparedSaveAs, hard_link_confirmed: bool) -> SaveStep {
-        let target = prepared.path().to_path_buf();
+    fn save_prepared(
+        &mut self,
+        prepared: PreparedSaveAs,
+        reservation: SaveRecoveryReservation,
+        hard_link_confirmed: bool,
+    ) -> SaveStep {
+        if self.save_is_blocked() {
+            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            return SaveStep::NotSaved;
+        }
         let result = if hard_link_confirmed {
             self.document
                 .save_prepared_as_confirming_hard_link_replacement(prepared.clone())
@@ -647,17 +759,17 @@ impl TuiSession {
             self.document.save_prepared_as(prepared.clone())
         };
         if let Err(NoterError::HardLinkedTarget(link_count)) = result {
-            self.pending_save = Some(PendingSave::SplitHardLink(prepared));
+            self.pending_save = Some(PendingSave::SplitHardLink(prepared, reservation));
             self.prompt = PromptMode::ConfirmHardLink(link_count);
             return SaveStep::AwaitingInput;
         }
-        self.report_save(target, result)
+        self.report_save(reservation, result)
     }
 
     /// Turns a save result into status text and the next step.
     fn report_save(
         &mut self,
-        target: PathBuf,
+        reservation: SaveRecoveryReservation,
         result: Result<SaveOutcome, NoterError>,
     ) -> SaveStep {
         match result {
@@ -689,15 +801,22 @@ impl TuiSession {
                 SaveStep::NotSaved
             }
             Ok(SaveOutcome::CommitStateUnknown {
-                recovery_artifact, ..
+                error,
+                recovery_artifact,
+                ..
             }) => {
-                if !self.is_uncertain(Some(&target)) {
-                    self.uncertain_paths.push(target);
-                }
-                self.set_status(format!(
-                    "Save outcome unknown: {}. {UNCERTAIN_SAVE_GUIDANCE}",
-                    recovery_artifact.message()
-                ));
+                let SaveRecoveryReservation {
+                    destination,
+                    destination_label,
+                    message,
+                } = reservation;
+                let message = write_save_recovery_message(message, &recovery_artifact, &error);
+                self.save_recoveries.push(SaveRecoveryRecord {
+                    destination,
+                    destination_label,
+                    message,
+                });
+                self.set_status(UNCERTAIN_SAVE_GUIDANCE);
                 SaveStep::NotSaved
             }
             Err(error) => {
@@ -824,7 +943,7 @@ const STATUS_LIFETIME: Duration = Duration::from_secs(3);
 
 /// Shown when an earlier save may have reached disk.
 const UNCERTAIN_SAVE_GUIDANCE: &str =
-    "Check that file on disk. Saving to it is paused; ^O Save As can write another file.";
+    "Every save is paused. Press ^R to inspect and reconcile the uncertain outcome.";
 
 /// One logical line: its content bytes and where the next line starts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1096,6 +1215,17 @@ fn prompt_parts(session: &TuiSession) -> Option<(String, &str, &'static str)> {
                 "",
             ));
         }
+        PromptMode::ReconcileSave(index) => {
+            return Some((
+                format!(
+                    "Uncertain save {}/{}. Inspect, (c)opy path, (y)es reconciled, (n)ext, (p)revious, Esc cancel",
+                    index + 1,
+                    session.save_recoveries.len()
+                ),
+                "",
+                "",
+            ));
+        }
         PromptMode::None => return None,
     };
     Some((label.to_owned(), input, hint))
@@ -1243,6 +1373,10 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
         return out;
     }
 
+    if let PromptMode::ReconcileSave(index) = &session.prompt {
+        return render_save_reconciliation(session, *index, cols, rows, &palette);
+    }
+
     let text = session.text();
     let frame = Frame::new(session, &text);
     let (caret_line, caret_column) = (frame.caret_line, frame.caret_column);
@@ -1325,6 +1459,90 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
             1 + offset + caret_column - session.scroll_col
         );
     }
+    out
+}
+
+fn render_save_reconciliation(
+    session: &TuiSession,
+    index: usize,
+    cols: u16,
+    rows: u16,
+    palette: &TuiPalette,
+) -> String {
+    let columns = usize::from(cols);
+    let height = usize::from(rows);
+    let mut out = String::with_capacity(columns * height * 4);
+    out.push_str("\x1b[?25l\x1b[H");
+    let Some(recovery) = session.save_recoveries.get(index) else {
+        return out;
+    };
+    let header = format!(
+        " Uncertain save {}/{} | All saves paused ",
+        index + 1,
+        session.save_recoveries.len()
+    );
+    push_bar(
+        &mut out,
+        &header,
+        columns,
+        palette.bar_bg,
+        palette.bar_fg,
+        true,
+    );
+    out.push_str("\r\n");
+
+    let mut lines = vec![
+        format!(" Destination: {}", recovery.destination_label),
+        " Inspect that destination and every retained .noter-save-*.tmp sibling.".to_owned(),
+        " Preserve the version you need; decide whether the earlier save committed.".to_owned(),
+        " Confirming removes only this in-memory safety record. It does not write.".to_owned(),
+        String::new(),
+        " Diagnostic:".to_owned(),
+    ];
+    let chunk_chars = columns.saturating_sub(2).max(2) / 2;
+    let characters: Vec<char> = recovery.message.chars().collect();
+    for chunk in characters.chunks(chunk_chars) {
+        let mut line = String::with_capacity(chunk.len() * 4 + 1);
+        line.push(' ');
+        line.extend(chunk);
+        lines.push(line);
+    }
+    if recovery.destination.to_str().is_none() {
+        lines.push(" Copy uses reversible operating-system path encoding.".to_owned());
+    }
+    let viewport = height.saturating_sub(2);
+    let start = session
+        .reconcile_scroll
+        .min(lines.len().saturating_sub(viewport));
+    for row in 0..viewport {
+        push_bar(
+            &mut out,
+            lines.get(start + row).map_or("", String::as_str),
+            columns,
+            palette.bg,
+            palette.fg,
+            false,
+        );
+        out.push_str("\r\n");
+    }
+    let footer = session.status_message.as_ref().map_or(
+        " Up/Down scroll | C copy exact path | Y reconciled | N/P record | Esc cancel",
+        |(message, created)| {
+            if created.elapsed() < STATUS_LIFETIME {
+                message
+            } else {
+                " Up/Down scroll | C copy exact path | Y reconciled | N/P record | Esc cancel"
+            }
+        },
+    );
+    push_bar(
+        &mut out,
+        footer,
+        columns,
+        palette.bar_bg,
+        palette.bar_fg,
+        true,
+    );
     out
 }
 
@@ -1513,9 +1731,45 @@ fn event_loop(session: &mut TuiSession) -> io::Result<()> {
                 break;
             }
         }
+        if let Some(exact_path) = session.pending_clipboard.take() {
+            stdout.write_all(osc52_copy(&exact_path).as_bytes())?;
+            stdout.flush()?;
+        }
         needs_frame = true;
     }
     Ok(())
+}
+
+/// Encodes an explicit path-copy request without putting path bytes into a
+/// terminal control sequence. The terminal decides whether OSC 52 is allowed.
+fn osc52_copy(text: &str) -> String {
+    const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = text.as_bytes();
+    let mut output = String::with_capacity(8 + bytes.len().div_ceil(3) * 4);
+    output.push_str("\x1b]52;c;");
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        for index in [
+            usize::from(first >> 2),
+            usize::from(((first & 0x03) << 4) | (second >> 4)),
+            usize::from(((second & 0x0f) << 2) | (third >> 6)),
+            usize::from(third & 0x3f),
+        ] {
+            output.push(char::from(BASE64[index]));
+        }
+        if chunk.len() < 3 {
+            output.pop();
+            output.push('=');
+        }
+        if chunk.len() < 2 {
+            let last = output.len() - 2;
+            output.replace_range(last..=last, "=");
+        }
+    }
+    output.push('\x07');
+    output
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1538,6 +1792,31 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
                 };
                 if let Some(decision) = decision {
                     session.answer_recovery_offer(decision);
+                }
+            }
+            return;
+        }
+        PromptMode::ReconcileSave(index) => {
+            if let TuiEvent::Key(key) = event {
+                match key {
+                    TuiKey::Char('y' | 'Y') => session.reconcile_save(*index),
+                    TuiKey::Char('c' | 'C') => session.copy_recovery_destination(*index),
+                    TuiKey::Char('n' | 'N') if *index + 1 < session.save_recoveries.len() => {
+                        session.prompt = PromptMode::ReconcileSave(*index + 1);
+                        session.reconcile_scroll = 0;
+                    }
+                    TuiKey::Char('p' | 'P') if *index > 0 => {
+                        session.prompt = PromptMode::ReconcileSave(*index - 1);
+                        session.reconcile_scroll = 0;
+                    }
+                    TuiKey::Down => {
+                        session.reconcile_scroll = session.reconcile_scroll.saturating_add(1);
+                    }
+                    TuiKey::Up => {
+                        session.reconcile_scroll = session.reconcile_scroll.saturating_sub(1);
+                    }
+                    TuiKey::Escape => session.prompt = PromptMode::None,
+                    _ => {}
                 }
             }
             return;
@@ -1724,6 +2003,9 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
             TuiKey::Ctrl('s') => {
                 session.save();
             }
+            TuiKey::Ctrl('r') => {
+                session.open_save_reconciliation();
+            }
             TuiKey::Ctrl('w' | 'f') => {
                 session.prompt = PromptMode::Find;
                 session.prompt_input.clear();
@@ -1835,11 +2117,16 @@ fn handle_paste(session: &mut TuiSession, pasted: &str) {
         PromptMode::ConfirmReplace
         | PromptMode::ConfirmHardLink(_)
         | PromptMode::ExitConfirm
-        | PromptMode::RecoveryOffer => {}
+        | PromptMode::RecoveryOffer
+        | PromptMode::ReconcileSave(_) => {}
     }
 }
 
 fn trigger_exit(session: &mut TuiSession) {
+    if session.save_is_blocked() {
+        session.set_status(UNCERTAIN_SAVE_GUIDANCE);
+        return;
+    }
     if session.document.is_dirty() {
         session.prompt = PromptMode::ExitConfirm;
     } else {
@@ -2223,7 +2510,7 @@ mod tests {
     }
 
     #[test]
-    fn an_uncertain_save_pauses_that_path_but_leaves_others_available() {
+    fn an_uncertain_save_pauses_all_saves_until_explicit_reconciliation() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.txt");
         let fresh = directory.path().join("fresh.txt");
@@ -2232,8 +2519,9 @@ mod tests {
         type_text(&mut session, "edit ");
         session.after_save = AfterSave::Exit;
 
+        let reservation = session.reserve_save_recovery(path.clone()).unwrap();
         let step = session.report_save(
-            path.clone(),
+            reservation,
             Ok(SaveOutcome::CommitStateUnknown {
                 revision: session.document.revision(),
                 error: storage_error("rename reported failure"),
@@ -2244,18 +2532,129 @@ mod tests {
 
         assert_eq!(step, SaveStep::NotSaved);
         assert!(!session.should_exit);
-        assert_eq!(session.uncertain_paths, vec![path.clone()]);
+        assert_eq!(session.save_recoveries.len(), 1);
+        assert_eq!(session.save_recoveries[0].destination, path);
         assert_eq!(session.save(), SaveStep::NotSaved);
         session.prompt_input = path.to_string_lossy().into_owned();
         assert_eq!(session.submit_save_as(), SaveStep::NotSaved);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "text");
 
         session.prompt_input = fresh.to_string_lossy().into_owned();
+        assert_eq!(session.submit_save_as(), SaveStep::NotSaved);
+        assert!(!fresh.exists());
+        assert_eq!(session.open_save_as(), SaveStep::NotSaved);
+        session.open_save_reconciliation();
+        assert_eq!(session.prompt, PromptMode::ReconcileSave(0));
+        key(&mut session, TuiKey::Char('c'));
+        assert_eq!(
+            session.pending_clipboard.take(),
+            Some(path.to_string_lossy().into_owned())
+        );
+        let frame = render_frame(&session, 80, 24);
+        assert!(frame.contains("All saves paused"));
+        assert!(frame.contains("Diagnostic:"));
+        assert!(
+            session.save_recoveries[0]
+                .message
+                .contains("a private copy was kept")
+        );
+        key(&mut session, TuiKey::Escape);
+        assert_eq!(session.save_recoveries.len(), 1);
+        key(&mut session, TuiKey::Ctrl('r'));
+        key(&mut session, TuiKey::Char('y'));
+        assert!(session.save_recoveries.is_empty());
+        assert_eq!(session.prompt, PromptMode::None);
+        session.prompt_input = fresh.to_string_lossy().into_owned();
         assert_eq!(session.submit_save_as(), SaveStep::Committed);
         assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "edit text");
-        // The document now lives at the new path, which is not uncertain.
-        type_text(&mut session, "more ");
-        assert_eq!(session.save(), SaveStep::Committed);
+    }
+
+    #[test]
+    fn uncertain_save_records_remain_independent_and_bound_exit() {
+        let mut session = untitled();
+        let first = PathBuf::from("first.txt");
+        let second = PathBuf::from("second.txt");
+        for path in [&first, &second] {
+            let reservation = session.reserve_save_recovery(path.clone()).unwrap();
+            session.report_save(
+                reservation,
+                Ok(SaveOutcome::CommitStateUnknown {
+                    revision: session.document.revision(),
+                    error: storage_error("unknown"),
+                    recovery_artifact: storage_error("retained"),
+                }),
+            );
+        }
+        assert_eq!(session.save_recoveries.len(), 2);
+        trigger_exit(&mut session);
+        assert!(!session.should_exit);
+        session.open_save_reconciliation();
+        key(&mut session, TuiKey::Char('n'));
+        assert_eq!(session.prompt, PromptMode::ReconcileSave(1));
+        key(&mut session, TuiKey::Char('y'));
+        assert_eq!(session.save_recoveries.len(), 1);
+        assert_eq!(session.save_recoveries[0].destination, first);
+        assert_eq!(session.prompt, PromptMode::ReconcileSave(0));
+        assert_eq!(session.save(), SaveStep::NotSaved);
+        key(&mut session, TuiKey::Char('y'));
+        assert!(session.save_recoveries.is_empty());
+        assert_eq!(session.prompt, PromptMode::None);
+    }
+
+    #[test]
+    fn uncertain_save_reservation_refuses_oversized_destinations_and_full_ledger() {
+        let mut session = untitled();
+        assert!(
+            session
+                .reserve_save_recovery(PathBuf::from(
+                    "x".repeat(MAX_SAVE_RECOVERY_DESTINATION_BYTES + 1)
+                ))
+                .is_none()
+        );
+        assert!(session.save_recoveries.is_empty());
+        for index in 0..MAX_SAVE_RECOVERY_RECORDS {
+            session.save_recoveries.push(SaveRecoveryRecord {
+                destination: PathBuf::from(format!("{index}.txt")),
+                destination_label: format!("{index}.txt"),
+                message: "unknown".to_owned(),
+            });
+        }
+        assert!(
+            session
+                .reserve_save_recovery(PathBuf::from("last.txt"))
+                .is_none()
+        );
+        assert_eq!(session.save_recoveries.len(), MAX_SAVE_RECOVERY_RECORDS);
+    }
+
+    #[test]
+    fn terminal_path_copy_encodes_payload_without_raw_controls() {
+        assert_eq!(osc52_copy(""), "\x1b]52;c;\x07");
+        assert_eq!(osc52_copy("f"), "\x1b]52;c;Zg==\x07");
+        assert_eq!(osc52_copy("fo"), "\x1b]52;c;Zm8=\x07");
+        assert_eq!(osc52_copy("foo"), "\x1b]52;c;Zm9v\x07");
+        assert_eq!(
+            osc52_copy("a\x1b]52;c;bad"),
+            "\x1b]52;c;YRtdNTI7YztiYWQ=\x07"
+        );
+    }
+
+    #[test]
+    fn uncertain_save_frame_draws_untrusted_diagnostic_inert() {
+        let mut session = untitled();
+        session.save_recoveries.push(SaveRecoveryRecord {
+            destination: PathBuf::from("note.txt"),
+            destination_label: "evil\x1b]0;owned\x07.txt".to_owned(),
+            message: "state\x1b]52;c;ZWNobw==\x07\u{202e}unknown".to_owned(),
+        });
+        session.prompt = PromptMode::ReconcileSave(0);
+        for (cols, rows) in [(32, 10), (80, 24), (120, 12)] {
+            let frame = render_frame(&session, cols, rows);
+            assert!(!frame.contains("\x1b]"));
+            assert!(!frame.contains('\x07'));
+            assert_frame_is_terminal_safe(&frame, usize::from(cols));
+            assert!(strip_own_sequences(&frame).split("\r\n").count() <= usize::from(rows));
+        }
     }
 
     #[test]
@@ -2263,8 +2662,11 @@ mod tests {
         let mut session = untitled();
         session.after_save = AfterSave::Exit;
 
+        let reservation = session
+            .reserve_save_recovery(PathBuf::from("note.txt"))
+            .unwrap();
         let step = session.report_save(
-            PathBuf::from("note.txt"),
+            reservation,
             Ok(SaveOutcome::NotCommitted {
                 revision: session.document.revision(),
                 error: storage_error("disk full"),
@@ -2282,7 +2684,7 @@ mod tests {
                 .as_ref()
                 .is_some_and(|(message, _)| message.contains("disk full"))
         );
-        assert!(session.uncertain_paths.is_empty());
+        assert!(session.save_recoveries.is_empty());
     }
 
     #[test]

@@ -6,6 +6,24 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+### Security
+
+- Bind crash recovery to verified, held directories on Linux and macOS. Noter
+  reopens the state directory from `/` without following links and refuses it
+  when another user could change a directory on the way, when the state
+  directory is not yours, when a recovery directory is a link, or when it is on
+  a known network or shared-folder file system. Noter's state and recovery
+  directories are made private. On macOS their access control lists are
+  removed, and an ancestor with an ACL grant is refused while deny-only ACLs
+  remain accepted. A group-writable ancestor requires the sticky bit, even
+  when its group number matches the user's. Every record, lease, and
+  quarantine operation runs through the held directories, so renaming a parent
+  directory cannot redirect recovery content, and a recovery
+  tree removed while Noter runs fails persistence visibly instead of losing
+  snapshots. When recovery is refused, the message names the directory and the
+  reason. On Windows, recovery file operations refuse paths outside the held
+  directories.
+
 ### Changed
 
 - Make each keystroke in the window cost the document core about a thirtieth
@@ -33,6 +51,11 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Pause every terminal Save and Save As after an uncertain commit. `^R` now
+  shows a bounded record for each unresolved destination, its recovery detail,
+  an explicit exact path-copy action, and a per-record reconciliation decision.
+  Saving and exit resume only after the user has inspected and reconciled all
+  records; reconciliation does not write or retry.
 - Explain a missing Linux window library instead of crashing. Without
   `libxkbcommon-x11` the window aborted with a panic. Noter now checks the
   keyboard, display-protocol, and OpenGL libraries the window loads for the

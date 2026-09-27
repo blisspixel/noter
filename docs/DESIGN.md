@@ -662,7 +662,7 @@ owner-controlled per-user directory. Group-writable or ACL-shared directories
 and redirected, synchronized, network, removable, or weak-filesystem state roots
 are outside that prerelease boundary. Alpha.2 restricts individual recovery
 files but does not yet verify or bind the enclosing recovery-directory namespace;
-M4-H1 closes that gap before beta.1. Preferences may use eframe storage
+M4-H1 closes that gap for beta.2. Preferences may use eframe storage
 (`app.ron`); recovery records do not. The library modules are
 `core::recovery` (pure schedule and integrity) and `core::recovery_store`
 (durable private files). The binary adapter `crash_recovery` opens
@@ -680,9 +680,29 @@ directories are created or tightened through retained handles to an exact
 protected inheritable user-and-SYSTEM DACL. Every held directory denies delete
 sharing for the namespace lifetime. Record enumeration, creation, replacement,
 quarantine, and cleanup are still pathname-based, and fixed-drive classification
-does not prove that a profile is not synchronized or redirected. M4-H1 remains
-in progress until those Windows gaps and the Unix namespace and retirement
-contracts close with native evidence.
+does not prove that a profile is not synchronized or redirected. Those record
+operations now refuse any path outside the held records and quarantine
+directories.
+
+On Unix the whole namespace is bound
+([ADR-0004](adr/0004-unix-recovery-namespace.md)). The state path is reopened
+from `/` without following links after its existing prefix is resolved once.
+Every ancestor must be owned by the superuser or the user and must not let
+another user replace its entries: group or other writes require the sticky
+bit. A matching group number does not prove that no other account belongs to
+it, and Linux ACL masks can hide named-user grants behind those mode bits.
+On macOS, ancestor ACLs may contain only deny entries. The state directory
+must be the user's and is tightened to 0700 when others can write it. The
+recovery, records, and quarantine directories are
+created or opened through held descriptors, owned by the user, on the state
+directory's device, tightened to 0700, and stripped of ACLs on macOS. Known
+network, cluster, shared-folder, and user-space file systems are refused. Every record, lease, and
+quarantine operation is relative to the held descriptors, a removed directory
+refuses new content, and retirement unlinks a name in its held private
+directory right after confirming that it still identifies the held object.
+M4-H1 remains in progress until Windows record operations become
+handle-relative and redirected or synchronized roots are detected, with native
+evidence.
 
 Each dirty session owns one versioned record:
 
@@ -745,7 +765,8 @@ directory or undo a wrong unlink. New, Open,
 Restore, and Discard advance the scheduler epoch and publish it to the worker
 gate before releasing the prior lease. Save and every identity transition then
 send a FIFO fence and wait until every earlier persistence request has
-quiesced before deleting a record or releasing ownership. Lease acquisition or
+quiesced before deleting a record or releasing ownership. On Unix those steps run relative to the held private records directory, so
+only the same user's processes can race them. Lease acquisition or
 ownership-probe errors make recovery unavailable for that session or startup
 scan. Unknown ownership never exposes Restore or Discard. Stale UI
 acknowledgements are inert so they cannot delete a newer worker result.
@@ -1482,10 +1503,14 @@ Current state:
   from `src/core/` through `Document`. Save, Save As, replace confirmation, and
   hard-link confirmation use the same `Document` calls as the GUI, and a save
   that does not commit never exits or discards text.
-- **Uncertain outcomes:** the GUI blocks every save until the user reconciles
-  an uncertain outcome in its save-recovery flow. The TUI has no such flow, so
-  it pauses saves to the uncertain path only and leaves Save As to other
-  destinations available, so the text can always be written somewhere.
+- **Uncertain outcomes:** the GUI and TUI share bounded evidence and exact path
+  representation. Before any save inspects or mutates its destination, the TUI
+  reserves a record slot, selected path, short label, and diagnostic buffer.
+  An uncertain outcome pauses all saves and exit. `Ctrl+R` opens a full-screen
+  record with scrollable diagnostic, exact path copy through an explicit OSC 52
+  request, and per-record reconciliation. Reconciliation removes only the
+  in-memory record without retrying a write. Terminals may decline clipboard
+  requests, so the short destination label remains visible for inspection.
 - **Undo and recovery:** edits are single-range `EditTransaction`s built
   from the changed bytes only, recorded in the core `UndoHistory` with the
   window's coalescing rules. Crash recovery uses the same
@@ -1499,7 +1524,8 @@ Current state:
 - **Shortcuts:** `Ctrl+S` Save, `Ctrl+O` Save As (prefilled with the current
   name), `Ctrl+X`, `Ctrl+Q`, or `Ctrl+C` Exit, `Ctrl+W` or `Ctrl+F` Find,
   `Ctrl+K` Cut Line, `Ctrl+U` Paste, `Ctrl+Z` Undo, `Ctrl+Y` Redo, `Ctrl+E`
-  Markdown styling, `Ctrl+T` Theme, `Ctrl+G` Help.
+  Markdown styling, `Ctrl+T` Theme, `Ctrl+R` Save Reconciliation,
+  `Ctrl+G` Help.
 - **Mouse:** click to place the caret, wheel to scroll, and clickable shortcut
   legend. There is no drag selection.
 - **Terminal-safe drawing:** document text, file names, typed input, and

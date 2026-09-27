@@ -28,6 +28,8 @@ pub mod recovery_store;
 pub mod revision;
 /// Revision-tagged, fault-injectable save protocol.
 pub mod save;
+/// Bounded evidence and exact path representation for uncertain saves.
+pub mod save_recovery;
 /// Bounded literal search and replacement policy.
 pub mod search;
 /// Terminal-safe display of untrusted text.

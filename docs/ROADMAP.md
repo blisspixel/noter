@@ -92,8 +92,10 @@ does not expand unsafe UI surface.
     panic, and shares the window's bounded Undo and crash recovery, checked
     in a real pseudo-terminal by `scripts/check_tui_pty.py` on Linux and
     macOS CI; a missing Linux window library is named instead of aborting;
-    the installer scripts work. Exact-head CI evidence
-    is recorded when the branch merges.
+    the installer scripts work; the window draws any script with local
+    fonts; and a keystroke's document-core cost is proportional to the edit.
+    Exact-head CI passed on `e3247c1`, including every mutation shard, and
+    it merged to protected `main` as `7e4edb3` on 2026-09-26.
 9. **Complete M4-H1 recovery namespace binding:** verify and retain the state and
    recovery directory identities and access policy, route operations through
    held directory handles, reject unsupported roots before writing recovery
@@ -138,7 +140,8 @@ and installer scripts, but without the M4-H1, M5, and M6 work this roadmap had
 placed before it. A later review found that the preview could lose text on a
 failed save, had no crash recovery, and wrote untrusted text to the terminal,
 and that the documented installer commands failed. Item 8a records the
-hardening in progress; the version table records the correction.
+merged hardening; the version table records the correction. Beta.2 also waits
+for M4-H1, the M5 gate, and continuous Markdown editing.
 
 ## Previous checkpoint: `0.1.0-alpha.2` correctness alpha
 
@@ -536,10 +539,11 @@ or still-interactive save preserves the document and returns to a safe explicit
 decision. Indeterminate-save recovery guidance survives these decisions and
 Cancel. Independent in-memory records retain every unresolved destination and
 instruction instead of allowing a later Save As to replace earlier evidence.
-An indeterminate outcome stops every Save and Save As before destination work
-until the user explicitly reconciles each record. New, Open, and notice
-dismissal never release the block. A confirmation removes one record without
-writing or retrying. Each bounded record reserves its vector slot, selected
+In the window, an indeterminate outcome stops every Save and Save As before
+destination work until the user explicitly reconciles each record. New, Open,
+and notice dismissal never release the block. A confirmation removes one
+record without writing or retrying. Each bounded record reserves its vector
+slot, selected
 destination, 1-KiB display label, and 4-KiB diagnostic before mutation; encoded
 paths above 128 KiB are refused before save work, the ledger retains at most 16
 records, and the scroll-bounded surfaces expose the destination plus an explicit
@@ -547,11 +551,19 @@ path-copy action. Non-Unicode paths use a labeled reversible hexadecimal
 operating-system representation rather than lossy replacement text. The
 confirmation repeats the diagnostic and path action; removing the last record
 clears only its stale block error. Save availability is a constant-time
-in-memory decision with no repaint-time filesystem inspection. Exhaustive
-transition tests and a
-fixed-seed 512-case command-sequence property compare the reducer with an
-independent model. A pure external-change classifier and conflict reducer now
-compare the trusted load or save baseline with focus-regain and bounded
+in-memory decision with no repaint-time filesystem inspection.
+
+The TUI now retains the same bounded records and pauses every Save and Save As
+after an uncertain outcome. `^R` opens each record's destination and retained
+diagnostic. The user can request an exact path copy through terminal clipboard
+support, then explicitly reconcile one record at a time without a write or
+retry. Native pseudo-terminal evidence and exact-head CI remain before this is
+verified for beta.2.
+
+Exhaustive transition tests and a fixed-seed 512-case command-sequence property
+compare the reducer with an independent model. A pure external-change
+classifier and conflict reducer now compare the trusted load or save baseline
+with focus-regain and bounded
 focused-timer inspections. Changed, deleted, special, and unreadable outcomes
 prompt Reload Disk Version, Keep Editing, or Save As. Keep Editing never
 rebaselines the expectation, so ordinary Save still fails closed through the
@@ -590,7 +602,7 @@ navigation remain a beta.1 gate and are not claimed by the alpha.2 prerelease.
 
 ### M4-H1: Recovery namespace binding
 
-**Status:** In progress and required before beta.1.
+**Status:** In progress and required before beta.2.
 
 Open or create the platform state root, recovery root, records directory, and
 quarantine directory without following links. Verify stable directory identity,
@@ -599,18 +611,31 @@ retain directory handles for the session and route creation, scan, sync, rename,
 quarantine, and cleanup through them. Reject an unsafe or unverifiable root
 before writing recovery content.
 
+The Unix namespace binding is in tree
+([ADR-0004](adr/0004-unix-recovery-namespace.md)): a verified, held directory
+chain from `/`, owner and mode checks, local file system classification, ACL
+removal on macOS, handle-relative record, lease, and quarantine operations,
+identity-checked retirement in a private directory, and native fixtures for
+group and other write access, ancestor rebind, final-entry swaps, links, and
+removal. Windows record operations now refuse paths outside the held
+directories.
+
 The first Windows foundation validates the drive-rooted state path on fixed
 NTFS, rejects reparse and cross-volume directory components, verifies stable
 preferred identities, retains every traversed and recovery-directory handle
 without delete sharing, rejects state DACLs that grant unprivileged mutation,
 and applies an exact protected inheritable user-and-SYSTEM DACL to the owned
-recovery subtree. It intentionally does not claim handle-relative record
-operations, redirected or synchronized-root detection, Unix namespace binding,
-or exact Unix retirement. Those gaps keep M4-H1 in progress.
+recovery subtree. It does not claim handle-relative record operations or
+redirected or synchronized-root detection; those keep M4-H1 in progress.
 
-The Unix cleanup ADR must either provide a genuinely object-bound retirement
-strategy or retain and safely neutralize the exact opened object instead of
-claiming atomic pathname unlink. Native Windows, Linux, and macOS fixtures must
+The Unix cleanup ADR was required either to provide a genuinely object-bound
+retirement strategy or to retain and safely neutralize the exact opened object
+instead of claiming atomic pathname unlink. ADR-0004 takes a third path and
+records why: it claims no atomic unlink, and instead confines the check and the
+`unlinkat` to a verified private directory, so only the same user's processes
+can race them. Retaining and neutralizing was rejected because it leaves an
+unbounded trail of artifacts and still ends in a name-based removal. Native
+Windows, Linux, and macOS fixtures must
 cover group or ACL sharing, ancestor rebind, commit and cleanup final-window
 swaps, redirected roots, and explicit weak or remote filesystem rejection.
 M4-H1 passes only when every supported platform either rejects the unsafe root
@@ -915,9 +940,9 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 
 ## Immediate backlog (maps to version train)
 
-The alpha.2 correctness work is complete and published. M4-H1 recovery
-namespace binding is the next safety prerequisite. The beta.1 editor feasibility
-gate follows it.
+The alpha.2 correctness work is complete and published. Beta.1 shipped as a
+preview, and beta.2 hardening is in progress. M4-H1 recovery namespace binding
+is the next safety prerequisite; the M5 editor feasibility gate follows it.
 
 1. **Done:** Markdown keyboard navigation parity with Text Mode; pure word /
    Home-End / document policy and long-session history fixture.
@@ -934,11 +959,11 @@ gate follows it.
    [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) stays paired
    with the immutable implementation commit, and `v0.1.0-alpha.2` was tagged at
    the protected-main head `dbb419f` after that exact commit passed CI.
-6. **In progress, before `0.1.0-beta.1`:** M4-H1 recovery namespace binding.
+6. **In progress, before `0.1.0-beta.2`:** M4-H1 recovery namespace binding.
    Complete handle-relative Windows record operations and redirected-root
-   classification, add the Linux and macOS namespace adapters, close the Unix
-   cleanup contract, and record every native adversarial fixture.
-7. **Then, `0.1.0-beta.1`:** M5 editor feasibility gate (typography, IME,
+   classification, and record every remaining native adversarial fixture.
+   The Linux and macOS namespace adapters and Unix cleanup contract are in tree.
+7. **Then, `0.1.0-beta.2`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
    production editor contract is stable.
 8. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
