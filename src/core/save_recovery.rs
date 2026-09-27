@@ -133,26 +133,7 @@ pub fn recovery_path_clipboard_text(path: &Path) -> String {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt as _;
-
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let units = path.as_os_str().encode_wide();
-        let unit_count = units.clone().count();
-        let mut output = String::new();
-        output
-            .try_reserve_exact(
-                "windows-path-utf16:"
-                    .len()
-                    .saturating_add(unit_count.saturating_mul(4)),
-            )
-            .expect("bounded recovery paths fit the clipboard representation");
-        output.push_str("windows-path-utf16:");
-        for unit in units {
-            for shift in [12, 8, 4, 0] {
-                output.push(char::from(HEX[usize::from((unit >> shift) & 0x0f)]));
-            }
-        }
-        output
+        windows_utf16_encoded_path(path)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -161,6 +142,30 @@ pub fn recovery_path_clipboard_text(path: &Path) -> String {
             path.as_os_str().as_encoded_bytes(),
         )
     }
+}
+
+#[cfg(windows)]
+fn windows_utf16_encoded_path(path: &Path) -> String {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let units = path.as_os_str().encode_wide();
+    let unit_count = units.clone().count();
+    let mut output = String::new();
+    output
+        .try_reserve_exact(
+            "windows-path-utf16:"
+                .len()
+                .saturating_add(unit_count.saturating_mul(4)),
+        )
+        .expect("bounded recovery paths fit the clipboard representation");
+    output.push_str("windows-path-utf16:");
+    for unit in units {
+        for shift in [12, 8, 4, 0] {
+            output.push(char::from(HEX[usize::from((unit >> shift) & 0x0f)]));
+        }
+    }
+    output
 }
 
 #[cfg(not(windows))]

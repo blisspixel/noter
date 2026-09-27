@@ -1161,6 +1161,12 @@ mod tests {
     }
 
     #[test]
+    fn chunked_suffix_never_exceeds_the_unmatched_prefix() {
+        let backward_chunks: [&[u8]; 2] = [b"d", b"bc"];
+        assert_eq!(common_suffix_len(backward_chunks.into_iter(), b"bcd", 2), 2);
+    }
+
+    #[test]
     fn a_shared_run_that_splits_a_character_backs_off_to_its_boundary() {
         // "é" is C3 A9 and "ê" is C3 AA: the first byte matches, the character does not.
         let expected = Some((TextRange::new(1, 3), "ê".to_owned(), "é".to_owned()));
