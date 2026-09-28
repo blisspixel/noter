@@ -126,8 +126,9 @@ assertion.
 A focused Windows-local `cargo mutants --regex 'move_by_word' -j 4` run on
 navigation source blob `d43ea14f7c8e4a1c76f8e02d3404bf26874ece8e`
 completed 17 of 17 mutants as caught, with zero missed, timed out, or
-unviable. The full workspace test baseline passed. This is evidence for the
-word-movement mutation subset, not the complete CI mutation campaign.
+unviable. The campaign's selected application tests passed at baseline. This
+is evidence for the word-movement mutation subset, not the complete CI
+mutation campaign.
 
 ## 2026-09-28 UTC backward-character latency follow-up
 
@@ -152,3 +153,12 @@ UI-excluded calculation was 92.64 percent. The complete workspace test run
 failed in the unchanged Windows Cloud Files registration fixture with access
 denied (`0x80070005`); a direct platform-package retry reproduced it. Full
 workspace coverage, independent review, and exact-head hosted CI are pending.
+
+A Windows-local `cargo mutants --regex 'move_by_character' -j 4` run on
+`e6b18c4` finished 11 of 11 selected mutants as caught, with zero missed,
+timed out, or unviable. Ten selected candidates were in character navigation;
+one unrelated recovery candidate also matched the tool's selection. The
+campaign's selected application tests passed at baseline. A subsequent direct
+full-workspace retry still failed in the Cloud Files registration fixture with
+`0x80070005`. This focused mutation result does not establish the complete
+workspace gate.
