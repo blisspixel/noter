@@ -473,3 +473,9 @@ Clippy, formatting, Rustdoc, documentation links, Python tests, Ruff, and the
 README asset check pass. Application-package line coverage is 93.80 percent;
 the UI-excluded application figure is 92.69 percent. Hosted exact-head CI is
 still required before integration.
+
+The formal security diff scan for `dfa72c5..2e2636c` reviewed all four
+changed source-like files and found no reportable vulnerability. Scan ID:
+`1dc3cd3f-b80f-49e0-893a-2156e7038597`. Its static review traced the
+durability warning through GUI and TUI close, emergency persistence, and the
+clean retry. It did not inject a live filesystem sync failure.
