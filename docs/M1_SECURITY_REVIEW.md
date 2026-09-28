@@ -610,3 +610,7 @@ Runnable line coverage is 93.18 percent whole-workspace and 91.63 percent
 UI-excluded. All five regenerated README screenshots match the previously
 reviewed image hashes. The exact all-targets local test still fails only at
 Cloud Files registration (`0x80070005`), with 79 other platform tests passing.
+Formal diff scan `aec6e4b5-a2e3-4641-84f4-b927a81d6e05` reviewed all three
+changed source-like files in `d35b692..56cb716` and found no reportable
+security vulnerability. It does not establish repository-wide coverage or the
+missing native and hosted evidence above.
