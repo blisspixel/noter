@@ -692,8 +692,11 @@ observations open relative to the held records directory. Ratification and
 cleanup operate on their exact opened files. Failure completion installs the
 opened stage relative to that directory. Existing-record replacement and
 synchronization remain pathname-based inside the held, delete-protected
-directories. Fixed-drive classification does not prove that a profile is not
-synchronized or redirected.
+directories. A handle-based Windows Cloud Files query loaded by its absolute
+System32 path checks the parent, state, recovery, records, and quarantine
+handles before recovery writes; an unavailable API or unrecognized result also
+refuses recovery. Other synchronization and redirection models remain
+unclassified.
 Store entry operations refuse paths outside the held records and quarantine
 directories. Cleanup deletes the opened file after any required identity check,
 so a name replacement racing that check cannot be deleted instead.

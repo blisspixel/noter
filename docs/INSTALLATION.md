@@ -307,14 +307,16 @@ removable, or on a weak filesystem, recovery is unverified. Keep important work
 saved and backed up, and do not rely on recovery from that state root.
 
 The current unreleased Windows build validates the fixed NTFS directory chain,
-rejects reparse and cross-volume components, retains its directory handles,
-rejects state ACLs with unprivileged mutation rights, and hardens the recovery
+rejects registered Cloud Files sync roots at the state or recovery directories,
+reparse and cross-volume components,
+retains its directory handles, rejects state ACLs with unprivileged mutation
+rights, and hardens the recovery
 subtree to a protected inheritable user-and-SYSTEM DACL before writing recovery
 bytes. Record entry opens, creation, classification, new-record installation,
 enumeration, replacement observations, and partial-replacement completion use
 the retained directory handles. Existing-record replacement and synchronization
-still use paths within those protected directories. A fixed local profile does
-not prove that the directory is unsynchronized or unredirected.
+still use paths within those protected directories. Other synchronization and
+redirection models are not yet classified.
 
 The current unreleased Linux and macOS builds bind the recovery namespace. If a
 directory on the path to the state directory can be changed by another user,

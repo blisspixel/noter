@@ -1,10 +1,9 @@
 //! Windows recovery-directory namespace binding.
 //!
 //! This module binds the state and recovery directories to retained handles.
-//! Its entry creation, open, and classification methods are relative to those
-//! handles. New-record installation also uses the opened stage and held
-//! directory. Existing-record replacement and root classification remain
-//! separate M4-H1 work.
+//! Its entry creation, open, classification, enumeration, and new-record
+//! installation use those handles. Existing-record replacement and complete
+//! root classification remain separate M4-H1 work.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -22,8 +21,11 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation, NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
-    ERROR_NO_MORE_FILES, GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE,
-    RtlNtStatusToDosError, UNICODE_STRING,
+    ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT, ERROR_NO_MORE_FILES, FreeLibrary, GENERIC_READ, HANDLE,
+    HMODULE, INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, UNICODE_STRING,
+};
+use windows_sys::Win32::Storage::CloudFilters::{
+    CF_SYNC_ROOT_BASIC_INFO, CF_SYNC_ROOT_INFO_BASIC, CF_SYNC_ROOT_INFO_CLASS,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -35,6 +37,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     SYNCHRONIZE, WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+use windows_sys::Win32::System::LibraryLoader::{
+    GetModuleFileNameW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+};
+use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
 use crate::imp::{
@@ -530,13 +536,13 @@ fn regular_entry_handle(file: &File) -> io::Result<bool> {
 /// directory belongs to the current user, and principals other than that user,
 /// SYSTEM, and Administrators have read-only access. The recovery directories
 /// must have Noter's exact private owner and inheritable DACL policy. Newly
-/// created directories receive that policy at creation time. Fixed-drive
-/// classification does not prove that the profile is unsynchronized or local.
+/// created directories receive that policy at creation time. Registered Cloud
+/// Files sync roots are refused. Other synchronization and redirection models
+/// remain outside the supported recovery boundary.
 ///
-/// Entry creation, open, and classification methods use these handles. Stage installation,
-/// reconciliation, enumeration, rename, quarantine installation, and
-/// synchronization still require handle-relative operations to complete the
-/// namespace contract.
+/// Entry creation, open, classification, enumeration, new-record installation,
+/// and replacement reconciliation use these handles. Existing-record
+/// replacement and synchronization still require handle-relative operations.
 pub struct WindowsRecoveryNamespace {
     state: WindowsRecoveryDirectory,
     recovery: WindowsRecoveryDirectory,
@@ -560,6 +566,14 @@ impl WindowsRecoveryNamespace {
     /// contract cannot be established. A newly created empty private directory
     /// can remain if a later native verification call fails.
     pub fn open_or_create(state_root: &Path, recovery_name: &OsStr) -> io::Result<Self> {
+        Self::open_or_create_with_cloud_check(state_root, recovery_name, reject_cloud_sync_root)
+    }
+
+    fn open_or_create_with_cloud_check(
+        state_root: &Path,
+        recovery_name: &OsStr,
+        mut check_cloud_root: impl FnMut(&File) -> io::Result<()>,
+    ) -> io::Result<Self> {
         let parsed = ParsedStatePath::new(state_root)?;
         let recovery_name = WindowsRecoveryEntryName::new(recovery_name)?;
         let records_name = WindowsRecoveryEntryName::new(OsStr::new(RECORDS_DIRECTORY_NAME))?;
@@ -580,16 +594,26 @@ impl WindowsRecoveryNamespace {
             current.push(component);
             traversal_guards.push(bind_existing_directory(&current, Some(expected_volume))?);
         }
+        check_cloud_root(
+            traversal_guards
+                .last()
+                .ok_or_else(invalid_state_root_error)?
+                .handle(),
+        )?;
 
         current.push(state_name);
         let state = bind_state_directory(&current, expected_volume)?;
+        check_cloud_root(state.handle())?;
         current.push(recovery_name.as_os_str());
         let recovery = bind_private_directory(&current, expected_volume)?;
+        check_cloud_root(recovery.handle())?;
         let mut records_path = current.clone();
         records_path.push(records_name.as_os_str());
         let records = bind_private_directory(&records_path, expected_volume)?;
+        check_cloud_root(records.handle())?;
         current.push(quarantine_name.as_os_str());
         let quarantine = bind_private_directory(&current, expected_volume)?;
+        check_cloud_root(quarantine.handle())?;
 
         Ok(Self {
             state,
@@ -788,6 +812,149 @@ fn verify_ntfs(handle: &File) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+fn reject_cloud_sync_root(handle: &File) -> io::Result<()> {
+    type QuerySyncRoot = unsafe extern "system" fn(
+        HANDLE,
+        CF_SYNC_ROOT_INFO_CLASS,
+        *mut core::ffi::c_void,
+        u32,
+        *mut u32,
+    ) -> i32;
+    let info_size = u32::try_from(size_of::<CF_SYNC_ROOT_BASIC_INFO>()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cloud information size overflow",
+        )
+    })?;
+
+    let library_path = system_cloud_library_path()?;
+    let library_name = nul_terminated_path(&library_path)?;
+    // SAFETY: the fully qualified System32 path stays live for the call. The
+    // search flag restricts dependency resolution to System32 as well.
+    #[allow(unsafe_code)]
+    let library = unsafe {
+        LoadLibraryExW(
+            library_name.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_LIBRARY_SEARCH_SYSTEM32,
+        )
+    };
+    if library.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Windows Cloud Files classification is unavailable",
+        ));
+    }
+    let result = verify_loaded_cloud_library(library, &library_path).and_then(|()| {
+        let symbol = b"CfGetSyncRootInfoByHandle\0";
+        // SAFETY: the verified library handle is live, and `symbol` is
+        // NUL-terminated.
+        #[allow(unsafe_code)]
+        let query = unsafe { GetProcAddress(library, symbol.as_ptr()) }.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Windows Cloud Files classification is unavailable",
+            )
+        })?;
+        // SAFETY: the named export has the documented CfGetSyncRootInfoByHandle
+        // signature. The library, directory handle, output structure, and
+        // writable length remain live until the synchronous call returns.
+        #[allow(unsafe_code)]
+        let query: QuerySyncRoot = unsafe { std::mem::transmute(query) };
+        let mut info = CF_SYNC_ROOT_BASIC_INFO::default();
+        let mut returned = 0_u32;
+        // SAFETY: the directory handle is live and the output pointers refer to
+        // writable values of the advertised sizes for this synchronous call.
+        #[allow(unsafe_code)]
+        let status = unsafe {
+            query(
+                handle.as_raw_handle(),
+                CF_SYNC_ROOT_INFO_BASIC,
+                (&raw mut info).cast(),
+                info_size,
+                &raw mut returned,
+            )
+        };
+        classify_cloud_sync_root_result(status)
+    });
+    // SAFETY: `library` is a live handle returned by LoadLibraryExW. The query
+    // has completed, so no code or pointer from the library is used afterward.
+    #[allow(unsafe_code)]
+    unsafe {
+        FreeLibrary(library)
+    };
+    result
+}
+
+fn system_cloud_library_path() -> io::Result<PathBuf> {
+    let mut buffer = [0_u16; 512];
+    let capacity = u32::try_from(buffer.len()).map_err(|_| invalid_state_root_error())?;
+    // SAFETY: the output buffer is writable for `capacity` UTF-16 units.
+    #[allow(unsafe_code)]
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), capacity) };
+    let length = bounded_windows_path_length(length, capacity).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Windows system directory cannot be established",
+        )
+    })?;
+    let mut path = PathBuf::from(OsString::from_wide(&buffer[..length]));
+    path.push("cldapi.dll");
+    Ok(path)
+}
+
+fn verify_loaded_cloud_library(library: HMODULE, expected: &Path) -> io::Result<()> {
+    let mut buffer = [0_u16; 512];
+    let capacity = u32::try_from(buffer.len()).map_err(|_| invalid_state_root_error())?;
+    // SAFETY: `library` is a live module handle and the output buffer is
+    // writable for `capacity` UTF-16 units.
+    #[allow(unsafe_code)]
+    let length = unsafe { GetModuleFileNameW(library, buffer.as_mut_ptr(), capacity) };
+    let length = bounded_windows_path_length(length, capacity).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Windows Cloud Files library origin cannot be established",
+        )
+    })?;
+    let actual = OsString::from_wide(&buffer[..length]);
+    if !actual
+        .to_string_lossy()
+        .eq_ignore_ascii_case(expected.as_os_str().to_string_lossy().as_ref())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Windows Cloud Files library did not come from System32",
+        ));
+    }
+    Ok(())
+}
+
+fn bounded_windows_path_length(length: u32, capacity: u32) -> Option<usize> {
+    if length == 0 || length >= capacity {
+        return None;
+    }
+    usize::try_from(length).ok()
+}
+
+fn classify_cloud_sync_root_result(status: i32) -> io::Result<()> {
+    if status == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "recovery state cannot use a Windows Cloud Files sync root",
+        ));
+    }
+    // HRESULT_FROM_WIN32 places this Win32 error in the low 16 bits.
+    let not_under_sync_root =
+        (0x8007_0000_u32 + ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT).cast_signed();
+    if status == not_under_sync_root {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!("Windows Cloud Files classification failed with HRESULT {status:#010x}"),
+    ))
 }
 
 fn bind_existing_directory(
@@ -1045,7 +1212,7 @@ mod tests {
     use std::fs::{self, File};
     use std::io::{self, Read, Write};
     use std::mem::{offset_of, size_of};
-    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::os::windows::fs::{OpenOptionsExt, symlink_dir, symlink_file};
     use std::path::Path;
 
@@ -1054,10 +1221,12 @@ mod tests {
     use super::{
         DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, ParsedStatePath,
         WindowsRecoveryDirectory, WindowsRecoveryEntryName, WindowsRecoveryNamespace,
+        bounded_windows_path_length, classify_cloud_sync_root_result,
         classify_directory_creation_error, classify_directory_open_error,
         directory_attributes_are_safe, entry_names_from_handle, nt_open_handle_usable,
         open_directory_no_follow, parse_directory_entry_batch, query_preferred_identity,
-        verify_fixed_drive, verify_ntfs,
+        reject_cloud_sync_root, system_cloud_library_path, verify_fixed_drive,
+        verify_loaded_cloud_library, verify_ntfs,
     };
     use crate::InstallNewOutcome;
     use crate::imp::{
@@ -1065,10 +1234,14 @@ mod tests {
         windows_verify_private_directory_security,
     };
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::CloudFilters::{
+        CF_HYDRATION_POLICY_ALWAYS_FULL, CF_POPULATION_POLICY_ALWAYS_FULL, CF_REGISTER_FLAG_NONE,
+        CF_SYNC_POLICIES, CF_SYNC_REGISTRATION, CfRegisterSyncRoot, CfUnregisterSyncRoot,
+    };
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_ID_BOTH_DIR_INFO, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE,
+        FILE_ID_BOTH_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
 
     #[test]
@@ -1158,6 +1331,212 @@ mod tests {
         );
         let null_device = File::open("NUL")?;
         assert!(verify_ntfs(&null_device).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn cloud_sync_root_result_accepts_only_the_specific_non_root_status() {
+        let not_under_sync_root = 0x8007_0186_u32.cast_signed();
+        assert!(classify_cloud_sync_root_result(not_under_sync_root).is_ok());
+        assert_eq!(
+            classify_cloud_sync_root_result(0).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            classify_cloud_sync_root_result(-1).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn windows_path_length_requires_a_nonempty_terminated_buffer() {
+        assert_eq!(bounded_windows_path_length(0, 512), None);
+        assert_eq!(bounded_windows_path_length(511, 512), Some(511));
+        assert_eq!(bounded_windows_path_length(512, 512), None);
+        assert_eq!(bounded_windows_path_length(513, 512), None);
+    }
+
+    #[test]
+    fn native_cloud_sync_root_query_accepts_an_ordinary_local_directory() -> io::Result<()> {
+        let local = tempdir()?;
+        let open_directory = |path: &Path| {
+            fs::OpenOptions::new()
+                .access_mode(FILE_READ_ATTRIBUTES)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(path)
+        };
+        reject_cloud_sync_root(&open_directory(local.path())?)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_cloud_sync_root_query_refuses_a_registered_subtree() -> io::Result<()> {
+        struct RegisteredSyncRoot {
+            path: Vec<u16>,
+            registered: bool,
+        }
+
+        impl RegisteredSyncRoot {
+            fn unregister(&mut self) -> io::Result<()> {
+                if !self.registered {
+                    return Ok(());
+                }
+                // SAFETY: the registered path remains NUL-terminated and live.
+                #[allow(unsafe_code)]
+                let status = unsafe { CfUnregisterSyncRoot(self.path.as_ptr()) };
+                if status != 0 {
+                    return Err(io::Error::other(format!(
+                        "Cloud Files fixture unregistration failed: {status:#x}"
+                    )));
+                }
+                self.registered = false;
+                Ok(())
+            }
+        }
+
+        impl Drop for RegisteredSyncRoot {
+            fn drop(&mut self) {
+                let _ = self.unregister();
+            }
+        }
+
+        let local = tempdir()?;
+        let child = local.path().join("child");
+        fs::create_dir(&child)?;
+        let path: Vec<u16> = local
+            .path()
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let provider_name: Vec<u16> = OsStr::new("Noter test fixture")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let provider_version: Vec<u16> = OsStr::new("1")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let registration = CF_SYNC_REGISTRATION {
+            StructSize: u32::try_from(size_of::<CF_SYNC_REGISTRATION>())
+                .expect("Cloud Files registration structure fits in u32"),
+            ProviderName: provider_name.as_ptr(),
+            ProviderVersion: provider_version.as_ptr(),
+            ProviderId: windows_sys::core::GUID::from_u128(
+                0x9f95_c9cd_3494_4c57_9e8b_70a4_2e35_9bde,
+            ),
+            ..Default::default()
+        };
+        let mut policies = CF_SYNC_POLICIES {
+            StructSize: u32::try_from(size_of::<CF_SYNC_POLICIES>())
+                .expect("Cloud Files policy structure fits in u32"),
+            ..Default::default()
+        };
+        policies.Hydration.Primary = CF_HYDRATION_POLICY_ALWAYS_FULL;
+        policies.Population.Primary = CF_POPULATION_POLICY_ALWAYS_FULL;
+        // SAFETY: all registration fields and pointed-to strings remain live
+        // through the synchronous call. The temporary directory is writable.
+        #[allow(unsafe_code)]
+        let status = unsafe {
+            CfRegisterSyncRoot(
+                path.as_ptr(),
+                &raw const registration,
+                &raw const policies,
+                CF_REGISTER_FLAG_NONE,
+            )
+        };
+        assert_eq!(
+            status, 0,
+            "Cloud Files fixture registration failed: {status:#x}"
+        );
+        let mut registration_guard = RegisteredSyncRoot {
+            path,
+            registered: true,
+        };
+        let opened = fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&child)?;
+        assert_eq!(
+            reject_cloud_sync_root(&opened).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        drop(opened);
+        registration_guard.unregister()?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_cloud_sync_root_query_refuses_a_non_filesystem_handle() -> io::Result<()> {
+        let device = File::open("NUL")?;
+        assert_eq!(
+            reject_cloud_sync_root(&device).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cloud_library_origin_rejects_the_process_module() -> io::Result<()> {
+        let expected = system_cloud_library_path()?;
+        assert!(expected.is_absolute());
+        assert_eq!(expected.file_name(), Some(OsStr::new("cldapi.dll")));
+        // A null HMODULE identifies the process image for GetModuleFileNameW,
+        // which cannot satisfy the exact System32 Cloud Files library path.
+        assert_eq!(
+            verify_loaded_cloud_library(std::ptr::null_mut(), &expected)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cloud_root_checks_cover_every_bound_directory_before_content() -> io::Result<()> {
+        for rejected_check in 1..=5 {
+            let parent = tempdir()?;
+            let state = parent.path().join("state");
+            let recovery = state.join("recovery");
+            let expected_paths = [
+                parent.path().to_path_buf(),
+                state.clone(),
+                recovery.clone(),
+                recovery.join("records"),
+                recovery.join("quarantine"),
+            ];
+            let mut checks = 0;
+            let error = WindowsRecoveryNamespace::open_or_create_with_cloud_check(
+                &state,
+                OsStr::new("recovery"),
+                |handle| {
+                    let expected = fs::OpenOptions::new()
+                        .access_mode(FILE_READ_ATTRIBUTES)
+                        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                        .open(&expected_paths[checks])?;
+                    assert_eq!(
+                        query_preferred_identity(handle)?,
+                        query_preferred_identity(&expected)?
+                    );
+                    checks += 1;
+                    if checks == rejected_check {
+                        Err(io::Error::new(
+                            io::ErrorKind::Unsupported,
+                            "injected cloud sync root",
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .err()
+            .expect("every bound directory must be checked");
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            assert_eq!(checks, rejected_check);
+        }
         Ok(())
     }
 
