@@ -95,3 +95,30 @@ and mutation result carry the stronger decision-path evidence for this scope.
   behavior, long-session memory bounds, or release readiness.
 - M3 remains In Progress until every roadmap exit criterion has same-commit
   evidence.
+
+## 2026-09-28 UTC backward-word memory follow-up
+
+This is separate Windows-local evidence for a navigation fix based on
+`49eaab40fad1b78cc58f0c5a14c0c6190e42c2de`. The candidate
+`src/core/navigation.rs` has Git blob
+`d43ea14f7c8e4a1c76f8e02d3404bf26874ece8e`. Hosted exact-head CI and
+non-Windows peak-memory evidence are pending.
+
+`python scripts/navigation_memory_check.py` builds the real navigation fixture,
+moves backward through a 16 MiB ASCII prefix with wide and bidi-control
+characters at the end, and checks the held process's peak working set against a
+160 MiB ceiling. On Windows, the prior vector implementation failed at
+289,267,712 bytes. The candidate passed at 37,576,704 bytes. Restoring the
+candidate after that negative check made the same test pass again. A separate
+allocation-count probe measured 234,881,136 requested allocation bytes for the
+old 8 MiB backward move, zero for the candidate at 8 MiB, and zero for the
+candidate at 64 MiB. Single-run timing was not used as an acceptance threshold.
+
+The candidate passed the full Windows workspace tests, 206 repository script
+tests with 11 skips, Clippy, Rustdoc, formatting, Ruff, documentation links,
+and release-config validation. Local line coverage was 93.36 percent for the
+whole workspace and 92.63 percent with the declared UI-adapter exclusions. The
+memory regression runs on Linux and Windows in the cached CI test job. macOS
+still runs the Rust fixture's Unicode offset checks, but its current baseline
+can sample only held resident memory, not the transient peak required for this
+assertion.

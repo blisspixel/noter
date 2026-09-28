@@ -86,6 +86,9 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Move backward by words without allocating a position for every preceding
+  character. This removes a large transient allocation from word navigation
+  near the end of a large document.
 - Verify source-built executables before replacing a working install on
   Windows, macOS, and Linux; failed source builds keep the previous binary.
 - Restore a retained Windows binary before retrying an install interrupted after

@@ -97,6 +97,14 @@ jobs:
         if: runner.os == 'Windows'
         run: python -m unittest discover -s scripts -p 'test_*.py'
 
+      - name: Bound backward word navigation memory (Windows)
+        if: runner.os == 'Windows'
+        run: python scripts/navigation_memory_check.py
+
+      - name: Bound backward word navigation memory (Linux)
+        if: runner.os == 'Linux'
+        run: python3 scripts/navigation_memory_check.py
+
       - name: Test Windows installer regressions (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh
