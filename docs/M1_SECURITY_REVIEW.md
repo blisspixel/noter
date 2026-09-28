@@ -538,3 +538,9 @@ coverage. Those numbers do not replace the exact gates. Independent review
 found and closed a missing virtual-volume flag; it found no native-call defect.
 A real drive-remapping or remote-volume fixture and exact-head hosted CI remain
 necessary before this Windows root-classification work can be claimed complete.
+
+The formal security diff scan for `36edc9e..a4b3196` reviewed all three
+changed source-like files and found no reportable vulnerability. Scan ID:
+`726316ad-2650-45ba-8ab6-928feefbf67d`. This is static diff coverage;
+it does not establish the missing native remote-volume, drive-remapping, or
+exact-head CI evidence.
