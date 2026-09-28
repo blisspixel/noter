@@ -544,3 +544,16 @@ changed source-like files and found no reportable vulnerability. Scan ID:
 `726316ad-2650-45ba-8ab6-928feefbf67d`. This is static diff coverage;
 it does not establish the missing native remote-volume, drive-remapping, or
 exact-head CI evidence.
+
+A follow-up mutation review replaced the equivalent OR-to-XOR flag-mask
+mutants with individually checked device characteristics and isolated the
+native response-length decision for exact boundary testing. The local Windows
+campaign caught all 5 response-length mutants and all 34 classifier and
+wrapper mutants. Each campaign also caught one unrelated recovery-scheduler
+mutant selected by the mutation tool. Both ran the unmodified test baseline
+with only the Cloud Files registration fixture omitted from the command line
+because it still returned access denied on this machine. The repository's CI
+mutation scope and exclusions were not changed; its full hosted gate remains
+unverified. The post-refactor runnable suite passes 93.18 percent
+whole-workspace and 91.64 percent UI-excluded line coverage. The exact
+all-targets test still stops at that Cloud Files fixture.

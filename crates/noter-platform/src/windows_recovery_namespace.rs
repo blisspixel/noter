@@ -1256,14 +1256,18 @@ fn verify_directory_handle(handle: &File) -> io::Result<WindowsDirectoryIdentity
 }
 
 const fn supported_local_disk_device(info: FILE_FS_DEVICE_INFORMATION) -> bool {
-    const UNSUPPORTED: u32 = FILE_REMOTE_DEVICE
-        | FILE_REMOVABLE_MEDIA
-        | FILE_PORTABLE_DEVICE
-        | FILE_READ_ONLY_DEVICE
-        | FILE_CHARACTERISTIC_WEBDAV_DEVICE
-        | FILE_CHARACTERISTIC_CSV
-        | FILE_VIRTUAL_VOLUME;
-    info.DeviceType == FILE_DEVICE_DISK && info.Characteristics & UNSUPPORTED == 0
+    info.DeviceType == FILE_DEVICE_DISK
+        && info.Characteristics & FILE_REMOTE_DEVICE == 0
+        && info.Characteristics & FILE_REMOVABLE_MEDIA == 0
+        && info.Characteristics & FILE_PORTABLE_DEVICE == 0
+        && info.Characteristics & FILE_READ_ONLY_DEVICE == 0
+        && info.Characteristics & FILE_CHARACTERISTIC_WEBDAV_DEVICE == 0
+        && info.Characteristics & FILE_CHARACTERISTIC_CSV == 0
+        && info.Characteristics & FILE_VIRTUAL_VOLUME == 0
+}
+
+const fn complete_device_query(status: i32, returned_bytes: usize) -> bool {
+    status == 0 && returned_bytes >= size_of::<FILE_FS_DEVICE_INFORMATION>()
 }
 
 fn verify_local_disk_device(handle: &File) -> io::Result<()> {
@@ -1283,7 +1287,7 @@ fn verify_local_disk_device(handle: &File) -> io::Result<()> {
             FileFsDeviceInformation,
         )
     };
-    if status != 0 || status_block.Information < size_of::<FILE_FS_DEVICE_INFORMATION>() {
+    if !complete_device_query(status, status_block.Information) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!("recovery volume device classification failed with NTSTATUS {status:#010x}"),
@@ -1375,7 +1379,7 @@ mod tests {
         DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, ParsedStatePath,
         WindowsRecoveryDirectory, WindowsRecoveryEntryName, WindowsRecoveryNamespace,
         bounded_windows_path_length, classify_cloud_sync_root_result,
-        classify_directory_creation_error, classify_directory_open_error,
+        classify_directory_creation_error, classify_directory_open_error, complete_device_query,
         directory_attributes_are_safe, entry_names_from_handle, nt_open_handle_usable,
         open_directory_no_follow, parse_directory_entry_batch, query_preferred_identity,
         reject_cloud_sync_root, supported_local_disk_device, system_cloud_library_path,
@@ -1534,6 +1538,16 @@ mod tests {
                 ..local
             }));
         }
+    }
+
+    #[test]
+    fn device_query_requires_success_and_the_complete_native_structure() {
+        let size = size_of::<FILE_FS_DEVICE_INFORMATION>();
+        assert!(!complete_device_query(-1, size));
+        assert!(!complete_device_query(0, 0));
+        assert!(!complete_device_query(0, size - 1));
+        assert!(complete_device_query(0, size));
+        assert!(complete_device_query(0, size + 1));
     }
 
     #[test]
