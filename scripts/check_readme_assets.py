@@ -34,7 +34,7 @@ SCREENSHOT_SOURCE_GLOBS = (
     "src/**/*.rs",
 )
 EXPECTED_SCREENSHOT_SOURCE_SHA256 = (
-    "be1887d4db5a59755fe6b70da55172e4a10f9aabd370bd9b0b6a4a41c67ca28e"
+    "20181f6ed8cd05d8ffbbf2c966cdceeef45d93476f2ac5c08b7fa3f5e760103f"
 )
 EXPECTED_SHA256 = {
     Path(

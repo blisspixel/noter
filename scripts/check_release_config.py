@@ -40,10 +40,13 @@ REVIEWED_RELEASE_WORKFLOW_SHA256 = (
 )
 REVIEWED_WIX_SHA256 = "613e8980817c96241e27956eea5dc235630e3c215b705d8097f75fe1b382d391"
 REVIEWED_CI_WORKFLOW_SHA256 = (
-    "e678eaf1a1149ca51df4d025f196e332bfbe41e9716bcae022a68dbeaaf7dcad"
+    "4e7f4e214288d07b6612095000322bfaa603d62b854b1f0d09ad9af57af86302"
 )
 REVIEWED_CI_TEST_JOB_SHA256 = (
-    "8ae16c89d644dbe19d2b01fc902212b79d62fbaeff692dd3789646b77960d593"
+    "08f25ee80fbf8027dee1f34283cfa315ba3768b7a1ed5e69300c7d761681da57"
+)
+REVIEWED_WINDOWS_CLOUD_FILTER_SCRIPT_SHA256 = (
+    "11fe78e1c8347a546c7632338249d5bd89e907c169f5224736160886721a0e80"
 )
 REVIEWED_RELEASE_ARTIFACT_VALIDATOR_SHA256 = (
     "fdc8376c35381ec24505b46cf112e6b4c65023d11213b80730cabef25ffaf578"
@@ -1121,6 +1124,9 @@ def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
         ci_workflow = read_regular_file(root / ".github/workflows/ci.yml").decode(
             "utf-8"
         )
+        windows_cloud_filter_script = read_regular_file(
+            root / "scripts/ensure_windows_cloud_filter.ps1"
+        )
         wix = read_regular_file(root / "wix/main.wxs")
         license_text = read_regular_file(root / "LICENSE").decode("utf-8")
         license_rtf = read_regular_file(root / "wix/License.rtf")
@@ -1142,6 +1148,11 @@ def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
         return [str(error)]
 
     errors = validate_manifest(manifest)
+    if (
+        sha256(windows_cloud_filter_script).hexdigest()
+        != REVIEWED_WINDOWS_CLOUD_FILTER_SCRIPT_SHA256
+    ):
+        errors.append("Windows Cloud Files CI helper differs from its reviewed source")
     errors.extend(validate_workflow(workflow))
     errors.extend(validate_sbom_generator(sbom_generator))
     errors.extend(validate_release_artifact_validator(release_artifact_validator))

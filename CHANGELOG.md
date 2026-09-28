@@ -8,6 +8,10 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Refuse registered Windows Cloud Files sync roots at the state path or any
+  bound recovery directory before writing recovery bytes. A missing or failed
+  classification API also refuses recovery rather than treating an unknown
+  root as local.
 - Inspect Windows recovery replacement stages, destinations, and backups
   through the held records directory. Reconciliation holds the exact opened
   destination while checking it, deletes only opened stage or backup files, and
