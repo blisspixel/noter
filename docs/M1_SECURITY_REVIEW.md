@@ -507,3 +507,9 @@ whole-workspace line coverage is 93.34 percent and UI-excluded line coverage
 is 91.96 percent. Clippy, formatting, Rustdoc, Python checks, documentation
 links, and regenerated README screenshot assets pass. The earlier formal diff
 scan does not cover this new GUI source change.
+
+The formal security diff scan for `fc20020..cd82b93` reviewed both changed
+source-like files, including the GUI lifecycle change, and found no reportable
+vulnerability. Scan ID: `46126ba7-54f8-487e-a819-ce7ef5d2a96e`. It is
+diff-scoped static review; the regression test injects a committed Save rather
+than a live filesystem failure.
