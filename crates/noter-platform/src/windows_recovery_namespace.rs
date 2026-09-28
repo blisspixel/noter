@@ -95,17 +95,19 @@ pub fn windows_local_appdata_directory() -> io::Result<PathBuf> {
         )
     };
     let allocation = KnownFolderAllocation(raw);
-    if status != 0 || allocation.0.is_null() {
+    if status != 0 {
         return Err(io::Error::other(format!(
             "Windows LocalAppData lookup failed with HRESULT {status:#010x}"
         )));
     }
+    let path = std::ptr::NonNull::new(allocation.0)
+        .ok_or_else(|| io::Error::other("Windows LocalAppData lookup returned no path"))?;
     let mut units = Vec::new();
     for offset in 0..KNOWN_FOLDER_PATH_LIMIT {
         // SAFETY: successful SHGetKnownFolderPath returns a null-terminated
         // allocation. The loop reads only through that terminator.
         #[allow(unsafe_code)]
-        let unit = unsafe { *allocation.0.add(offset) };
+        let unit = unsafe { *path.as_ptr().add(offset) };
         if unit == 0 {
             if units.is_empty() {
                 return Err(io::Error::new(

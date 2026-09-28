@@ -400,8 +400,10 @@ the quality-standard UI-excluded application figure is 92.55 percent. The
 full Windows workspace test command passed its application and integration
 tests but its unchanged Cloud Files registration fixture failed with access
 denied `0x80070005`; one platform-package retry reproduced that result. The
-fixture remains enabled. Full-workspace coverage, focused mutation evidence,
-and hosted exact-head CI remain pending.
+fixture remains enabled. A focused Windows known-folder campaign caught all
+three generated mutants after separating status and null-pointer validation.
+Full-workspace coverage, broader mutation evidence, and hosted exact-head CI
+remain pending.
 
 The independent migration diff review at `1b77e17..918e4c2` completed with
 one low-severity privacy finding, scan
