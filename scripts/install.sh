@@ -121,6 +121,21 @@ trusted_install_directory() {
     done
 }
 
+prepare_trusted_bin_dir() {
+    bin_dir=$install_root/bin
+    existing_dir=$bin_dir
+    while [ ! -e "$existing_dir" ]; do
+        [ ! -L "$existing_dir" ] || fail "install path contains a broken symbolic link."
+        existing_dir=$(dirname -- "$existing_dir")
+    done
+    [ -d "$existing_dir" ] || fail "install path contains a non-directory entry."
+    trusted_install_directory "$existing_dir"
+    mkdir -p "$bin_dir"
+    bin_dir=$(CDPATH='' cd -- "$bin_dir" 2>/dev/null && pwd -P) ||
+        fail "cannot resolve the install directory."
+    trusted_install_directory "$bin_dir"
+}
+
 install_from_source() {
     manifest=$source_dir/Cargo.toml
     [ -f "$manifest" ] || fail "Noter source manifest not found at '$manifest'."
@@ -140,18 +155,26 @@ install_from_source() {
         return
     fi
 
-    (cd "$source_dir" && cargo install --path "$source_dir" --locked --force --root "$install_root")
+    build_root=$(mktemp -d "${TMPDIR:-/tmp}/noter-source.XXXXXX") ||
+        fail "cannot reserve a private source build root."
+    stage_dir=
+    trap 'rm -rf "$build_root"; if [ -n "$stage_dir" ]; then rm -rf "$stage_dir"; fi' EXIT HUP INT TERM
+    (cd "$source_dir" && cargo install --path "$source_dir" --locked --force --root "$build_root")
 
-    installed_binary=$install_root/bin/noter
-    [ -x "$installed_binary" ] || fail "Cargo reported success, but '$installed_binary' was not found."
-    [ "$("$installed_binary" --version)" = "noter $expected_version" ] ||
-        fail "the installed executable did not report the expected Noter version $expected_version."
+    built_binary=$build_root/bin/noter
+    [ -x "$built_binary" ] || fail "Cargo reported success, but the staged Noter binary was not found."
+    prepare_trusted_bin_dir
+    stage_dir=$(mktemp -d "$bin_dir/.noter.install.XXXXXXXX") ||
+        fail "cannot reserve a private install stage."
+    cp "$built_binary" "$stage_dir/noter"
+    chmod 755 "$stage_dir/noter"
 
-    cli_temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/noter-install.XXXXXX")
-    trap 'rm -rf "$cli_temp_dir"' EXIT HUP INT TERM
-    invalid_stdout=$cli_temp_dir/invalid.stdout
-    invalid_stderr=$cli_temp_dir/invalid.stderr
-    if "$installed_binary" --theme invalid >"$invalid_stdout" 2>"$invalid_stderr"; then
+    [ "$("$stage_dir/noter" --version)" = "noter $expected_version" ] ||
+        fail "the staged executable did not report the expected Noter version $expected_version."
+
+    invalid_stdout=$build_root/invalid.stdout
+    invalid_stderr=$build_root/invalid.stderr
+    if "$stage_dir/noter" --theme invalid >"$invalid_stdout" 2>"$invalid_stderr"; then
         invalid_status=0
     else
         invalid_status=$?
@@ -160,9 +183,12 @@ install_from_source() {
         [ ! -s "$invalid_stdout" ] &&
         grep -F 'unknown theme `invalid`; expected system, light, dark, green, or amber' "$invalid_stderr" >/dev/null &&
         grep -F 'Usage:' "$invalid_stderr" >/dev/null ||
-        fail "the installed executable did not preserve the release command-line error contract."
+        fail "the staged executable did not preserve the release command-line error contract."
+    [ ! -d "$bin_dir/noter" ] || fail "the install destination is a directory."
+    mv -f "$stage_dir/noter" "$bin_dir/noter"
+    installed_binary=$bin_dir/noter
     printf "Installed Noter %s at '%s'.\n" "$expected_version" "$installed_binary"
-    path_hint "$install_root/bin"
+    path_hint "$bin_dir"
 }
 
 install_from_release() {
@@ -226,17 +252,7 @@ install_from_release() {
     found_binary=$(find "$cli_temp_dir" -type f -name noter | head -n 1)
     [ -n "$found_binary" ] || fail "the release archive did not contain the noter binary."
 
-    existing_dir=$bin_dir
-    while [ ! -e "$existing_dir" ]; do
-        [ ! -L "$existing_dir" ] || fail "install path contains a broken symbolic link."
-        existing_dir=$(dirname -- "$existing_dir")
-    done
-    [ -d "$existing_dir" ] || fail "install path contains a non-directory entry."
-    trusted_install_directory "$existing_dir"
-    mkdir -p "$bin_dir"
-    bin_dir=$(CDPATH='' cd -- "$bin_dir" 2>/dev/null && pwd -P) ||
-        fail "cannot resolve the install directory."
-    trusted_install_directory "$bin_dir"
+    prepare_trusted_bin_dir
     # Stage beside the destination and rename, so the install is atomic and a
     # running copy keeps its file until it exits.
     stage_dir=$(mktemp -d "$bin_dir/.noter.install.XXXXXXXX") ||

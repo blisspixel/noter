@@ -163,5 +163,97 @@ class ReleaseInstallerTests(unittest.TestCase):
         self.assertFalse((self.bin_dir / "noter").exists())
 
 
+@unittest.skipUnless(os.name == "posix", "the POSIX installer needs a Unix host")
+class SourceInstallerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(
+            prefix="noter-source-install-test-", dir=Path.home()
+        )
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.install_root = self.root / "install"
+        self.bin_dir = self.install_root / "bin"
+        self.bin_dir.mkdir(parents=True)
+        self.installed = self.bin_dir / "noter"
+        self.installed.write_text("last working binary")
+        self.source = self.root / "source"
+        self.source.mkdir()
+        (self.source / "Cargo.toml").write_text('name = "noter"\n')
+        self.built = self.root / "built-noter"
+        self.built.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            "  --version) printf 'noter 0.1.0-beta.1\\n' ;;\n"
+            "  --theme) printf 'unknown theme `invalid`; expected system, light, dark, green, or amber\\nUsage: noter\\n' >&2; exit 2 ;;\n"
+            "esac\n"
+        )
+        self.built.chmod(0o755)
+        self.cargo_root_log = self.root / "cargo-root"
+        mock_bin = self.root / "mock-bin"
+        mock_bin.mkdir()
+        cargo = mock_bin / "cargo"
+        cargo.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            '  metadata) printf \'{"packages":[{"name":"noter","version":"0.1.0-beta.1"}]}\\n\' ;;\n'
+            "  install)\n"
+            '    while [ "$#" -gt 0 ]; do\n'
+            '      if [ "$1" = --root ]; then shift; root=$1; break; fi\n'
+            "      shift\n"
+            "    done\n"
+            '    printf \'%s\' "$root" >"$TEST_CARGO_ROOT_LOG"\n'
+            '    mkdir -p "$root/bin"\n'
+            '    cp "$TEST_SOURCE_BINARY" "$root/bin/noter"\n'
+            '    chmod 755 "$root/bin/noter" ;;\n'
+            "  *) exit 2 ;;\n"
+            "esac\n"
+        )
+        cargo.chmod(0o755)
+        self.environment = os.environ.copy()
+        self.environment.update(
+            PATH=f"{mock_bin}{os.pathsep}{self.environment['PATH']}",
+            TEST_SOURCE_BINARY=str(self.built),
+            TEST_CARGO_ROOT_LOG=str(self.cargo_root_log),
+        )
+
+    def install(self) -> subprocess.CompletedProcess[str]:
+        installer = Path(__file__).with_name("install.sh")
+        return subprocess.run(
+            [
+                "sh",
+                str(installer),
+                "--source",
+                str(self.source),
+                "--root",
+                str(self.install_root),
+            ],
+            cwd=self.root,
+            env=self.environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    def test_bad_staged_version_preserves_previous_executable(self) -> None:
+        self.built.write_text("#!/bin/sh\nprintf 'noter wrong-version\\n'\n")
+        self.built.chmod(0o755)
+
+        result = self.install()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("staged executable did not report", result.stderr)
+        self.assertEqual(self.installed.read_text(), "last working binary")
+        self.assertFalse(Path(self.cargo_root_log.read_text()).exists())
+
+    def test_verified_source_binary_replaces_previous_executable(self) -> None:
+        result = self.install()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.installed.read_bytes(), self.built.read_bytes())
+        self.assertFalse(Path(self.cargo_root_log.read_text()).exists())
+        self.assertFalse(list(self.bin_dir.glob(".noter.install.????????")))
+
+
 if __name__ == "__main__":
     unittest.main()

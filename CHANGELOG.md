@@ -86,6 +86,8 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Verify source-built executables before replacing a working install on
+  Windows, macOS, and Linux; failed source builds keep the previous binary.
 - Restore a retained Windows binary before retrying an install interrupted after
   the previous executable was moved aside. A failed retry keeps that executable,
   while uninstall removes it.

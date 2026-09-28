@@ -139,6 +139,57 @@ function Restore-InterruptedBinaryInstall {
     }
 }
 
+function Install-VerifiedBinary {
+    param(
+        [Parameter(Mandatory)][string]$VerifiedBinary,
+        [Parameter(Mandatory)][string]$BinDir
+    )
+
+    $installedBinary = Join-Path $BinDir 'noter.exe'
+    $stagedBinary = Join-Path $BinDir ('noter.exe.new.' + [System.Guid]::NewGuid().ToString('N'))
+    $previousBinary = Join-Path $BinDir 'noter.exe.old'
+    $verifiedHash = (Get-FileHash -LiteralPath $VerifiedBinary -Algorithm SHA256).Hash
+    try {
+        $sourceStream = [System.IO.File]::Open(
+            $VerifiedBinary, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::Read
+        )
+        try {
+            $stageStream = [System.IO.File]::Open(
+                $stagedBinary, [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::Write, [System.IO.FileShare]::None
+            )
+            try {
+                $sourceStream.CopyTo($stageStream)
+                $stageStream.Flush($true)
+            } finally {
+                $stageStream.Dispose()
+            }
+        } finally {
+            $sourceStream.Dispose()
+        }
+        if ((Get-FileHash -LiteralPath $stagedBinary -Algorithm SHA256).Hash -ne $verifiedHash) {
+            throw 'The install stage changed while copying the verified executable.'
+        }
+        $hadPrevious = Test-Path -LiteralPath $installedBinary
+        if ($hadPrevious) {
+            Remove-Item -LiteralPath $previousBinary -Force -ErrorAction SilentlyContinue
+            Move-Item -LiteralPath $installedBinary -Destination $previousBinary -Force
+        }
+        try {
+            Move-Item -LiteralPath $stagedBinary -Destination $installedBinary -Force
+        } catch {
+            if ($hadPrevious) {
+                Move-Item -LiteralPath $previousBinary -Destination $installedBinary -Force
+            }
+            throw
+        }
+        Remove-Item -LiteralPath $previousBinary -Force -ErrorAction SilentlyContinue
+    } finally {
+        Remove-Item -LiteralPath $stagedBinary -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-FromSource {
     param(
         [Parameter(Mandatory)][string]$ResolvedSource,
@@ -182,45 +233,56 @@ function Install-FromSource {
         return
     }
 
-    $arguments = @(
-        'install', '--path', $ResolvedSource, '--locked', '--force',
-        '--root', $ResolvedInstallRoot
-    )
-    $installExitCode = 0
-    Push-Location -LiteralPath $ResolvedSource
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('noter-source-' + [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tempRoot | Out-Null
     try {
-        & $cargo.Source @arguments
-        $installExitCode = $LASTEXITCODE
+        $arguments = @(
+            'install', '--path', $ResolvedSource, '--locked', '--force',
+            '--root', $tempRoot
+        )
+        $installExitCode = 0
+        Push-Location -LiteralPath $ResolvedSource
+        try {
+            & $cargo.Source @arguments
+            $installExitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+        if ($installExitCode -ne 0) {
+            throw "Cargo failed to build Noter with exit code $installExitCode."
+        }
+
+        $stagedBinary = Join-Path $tempRoot 'bin\noter.exe'
+        if (-not (Test-Path -LiteralPath $stagedBinary -PathType Leaf)) {
+            throw "Cargo reported success, but the staged Noter executable was not found."
+        }
+        $versionResult = Invoke-NoterCli -Binary $stagedBinary -Arguments @('--version')
+        $stagedVersion = $versionResult.StdOut.Trim()
+        if (
+            $versionResult.ExitCode -ne 0 -or
+            -not [string]::IsNullOrEmpty($versionResult.StdErr) -or
+            $stagedVersion -ne "noter $($noterPackage.version)"
+        ) {
+            throw "The staged executable did not report the expected Noter version $($noterPackage.version)."
+        }
+
+        $invalidResult = Invoke-NoterCli -Binary $stagedBinary -Arguments @('--theme', 'invalid')
+        if (
+            $invalidResult.ExitCode -ne 2 -or
+            -not [string]::IsNullOrEmpty($invalidResult.StdOut) -or
+            -not $invalidResult.StdErr.Contains('unknown theme `invalid`; expected system, light, dark, green, or amber') -or
+            -not $invalidResult.StdErr.Contains('Usage:')
+        ) {
+            throw 'The staged executable did not preserve the release command-line error contract.'
+        }
+
+        $binDir = Join-Path $ResolvedInstallRoot 'bin'
+        New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+        Install-VerifiedBinary -VerifiedBinary $stagedBinary -BinDir $binDir
     } finally {
-        Pop-Location
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
-    if ($installExitCode -ne 0) {
-        throw "Cargo failed to install Noter with exit code $installExitCode."
-    }
-
     $installedBinary = Join-Path $ResolvedInstallRoot 'bin\noter.exe'
-    if (-not (Test-Path -LiteralPath $installedBinary -PathType Leaf)) {
-        throw "Cargo reported success, but '$installedBinary' was not found."
-    }
-    $versionResult = Invoke-NoterCli -Binary $installedBinary -Arguments @('--version')
-    $installedVersion = $versionResult.StdOut.Trim()
-    if (
-        $versionResult.ExitCode -ne 0 -or
-        -not [string]::IsNullOrEmpty($versionResult.StdErr) -or
-        $installedVersion -ne "noter $($noterPackage.version)"
-    ) {
-        throw "The installed executable did not report the expected Noter version $($noterPackage.version)."
-    }
-
-    $invalidResult = Invoke-NoterCli -Binary $installedBinary -Arguments @('--theme', 'invalid')
-    if (
-        $invalidResult.ExitCode -ne 2 -or
-        -not [string]::IsNullOrEmpty($invalidResult.StdOut) -or
-        -not $invalidResult.StdErr.Contains('unknown theme `invalid`; expected system, light, dark, green, or amber') -or
-        -not $invalidResult.StdErr.Contains('Usage:')
-    ) {
-        throw 'The installed executable did not preserve the release command-line error contract.'
-    }
     Write-Output "Installed Noter $($noterPackage.version) at '$installedBinary'."
 }
 
@@ -286,25 +348,8 @@ function Install-FromRelease {
         # is a rename on one volume. A running noter.exe cannot be
         # overwritten but can be renamed, so move it aside, rename the new
         # file into place, and restore the old one if that fails.
+        Install-VerifiedBinary -VerifiedBinary $extractedBinary.FullName -BinDir $binDir
         $installedBinary = Join-Path $binDir 'noter.exe'
-        $stagedBinary = Join-Path $binDir 'noter.exe.new'
-        $previousBinary = Join-Path $binDir 'noter.exe.old'
-        Copy-Item -LiteralPath $extractedBinary.FullName -Destination $stagedBinary -Force
-        $hadPrevious = Test-Path -LiteralPath $installedBinary
-        if ($hadPrevious) {
-            Remove-Item -LiteralPath $previousBinary -Force -ErrorAction SilentlyContinue
-            Move-Item -LiteralPath $installedBinary -Destination $previousBinary -Force
-        }
-        try {
-            Move-Item -LiteralPath $stagedBinary -Destination $installedBinary -Force
-        } catch {
-            if ($hadPrevious) {
-                Move-Item -LiteralPath $previousBinary -Destination $installedBinary -Force
-            }
-            Remove-Item -LiteralPath $stagedBinary -Force -ErrorAction SilentlyContinue
-            throw
-        }
-        Remove-Item -LiteralPath $previousBinary -Force -ErrorAction SilentlyContinue
 
         $entries = @(Get-UserPathEntries)
         if (-not ($entries | Where-Object { Test-SamePath $_ $binDir })) {

@@ -72,6 +72,9 @@ install root rather than a shared writable directory.
 On Windows, retrying after an interrupted binary replacement restores
 `noter.exe.old` if `noter.exe` is missing before another download or build.
 Uninstall also removes this retained executable.
+Source installs on all platforms build and verify a staged executable before
+replacing the installed binary. A failed build or verification leaves the
+previous executable in place.
 
 `--uninstall` (`-Uninstall`) removes the binary, and on Windows its `PATH`
 entry when the directory is otherwise empty. Documents, settings, and recovery
@@ -121,10 +124,12 @@ sh scripts/install.sh
 The source installer:
 
 1. validates the local locked Cargo workspace;
-2. builds the release executable with the repository's pinned toolchain;
-3. replaces an older Cargo-installed Noter build at the selected install root;
-4. verifies `noter --version`; and
-5. verifies the installed command-line error and exit-status contract.
+2. builds into a private temporary Cargo root with the repository's pinned
+   toolchain;
+3. verifies the staged executable's version and command-line error contract;
+   and
+4. replaces an older Noter executable at the selected install root only after
+   verification passes.
 
 Run from a checkout, the installer builds that source; pass `--binary`
 (`-Binary`) to download a release instead. It does not fetch Noter source,
@@ -239,8 +244,8 @@ sh scripts/install.sh
 ```
 
 `--ff-only` refuses an implicit merge when local history has diverged. The
-installer passes `--locked` and `--force` to Cargo, so it honors the committed
-lockfile and replaces the existing source-installed executable.
+installer passes `--locked` and `--force` to Cargo in a private build root,
+then verifies and replaces the executable at the selected install root.
 
 ## Installer options
 
@@ -270,30 +275,29 @@ An explicit install root takes precedence, then `CARGO_INSTALL_ROOT` when set.
 Otherwise a source build uses `CARGO_HOME` or Cargo's standard per-user
 directory, and a binary install uses `%LOCALAPPDATA%\Programs\Noter` on
 Windows or `~/.local` on macOS and Linux. The scripts pass the resulting
-absolute path to Cargo so repository or user configuration cannot silently
-redirect the executable. Only an x64 Windows build is published; Windows on
-ARM runs it through x64 emulation.
+absolute path to the installer. Source builds pass a separate private temporary
+root to Cargo, then copy the verified executable into the selected root so
+repository or user configuration cannot silently redirect it. Only an x64
+Windows build is published; Windows on ARM runs it through x64 emulation.
 
 ## Uninstall a source build
 
-For an installation in Cargo's default root:
-
-```sh
-cargo uninstall noter
-```
-
-For a custom root, use the same root supplied during installation. For example:
+Run the installer from the checkout with its uninstall option:
 
 ```powershell
-cargo uninstall noter --root "$env:LOCALAPPDATA\Noter"
+.\scripts\install.ps1 -Uninstall
 ```
 
 ```sh
-cargo uninstall noter --root "$HOME/.local"
+sh scripts/install.sh --uninstall
 ```
 
-Cargo removes the executable and its install record. It does not remove the Git
-checkout or Noter's per-user framework state. The current build stores its
+For a custom installation, pass the same `-InstallRoot` or `--root` used to
+install it. Source installs are managed by these scripts; Cargo builds in a
+temporary root and has no new install record in the selected root. A Cargo
+record from an older Noter source install may remain until removed separately.
+Uninstall does not remove the Git checkout or Noter's per-user framework state.
+The current build stores its
 selected theme, Text Mode word-wrap preference, and editor zoom in `app.ron`
 under the following directory:
 
