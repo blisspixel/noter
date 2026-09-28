@@ -692,8 +692,9 @@ observations open relative to the held records directory. Ratification and
 cleanup operate on their exact opened files. Failure completion installs the
 opened stage relative to that directory. After a recovery record commit,
 Windows flushes the held records directory and reports a failed barrier
-without discarding the record. Existing-record replacement and other
-synchronization operations remain pathname-based inside the held, delete-protected
+without discarding the record. Quarantine copy and source-cleanup directory
+barriers also flush the exact held records or quarantine directory. Existing-record
+replacement remains pathname-based inside the held, delete-protected
 directories. A handle-based Windows Cloud Files query loaded by its absolute
 System32 path checks the parent, state, recovery, records, and quarantine
 handles before recovery writes; an unavailable API or unrecognized result also
@@ -833,6 +834,14 @@ artifact last. They never delete by document ID. Corrupt or unsupported records
 are quarantined; quarantine relocation failures leave the damaged file in place
 and are reported. Restored content always opens dirty and never writes the
 original user path until Save.
+
+Each quarantine copy uses exclusive creation in a slot derived from the exact
+source basename, opened identity, and encoded bytes. If its directory barrier
+fails, the source and one private copy remain for review. A retry of that source
+reports the occupied slot without creating another copy. Distinct source
+names or identities use distinct slots even when their bytes match. Reuse of
+the same name and file identity after deletion can conservatively require
+review of the occupied slot; the new source is retained.
 
 ### 7.3 External changes
 

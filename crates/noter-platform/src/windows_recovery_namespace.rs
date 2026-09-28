@@ -2,8 +2,9 @@
 //!
 //! This module binds the state and recovery directories to retained handles.
 //! Its entry creation, open, classification, enumeration, and new-record
-//! installation use those handles. Existing-record replacement and complete
-//! root classification remain separate M4-H1 work.
+//! installation and directory synchronization use those handles.
+//! Existing-record replacement and complete root classification remain
+//! separate M4-H1 work.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -554,8 +555,8 @@ fn regular_entry_handle(file: &File) -> io::Result<bool> {
 /// remain outside the supported recovery boundary.
 ///
 /// Entry creation, open, classification, enumeration, new-record installation,
-/// and replacement reconciliation use these handles. Existing-record
-/// replacement and synchronization still require handle-relative operations.
+/// replacement reconciliation, and directory synchronization use these
+/// handles. Existing-record replacement still requires handle-relative work.
 pub struct WindowsRecoveryNamespace {
     state: WindowsRecoveryDirectory,
     recovery: WindowsRecoveryDirectory,

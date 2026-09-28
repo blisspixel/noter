@@ -13,7 +13,6 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use getrandom::fill as fill_random;
 #[cfg(any(windows, test))]
 use noter_platform::{CommitReceipt, InstallNewOutcome, ReplaceExistingOutcome};
 #[cfg(unix)]
@@ -366,7 +365,7 @@ impl RecoveryStore {
     }
 
     /// Refuses a pathname outside the held records and quarantine directories.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn windows_require_bound_directory(&self, directory: &Path) -> io::Result<()> {
         if directory == self.records_dir() || directory == self.quarantine_dir() {
             Ok(())
@@ -378,7 +377,7 @@ impl RecoveryStore {
         }
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn windows_require_bound_entry(&self, path: &Path) -> io::Result<()> {
         self.windows_require_bound_directory(path.parent().unwrap_or_else(|| Path::new("")))
     }
@@ -530,7 +529,11 @@ impl RecoveryStore {
             self.unix_bound_entry(path)?.0.sync()?;
             Ok(noter_platform::ParentSyncOutcome::Synced)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            self.windows_bound_entry(path)?.0.sync()
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             self.windows_require_bound_entry(path)?;
             noter_platform::sync_parent(path)
@@ -1214,7 +1217,7 @@ fn quarantine_bound_file_with(
         ));
     }
     revalidate_path_identity(store, path, opened.facts, opened.encoded_len)?;
-    let (destination, mut quarantine_file) = create_quarantine_copy(store, bytes)?;
+    let (destination, mut quarantine_file) = create_quarantine_copy(store, path, opened, bytes)?;
     if let Err(error) = verify_exact_bytes(&mut quarantine_file, bytes) {
         discard_created_entry(store, &destination, quarantine_file);
         return Err(error);
@@ -1230,38 +1233,83 @@ fn quarantine_bound_file_with(
     Ok((destination, cleanup_error))
 }
 
-fn create_quarantine_copy(store: &RecoveryStore, bytes: &[u8]) -> io::Result<(PathBuf, File)> {
-    for _ in 0..32 {
-        let mut random = [0_u8; 16];
-        fill_random(&mut random).map_err(|error| {
-            io::Error::other(format!("recovery quarantine random name failed: {error}"))
-        })?;
-        let destination = store
-            .quarantine_dir()
-            .join(format!("noter-quarantine-{}.rec", hex16(&random)));
-        let mut file = match store.entry_create_private_new(&destination) {
-            Ok(file) => file,
-            Err(error) => {
-                if is_quarantine_name_collision(error.kind()) {
-                    continue;
-                }
-                return Err(error);
+fn create_quarantine_copy(
+    store: &RecoveryStore,
+    path: &Path,
+    opened: &OpenedRecoveryCandidate,
+    bytes: &[u8],
+) -> io::Result<(PathBuf, File)> {
+    let name = quarantine_copy_name(path, opened.facts.identity(), bytes)?;
+    let destination = store.quarantine_dir().join(name);
+    let mut file = store
+        .entry_create_private_new(&destination)
+        .map_err(|error| {
+            if is_quarantine_name_collision(error.kind()) {
+                io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "a retained quarantine copy requires review before this source can be retried",
+                )
+            } else {
+                error
             }
-        };
-        let write_result = (|| {
-            file.write_all(bytes)?;
-            file.flush()?;
-            noter_platform::sync_file(&file)
-        })();
-        if let Err(error) = write_result {
-            discard_created_entry(store, &destination, file);
-            return Err(error);
-        }
-        return Ok((destination, file));
+        })?;
+    let write_result = (|| {
+        file.write_all(bytes)?;
+        file.flush()?;
+        noter_platform::sync_file(&file)
+    })();
+    if let Err(error) = write_result {
+        discard_created_entry(store, &destination, file);
+        return Err(error);
     }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not allocate a private recovery quarantine name",
+    Ok((destination, file))
+}
+
+fn quarantine_copy_name(
+    path: &Path,
+    identity: noter_platform::FileIdentity,
+    bytes: &[u8],
+) -> io::Result<String> {
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a recovery source needs a name",
+        )
+    })?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"noter-quarantine-v1");
+    #[cfg(unix)]
+    let name_bytes = {
+        use std::os::unix::ffi::OsStrExt;
+        name.as_bytes().to_vec()
+    };
+    #[cfg(windows)]
+    let name_bytes = {
+        use std::os::windows::ffi::OsStrExt;
+        name.encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>()
+    };
+    #[cfg(not(any(unix, windows)))]
+    let name_bytes = name.to_string_lossy().as_bytes().to_vec();
+    let name_length = u64::try_from(name_bytes.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "recovery source name is too long",
+        )
+    })?;
+    hasher.update(&name_length.to_le_bytes());
+    hasher.update(&name_bytes);
+    hasher.update(&[u8::from(matches!(
+        identity.quality(),
+        noter_platform::IdentityQuality::Preferred
+    ))]);
+    hasher.update(&identity.volume().to_le_bytes());
+    hasher.update(&identity.file().to_le_bytes());
+    hasher.update(bytes);
+    Ok(format!(
+        "noter-quarantine-{}.rec",
+        hasher.finalize().to_hex()
     ))
 }
 
@@ -4750,6 +4798,70 @@ mod tests {
             fs::read_dir(store.quarantine_dir())?.collect::<Result<_, _>>()?;
         assert_eq!(quarantined.len(), 1);
         assert_eq!(fs::read(quarantined[0].path())?, damaged);
+        drop(opened);
+        let reopened = open_recovery_candidate(&store, &path).expect("rebind retained source");
+        let retry = quarantine_bound_file_with(&store, &path, &reopened, damaged, |_| {
+            panic!("a retained copy must stop the retry before another barrier")
+        })
+        .expect_err("the same failed source must not create another quarantine copy");
+        assert_eq!(retry.kind(), io::ErrorKind::ResourceBusy);
+        assert_eq!(fs::read(&path)?, damaged);
+        assert_eq!(fs::read_dir(store.quarantine_dir())?.count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn distinct_quarantine_sources_with_equal_bytes_use_distinct_slots() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let damaged = b"same damaged bytes";
+        let paths = [
+            store.records_dir().join("first.rec"),
+            store.records_dir().join("second.rec"),
+        ];
+        for path in &paths {
+            fs::write(path, damaged)?;
+        }
+        let opened = paths
+            .iter()
+            .map(|path| open_recovery_candidate(&store, path).expect("bind damaged fixture"))
+            .collect::<Vec<_>>();
+        assert_ne!(opened[0].facts.identity(), opened[1].facts.identity());
+        let mut destinations = Vec::new();
+        for (path, opened) in paths.iter().zip(&opened) {
+            let (destination, cleanup_error) =
+                quarantine_bound_file_with(&store, path, opened, damaged, |_| {
+                    Ok(noter_platform::ParentSyncOutcome::Unsupported)
+                })?;
+            assert!(cleanup_error.is_none());
+            destinations.push(destination);
+        }
+        assert_ne!(destinations[0], destinations[1]);
+        assert_eq!(fs::read_dir(store.quarantine_dir())?.count(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn quarantine_slot_key_binds_name_and_bytes_independently() -> io::Result<()> {
+        let dir = tempdir()?;
+        let source = dir.path().join("source.rec");
+        fs::write(&source, b"source")?;
+        let opened = noter_platform::open_existing_no_follow(&source)?;
+        let identity = noter_platform::file_facts(&opened)?.identity();
+        let first = quarantine_copy_name(Path::new("first.rec"), identity, b"damaged")?;
+
+        assert_eq!(
+            first,
+            quarantine_copy_name(Path::new("first.rec"), identity, b"damaged")?
+        );
+        assert_ne!(
+            first,
+            quarantine_copy_name(Path::new("other.rec"), identity, b"damaged")?
+        );
+        assert_ne!(
+            first,
+            quarantine_copy_name(Path::new("first.rec"), identity, b"changed")?
+        );
         Ok(())
     }
 
@@ -5453,6 +5565,24 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
         assert_eq!(fs::read(&outside)?, b"outside recovery");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recovery_entry_directory_sync_uses_both_held_directories() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        for directory in [store.records_dir(), store.quarantine_dir()] {
+            let entry = directory.join("barrier.rec");
+            let mut file = store.entry_create_private_new(&entry)?;
+            file.write_all(b"barrier")?;
+            noter_platform::sync_file(&file)?;
+            assert_eq!(
+                store.sync_entry_directory(&entry)?,
+                noter_platform::ParentSyncOutcome::Synced
+            );
+        }
         Ok(())
     }
 

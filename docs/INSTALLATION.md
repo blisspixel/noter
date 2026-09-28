@@ -316,8 +316,9 @@ bytes. Record entry opens, creation, classification, new-record installation,
 enumeration, replacement observations, and partial-replacement completion use
 the retained directory handles. Committed recovery records flush the held
 records directory; a failed barrier remains visible as a recovery persistence
-warning. Existing-record replacement and other synchronization still use paths
-within those protected directories. Other synchronization and redirection
+warning. Quarantine directory barriers also use the held directories.
+Existing-record replacement still uses paths within those protected
+directories. Other synchronization and redirection
 models are not yet classified.
 
 The current unreleased Linux and macOS builds bind the recovery namespace. If a

@@ -642,7 +642,10 @@ exclusive private creation, regular-file and directory classification, final
 links, name replacement after open, and rejection of an unbound parent or
 invalid stage destination before writing. Recovery record commits flush the
 held records directory on Windows NTFS and surface a failed directory barrier.
-Existing-record replacement, remaining synchronization, and detection of
+Quarantine copy and source-cleanup barriers also flush the held directories.
+An occupied per-source quarantine slot stops retries from accumulating copies
+after a failed barrier while retaining the original for review.
+Existing-record replacement and detection of
 redirected or other synchronized roots keep M4-H1 in progress.
 
 The Unix cleanup ADR was required either to provide a genuinely object-bound
