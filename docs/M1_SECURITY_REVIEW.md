@@ -286,3 +286,35 @@ A focused Windows-local `cargo mutants --regex 'terminal_text' -j 4` run on
 or unviable. The campaign's selected application tests passed at baseline.
 This tests the terminal text module's mutation scope; it does not replace the
 complete CI campaign.
+
+## 2026-09-28 UTC local branch security review
+
+A source-backed security diff scan reviewed all 17 changed source-like files in
+the immutable local range `91fef57..8c5b77d`, plus supporting recovery,
+installer, save, terminal, and release boundaries. It found no plausible new
+vulnerability in that diff. The completed local scan is
+`de5b5626-d6b9-4b74-afd1-23764d616654`. It was a read-only source review,
+not native runtime validation or exact-head hosted CI. The existing Windows
+recovery replacement gap in M4-H1 is not closed by this result.
+
+The current Windows recovery implementation binds a written stage's identity,
+length, and BLAKE3 fingerprint before closing its handle, then rechecks the
+stage before `ReplaceFileW`. The replacement operation itself still names the
+stage and destination by path. A Windows native probe tested a possible
+handle-relative replacement using `NtSetInformationFile` with
+`FileRenameInformationEx`, `FILE_RENAME_REPLACE_IF_EXISTS`, and
+`FILE_RENAME_POSIX_SEMANTICS`. With a held destination handle that denied delete
+sharing, a competing rename was blocked, but the replacement failed with NT
+`0xC0000043` and Win32 error 32. Allowing delete sharing let the replacement
+succeed, but also let a competing rename replace the destination while that
+handle remained open. The old handle still read the predecessor bytes. Both
+probe modes exited successfully after asserting their expected observations.
+
+This local result rules out claiming that those tested flags alone both lock
+the destination name against a race and perform a handle-relative replacement.
+It does not prove behavior on every Windows version or filesystem. M4-H1 still
+needs a predecessor-preserving protocol, native final-window race and fault
+fixtures, and exact-head CI. The API contracts are documented by Microsoft:
+[ReplaceFileW](https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-replacefilew),
+[FILE_RENAME_INFORMATION](https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information),
+and [FILE_LINK_INFORMATION](https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_link_information).
