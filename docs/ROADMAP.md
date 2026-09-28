@@ -625,6 +625,8 @@ rebound pathname cannot delete the replacement. Startup and owned-artifact
 enumeration run through the held directory handle with their entry limits.
 Windows child traversal and private directory creation now use the held parent
 handle, so a changed drive-letter mapping cannot redirect their objects.
+A native fixture remaps an unused drive letter after binding the parent and
+confirms state and recovery creation stay under that held directory.
 Startup retains and reports an ambiguously named Windows entry without
 aborting review of other valid records.
 A native fixture confirms a reparse point at the private recovery child name
@@ -660,9 +662,8 @@ after a failed barrier while retaining the original for review. Existing-record
 reconciliation binds the intended stage identity and bytes before its handle
 closes, so a rebound stage cannot redefine the snapshot to commit.
 Existing-record replacement has local native primitive and injected barrier
-tests. Classification of other redirected or synchronized roots, a native
-drive-remapping fixture, the remaining fault and race matrix, and exact-head
-hosted CI keep M4-H1 in progress.
+tests. Classification of other redirected or synchronized roots, the remaining
+fault and race matrix, and exact-head hosted CI keep M4-H1 in progress.
 The local branch moves new Windows recovery writes to the LocalAppData known
 folder while eframe preferences remain under RoamingAppData. It opens an
 existing legacy recovery root through the verified namespace, reviews both

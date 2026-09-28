@@ -679,3 +679,30 @@ tool also caught one unrelated recovery-scheduler mutant. The existing tests
 therefore detect changes to the canonical and keyed artifact removal,
 directory-entry bound, foreign-artifact filter, and missing-file error policy
 in this campaign. This is local focused evidence, not the full hosted gate.
+
+## 2026-09-28 UTC native Windows drive-remapping fixture
+
+A native fixture uses an unused temporary drive letter mapped to one NTFS tree,
+opens and holds its traversal parent, then remaps that drive letter to a
+different tree on the same volume before state binding. Both trees contain a
+private state directory, so an absolute state open could succeed against the
+wrong object. The namespace instead binds the original state identity and
+creates recovery records under the held tree; the unrelated state gains no
+recovery subtree. The fixture launches the system-directory `subst.exe` by
+absolute path and unmaps the temporary drive before removing the test tree.
+Replacing the relative
+state bind with an absolute pathname open makes the focused test fail on the
+different file identity, and restoring the relative open makes it pass.
+This covers one actual drive-letter remap window, not every redirected-root
+classification or the remaining fault and race matrix.
+
+Independent review confirmed the executable origin, cleanup order, and
+identity assertions. On this Windows host the full all-targets suite passed,
+including all 82 platform tests and the native Cloud Files fixture. Format,
+Clippy with warnings denied, Rustdoc with warnings denied, Python tests,
+Ruff, doc links, README asset validation, offline deny, cached advisory audit,
+and `git diff --check` passed. Coverage was 93.32 percent for the workspace
+and 92.72 percent with the specified UI files excluded, above the 80 and
+90 percent thresholds. The five regenerated screenshots were byte-identical
+to the approved assets; only their source-input digest changed. Hosted
+exact-head CI remains unverified.

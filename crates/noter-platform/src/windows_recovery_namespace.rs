@@ -1461,7 +1461,8 @@ mod tests {
     use std::mem::{offset_of, size_of};
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::os::windows::fs::{OpenOptionsExt, symlink_dir, symlink_file};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::Mutex;
 
     use tempfile::tempdir;
@@ -1495,6 +1496,7 @@ mod tests {
         CF_HYDRATION_POLICY_ALWAYS_FULL, CF_POPULATION_POLICY_ALWAYS_FULL, CF_REGISTER_FLAG_NONE,
         CF_SYNC_POLICIES, CF_SYNC_REGISTRATION, CfRegisterSyncRoot, CfUnregisterSyncRoot,
     };
+    use windows_sys::Win32::Storage::FileSystem::GetLogicalDrives;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DEVICE_DISK,
         FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_BOTH_DIR_INFO, FILE_LIST_DIRECTORY,
@@ -2013,6 +2015,113 @@ mod tests {
             )?)?
         );
         assert!(!other_new_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn native_drive_remap_keeps_state_binding_under_the_held_parent() -> io::Result<()> {
+        struct SubstDrive {
+            drive: String,
+            executable: PathBuf,
+            active: bool,
+        }
+
+        impl SubstDrive {
+            fn mount(&mut self, target: &Path) -> io::Result<()> {
+                self.unmount()?;
+                let status = Command::new(&self.executable)
+                    .arg(&self.drive)
+                    .arg(target)
+                    .status()?;
+                if !status.success() {
+                    return Err(io::Error::other(format!(
+                        "temporary drive mapping failed: {status}"
+                    )));
+                }
+                self.active = true;
+                Ok(())
+            }
+
+            fn unmount(&mut self) -> io::Result<()> {
+                if !self.active {
+                    return Ok(());
+                }
+                let status = Command::new(&self.executable)
+                    .arg(&self.drive)
+                    .arg("/D")
+                    .status()?;
+                if !status.success() {
+                    return Err(io::Error::other(format!(
+                        "temporary drive unmapping failed: {status}"
+                    )));
+                }
+                self.active = false;
+                Ok(())
+            }
+        }
+
+        impl Drop for SubstDrive {
+            fn drop(&mut self) {
+                let _ = self.unmount();
+            }
+        }
+
+        // SAFETY: GetLogicalDrives reads the current drive-letter bitmap.
+        #[allow(unsafe_code)]
+        let occupied = unsafe { GetLogicalDrives() };
+        if occupied == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let letter = (b'P'..=b'Z')
+            .rev()
+            .find(|letter| occupied & (1_u32 << (letter - b'A')) == 0)
+            .ok_or_else(|| io::Error::other("no free drive letter for the remapping fixture"))?;
+        let root = tempdir()?;
+        let source = root.path().join("source");
+        let unrelated = root.path().join("unrelated");
+        let source_parent = source.join("parent");
+        let unrelated_parent = unrelated.join("parent");
+        fs::create_dir_all(&source_parent)?;
+        fs::create_dir_all(&unrelated_parent)?;
+        let source_state = source_parent.join("state");
+        let unrelated_state = unrelated_parent.join("state");
+        windows_create_private_directory(&source_state)?;
+        windows_create_private_directory(&unrelated_state)?;
+        let source_identity = query_preferred_identity(&open_directory_no_follow(
+            &source_state,
+            DirectorySharePolicy::Traversal,
+        )?)?;
+        let unrelated_identity = query_preferred_identity(&open_directory_no_follow(
+            &unrelated_state,
+            DirectorySharePolicy::Traversal,
+        )?)?;
+        assert_ne!(source_identity, unrelated_identity);
+
+        let mut mapping = SubstDrive {
+            drive: format!("{}:", char::from(letter)),
+            executable: system_cloud_library_path()?.with_file_name("subst.exe"),
+            active: false,
+        };
+        mapping.mount(&source)?;
+        let mapped_state = PathBuf::from(format!("{}\\parent\\state", mapping.drive));
+        let mut remapped = false;
+        let namespace = WindowsRecoveryNamespace::open_or_create_with_cloud_check(
+            &mapped_state,
+            OsStr::new("recovery"),
+            |parent| {
+                reject_cloud_sync_root(parent)?;
+                if !remapped {
+                    mapping.mount(&unrelated)?;
+                    remapped = true;
+                }
+                Ok(())
+            },
+        )?;
+        assert!(remapped);
+        assert_eq!(namespace.state_identity(), source_identity);
+        assert!(source_state.join("recovery").join("records").is_dir());
+        assert!(!unrelated_state.join("recovery").exists());
+        mapping.unmount()?;
         Ok(())
     }
 
