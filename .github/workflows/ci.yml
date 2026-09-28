@@ -249,13 +249,15 @@ jobs:
           # evaluating cfg, so a `#[cfg(unix)]` item still yields candidates
           # here. Those mutants compile out of the Windows binary, no test can
           # observe them, and they are reported missed rather than unviable.
+          # The two windows_require_bound helpers are also cfg-disabled here:
+          # they are the fallback for targets that are neither Unix nor Windows.
           CARGO_INCREMENTAL: 1
         run: >
           cargo mutants -vV --in-place --colors never --workspace
           --minimum-test-timeout 120
           --shard ${{ matrix.shard }}
           --exclude-re
-          '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|[Uu]nix|from_open_parent|linux|[Mm]acos)'
+          '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|[Uu]nix|from_open_parent|linux|[Mm]acos|windows_require_bound_(directory|entry))'
       - name: Run macOS platform mutation tests
         if: runner.os == 'macOS'
         env:
