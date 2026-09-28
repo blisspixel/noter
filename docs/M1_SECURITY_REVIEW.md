@@ -577,3 +577,8 @@ registration (`0x80070005`); full exact-head CI remains unverified.
 Formal diff scan `dc4e235f-7afe-4165-8bdc-f51934ff85fa` reviewed all three
 changed source-like files in `6b9a008..7c866a5` and found no reportable
 security vulnerability. Its scope does not establish repository-wide coverage.
+A focused local `scan_startup` mutation campaign passed its baseline with only
+the unavailable Cloud Files registration fixture omitted. Four relevant
+mutants were caught and one was unviable; the tool also selected and caught
+one unrelated recovery-scheduler mutant. This does not replace the hosted
+mutation gate or directly mutate the new unsafe-name predicate.
