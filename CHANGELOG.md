@@ -13,7 +13,8 @@ that candidate is frozen for publication.
   Roaming recovery records; Restore first persists a successor locally, and
   Discard deletes only the claimed old record. If an interrupted transfer
   leaves both copies, restoring the local successor offers explicit cleanup
-  of its older Roaming predecessor.
+  of its older Roaming predecessor. A successful retry clears that copy's
+  cleanup warning without hiding another cleanup failure.
 - Replace existing Windows recovery records through held stage and predecessor
   handles. Preserve a private backup across the first directory sync, install
   the new record exclusively, and retain available snapshots for startup

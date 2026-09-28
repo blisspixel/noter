@@ -411,8 +411,10 @@ one low-severity privacy finding, scan
 successor but before retiring its Roaming predecessor could leave the older
 copy hidden after the local offer was restored. The local remediation retains
 that exact older offer in the session and exposes an explicit Discard action.
-The focused test checks retention while the old record is busy and exact
-cleanup after the blocker is released. Fresh native screenshots were rendered
-and reviewed in five themes and views. The capture script now uses an isolated
+The focused test checks retention while the old record is busy and after Save,
+then exact cleanup after the blocker is released. It also checks that a
+successful retry clears the warning caused by that blocked attempt. Fresh
+native screenshots were rendered and reviewed in five themes and views. The
+capture script now uses an isolated
 private QA state root; its previous run showed a recovery-unavailable banner
 because the script's temporary root inherited broad permissions.

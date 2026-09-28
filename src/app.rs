@@ -3931,8 +3931,12 @@ impl NoterApp {
                     ui.visuals().warn_fg_color,
                     "An older RoamingAppData recovery copy remains from a restored document.",
                 );
-                if ui.button("Discard older copy").clicked() {
-                    self.crash_recovery.discard_pending_legacy_copy();
+                if ui.button("Discard older copy").clicked()
+                    && self.crash_recovery.discard_pending_legacy_copy()
+                    && !self.crash_recovery.has_cleanup_failure()
+                    && self.error_msg.as_deref() == Some(RECOVERY_CLEANUP_FAILURE_MESSAGE)
+                {
+                    self.error_msg = None;
                 }
             });
         });

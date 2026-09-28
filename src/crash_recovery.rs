@@ -180,6 +180,13 @@ impl StartupRecoveryOffer {
 }
 
 /// Process-owned recovery session for one editor window.
+#[derive(Default)]
+enum LegacyCleanupStatus {
+    #[default]
+    Clear,
+    Failed,
+}
+
 pub struct CrashRecoverySession {
     store: Option<RecoveryStore>,
     legacy_store: Option<RecoveryStore>,
@@ -199,6 +206,7 @@ pub struct CrashRecoverySession {
     quarantine_notices: Vec<String>,
     persist_failure: bool,
     cleanup_failure: bool,
+    pending_legacy_cleanup_status: LegacyCleanupStatus,
     unavailable: bool,
     /// Why the recovery store could not be opened, when it was refused.
     unavailable_reason: Option<String>,
@@ -344,6 +352,7 @@ impl CrashRecoverySession {
             quarantine_notices: Vec::new(),
             persist_failure: false,
             cleanup_failure: false,
+            pending_legacy_cleanup_status: LegacyCleanupStatus::Clear,
             unavailable,
             unavailable_reason: None,
             persist_jobs: None,
@@ -446,6 +455,10 @@ impl CrashRecoverySession {
     /// Returns whether an authorized recovery cleanup could not complete.
     pub const fn has_cleanup_failure(&self) -> bool {
         self.cleanup_failure
+            || matches!(
+                self.pending_legacy_cleanup_status,
+                LegacyCleanupStatus::Failed
+            )
     }
 
     /// Clears a dismissed persist-failure notice without claiming durability.
@@ -456,6 +469,7 @@ impl CrashRecoverySession {
     /// Hides the cleanup warning without claiming that deletion succeeded.
     pub const fn dismiss_cleanup_failure(&mut self) {
         self.cleanup_failure = false;
+        self.pending_legacy_cleanup_status = LegacyCleanupStatus::Clear;
     }
 
     /// Returns quarantine notices collected at the last scan.
@@ -487,14 +501,14 @@ impl CrashRecoverySession {
             return false;
         };
         let Ok(claim) = store.claim_offered_record(offer.artifact.primary()) else {
-            self.cleanup_failure = true;
+            self.pending_legacy_cleanup_status = LegacyCleanupStatus::Failed;
             return false;
         };
         if store
             .load_claimed_record(offer.artifact.primary(), &claim)
             .is_err()
         {
-            self.cleanup_failure = true;
+            self.pending_legacy_cleanup_status = LegacyCleanupStatus::Failed;
             let _ = store.release_claim(claim);
             return false;
         }
@@ -505,9 +519,10 @@ impl CrashRecoverySession {
         let cleanup = cleanup_offer_artifacts(store, offer.artifact, &claim);
         let release = store.release_claim(claim);
         if cleanup.is_err() || release.is_err() {
-            self.cleanup_failure = true;
+            self.pending_legacy_cleanup_status = LegacyCleanupStatus::Failed;
             return false;
         }
+        self.pending_legacy_cleanup_status = LegacyCleanupStatus::Clear;
         true
     }
 
@@ -1431,10 +1446,14 @@ mod tests {
         assert!(session.has_cleanup_failure());
         assert!(session.has_pending_legacy_cleanup());
         assert_eq!(recovery_record_count(&legacy_store), 1);
+        session.on_saved_clean(document.revision());
+        assert!(session.has_pending_legacy_cleanup());
+        assert_eq!(recovery_record_count(&legacy_store), 1);
         drop(busy_old_copy);
         fs::remove_file(legacy_store.live_path(old.instance_id())).expect("remove test lease");
         assert!(session.discard_pending_legacy_copy());
         assert!(!session.has_pending_legacy_cleanup());
+        assert!(!session.has_cleanup_failure());
         assert_eq!(recovery_record_count(&legacy_store), 0);
     }
 
