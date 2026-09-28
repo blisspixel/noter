@@ -576,8 +576,8 @@ fn regular_entry_handle(file: &File) -> io::Result<bool> {
 /// remain outside the supported recovery boundary.
 ///
 /// Entry creation, open, classification, enumeration, new-record installation,
-/// replacement reconciliation, and directory synchronization use these
-/// handles. Existing-record replacement still requires handle-relative work.
+/// existing-record backup and installation, and directory synchronization use
+/// these handles.
 pub struct WindowsRecoveryNamespace {
     state: WindowsRecoveryDirectory,
     recovery: WindowsRecoveryDirectory,
