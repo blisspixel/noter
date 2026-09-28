@@ -342,3 +342,25 @@ evidence for the native primitive and its failure state; production recovery
 still uses `ReplaceFileW` for existing records. The two-step protocol needs
 application integration, crash and barrier fault tests, independent review,
 and exact-head hosted CI before M4-H1 can claim completion.
+
+## 2026-09-28 UTC Windows replacement integration
+
+The local branch now routes production Windows recovery replacement through
+the held records directory. It opens the verified stage and predecessor while
+denying delete sharing, moves the predecessor exclusively to a reserved backup,
+syncs the directory, installs the stage exclusively at the canonical name,
+syncs again, verifies both exact artifacts, deletes the opened predecessor,
+and syncs cleanup. [ADR-0005](adr/0005-windows-recovery-replacement.md) records
+the safety and availability tradeoff.
+
+Focused recovery-store tests pass for ordinary replacement, failed backup,
+new-record, and cleanup barriers, an occupied canonical name, and first-record
+installation failure. The backup and new-record barrier tests also confirm
+that startup scanning offers the latest snapshot and retains the predecessor
+as superseded. On this Windows machine, the current local tree passes
+`cargo fmt --all -- --check`, full-workspace Clippy, full-workspace tests
+including all 75 platform tests, Rustdoc with denied warnings, document links,
+206 script tests with 11 skips, and both `cargo llvm-cov` thresholds. Whole
+workspace line coverage is 93.34 percent; the quality-standard filtered
+coverage is 91.85 percent. The broader native fault and race matrix,
+independent review, and hosted exact-head CI remain unverified.

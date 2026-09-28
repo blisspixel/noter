@@ -8,6 +8,10 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Replace existing Windows recovery records through held stage and predecessor
+  handles. Preserve a private backup across the first directory sync, install
+  the new record exclusively, and retain available snapshots for startup
+  review when a barrier or competing name stops the operation.
 - Replace deprecated Unicode formatting controls with visible placeholders in
   terminal document views and diagnostic paths.
 - Reserve the Unix binary install stage inside a private directory and reject
@@ -36,7 +40,7 @@ that candidate is frozen for publication.
 - Create staged Windows recovery snapshots relative to the held records
   directory. An outside destination or invalid entry name is refused without
   creating a stage or parent directory. Stage observation and existing-record
-  replacement remain pathname-based work in M4-H1.
+  replacement were completed in later M4-H1 work.
 - Delete Windows recovery entries through their opened handles. If a checked
   entry name is replaced before cleanup, the replacement is preserved.
 - Open routine Windows crash-recovery entries and create lease or quarantine

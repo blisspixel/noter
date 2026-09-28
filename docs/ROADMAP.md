@@ -623,10 +623,13 @@ from the opened stage, and lease or quarantine creation use those handles.
 Windows cleanup deletes an opened file after any required identity check, so a
 rebound pathname cannot delete the replacement. Startup and owned-artifact
 enumeration run through the held directory handle with their entry limits.
-Replacement stage, destination, and backup observations now open relative to
-the held records directory; ratification blocks competing mutation, and cleanup
-removes the opened object. Failure completion installs the opened stage relative
-to the same held directory.
+Replacement stage, destination, and backup observations open relative to the
+held records directory. The replacement path now moves the held predecessor to
+a reserved backup, syncs, installs the held stage exclusively, syncs, verifies
+both exact artifacts, deletes the opened backup, and syncs cleanup. A competing
+canonical name blocks stage installation while preserving the stage, backup,
+and competitor. Barrier failures retain available snapshots for startup review.
+See [ADR-0005](adr/0005-windows-recovery-replacement.md).
 
 The first Windows foundation validates the drive-rooted state path on fixed
 NTFS, checks every bound state and recovery directory for registered Windows
@@ -647,8 +650,9 @@ An occupied per-source quarantine slot stops retries from accumulating copies
 after a failed barrier while retaining the original for review. Existing-record
 reconciliation binds the intended stage identity and bytes before its handle
 closes, so a rebound stage cannot redefine the snapshot to commit.
-Existing-record replacement and detection of
-redirected or other synchronized roots keep M4-H1 in progress.
+Existing-record replacement has local native primitive and injected barrier
+tests. Detection of redirected or other synchronized roots, the complete native
+fault and race fixture matrix, and exact-head hosted CI keep M4-H1 in progress.
 
 The Unix cleanup ADR was required either to provide a genuinely object-bound
 retirement strategy or to retain and safely neutralize the exact opened object

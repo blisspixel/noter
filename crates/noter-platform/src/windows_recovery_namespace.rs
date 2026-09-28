@@ -167,6 +167,27 @@ impl WindowsRecoveryDirectory {
         Ok(file)
     }
 
+    /// Opens one entry for a handle-relative rename while denying competing
+    /// writes and renames until the caller finishes its directory barriers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entry is invalid, missing, not regular, or
+    /// cannot be opened with both delete access and exclusive rename sharing.
+    pub fn open_for_bound_replacement(&self, name: &OsStr) -> io::Result<File> {
+        let options = combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT),
+            FILE_SYNCHRONOUS_IO_NONALERT,
+        );
+        let access = combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(GENERIC_READ, DELETE),
+            SYNCHRONIZE,
+        );
+        let file = open_entry_relative_with(&self.handle, name, access, FILE_SHARE_READ, options)?;
+        verify_regular_entry_handle(&file)?;
+        Ok(file)
+    }
+
     /// Classifies an entry through the retained directory without following a
     /// final reparse point. Directories and reparse points are not files.
     ///
@@ -1234,30 +1255,29 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, FILE_NON_DIRECTORY_FILE,
-        FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, ParsedStatePath,
+        DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, ParsedStatePath,
         WindowsRecoveryDirectory, WindowsRecoveryEntryName, WindowsRecoveryNamespace,
         bounded_windows_path_length, classify_cloud_sync_root_result,
         classify_directory_creation_error, classify_directory_open_error,
         directory_attributes_are_safe, entry_names_from_handle, nt_open_handle_usable,
-        open_directory_no_follow, open_entry_relative_with, parse_directory_entry_batch,
-        query_preferred_identity, reject_cloud_sync_root, system_cloud_library_path,
-        verify_fixed_drive, verify_loaded_cloud_library, verify_ntfs,
+        open_directory_no_follow, parse_directory_entry_batch, query_preferred_identity,
+        reject_cloud_sync_root, system_cloud_library_path, verify_fixed_drive,
+        verify_loaded_cloud_library, verify_ntfs,
     };
     use crate::imp::{
         windows_create_owner_controlled_readable_directory_for_test,
         windows_verify_private_directory_security,
     };
     use crate::{InstallNewOutcome, ParentSyncOutcome};
-    use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::CloudFilters::{
         CF_HYDRATION_POLICY_ALWAYS_FULL, CF_POPULATION_POLICY_ALWAYS_FULL, CF_REGISTER_FLAG_NONE,
         CF_SYNC_POLICIES, CF_SYNC_REGISTRATION, CfRegisterSyncRoot, CfUnregisterSyncRoot,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
         FILE_ID_BOTH_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
 
     #[test]
@@ -1918,23 +1938,8 @@ mod tests {
         fs::write(&destination_path, b"old snapshot")?;
         fs::write(&competitor_path, b"raced snapshot")?;
 
-        let access = GENERIC_READ | DELETE | SYNCHRONIZE;
-        let options =
-            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT;
-        let opened_stage = open_entry_relative_with(
-            records.handle(),
-            OsStr::new("stage.rec"),
-            access,
-            FILE_SHARE_READ,
-            options,
-        )?;
-        let predecessor = open_entry_relative_with(
-            records.handle(),
-            OsStr::new("current.rec"),
-            access,
-            FILE_SHARE_READ,
-            options,
-        )?;
+        let opened_stage = records.open_for_bound_replacement(OsStr::new("stage.rec"))?;
+        let predecessor = records.open_for_bound_replacement(OsStr::new("current.rec"))?;
 
         assert!(fs::rename(&competitor_path, &destination_path).is_err());
         fs::write(&backup_path, b"retained backup")?;

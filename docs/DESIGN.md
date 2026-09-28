@@ -688,14 +688,16 @@ verifies it on the opened handle. New-record installation renames the opened
 stage relative to the held records directory without replacing an existing
 name. Startup and owned-artifact enumeration run through the held directory
 handle with bounded entries. Replacement stage, destination, and backup
-observations open relative to the held records directory. Ratification and
-cleanup operate on their exact opened files. Failure completion installs the
-opened stage relative to that directory. After a recovery record commit,
-Windows flushes the held records directory and reports a failed barrier
-without discarding the record. Quarantine copy and source-cleanup directory
-barriers also flush the exact held records or quarantine directory. Existing-record
-replacement remains pathname-based inside the held, delete-protected
-directories. A handle-based Windows Cloud Files query loaded by its absolute
+observations open relative to the held records directory. Existing-record
+replacement holds the verified stage and predecessor with no delete sharing,
+moves the predecessor to a reserved backup name, syncs the held directory,
+installs the stage exclusively at the canonical name, and syncs again. It
+deletes the exact opened predecessor only after verifying both artifacts, then
+syncs the cleanup. A failed barrier leaves the available snapshots for startup
+review. The native protocol is recorded in
+[ADR-0005](adr/0005-windows-recovery-replacement.md). Quarantine copy and
+source-cleanup directory barriers also flush the exact held records or
+quarantine directory. A handle-based Windows Cloud Files query loaded by its absolute
 System32 path checks the parent, state, recovery, records, and quarantine
 handles before recovery writes; an unavailable API or unrecognized result also
 refuses recovery. Other synchronization and redirection models remain
@@ -720,9 +722,9 @@ network, cluster, shared-folder, and user-space file systems are refused. Every 
 quarantine operation is relative to the held descriptors, a removed directory
 refuses new content, and retirement unlinks a name in its held private
 directory right after confirming that it still identifies the held object.
-M4-H1 remains in progress until the remaining Windows record operations become
-handle-relative and redirected or synchronized roots are detected, with native
-evidence.
+M4-H1 remains in progress until redirected or other synchronized roots are
+classified, the complete native fault and race fixture matrix passes, and
+exact-head CI validates the change.
 
 Each dirty session owns one versioned record:
 
