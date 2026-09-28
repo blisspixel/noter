@@ -582,3 +582,31 @@ the unavailable Cloud Files registration fixture omitted. Four relevant
 mutants were caught and one was unviable; the tool also selected and caught
 one unrelated recovery-scheduler mutant. This does not replace the hosted
 mutation gate or directly mutate the new unsafe-name predicate.
+
+## 2026-09-28 UTC Windows parent-relative directory binding
+
+The prior namespace walk held each parent but opened its child by a full
+pathname. A drive-letter mapping change between those steps could bind an
+unrelated same-volume child. Missing private children were also created by
+pathname, potentially leaving an empty directory outside the held tree. The
+walk and exclusive private creation now use the held parent handle; the drive
+root remains the one absolute directory open. A native NTFS fixture supplies a
+child pathname in a different tree and proves both existing-child binding and
+missing-child creation select the held parent instead. It also verifies that
+exclusive creation reports an occupied name. Replacing either relative open
+with its old pathname open makes the fixture fail. An independent fresh-context
+review found no remaining concrete issue in this diff. The fixture simulates a
+changed path mapping; a real drive-remapping fixture remains outstanding, as
+do exact-head hosted CI and the local Cloud Files registration fixture. The
+creation-race recovery also has a native test for an occupied child,
+permission failure, and a vanished child. A focused local mutation campaign
+passed its baseline with only the unavailable Cloud Files fixture omitted:
+three mutants were caught, four were unviable, and none survived. One caught
+mutant was an unrelated scheduler mutation selected by the tool. The mutation
+campaign does not replace the hosted gate. The runnable Windows suite, format,
+Clippy, Rustdoc, documentation links, script
+tests, Ruff, screenshot assets, offline deny, and cached advisory audit pass.
+Runnable line coverage is 93.18 percent whole-workspace and 91.63 percent
+UI-excluded. All five regenerated README screenshots match the previously
+reviewed image hashes. The exact all-targets local test still fails only at
+Cloud Files registration (`0x80070005`), with 79 other platform tests passing.

@@ -8,6 +8,9 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Bind Windows recovery directory traversal and private child creation to the
+  held parent handle, so a drive-letter remap cannot redirect a child open or
+  create an empty recovery directory under a different pathname.
 - Keep Windows startup recovery review moving when a private records folder
   contains an entry with an ambiguous Windows name. Retain and report the
   unsafe entry without exposing its spelling, while still offering valid

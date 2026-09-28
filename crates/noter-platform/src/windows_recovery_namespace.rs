@@ -17,9 +17,9 @@ use std::sync::Mutex;
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileFsDeviceInformation, FileRenameInformation, NtCreateFile,
-    NtQueryVolumeInformationFile, NtSetInformationFile,
+    FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+    FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT, FileFsDeviceInformation,
+    FileRenameInformation, NtCreateFile, NtQueryVolumeInformationFile, NtSetInformationFile,
 };
 use windows_sys::Wdk::System::SystemServices::{
     FILE_CHARACTERISTIC_CSV, FILE_CHARACTERISTIC_WEBDAV_DEVICE, FILE_FS_DEVICE_INFORMATION,
@@ -54,7 +54,7 @@ use windows_sys::Win32::UI::Shell::{
 };
 
 use crate::imp::{
-    windows_create_private_directory, windows_create_private_new_at,
+    windows_create_private_directory_at, windows_create_private_new_at,
     windows_tighten_private_directory_security, windows_verify_owner_controlled_state_directory,
     windows_verify_private_directory_security,
 };
@@ -699,7 +699,15 @@ impl WindowsRecoveryNamespace {
             .ok_or_else(invalid_state_root_error)?;
         for component in parent_names {
             current.push(component);
-            traversal_guards.push(bind_existing_directory(&current, Some(expected_volume))?);
+            let parent = traversal_guards
+                .last()
+                .ok_or_else(invalid_state_root_error)?;
+            traversal_guards.push(bind_existing_child_directory(
+                parent.handle(),
+                component,
+                &current,
+                expected_volume,
+            )?);
         }
         check_cloud_root(
             traversal_guards
@@ -709,17 +717,40 @@ impl WindowsRecoveryNamespace {
         )?;
 
         current.push(state_name);
-        let state = bind_state_directory(&current, expected_volume)?;
+        let state = bind_state_directory(
+            traversal_guards
+                .last()
+                .ok_or_else(invalid_state_root_error)?
+                .handle(),
+            state_name,
+            &current,
+            expected_volume,
+        )?;
         check_cloud_root(state.handle())?;
         current.push(recovery_name.as_os_str());
-        let recovery = bind_private_directory(&current, expected_volume)?;
+        let recovery = bind_private_directory(
+            state.handle(),
+            recovery_name.as_os_str(),
+            &current,
+            expected_volume,
+        )?;
         check_cloud_root(recovery.handle())?;
         let mut records_path = current.clone();
         records_path.push(records_name.as_os_str());
-        let records = bind_private_directory(&records_path, expected_volume)?;
+        let records = bind_private_directory(
+            recovery.handle(),
+            records_name.as_os_str(),
+            &records_path,
+            expected_volume,
+        )?;
         check_cloud_root(records.handle())?;
         current.push(quarantine_name.as_os_str());
-        let quarantine = bind_private_directory(&current, expected_volume)?;
+        let quarantine = bind_private_directory(
+            recovery.handle(),
+            quarantine_name.as_os_str(),
+            &current,
+            expected_volume,
+        )?;
         check_cloud_root(quarantine.handle())?;
 
         Ok(Self {
@@ -1084,8 +1115,35 @@ fn bind_existing_directory(
     })
 }
 
-fn bind_state_directory(path: &Path, expected_volume: u64) -> io::Result<WindowsRecoveryDirectory> {
-    let handle = open_or_create_private_directory(path)?;
+fn bind_existing_child_directory(
+    parent: &File,
+    name: &OsStr,
+    path: &Path,
+    expected_volume: u64,
+) -> io::Result<WindowsRecoveryDirectory> {
+    let handle = open_directory_relative(parent, name, DirectorySharePolicy::Traversal)?;
+    let identity = verify_directory_handle(&handle)?;
+    if identity.volume_serial != expected_volume {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery state directory crossed a volume boundary",
+        ));
+    }
+    Ok(WindowsRecoveryDirectory {
+        handle,
+        enumeration_lock: Mutex::new(()),
+        identity,
+        path: path.to_path_buf(),
+    })
+}
+
+fn bind_state_directory(
+    parent: &File,
+    name: &OsStr,
+    path: &Path,
+    expected_volume: u64,
+) -> io::Result<WindowsRecoveryDirectory> {
+    let handle = open_or_create_private_directory(parent, name)?;
     let identity = verify_directory_handle(&handle)?;
     if identity.volume_serial != expected_volume {
         return Err(io::Error::new(
@@ -1103,10 +1161,12 @@ fn bind_state_directory(path: &Path, expected_volume: u64) -> io::Result<Windows
 }
 
 fn bind_private_directory(
+    parent: &File,
+    name: &OsStr,
     path: &Path,
     expected_volume: u64,
 ) -> io::Result<WindowsRecoveryDirectory> {
-    let handle = open_or_create_private_directory(path)?;
+    let handle = open_or_create_private_directory(parent, name)?;
     let identity = verify_directory_handle(&handle)?;
     if identity.volume_serial != expected_volume {
         return Err(io::Error::new(
@@ -1126,23 +1186,32 @@ fn bind_private_directory(
     })
 }
 
-fn open_or_create_private_directory(path: &Path) -> io::Result<File> {
-    let handle = match open_directory_no_follow(path, DirectorySharePolicy::BoundPrivate) {
+fn open_or_create_private_directory(parent: &File, name: &OsStr) -> io::Result<File> {
+    let handle = match open_directory_relative(parent, name, DirectorySharePolicy::BoundPrivate) {
         Ok(handle) => handle,
         Err(error) => match classify_directory_open_error(&error) {
             DirectoryOpenError::Missing => {
-                if let Err(error) = windows_create_private_directory(path) {
-                    match classify_directory_creation_error(&error) {
-                        DirectoryCreationError::Raced => {}
-                        DirectoryCreationError::Fatal => return Err(error),
-                    }
+                match windows_create_private_directory_at(parent, name) {
+                    Ok(created) => created,
+                    Err(error) => recover_private_directory_creation_error(parent, name, error)?,
                 }
-                open_directory_no_follow(path, DirectorySharePolicy::BoundPrivate)?
             }
             DirectoryOpenError::Fatal => return Err(error),
         },
     };
     Ok(handle)
+}
+
+fn recover_private_directory_creation_error(
+    parent: &File,
+    name: &OsStr,
+    error: io::Error,
+) -> io::Result<File> {
+    if classify_directory_creation_error(&error) == DirectoryCreationError::Raced {
+        open_directory_relative(parent, name, DirectorySharePolicy::BoundPrivate)
+    } else {
+        Err(error)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1177,17 +1246,39 @@ enum DirectorySharePolicy {
     BoundPrivate,
 }
 
-fn open_directory_no_follow(path: &Path, share_policy: DirectorySharePolicy) -> io::Result<File> {
-    let (security_access, share_mode) = match share_policy {
-        DirectorySharePolicy::Traversal => (
-            0,
-            combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
+fn open_directory_relative(
+    parent: &File,
+    name: &OsStr,
+    share_policy: DirectorySharePolicy,
+) -> io::Result<File> {
+    let (security_access, share_mode) = directory_access_and_share(share_policy);
+    let read_access = combine_disjoint_flag_bits(FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES);
+    let access_mode = combine_disjoint_flag_bits(
+        combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(read_access, READ_CONTROL),
+            security_access,
         ),
+        SYNCHRONIZE,
+    );
+    let options = combine_disjoint_flag_bits(
+        combine_disjoint_flag_bits(FILE_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT),
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    );
+    open_entry_relative_with(parent, name, access_mode, share_mode, options)
+}
+
+const fn directory_access_and_share(share_policy: DirectorySharePolicy) -> (u32, u32) {
+    match share_policy {
+        DirectorySharePolicy::Traversal => (0, FILE_SHARE_READ | FILE_SHARE_WRITE),
         DirectorySharePolicy::BoundPrivate => (
-            combine_disjoint_flag_bits(WRITE_DAC, FILE_ADD_FILE),
-            combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
+            WRITE_DAC | FILE_ADD_FILE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
         ),
-    };
+    }
+}
+
+fn open_directory_no_follow(path: &Path, share_policy: DirectorySharePolicy) -> io::Result<File> {
+    let (security_access, share_mode) = directory_access_and_share(share_policy);
     let read_access = combine_disjoint_flag_bits(FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES);
     let read_and_control_access = combine_disjoint_flag_bits(read_access, READ_CONTROL);
     let access_mode = combine_disjoint_flag_bits(read_and_control_access, security_access);
@@ -1378,17 +1469,19 @@ mod tests {
     use super::{
         DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, ParsedStatePath,
         WindowsRecoveryDirectory, WindowsRecoveryEntryName, WindowsRecoveryNamespace,
-        bounded_windows_path_length, classify_cloud_sync_root_result,
-        classify_directory_creation_error, classify_directory_open_error, complete_device_query,
-        directory_attributes_are_safe, entry_names_from_handle, nt_open_handle_usable,
-        open_directory_no_follow, parse_directory_entry_batch, query_preferred_identity,
-        reject_cloud_sync_root, supported_local_disk_device, system_cloud_library_path,
-        verify_fixed_drive, verify_loaded_cloud_library, verify_local_disk_device, verify_ntfs,
+        bind_existing_child_directory, bind_private_directory, bounded_windows_path_length,
+        classify_cloud_sync_root_result, classify_directory_creation_error,
+        classify_directory_open_error, complete_device_query, directory_attributes_are_safe,
+        entry_names_from_handle, nt_open_handle_usable, open_directory_no_follow,
+        open_or_create_private_directory, parse_directory_entry_batch, query_preferred_identity,
+        recover_private_directory_creation_error, reject_cloud_sync_root,
+        supported_local_disk_device, system_cloud_library_path, verify_fixed_drive,
+        verify_loaded_cloud_library, verify_local_disk_device, verify_ntfs,
         windows_local_appdata_directory,
     };
     use crate::imp::{
         windows_create_owner_controlled_readable_directory_for_test,
-        windows_verify_private_directory_security,
+        windows_create_private_directory_at, windows_verify_private_directory_security,
     };
     use crate::{InstallNewOutcome, ParentSyncOutcome};
     use windows_sys::Wdk::System::SystemServices::{
@@ -1820,6 +1913,104 @@ mod tests {
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(!target.join("state").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn child_directory_binding_uses_the_held_parent_when_the_path_points_elsewhere()
+    -> io::Result<()> {
+        let root = tempdir()?;
+        let held_parent_path = root.path().join("held");
+        let other_parent_path = root.path().join("other");
+        let held_child_path = held_parent_path.join("child");
+        let other_child_path = other_parent_path.join("child");
+        fs::create_dir(&held_parent_path)?;
+        fs::create_dir(&other_parent_path)?;
+        fs::create_dir(&held_child_path)?;
+        fs::create_dir(&other_child_path)?;
+
+        let held_parent =
+            open_directory_no_follow(&held_parent_path, DirectorySharePolicy::Traversal)?;
+        let expected = query_preferred_identity(&open_directory_no_follow(
+            &held_child_path,
+            DirectorySharePolicy::Traversal,
+        )?)?;
+        let unrelated = query_preferred_identity(&open_directory_no_follow(
+            &other_child_path,
+            DirectorySharePolicy::Traversal,
+        )?)?;
+        assert_ne!(expected, unrelated);
+
+        let bound = bind_existing_child_directory(
+            &held_parent,
+            OsStr::new("child"),
+            &other_child_path,
+            query_preferred_identity(&held_parent)?.volume_serial,
+        )?;
+        assert_eq!(bound.identity, expected);
+        let private = open_or_create_private_directory(&held_parent, OsStr::new("child"))?;
+        assert_eq!(query_preferred_identity(&private)?, expected);
+        assert_eq!(
+            windows_create_private_directory_at(&held_parent, OsStr::new("child"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+
+        let held_new_path = held_parent_path.join("new");
+        let other_new_path = other_parent_path.join("new");
+        let created = bind_private_directory(
+            &held_parent,
+            OsStr::new("new"),
+            &other_new_path,
+            query_preferred_identity(&held_parent)?.volume_serial,
+        )?;
+        assert_eq!(
+            created.identity,
+            query_preferred_identity(&open_directory_no_follow(
+                &held_new_path,
+                DirectorySharePolicy::Traversal,
+            )?)?
+        );
+        assert!(!other_new_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn private_directory_create_race_reopens_only_an_existing_child() -> io::Result<()> {
+        let root = tempdir()?;
+        let child_path = root.path().join("child");
+        fs::create_dir(&child_path)?;
+        let parent = open_directory_no_follow(root.path(), DirectorySharePolicy::Traversal)?;
+        let expected = query_preferred_identity(&open_directory_no_follow(
+            &child_path,
+            DirectorySharePolicy::Traversal,
+        )?)?;
+
+        let reopened = recover_private_directory_creation_error(
+            &parent,
+            OsStr::new("child"),
+            io::Error::from(io::ErrorKind::AlreadyExists),
+        )?;
+        assert_eq!(query_preferred_identity(&reopened)?, expected);
+
+        let denied = recover_private_directory_creation_error(
+            &parent,
+            OsStr::new("child"),
+            io::Error::from(io::ErrorKind::PermissionDenied),
+        )
+        .unwrap_err();
+        assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            recover_private_directory_creation_error(
+                &parent,
+                OsStr::new("missing"),
+                io::Error::from(io::ErrorKind::AlreadyExists),
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::NotFound
+        );
         Ok(())
     }
 

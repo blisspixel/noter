@@ -693,7 +693,10 @@ access. Noter's recovery, records, and quarantine directories are created or
 tightened through
 retained handles to an exact protected inheritable user-and-SYSTEM DACL. Every
 held directory denies delete sharing for the namespace lifetime. The store's
-routine entry opens, startup entry classification, staged record creation,
+Windows directory traversal opens each child relative to its held parent, and
+missing private children are created exclusively relative to that parent with
+the protected descriptor. The drive root is the sole absolute directory open.
+Routine entry opens, startup entry classification, staged record creation,
 and lease or quarantine creation are relative to the held records or
 quarantine directory, validate a single
 entry component, and refuse final reparse points. Classification treats

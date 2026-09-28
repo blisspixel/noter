@@ -623,6 +623,8 @@ from the opened stage, and lease or quarantine creation use those handles.
 Windows cleanup deletes an opened file after any required identity check, so a
 rebound pathname cannot delete the replacement. Startup and owned-artifact
 enumeration run through the held directory handle with their entry limits.
+Windows child traversal and private directory creation now use the held parent
+handle, so a changed drive-letter mapping cannot redirect their objects.
 Startup retains and reports an ambiguously named Windows entry without
 aborting review of other valid records.
 Replacement stage, destination, and backup observations open relative to the
