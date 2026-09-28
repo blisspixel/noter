@@ -12,9 +12,9 @@ that candidate is frozen for publication.
   while keeping preferences in RoamingAppData. Startup still reviews existing
   Roaming recovery records; Restore first persists a successor locally, and
   Discard deletes only the claimed old record. If an interrupted transfer
-  leaves both copies, restoring the local successor offers explicit cleanup
-  of its older Roaming predecessor. A successful retry clears that copy's
-  cleanup warning without hiding another cleanup failure. Failed deletion
+  leaves a schema-v2 predecessor and successor, restoring the local copy offers
+  explicit cleanup of its older Roaming predecessor. A successful retry clears
+  that copy's cleanup warning without hiding another cleanup failure. Failed deletion
   retains the retry action, and only an exact schema-v2 successor relationship
   labels a Roaming record as its older copy.
 - Replace existing Windows recovery records through held stage and predecessor

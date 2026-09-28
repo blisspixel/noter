@@ -428,4 +428,6 @@ next-generation predicate. Focused tests cover busy predecessor cleanup and
 the generation gap. The focused library mutation campaign caught all 12
 generated mutants, including the unrelated scheduler mutant included by the
 repository's mutation configuration. The broader native race matrix remains
-open.
+open. Schema-v1 records remain separate offers under the core lineage rule;
+the migration's in-session review requirement for an interrupted v1 transfer
+is not yet met.
