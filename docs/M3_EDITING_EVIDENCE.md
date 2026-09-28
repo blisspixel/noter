@@ -122,3 +122,9 @@ memory regression runs on Linux and Windows in the cached CI test job. macOS
 still runs the Rust fixture's Unicode offset checks, but its current baseline
 can sample only held resident memory, not the transient peak required for this
 assertion.
+
+A focused Windows-local `cargo mutants --regex 'move_by_word' -j 4` run on
+navigation source blob `d43ea14f7c8e4a1c76f8e02d3404bf26874ece8e`
+completed 17 of 17 mutants as caught, with zero missed, timed out, or
+unviable. The full workspace test baseline passed. This is evidence for the
+word-movement mutation subset, not the complete CI mutation campaign.
