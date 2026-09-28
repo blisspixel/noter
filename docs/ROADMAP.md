@@ -1011,12 +1011,11 @@ is the next safety prerequisite; the M5 editor feasibility gate follows it.
    with the immutable implementation commit, and `v0.1.0-alpha.2` was tagged at
    the protected-main head `dbb419f` after that exact commit passed CI.
 6. **In progress, before `0.1.0-beta.2`:** M4-H1 recovery namespace binding.
-   Next, verify the consolidated recovery branch with exact-head CI and close
-   its mutation findings. Complete redirected and synchronized root
-   classification, then the remaining native final-window swap, fault, and
-   weak or remote filesystem fixtures on Windows, Linux, and macOS. The Linux
-   and macOS namespace adapters and Unix cleanup contract are in tree. Record
-   the platform matrix before marking this milestone verified.
+   The Windows, Linux, and macOS namespace adapters and Unix cleanup contract
+   are in tree. Exact-head CI and mutation results, redirected and synchronized
+   root classification, and the remaining native final-window swap, fault, and
+   weak or remote filesystem fixtures on all three platforms must be recorded
+   in the platform matrix before this milestone is verified.
 7. **Then, `0.1.0-beta.2`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
    production editor contract is stable. A beta.2 release follows a clean
