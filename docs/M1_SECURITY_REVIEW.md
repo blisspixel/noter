@@ -574,3 +574,6 @@ assets, offline dependency checks, and cached advisory audit pass. Runnable
 coverage is 93.20 percent whole-workspace and 91.70 percent UI-excluded.
 The exact all-targets Windows test still fails only at Cloud Files fixture
 registration (`0x80070005`); full exact-head CI remains unverified.
+Formal diff scan `dc4e235f-7afe-4165-8bdc-f51934ff85fa` reviewed all three
+changed source-like files in `6b9a008..7c866a5` and found no reportable
+security vulnerability. Its scope does not establish repository-wide coverage.
