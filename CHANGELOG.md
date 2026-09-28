@@ -81,6 +81,9 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Reject a rebound Windows recovery stage before replacing an existing record,
+  even when the replacement has identical bytes. The intended snapshot is
+  bound to the opened stage before its handle closes.
 - Flush the retained Windows records directory after a recovery record commit.
   A directory-barrier failure now reports a persistence warning while keeping
   the committed record available for later recovery. Quarantine copy and

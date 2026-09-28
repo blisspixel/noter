@@ -644,7 +644,9 @@ invalid stage destination before writing. Recovery record commits flush the
 held records directory on Windows NTFS and surface a failed directory barrier.
 Quarantine copy and source-cleanup barriers also flush the held directories.
 An occupied per-source quarantine slot stops retries from accumulating copies
-after a failed barrier while retaining the original for review.
+after a failed barrier while retaining the original for review. Existing-record
+reconciliation binds the intended stage identity and bytes before its handle
+closes, so a rebound stage cannot redefine the snapshot to commit.
 Existing-record replacement and detection of
 redirected or other synchronized roots keep M4-H1 in progress.
 

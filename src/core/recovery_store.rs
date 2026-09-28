@@ -2296,6 +2296,18 @@ fn commit_staged_record_with(
     file.write_all(bytes)?;
     file.flush()?;
     noter_platform::sync_file(&file)?;
+    #[cfg(windows)]
+    let intended = {
+        let observed = observe_windows_recovery_artifact(access, stage, &file)?;
+        if !requested_windows_stage_matches(observed, bytes)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recovery stage differs from the requested snapshot",
+            )
+            .into());
+        }
+        IntendedWindowsRecoveryContent::from_observation(observed)
+    };
 
     if destination.exists() {
         drop(file);
@@ -2303,6 +2315,8 @@ fn commit_staged_record_with(
             paths,
             #[cfg(windows)]
             access,
+            #[cfg(windows)]
+            intended,
             replace,
         )
     } else {
@@ -2327,6 +2341,8 @@ fn commit_staged_record_with(
                     paths,
                     #[cfg(windows)]
                     access,
+                    #[cfg(windows)]
+                    intended,
                     replace,
                 )
             }
@@ -2339,6 +2355,7 @@ fn commit_staged_record_with(
 fn finish_replace_with(
     paths: RecoveryStagedPaths<'_>,
     #[cfg(windows)] access: WindowsRecoveryArtifactAccess<'_>,
+    #[cfg(windows)] intended: IntendedWindowsRecoveryContent,
     replace: impl FnOnce(
         &Path,
         &Path,
@@ -2351,12 +2368,25 @@ fn finish_replace_with(
         backup,
     } = paths;
     #[cfg(windows)]
-    let intended = inspect_windows_recovery_artifact(access, stage)?.ok_or_else(|| {
+    let stage_observation = inspect_windows_recovery_artifact(access, stage)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "recovery stage disappeared before replacement",
         )
     })?;
+    #[cfg(windows)]
+    if !intended.matches(stage_observation) {
+        let cause = io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery stage changed before replacement",
+        );
+        return Err(uncertain_windows_recovery_failure(
+            stage,
+            backup,
+            &cause,
+            "the recovery stage no longer identifies the intended snapshot",
+        ));
+    }
     #[cfg(windows)]
     let expected = inspect_windows_recovery_artifact(access, destination)?.ok_or_else(|| {
         io::Error::new(
@@ -2374,12 +2404,7 @@ fn finish_replace_with(
                     {
                         let success = io::Error::other("recovery replacement reported success");
                         finalize_reconciled_windows_recovery(
-                            access,
-                            paths,
-                            IntendedWindowsRecoveryContent::from_observation(intended),
-                            expected,
-                            &success,
-                            true,
+                            access, paths, intended, expected, &success, true,
                         )?;
                         Ok(RecoveryCommitSuccess::clean(RecoveryParentSync::bound(
                             parent_sync,
@@ -2404,14 +2429,8 @@ fn finish_replace_with(
         }
         Err(error) => {
             #[cfg(windows)]
-            return reconcile_windows_recovery_replace(
-                access,
-                paths,
-                IntendedWindowsRecoveryContent::from_observation(intended),
-                expected,
-                error,
-            )
-            .map(RecoveryCommitSuccess::clean);
+            return reconcile_windows_recovery_replace(access, paths, intended, expected, error)
+                .map(RecoveryCommitSuccess::clean);
             #[cfg(not(windows))]
             Err(error.into())
         }
@@ -2441,6 +2460,20 @@ impl IntendedWindowsRecoveryContent {
     fn matches(self, actual: RecoveryArtifactObservation) -> bool {
         self.observation == actual
     }
+}
+
+#[cfg(windows)]
+fn requested_windows_stage_matches(
+    observed: RecoveryArtifactObservation,
+    bytes: &[u8],
+) -> io::Result<bool> {
+    let length = u64::try_from(bytes.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "recovery record length is too large",
+        )
+    })?;
+    Ok(observed.length == length && observed.fingerprint == ContentFingerprint::from_bytes(bytes))
 }
 
 #[cfg(windows)]
@@ -3828,6 +3861,68 @@ mod tests {
         );
         assert_eq!(fs::read(&stage)?, b"quarantined bytes");
         assert!(!destination.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replacement_refuses_a_rebound_stage_with_identical_bytes() -> io::Result<()> {
+        let parent = tempdir()?;
+        let stage = parent.path().join("record.stage");
+        let moved_stage = parent.path().join("moved.stage");
+        let destination = parent.path().join("record.rec");
+        let backup = parent.path().join("record.backup");
+        let bytes = snapshot_at(64, 9, 21, b"intended recovery").encode();
+
+        let failure = commit_staged_record_with(
+            RecoveryStagedPaths {
+                stage: &stage,
+                destination: &destination,
+                backup: &backup,
+            },
+            &bytes,
+            WindowsRecoveryArtifactAccess::PathOnly,
+            noter_platform::create_private_new_file,
+            |_, stage, _| {
+                fs::rename(stage, &moved_stage)?;
+                fs::write(stage, &bytes)?;
+                Err(io::Error::from(io::ErrorKind::AlreadyExists))
+            },
+            |_, _, _| panic!("a rebound stage cannot be committed"),
+        )
+        .expect_err("replacement must stay bound to the original stage");
+
+        assert_eq!(failure.error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(&stage)?, bytes);
+        assert_eq!(fs::read(&moved_stage)?, bytes);
+        assert!(!destination.exists());
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stage_snapshot_requires_both_exact_length_and_fingerprint() -> io::Result<()> {
+        let parent = tempdir()?;
+        let path = parent.path().join("record.stage");
+        fs::write(&path, b"record")?;
+        let file = noter_platform::open_existing_no_follow(&path)?;
+        let observed = RecoveryArtifactObservation {
+            identity: noter_platform::file_facts(&file)?.identity(),
+            fingerprint: ContentFingerprint::from_bytes(b"record"),
+            length: 6,
+        };
+
+        assert!(requested_windows_stage_matches(observed, b"record")?);
+        assert!(!requested_windows_stage_matches(
+            RecoveryArtifactObservation {
+                length: 5,
+                ..observed
+            },
+            b"record"
+        )?);
+        assert!(!requested_windows_stage_matches(observed, b"recor")?);
+        assert!(!requested_windows_stage_matches(observed, b"recOrd")?);
         Ok(())
     }
 

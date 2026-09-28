@@ -758,7 +758,10 @@ successful in-boundary Unix recovery commit needs a displaced-file cleanup. A
 failed attempt retains at most that one stage and later attempts return
 `ResourceBusy` until startup review or explicit owned-artifact cleanup.
 Windows reserves one deterministic stage and one deterministic backup per
-instance. Replacement reconciliation holds the exact destination handle while
+instance. Before closing a written stage, it binds the intended snapshot to
+the opened file's identity, length, and BLAKE3 fingerprint, then refuses a
+replacement if the stage name no longer identifies that snapshot. Replacement
+reconciliation holds the exact destination handle while
 verified stage and backup handles are cleaned. Any failure retains only those
 slots, and later retries return `ResourceBusy` before creating another artifact.
 Cleanup or parent-sync failure is a failed transfer and keeps any predecessor
