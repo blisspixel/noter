@@ -663,10 +663,10 @@ explicit cleanup after its local successor is restored. Schema-v1 and
 generation-gap Roaming records remain separate offers and are presented for
 ordinary Restore / Later / Discard review after the restored local document
 is saved without a durability warning; they are never classified as obsolete
-from an ID link alone.
-Focused dual-root tests and application-package coverage pass; full-workspace
-native, coverage, mutation, and hosted exact-head evidence for this migration
-remain pending. See
+from an ID link alone. Terminal Save and Exit now pauses for that review.
+Focused dual-root tests, local Windows workspace tests, and both whole-workspace
+coverage thresholds pass; broader mutation and hosted exact-head evidence for
+this migration remain pending. See
 [ADR-0006](adr/0006-windows-local-recovery-root.md).
 
 The Unix cleanup ADR was required either to provide a genuinely object-bound

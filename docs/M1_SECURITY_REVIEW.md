@@ -479,3 +479,12 @@ changed source-like files and found no reportable vulnerability. Scan ID:
 `1dc3cd3f-b80f-49e0-893a-2156e7038597`. Its static review traced the
 durability warning through GUI and TUI close, emergency persistence, and the
 clean retry. It did not inject a live filesystem sync failure.
+
+A later terminal flow review found that Save and Exit could expose a deferred
+Roaming recovery offer and exit before showing it. The terminal now waits for
+the offer decision in the same session. The focused test fails without that
+change. The resulting local Windows workspace run passes all tests and the
+exact 80 percent whole-workspace and 90 percent UI-excluded line thresholds:
+93.33 and 91.93 percent, respectively. Clippy, formatting, Rustdoc, README
+assets, Python checks, and documentation links also pass. The preceding
+security diff scan does not cover this later source change.

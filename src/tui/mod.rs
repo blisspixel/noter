@@ -859,9 +859,14 @@ impl TuiSession {
     pub fn finish_save(&mut self, step: SaveStep) {
         match step {
             SaveStep::Committed => {
-                if self.after_save == AfterSave::Exit && !self.save_durability.is_at_risk() {
+                if self.after_save == AfterSave::Exit
+                    && !self.save_durability.is_at_risk()
+                    && self.recovery.active_offer().is_none()
+                {
                     self.should_exit = true;
-                } else if self.save_durability.is_at_risk() {
+                } else if self.save_durability.is_at_risk()
+                    || self.recovery.active_offer().is_some()
+                {
                     self.after_save = AfterSave::Stay;
                 }
             }
@@ -3229,12 +3234,16 @@ mod tests {
         assert_eq!(session.prompt, PromptMode::None);
         assert!(session.recovery.has_pending_legacy_review());
 
-        key(&mut session, TuiKey::Ctrl('s'));
+        trigger_exit(&mut session);
+        assert_eq!(session.prompt, PromptMode::ExitConfirm);
+        key(&mut session, TuiKey::Char('y'));
         assert_eq!(session.prompt, PromptMode::SaveAs);
         let destination = root.path().join("saved.txt");
         type_text(&mut session, &destination.to_string_lossy());
         key(&mut session, TuiKey::Enter);
         assert_eq!(session.prompt, PromptMode::RecoveryOffer);
+        assert!(!session.should_exit);
+        assert_eq!(session.after_save, AfterSave::Stay);
         assert!(!session.document.is_dirty());
         assert_eq!(
             std::fs::read_to_string(&destination).expect("saved document"),
