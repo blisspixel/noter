@@ -182,8 +182,8 @@ Feature presence alone is not verification.
   cleanup action for its older Roaming predecessor in that session. If the
   records lack a provable direct schema-v2 lineage, the separate Roaming copy
   remains available for ordinary Restore / Later / Discard review after the
-  restored local document is saved without a durability warning. Terminal Save
-  and Exit must show that review before exiting.
+  restored local document is saved without a durability warning. Save and Exit
+  must show that review before closing the GUI or terminal editor.
 - **FR-063 Recovery point objective:** After the first edit or detection that
   the loaded clean revision was replaced externally, persist a valid recovery
   record after at most 15 seconds of continued activity and normally within 2

@@ -19,7 +19,8 @@ that candidate is frozen for publication.
   labels a Roaming record as its older copy. A linked schema-v1 or generation-gap
   Roaming record stays intact and gets a separate Restore / Later / Discard
   review after the restored local document is saved without a durability
-  warning. Terminal Save and Exit pauses for that review in the same session.
+  warning. Save and Exit pauses for that review in the same GUI or terminal
+  session.
   A Save with a durability warning keeps the document in the editor,
   retains or creates its private recovery copy, and asks for another Save.
 - Replace existing Windows recovery records through held stage and predecessor

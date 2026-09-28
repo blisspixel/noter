@@ -42,9 +42,10 @@ separate offers. After the local document is saved without a durability
 warning, a linked but incomparable Roaming offer is presented through the
 ordinary Restore / Later / Discard review. A Save with a durability warning
 keeps the current document and its recovery copy at risk and delays that review.
-This waits until current
-work is safe before another Restore can replace it. A failed exact cleanup
-retains its offer for retry. The old copy is never deleted from metadata alone.
+GUI and terminal Save and Exit pause when the review becomes available. This
+waits until current work is safe before another Restore can replace it. A
+failed exact cleanup retains its offer for retry. The old copy is never deleted
+from metadata alone.
 Each root has its own bounded startup scan, so a dual-root launch can review
 up to twice one root's limits while still leaving overflow untouched.
 LocalAppData is the Windows nonroaming

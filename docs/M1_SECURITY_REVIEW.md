@@ -495,3 +495,15 @@ passes advisories, bans, licenses, and sources. Both commands
 used a disposable workspace Cargo home because the sandbox cannot acquire
 locks in the read-only user Cargo directory. These are local cached checks;
 they do not replace CI's fresh advisory fetch.
+
+A following GUI lifecycle test found that Save on a pending Quit could reveal
+the separate Roaming review offer and still authorize the window to close.
+The GUI now treats that offer as a blocking Save follow-up, cancelling the
+pending destructive intent so the ordinary review appears in the same session.
+The focused test fails without the change, and independent fresh-context
+review found no further lifecycle regression. The local Windows workspace
+suite passes 369 library, 564 application, and 76 native platform tests;
+whole-workspace line coverage is 93.34 percent and UI-excluded line coverage
+is 91.96 percent. Clippy, formatting, Rustdoc, Python checks, documentation
+links, and regenerated README screenshot assets pass. The earlier formal diff
+scan does not cover this new GUI source change.

@@ -663,7 +663,7 @@ explicit cleanup after its local successor is restored. Schema-v1 and
 generation-gap Roaming records remain separate offers and are presented for
 ordinary Restore / Later / Discard review after the restored local document
 is saved without a durability warning; they are never classified as obsolete
-from an ID link alone. Terminal Save and Exit now pauses for that review.
+from an ID link alone. GUI and terminal Save and Exit now pause for that review.
 Focused dual-root tests, local Windows workspace tests, and both whole-workspace
 coverage thresholds pass; broader mutation and hosted exact-head evidence for
 this migration remain pending. See

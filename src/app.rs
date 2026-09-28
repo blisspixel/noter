@@ -1292,7 +1292,7 @@ impl NoterApp {
                 self.document.revision(),
                 self.has_unsaved_state(),
                 self.pending_hard_link_save.is_some(),
-                self.error_msg.is_some(),
+                self.error_msg.is_some() || self.crash_recovery.active_offer().is_some(),
             )));
         self.apply_lifecycle_effect(effect, ctx);
     }
@@ -11166,6 +11166,96 @@ mod tests {
         assert!(app.lifecycle.pending_intent().is_none());
         assert!(!app.lifecycle.close_authorized(app.document.revision()));
         assert!(app.error_msg.is_some());
+    }
+
+    #[test]
+    fn pending_quit_waits_for_a_roaming_offer_revealed_by_save()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use noter::core::recovery::{
+            RecoveryDocumentId, RecoveryInstanceId, RecoveryLineageGeneration, RecoverySnapshot,
+            RecoverySnapshotParts, RecoveryWallTime,
+        };
+        use noter::core::recovery_store::RecoveryStore;
+        use noter::core::revision::Revision;
+        use noter::core::save::{Durability, SaveWarnings};
+        use noter::core::text_format::{Bom, Encoding};
+
+        let root = tempdir()?;
+        let local_state = root.path().join("local");
+        let legacy_state = root.path().join("legacy");
+        let local_store = RecoveryStore::open_in_state(&local_state)?;
+        let legacy_store = RecoveryStore::open_in_state(&legacy_state)?;
+        let parts = |instance, timestamp, content: &[u8]| RecoverySnapshotParts {
+            document_id: RecoveryDocumentId::new([91; 16]),
+            instance_id: RecoveryInstanceId::new([instance; 16]),
+            revision: Revision::new(1),
+            created_at: RecoveryWallTime::from_unix_millis(timestamp),
+            updated_at: RecoveryWallTime::from_unix_millis(timestamp + 1),
+            original_path: b"safe.txt".to_vec(),
+            bom: Bom::Absent,
+            encoding: Encoding::Utf8,
+            selection: Selection::caret(0),
+            content: content.to_vec(),
+        };
+        let old = RecoverySnapshot::try_new(parts(91, 1, b"roaming work"))
+            .expect("legacy fixture snapshot");
+        legacy_store.persist(&old)?;
+        let local = RecoverySnapshot::try_new_with_lineage(
+            parts(92, 3, b"local work"),
+            RecoveryLineageGeneration::new(2),
+            Some(old.instance_id()),
+        )
+        .expect("local fixture snapshot");
+        local_store.persist(&local)?;
+        let mut recovery =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        let _ = recovery.restore_active_offer().expect("restore local work");
+        recovery.defer_startup_offers();
+        assert!(recovery.has_pending_legacy_review());
+
+        let path = root.path().join("safe.txt");
+        fs::write(&path, b"local work")?;
+        let document = Document::from_path(&path)?;
+        let observation = match inspect_target(&path, SaveStage::InspectInitial)? {
+            TargetState::Regular(observation) => observation,
+            state => panic!("expected a regular file, got {state:?}"),
+        };
+        let mut app = NoterApp {
+            text: "local work".to_owned(),
+            document,
+            crash_recovery: recovery,
+            ..NoterApp::default()
+        };
+        arrange_saving_intent(&mut app, PendingAbandonAction::Quit);
+        let reservation = test_save_recovery_reservation(&mut app, SaveAttempt::Current(path));
+        app.handle_save_result(
+            Ok(SaveOutcome::Committed {
+                revision: app.document.revision(),
+                durability: Durability::FileAndDirectorySynced,
+                observation,
+                warnings: SaveWarnings::default(),
+            }),
+            reservation,
+        );
+        assert!(app.crash_recovery.active_offer().is_some());
+        assert!(app.error_msg.is_none());
+
+        let context = egui::Context::default();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            app.continue_pending_abandon_if_clean(ui.ctx());
+        });
+        assert!(
+            output
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .expect("root viewport")
+                .commands
+                .is_empty()
+        );
+        assert!(app.lifecycle.pending_intent().is_none());
+        assert!(!app.lifecycle.close_authorized(app.document.revision()));
+        assert!(legacy_store.record_path(old.instance_id()).exists());
+        Ok(())
     }
 
     #[test]
