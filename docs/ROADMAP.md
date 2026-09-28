@@ -627,6 +627,8 @@ Windows child traversal and private directory creation now use the held parent
 handle, so a changed drive-letter mapping cannot redirect their objects.
 Startup retains and reports an ambiguously named Windows entry without
 aborting review of other valid records.
+A native fixture confirms a reparse point at the private recovery child name
+cannot redirect creation into its target.
 Replacement stage, destination, and backup observations open relative to the
 held records directory. The replacement path now moves the held predecessor to
 a reserved backup, syncs, installs the held stage exclusively, syncs, verifies

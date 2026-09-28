@@ -1481,7 +1481,8 @@ mod tests {
     };
     use crate::imp::{
         windows_create_owner_controlled_readable_directory_for_test,
-        windows_create_private_directory_at, windows_verify_private_directory_security,
+        windows_create_private_directory, windows_create_private_directory_at,
+        windows_verify_private_directory_security,
     };
     use crate::{InstallNewOutcome, ParentSyncOutcome};
     use windows_sys::Wdk::System::SystemServices::{
@@ -1913,6 +1914,38 @@ mod tests {
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(!target.join("state").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn native_reparse_private_child_is_rejected_without_creating_target_content() -> io::Result<()>
+    {
+        let root = tempdir()?;
+        let state = root.path().join("state");
+        let target = root.path().join("target");
+        windows_create_private_directory(&state)?;
+        windows_create_private_directory(&target)?;
+        let sentinel = target.join("keep.txt");
+        fs::write(&sentinel, b"keep")?;
+        symlink_dir(&target, state.join("recovery"))?;
+
+        let result = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"));
+        let Err(error) = result else {
+            panic!("a reparse private child must be rejected");
+        };
+        // NT can refuse the reparse handle's requested security rights before
+        // the post-open attribute check runs.
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied
+        ));
+        assert_eq!(fs::read(sentinel)?, b"keep");
+        assert!(!target.join("records").exists());
+        assert!(!target.join("quarantine").exists());
+
+        fs::remove_dir(state.join("recovery"))?;
+        let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
+        assert!(namespace.records().path().is_dir());
         Ok(())
     }
 

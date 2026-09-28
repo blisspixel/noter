@@ -614,3 +614,30 @@ Formal diff scan `aec6e4b5-a2e3-4641-84f4-b927a81d6e05` reviewed all three
 changed source-like files in `d35b692..56cb716` and found no reportable
 security vulnerability. It does not establish repository-wide coverage or the
 missing native and hosted evidence above.
+
+## 2026-09-28 UTC Windows private-child reparse fixture
+
+A native fixture places a directory symlink at the recovery child name under
+an owner-protected state directory and points it to another owner-protected
+directory. Namespace opening fails before any records or quarantine directory
+appears in the symlink target, and a target
+sentinel remains unchanged. Removing only the symlink then allows the same
+protected state root to bind, proving the rejected child caused the first
+failure. Windows returns permission denied when its requested security rights
+are refused before the post-open reparse check; the
+fixture also accepts invalid data from that check. This covers the final
+private-child boundary separately from the existing ancestor traversal and
+record-entry reparse fixtures. It does not establish the outstanding actual
+drive-remapping or remote-volume cases.
+
+An independent fresh-context review identified the need for the successful
+same-root control and approved the revised fixture. The focused test fails
+when the relative directory open is manually changed to follow reparse
+points, and passes after the no-follow flag is restored. The exact all-targets
+Windows test still fails only at Cloud Files registration (`0x80070005`),
+with 80 other platform tests passing. The runnable suite, formatting, Clippy,
+Rustdoc, script tests, documentation links, Ruff, screenshot assets, offline
+deny, and cached advisory audit pass. Runnable line coverage is 93.18 percent
+whole-workspace and 91.67 percent
+UI-excluded. All five regenerated README screenshots match their previously
+reviewed image hashes. Hosted exact-head CI remains unverified.
