@@ -488,3 +488,10 @@ exact 80 percent whole-workspace and 90 percent UI-excluded line thresholds:
 93.33 and 91.93 percent, respectively. Clippy, formatting, Rustdoc, README
 assets, Python checks, and documentation links also pass. The preceding
 security diff scan does not cover this later source change.
+
+The cached RustSec database scan covers all 415 locked dependencies with
+`cargo audit --deny warnings --no-fetch`; `cargo deny --locked --offline check`
+passes advisories, bans, licenses, and sources. Both commands
+used a disposable workspace Cargo home because the sandbox cannot acquire
+locks in the read-only user Cargo directory. These are local cached checks;
+they do not replace CI's fresh advisory fetch.
