@@ -342,7 +342,7 @@ impl CrashRecoverySession {
         }
     }
 
-    #[cfg(any(test, feature = "screenshot-qa"))]
+    #[cfg(any(not(windows), test, feature = "screenshot-qa"))]
     fn unavailable() -> Self {
         let mut session = Self::blank();
         session.unavailable = true;
