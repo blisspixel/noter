@@ -329,13 +329,13 @@ retains its directory handles, rejects state ACLs with unprivileged mutation
 rights, and hardens the recovery
 subtree to a protected inheritable user-and-SYSTEM DACL before writing recovery
 bytes. Record entry opens, creation, classification, new-record installation,
-enumeration, replacement observations, and partial-replacement completion use
-the retained directory handles. Committed recovery records flush the held
-records directory; a failed barrier remains visible as a recovery persistence
-warning. Quarantine directory barriers also use the held directories.
-Existing-record replacement still uses paths within those protected
-directories. Other synchronization and redirection
-models are not yet classified.
+enumeration, and existing-record replacement use the retained directory
+handles. Replacement preserves the old record in a private backup until the
+new record is installed and both directory barriers succeed. A failed barrier
+remains visible as a recovery persistence warning and leaves available records
+for startup review. Quarantine directory barriers also use the held
+directories. Other synchronization and redirection models are not yet
+classified.
 
 The current unreleased Linux and macOS builds bind the recovery namespace. If a
 directory on the path to the state directory can be changed by another user,
