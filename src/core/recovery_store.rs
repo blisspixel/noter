@@ -2564,13 +2564,13 @@ struct RecoveryArtifactObservation {
     length: u64,
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct IntendedWindowsRecoveryContent {
     observation: RecoveryArtifactObservation,
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 impl IntendedWindowsRecoveryContent {
     const fn from_observation(observation: RecoveryArtifactObservation) -> Self {
         Self { observation }
@@ -2671,14 +2671,14 @@ fn inspect_windows_recovery_artifact(
     observe_windows_recovery_artifact(access, path, &file).map(Some)
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 #[derive(Debug)]
 struct OpenRecoveryArtifact {
     file: File,
     observation: RecoveryArtifactObservation,
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 fn open_windows_recovery_artifact_for_cleanup(
     access: WindowsRecoveryArtifactAccess<'_>,
     path: &Path,
@@ -2692,7 +2692,7 @@ fn open_windows_recovery_artifact_for_cleanup(
     Ok(Some(OpenRecoveryArtifact { file, observation }))
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 fn open_windows_recovery_artifact_for_ratification(
     access: WindowsRecoveryArtifactAccess<'_>,
     path: &Path,
@@ -2706,7 +2706,7 @@ fn open_windows_recovery_artifact_for_ratification(
     Ok(Some(OpenRecoveryArtifact { file, observation }))
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 fn delete_verified_windows_recovery_artifact(artifact: OpenRecoveryArtifact) -> io::Result<()> {
     noter_platform::delete_open_file(&artifact.file)?;
     drop(artifact.file);
@@ -2783,7 +2783,7 @@ fn fingerprint_bound_open_windows_file(
     Ok(fingerprint)
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 fn reconcile_windows_recovery_replace(
     access: WindowsRecoveryArtifactAccess<'_>,
     paths: RecoveryStagedPaths<'_>,
@@ -2880,7 +2880,7 @@ fn reconcile_windows_recovery_replace(
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 fn complete_missing_windows_recovery_destination(
     access: WindowsRecoveryArtifactAccess<'_>,
     paths: RecoveryStagedPaths<'_>,
@@ -2917,7 +2917,7 @@ fn complete_missing_windows_recovery_destination(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 fn finalize_reconciled_windows_recovery(
     access: WindowsRecoveryArtifactAccess<'_>,
     paths: RecoveryStagedPaths<'_>,
@@ -2937,7 +2937,7 @@ fn finalize_reconciled_windows_recovery(
     )
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 fn finalize_reconciled_windows_recovery_with_cleanup_hook(
     access: WindowsRecoveryArtifactAccess<'_>,
     paths: RecoveryStagedPaths<'_>,
@@ -3037,7 +3037,7 @@ fn finalize_reconciled_windows_recovery_with_cleanup_hook(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 fn uncertain_windows_recovery_failure(
     stage: &Path,
     backup: &Path,
@@ -3058,7 +3058,7 @@ fn uncertain_windows_recovery_failure(
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 fn windows_recovery_artifact_label(path: &Path, fallback: &str) -> String {
     path.file_name().map_or_else(
         || fallback.to_owned(),
