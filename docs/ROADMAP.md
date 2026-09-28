@@ -623,18 +623,33 @@ from the opened stage, and lease or quarantine creation use those handles.
 Windows cleanup deletes an opened file after any required identity check, so a
 rebound pathname cannot delete the replacement. Startup and owned-artifact
 enumeration run through the held directory handle with their entry limits.
-Replacement stage, destination, and backup observations now open relative to
-the held records directory; ratification blocks competing mutation, and cleanup
-removes the opened object. Failure completion installs the opened stage relative
-to the same held directory.
+Windows child traversal and private directory creation now use the held parent
+handle, so a changed drive-letter mapping cannot redirect their objects.
+A native fixture remaps an unused drive letter after binding the parent and
+confirms state and recovery creation, then record creation, exclusive
+installation, directory sync, and enumeration, stay under the held directories.
+Startup retains and reports an ambiguously named Windows entry without
+aborting review of other valid records.
+A native fixture confirms a reparse point at the private recovery child name
+cannot redirect creation into its target.
+Replacement stage, destination, and backup observations open relative to the
+held records directory. The replacement path now moves the held predecessor to
+a reserved backup, syncs, installs the held stage exclusively, syncs, verifies
+both exact artifacts, deletes the opened backup, and syncs cleanup. A competing
+canonical name blocks stage installation while preserving the stage, backup,
+and competitor. Barrier failures retain available snapshots for startup review.
+See [ADR-0005](adr/0005-windows-recovery-replacement.md).
 
 The first Windows foundation validates the drive-rooted state path on fixed
-NTFS, checks every bound state and recovery directory for registered Windows
-Cloud Files sync roots before writing recovery bytes, rejects reparse and
-cross-volume directory components, verifies stable
-preferred identities, retains every traversed and recovery-directory handle
-without delete sharing, rejects state DACLs that grant unprivileged mutation,
-and applies an exact protected inheritable user-and-SYSTEM DACL to the owned
+NTFS and classifies each opened directory handle's backing device. A remote,
+removable, portable, read-only, WebDAV, CSV, virtual, or non-disk device is
+refused even if a drive-letter mapping changes after the path-based fixed-drive
+check. It checks every bound state and recovery directory for registered
+Windows Cloud Files sync roots before writing recovery bytes, rejects reparse
+and cross-volume directory components, verifies stable preferred identities,
+retains every traversed and recovery-directory handle without delete sharing,
+rejects state DACLs that grant unprivileged mutation, and applies an exact
+protected inheritable user-and-SYSTEM DACL to the owned
 recovery subtree. Routine store entry opens, startup entry classification,
 staged record creation, new-record installation from the opened stage, and
 lease or quarantine creation are handle-relative and have native fixtures for
@@ -644,9 +659,27 @@ invalid stage destination before writing. Recovery record commits flush the
 held records directory on Windows NTFS and surface a failed directory barrier.
 Quarantine copy and source-cleanup barriers also flush the held directories.
 An occupied per-source quarantine slot stops retries from accumulating copies
-after a failed barrier while retaining the original for review.
-Existing-record replacement and detection of
-redirected or other synchronized roots keep M4-H1 in progress.
+after a failed barrier while retaining the original for review. Existing-record
+reconciliation binds the intended stage identity and bytes before its handle
+closes, so a rebound stage cannot redefine the snapshot to commit.
+Existing-record replacement has local native primitive and injected barrier
+tests. Classification of other redirected or synchronized roots, the remaining
+fault and race matrix, and exact-head hosted CI keep M4-H1 in progress.
+The local branch moves new Windows recovery writes to the LocalAppData known
+folder while eframe preferences remain under RoamingAppData. It opens an
+existing legacy recovery root through the verified namespace, reviews both
+roots, restores legacy offers by durably persisting a successor locally before
+deleting the old record, and refuses recovery if the legacy root is invalid.
+An interrupted schema-v2 transfer's older Roaming copy remains available for
+explicit cleanup after its local successor is restored. Schema-v1 and
+generation-gap Roaming records remain separate offers and are presented for
+ordinary Restore / Later / Discard review after the restored local document
+is saved without a durability warning; they are never classified as obsolete
+from an ID link alone. GUI and terminal Save and Exit now pause for that review.
+Focused dual-root tests, local Windows workspace tests, and both whole-workspace
+coverage thresholds pass; broader mutation and hosted exact-head evidence for
+this migration remain pending. See
+[ADR-0006](adr/0006-windows-local-recovery-root.md).
 
 The Unix cleanup ADR was required either to provide a genuinely object-bound
 retirement strategy or to retain and safely neutralize the exact opened object
@@ -721,10 +754,8 @@ egui shapes each font run, but mixed-direction lines are not yet reordered by
 the Unicode bidirectional algorithm; that stays part of the text-engine gate
 below. The current renderer's emoji
 output is monochrome and is not accepted as final cross-platform appearance
-evidence. A status bar ordering inversion currently renders cursor coordinates
-before the active editor, introducing a 1-frame lag and forced repaint on caret
-navigation that will be eliminated by resolving cursor metrics prior to chrome.
-No spell-check provider is implemented.
+evidence. The status bar now renders after the editor and has a same-frame
+caret-coordinate test. No spell-check provider is implemented.
 
 Research completed on 2026-08-23 makes the next decision narrower. The current
 egui `TextEdit` remains the correctness adapter, but stock egui 0.35 with
@@ -980,13 +1011,16 @@ is the next safety prerequisite; the M5 editor feasibility gate follows it.
    with the immutable implementation commit, and `v0.1.0-alpha.2` was tagged at
    the protected-main head `dbb419f` after that exact commit passed CI.
 6. **In progress, before `0.1.0-beta.2`:** M4-H1 recovery namespace binding.
-   Complete the remaining handle-relative Windows record operations and
-   redirected-root classification, and record every remaining native
-   adversarial fixture.
-   The Linux and macOS namespace adapters and Unix cleanup contract are in tree.
+   The Windows, Linux, and macOS namespace adapters and Unix cleanup contract
+   are in tree. Exact-head CI and mutation results, redirected and synchronized
+   root classification, and the remaining native final-window swap, fault, and
+   weak or remote filesystem fixtures on all three platforms must be recorded
+   in the platform matrix before this milestone is verified.
 7. **Then, `0.1.0-beta.2`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
-   production editor contract is stable.
+   production editor contract is stable. A beta.2 release follows a clean
+   protected-main commit with the required CI, mutation, manual platform, and
+   release evidence; M4-H1 and M5 remain release blockers.
 8. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
    dogfood, public release.
 

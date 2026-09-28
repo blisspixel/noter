@@ -23,7 +23,7 @@ pub use unix_recovery_namespace::{UnixRecoveryDirectory, UnixRecoveryNamespace};
 #[cfg(windows)]
 pub use windows_recovery_namespace::{
     WindowsDirectoryIdentity, WindowsRecoveryDirectory, WindowsRecoveryEntryName,
-    WindowsRecoveryNamespace,
+    WindowsRecoveryNamespace, windows_local_appdata_directory,
 };
 
 #[cfg(unix)]
@@ -3022,7 +3022,7 @@ mod imp {
 
     use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
     use windows_sys::Wdk::Storage::FileSystem::{
-        FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT,
+        FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT,
         FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
     };
     use windows_sys::Win32::Foundation::{
@@ -3044,16 +3044,17 @@ mod imp {
         PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     };
     #[cfg(test)]
-    use windows_sys::Win32::Storage::FileSystem::WRITE_DAC;
+    use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
     use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE,
-        FILE_ATTRIBUTE_NORMAL, FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE,
-        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
-        FILE_EXECUTE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_READ_ATTRIBUTES,
-        FILE_READ_DATA, FILE_READ_EA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        FileBasicInfo, FileDispositionInfo, FileDispositionInfoEx, FileIdInfo,
-        GetFileInformationByHandle, GetFileInformationByHandleEx, MOVEFILE_WRITE_THROUGH,
-        MoveFileExW, READ_CONTROL, ReplaceFileW, SYNCHRONIZE, SetFileInformationByHandle,
+        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, DELETE, FILE_ADD_FILE,
+        FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_BASIC_INFO,
+        FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
+        FILE_DISPOSITION_INFO_EX, FILE_EXECUTE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_READ_EA, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, FileBasicInfo, FileDispositionInfo,
+        FileDispositionInfoEx, FileIdInfo, GetFileInformationByHandle,
+        GetFileInformationByHandleEx, MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL,
+        ReplaceFileW, SYNCHRONIZE, SetFileInformationByHandle, WRITE_DAC,
     };
     use windows_sys::Win32::System::Console::{
         ATTACH_PARENT_PROCESS, AttachConsole, CONSOLE_SCREEN_BUFFER_INFO, ENABLE_ECHO_INPUT,
@@ -3713,6 +3714,7 @@ mod imp {
         windows_private_security_policy_for_sid(owner_sid)
     }
 
+    #[cfg(test)]
     #[allow(unsafe_code)]
     pub fn windows_create_private_directory(path: &Path) -> io::Result<()> {
         let policy = windows_private_directory_security_policy()?;
@@ -3738,6 +3740,95 @@ mod imp {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    pub fn windows_create_private_directory_at(directory: &File, name: &OsStr) -> io::Result<File> {
+        let name = WindowsRecoveryEntryName::new(name)?;
+        let policy = windows_private_directory_security_policy()?;
+        let descriptor = windows_security_descriptor_from_sddl(&policy.descriptor_sddl)?;
+        let mut units: Vec<u16> = name.as_os_str().encode_wide().collect();
+        let length = units
+            .len()
+            .checked_mul(size_of::<u16>())
+            .and_then(|length| u16::try_from(length).ok())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "recovery directory name is too long",
+                )
+            })?;
+        let unicode_name = UNICODE_STRING {
+            Length: length,
+            MaximumLength: length,
+            Buffer: units.as_mut_ptr(),
+        };
+        let attributes = OBJECT_ATTRIBUTES {
+            Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Windows object attributes are too large",
+                )
+            })?,
+            RootDirectory: directory.as_raw_handle(),
+            ObjectName: &raw const unicode_name,
+            Attributes: OBJ_CASE_INSENSITIVE,
+            SecurityDescriptor: descriptor.raw.cast(),
+            SecurityQualityOfService: std::ptr::null(),
+        };
+        let access = windows_combine_disjoint_flags(
+            windows_combine_disjoint_flags(
+                windows_combine_disjoint_flags(
+                    windows_combine_disjoint_flags(FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES),
+                    READ_CONTROL,
+                ),
+                windows_combine_disjoint_flags(
+                    windows_combine_disjoint_flags(WRITE_DAC, FILE_ADD_FILE),
+                    FILE_ADD_SUBDIRECTORY,
+                ),
+            ),
+            SYNCHRONIZE,
+        );
+        let share = windows_combine_disjoint_flags(FILE_SHARE_READ, FILE_SHARE_WRITE);
+        let options = windows_combine_disjoint_flags(
+            windows_combine_disjoint_flags(FILE_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT),
+            FILE_SYNCHRONOUS_IO_NONALERT,
+        );
+        let mut handle: HANDLE = std::ptr::null_mut();
+        let mut status_block = IO_STATUS_BLOCK::default();
+        // SAFETY: the held parent, validated UTF-16 name, private descriptor,
+        // object attributes, and writable outputs remain live for this
+        // synchronous, exclusive directory creation.
+        #[allow(unsafe_code)]
+        let status = unsafe {
+            NtCreateFile(
+                &raw mut handle,
+                access,
+                &raw const attributes,
+                &raw mut status_block,
+                std::ptr::null(),
+                FILE_ATTRIBUTE_DIRECTORY,
+                share,
+                FILE_CREATE,
+                options,
+                std::ptr::null(),
+                0,
+            )
+        };
+        if status != 0 {
+            // SAFETY: the preceding native call supplied the NTSTATUS value.
+            #[allow(unsafe_code)]
+            let code = unsafe { RtlNtStatusToDosError(status) };
+            return Err(io::Error::from_raw_os_error(code.cast_signed()));
+        }
+        if !windows_raw_handle_is_bound(handle) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Windows returned an unusable created recovery directory handle",
+            ));
+        }
+        // SAFETY: a successful NtCreateFile returned a unique owned handle.
+        #[allow(unsafe_code)]
+        Ok(unsafe { File::from_raw_handle(handle) })
     }
 
     pub fn windows_verify_private_directory_security(file: &File) -> io::Result<()> {

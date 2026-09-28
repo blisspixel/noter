@@ -97,6 +97,32 @@ jobs:
         if: runner.os == 'Windows'
         run: python -m unittest discover -s scripts -p 'test_*.py'
 
+      - name: Bound backward word navigation memory (Windows)
+        if: runner.os == 'Windows'
+        run: python scripts/navigation_memory_check.py
+
+      - name: Bound backward word navigation memory (Linux)
+        if: runner.os == 'Linux'
+        run: python3 scripts/navigation_memory_check.py
+
+      - name: Test Windows installer regressions (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/test_install_ps1.ps1
+          ./scripts/test_install_ps1_source.ps1
+
+      - name: Test Windows installer regressions (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./scripts/test_install_ps1.ps1
+          ./scripts/test_install_ps1_source.ps1
+
+      - name: Run native binary-installer regressions
+        if: runner.os != 'Windows'
+        run: python3 -m unittest scripts.test_install_sh
+
       - name: Install from source (PowerShell)
         if: runner.os == 'Windows'
         shell: pwsh

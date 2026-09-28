@@ -37,7 +37,8 @@ use noter::core::save_recovery::{
 };
 use noter::core::search::{LiteralSearch, MatchCase, SearchDirection};
 use noter::core::terminal_text::{
-    cell_width, column_of, display_width, fit_line, offset_at_column, push_display,
+    cell_width, column_of, display_width, escaped_cli_path, fit_line, offset_at_column,
+    push_display,
 };
 use noter::core::undo::{
     HistoryApplyOutcome, HistoryError, HistoryLimits, HistoryRecordOutcome, UndoHistory,
@@ -47,6 +48,7 @@ use noter::error::NoterError;
 use crate::app::{DocumentView, LaunchOptions};
 use crate::crash_recovery::{
     CrashRecoverySession, RECOVERY_CLEANUP_FAILURE_MESSAGE, RECOVERY_PERSIST_FAILURE_MESSAGE,
+    SaveDurabilityRisk,
 };
 
 mod input;
@@ -223,6 +225,7 @@ pub struct TuiSession {
     pub history: UndoHistory,
     /// Private crash-recovery records, shared with the window's store.
     pub recovery: CrashRecoverySession,
+    save_durability: SaveDurabilityRisk,
     /// Monotonic origin for edit timestamps, so typing coalesces into Undo
     /// steps by the same rules as the window.
     pub started: Instant,
@@ -249,7 +252,7 @@ impl TuiSession {
     pub fn new(options: &LaunchOptions, recovery: CrashRecoverySession) -> Result<Self, String> {
         let document = if let Some(path) = &options.initial_path {
             Document::from_path(path)
-                .map_err(|e| format!("cannot load `{}`: {e}", path.display()))?
+                .map_err(|e| format!("cannot load `{}`: {e}", escaped_cli_path(path)))?
         } else {
             Document::new()
         };
@@ -274,6 +277,7 @@ impl TuiSession {
             show_help: false,
             history,
             recovery,
+            save_durability: SaveDurabilityRisk::Clear,
             started: Instant::now(),
             should_exit: false,
             after_save: AfterSave::Stay,
@@ -296,15 +300,19 @@ impl TuiSession {
     }
 
     /// Tells crash recovery whether the text now needs a private copy, after
-    /// Undo, Redo, or a save, as the window's `synchronize_crash_recovery`
+    /// Undo or Redo, as the window's `synchronize_crash_recovery`
     /// does. A direct edit uses `on_edited` instead, also as the window does.
     fn sync_recovery(&mut self) {
         let selection = Selection::caret(self.caret_byte);
-        if self.document.is_dirty() {
+        if self.has_unsaved_state() {
             self.recovery.on_retained(&self.document, selection);
         } else {
             self.recovery.on_saved_clean(self.document.revision());
         }
+    }
+
+    fn has_unsaved_state(&self) -> bool {
+        self.document.is_dirty() || self.save_durability.is_at_risk()
     }
 
     /// Runs recovery work that has come due, reports a failed write once,
@@ -329,8 +337,12 @@ impl TuiSession {
     /// not choose, such as a terminal hangup.
     pub fn persist_before_exit(&mut self) -> bool {
         let selection = Selection::caret(self.caret_byte);
-        self.recovery
-            .persist_before_exit(&self.document, selection, EXIT_PERSIST_LIMIT)
+        self.recovery.persist_before_exit(
+            &self.document,
+            selection,
+            EXIT_PERSIST_LIMIT,
+            self.save_durability.is_at_risk(),
+        )
     }
 
     /// Answers the startup recovery offer that is showing.
@@ -339,6 +351,7 @@ impl TuiSession {
             RecoveryDecision::Restore => match self.recovery.restore_active_offer() {
                 Ok((document, selection)) => {
                     self.document = document;
+                    self.save_durability = SaveDurabilityRisk::Clear;
                     self.caret_byte = selection.active();
                     self.history.reset(self.document.revision());
                     self.recovery.on_edited(&self.document, selection);
@@ -779,8 +792,21 @@ impl TuiSession {
                 ..
             }) => {
                 let warning_count = warnings.cleanup().len() + warnings.durability().len();
-                self.sync_recovery();
-                if warning_count == 0 {
+                self.save_durability = SaveDurabilityRisk::from_warnings(&warnings);
+                if self.save_durability.is_at_risk() {
+                    self.recovery
+                        .on_retained(&self.document, Selection::caret(self.caret_byte));
+                } else {
+                    self.recovery.on_committed_save(self.document.revision());
+                    if self.recovery.active_offer().is_some() {
+                        self.prompt = PromptMode::RecoveryOffer;
+                    }
+                }
+                if self.save_durability.is_at_risk() {
+                    self.set_status(
+                        "Saved with uncertain durability. Keep this editor open and Save again.",
+                    );
+                } else if warning_count == 0 {
                     self.set_status(format!("Wrote {} bytes", observation.length()));
                 } else {
                     self.set_status(format!(
@@ -833,8 +859,15 @@ impl TuiSession {
     pub fn finish_save(&mut self, step: SaveStep) {
         match step {
             SaveStep::Committed => {
-                if self.after_save == AfterSave::Exit {
+                if self.after_save == AfterSave::Exit
+                    && !self.save_durability.is_at_risk()
+                    && self.recovery.active_offer().is_none()
+                {
                     self.should_exit = true;
+                } else if self.save_durability.is_at_risk()
+                    || self.recovery.active_offer().is_some()
+                {
+                    self.after_save = AfterSave::Stay;
                 }
             }
             SaveStep::NotSaved => self.after_save = AfterSave::Stay,
@@ -1393,7 +1426,7 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
                 .into_owned()
         },
     );
-    let dirty = if session.document.is_dirty() {
+    let dirty = if session.has_unsaved_state() {
         " *"
     } else {
         ""
@@ -2127,7 +2160,7 @@ fn trigger_exit(session: &mut TuiSession) {
         session.set_status(UNCERTAIN_SAVE_GUIDANCE);
         return;
     }
-    if session.document.is_dirty() {
+    if session.has_unsaved_state() {
         session.prompt = PromptMode::ExitConfirm;
     } else {
         session.should_exit = true;
@@ -2137,6 +2170,37 @@ fn trigger_exit(session: &mut TuiSession) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use noter::core::recovery::{
+        RecoveryDocumentId, RecoveryInstanceId, RecoveryLineageGeneration, RecoverySnapshot,
+        RecoverySnapshotParts, RecoveryWallTime,
+    };
+    use noter::core::recovery_store::RecoveryStore;
+    use noter::core::revision::Revision;
+    use noter::core::text_format::{Bom, Encoding};
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_load_escapes_control_characters_in_filename() {
+        use noter::core::terminal_text::is_terminal_unsafe;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notes\u{1b}]52;c;YQ==\u{7}.md");
+        std::fs::write(&path, [0xff]).unwrap();
+        let result = TuiSession::new(
+            &LaunchOptions {
+                initial_path: Some(path),
+                ..LaunchOptions::default()
+            },
+            CrashRecoverySession::disabled_for_test(),
+        );
+        let Err(error) = result else {
+            panic!("invalid UTF-8 must fail to load");
+        };
+
+        assert!(error.starts_with("cannot load `"));
+        assert!(error.contains("\\u{1b}]52;c;YQ==\\u{7}.md"));
+        assert!(!error.chars().any(is_terminal_unsafe));
+    }
 
     #[test]
     fn tui_session_typing_undo_and_redo() {
@@ -2510,6 +2574,76 @@ mod tests {
     }
 
     #[test]
+    fn durability_warning_keeps_terminal_work_and_recovery_until_a_clean_save() {
+        use noter::core::save::{
+            ContentFingerprint, Durability, FileChangeToken, FileIdentity, FileObservation,
+            SaveStage, SaveWarnings, StorageError,
+        };
+
+        let root = tempfile::tempdir().expect("recovery root");
+        let path = root.path().join("note.txt");
+        std::fs::write(&path, "text").expect("fixture file");
+        let recovery = CrashRecoverySession::open_at(root.path().join("private"));
+        let mut session = TuiSession::new(
+            &LaunchOptions {
+                initial_path: Some(path.clone()),
+                ..LaunchOptions::default()
+            },
+            recovery,
+        )
+        .expect("titled session");
+        let observation = FileObservation::new(
+            FileIdentity::new(1, 2),
+            ContentFingerprint::from_bytes(b"text"),
+            4,
+            1,
+            FileChangeToken::new(3, 4),
+        );
+        session.after_save = AfterSave::Exit;
+        let reservation = session
+            .reserve_save_recovery(path)
+            .expect("save reservation");
+        let step = session.report_save(
+            reservation,
+            Ok(SaveOutcome::Committed {
+                revision: session.document.revision(),
+                durability: Durability::FileSynced,
+                observation,
+                warnings: SaveWarnings::new(
+                    Vec::new(),
+                    vec![StorageError::new(SaveStage::SyncParent, "barrier failed")],
+                ),
+            }),
+        );
+        session.finish_save(step);
+        assert!(session.save_durability.is_at_risk());
+        assert!(session.has_unsaved_state());
+        assert!(!session.should_exit);
+        assert_eq!(session.after_save, AfterSave::Stay);
+        assert!(session.recovery.next_persist_delay().is_some());
+        session
+            .recovery
+            .force_due_persist_for_test(&session.document, Selection::caret(session.caret_byte));
+        let records_dir =
+            crate::crash_recovery::recovery_store_root_for_test(&root.path().join("private"))
+                .join("records");
+        assert!(
+            std::fs::read_dir(records_dir)
+                .expect("recovery records")
+                .filter_map(Result::ok)
+                .any(|entry| entry.path().extension().is_some_and(|ext| ext == "rec"))
+        );
+        trigger_exit(&mut session);
+        assert_eq!(session.prompt, PromptMode::ExitConfirm);
+        key(&mut session, TuiKey::Escape);
+        assert!(!session.should_exit);
+
+        assert_eq!(session.save(), SaveStep::Committed);
+        assert!(!session.save_durability.is_at_risk());
+        assert!(!session.has_unsaved_state());
+    }
+
+    #[test]
     fn an_uncertain_save_pauses_all_saves_until_explicit_reconciliation() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.txt");
@@ -2794,13 +2928,16 @@ mod tests {
     fn document_escape_sequences_are_drawn_inert() {
         let mut session = untitled();
         session.insert_str(
-            "title\u{1B}]0;owned\u{7}\nclip\u{1B}]52;c;ZWNobw==\u{7}\n\u{9B}2J\u{202E}txt",
+            "title\u{1B}]0;owned\u{7}\nclip\u{1B}]52;c;ZWNobw==\u{7}\n\u{9B}2J\u{202E}txt\u{206A}\u{206B}\u{206C}\u{206D}\u{206E}\u{206F}",
         );
         for view in [DocumentView::Text, DocumentView::Markdown] {
             session.view = view;
             let frame = render_frame(&session, 80, 24);
             assert!(!frame.contains("\u{1B}]"));
             assert!(!frame.contains('\u{7}'));
+            assert!(!frame.contains([
+                '\u{206A}', '\u{206B}', '\u{206C}', '\u{206D}', '\u{206E}', '\u{206F}'
+            ]));
             assert_frame_is_terminal_safe(&frame, 80);
         }
     }
@@ -3059,16 +3196,81 @@ mod tests {
     }
 
     #[test]
+    fn saving_a_restored_local_copy_offers_a_separate_roaming_copy() {
+        let root = tempfile::tempdir().expect("state root");
+        let local_state = root.path().join("local");
+        let legacy_state = root.path().join("legacy");
+        let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
+        let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
+        let parts = |instance, created_at, updated_at, content: &[u8]| RecoverySnapshotParts {
+            document_id: RecoveryDocumentId::new([91; 16]),
+            instance_id: RecoveryInstanceId::new([instance; 16]),
+            revision: Revision::new(1),
+            created_at: RecoveryWallTime::from_unix_millis(created_at),
+            updated_at: RecoveryWallTime::from_unix_millis(updated_at),
+            original_path: b"notes.txt".to_vec(),
+            bom: Bom::Absent,
+            encoding: Encoding::Utf8,
+            selection: Selection::caret(0),
+            content: content.to_vec(),
+        };
+        let old =
+            RecoverySnapshot::try_new(parts(91, 1, 2, b"roaming work")).expect("legacy snapshot");
+        legacy_store.persist(&old).expect("legacy record");
+        let local = RecoverySnapshot::try_new_with_lineage(
+            parts(92, 3, 4, b"local work"),
+            RecoveryLineageGeneration::new(2),
+            Some(old.instance_id()),
+        )
+        .expect("generation-gap successor");
+        local_store.persist(&local).expect("local record");
+
+        let recovery =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        let mut session = TuiSession::new(&LaunchOptions::default(), recovery).expect("session");
+        assert_eq!(session.prompt, PromptMode::RecoveryOffer);
+        key(&mut session, TuiKey::Char('r'));
+        assert_eq!(session.text(), "local work");
+        assert_eq!(session.prompt, PromptMode::None);
+        assert!(session.recovery.has_pending_legacy_review());
+
+        trigger_exit(&mut session);
+        assert_eq!(session.prompt, PromptMode::ExitConfirm);
+        key(&mut session, TuiKey::Char('y'));
+        assert_eq!(session.prompt, PromptMode::SaveAs);
+        let destination = root.path().join("saved.txt");
+        type_text(&mut session, &destination.to_string_lossy());
+        key(&mut session, TuiKey::Enter);
+        assert_eq!(session.prompt, PromptMode::RecoveryOffer);
+        assert!(!session.should_exit);
+        assert_eq!(session.after_save, AfterSave::Stay);
+        assert!(!session.document.is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(&destination).expect("saved document"),
+            "local work"
+        );
+        assert_eq!(
+            session
+                .recovery
+                .active_offer()
+                .expect("Roaming review")
+                .metadata()
+                .instance_id(),
+            old.instance_id()
+        );
+        key(&mut session, TuiKey::Char('l'));
+        assert_eq!(session.prompt, PromptMode::None);
+        assert!(legacy_store.record_path(old.instance_id()).exists());
+    }
+
+    #[test]
     fn saving_or_discarding_leaves_nothing_to_recover() {
         let store = tempfile::tempdir().unwrap();
         let directory = tempfile::tempdir().unwrap();
         {
             let mut session = untitled_with_store(store.path());
             type_text(&mut session, "saved text");
-            session.recovery.force_due_persist_for_test(
-                &session.document,
-                Selection::caret(session.caret_byte),
-            );
+            assert!(session.persist_before_exit());
             key(&mut session, TuiKey::Ctrl('s'));
             type_text(
                 &mut session,

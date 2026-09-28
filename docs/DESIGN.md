@@ -666,36 +666,57 @@ M4-H1 closes that gap for beta.2. Preferences may use eframe storage
 (`app.ron`); recovery records do not. The library modules are
 `core::recovery` (pure schedule and integrity) and `core::recovery_store`
 (durable private files). The binary adapter `crash_recovery` opens
-`eframe::storage_dir("Noter")/recovery`, drives the pure scheduler, presents
+the platform recovery root, drives the pure scheduler, presents
 startup Restore / Discard offers, and surfaces persist failures without writing
 user document paths.
 
+On Windows, new recovery snapshots use the current user's LocalAppData known
+folder under `Noter/recovery`; eframe preferences stay under RoamingAppData.
+If the former RoamingAppData recovery root exists, startup opens it through the
+same verified namespace and includes its bounded offers. Each offer retains
+its source root for exact Restore or Discard. Restoring a legacy offer persists
+a durable successor in LocalAppData before deleting the offered legacy record.
+An invalid legacy root makes recovery unavailable rather than hiding its
+possible records. [ADR-0006](adr/0006-windows-local-recovery-root.md) records
+the migration decision and limits.
+
 The first M4-H1 Windows slice now validates and retains the complete drive-root
 through quarantine directory chain before production recovery opens. It accepts
-only a drive-rooted fixed NTFS path with non-reparse, same-volume directories
-and stable preferred identities. The state directory must belong to the current
-user; SYSTEM and Administrators may mutate it, while every other principal is
-limited to read and execute access. Noter's recovery, records, and quarantine
-directories are created or tightened through retained handles to an exact
-protected inheritable user-and-SYSTEM DACL. Every held directory denies delete
-sharing for the namespace lifetime. The store's routine entry opens, startup
-entry classification, staged record creation, and lease or quarantine creation
-are relative to the held records or quarantine directory, validate a single
+only a drive-rooted fixed NTFS path with non-reparse, same-volume directories.
+Each opened directory handle must also report a local fixed disk device;
+remote, removable, portable, read-only, WebDAV, CSV, and virtual
+characteristics are refused, including after a drive-letter mapping changes
+between checks. The directories must also have stable preferred identities.
+The state directory must belong to the current user; SYSTEM and Administrators
+may mutate it, while every other principal is limited to read and execute
+access. Noter's recovery, records, and quarantine directories are created or
+tightened through
+retained handles to an exact protected inheritable user-and-SYSTEM DACL. Every
+held directory denies delete sharing for the namespace lifetime. The store's
+Windows directory traversal opens each child relative to its held parent, and
+missing private children are created exclusively relative to that parent with
+the protected descriptor. The drive root is the sole absolute directory open.
+Routine entry opens, startup entry classification, staged record creation,
+and lease or quarantine creation are relative to the held records or
+quarantine directory, validate a single
 entry component, and refuse final reparse points. Classification treats
-directories and final reparse points as non-files.
+directories and final reparse points as non-files. Startup retains and reports
+an ambiguously named entry without hiding other recovery offers.
 Private creation applies the owner-and-SYSTEM descriptor at creation time and
 verifies it on the opened handle. New-record installation renames the opened
 stage relative to the held records directory without replacing an existing
 name. Startup and owned-artifact enumeration run through the held directory
 handle with bounded entries. Replacement stage, destination, and backup
-observations open relative to the held records directory. Ratification and
-cleanup operate on their exact opened files. Failure completion installs the
-opened stage relative to that directory. After a recovery record commit,
-Windows flushes the held records directory and reports a failed barrier
-without discarding the record. Quarantine copy and source-cleanup directory
-barriers also flush the exact held records or quarantine directory. Existing-record
-replacement remains pathname-based inside the held, delete-protected
-directories. A handle-based Windows Cloud Files query loaded by its absolute
+observations open relative to the held records directory. Existing-record
+replacement holds the verified stage and predecessor with no delete sharing,
+moves the predecessor to a reserved backup name, syncs the held directory,
+installs the stage exclusively at the canonical name, and syncs again. It
+deletes the exact opened predecessor only after verifying both artifacts, then
+syncs the cleanup. A failed barrier leaves the available snapshots for startup
+review. The native protocol is recorded in
+[ADR-0005](adr/0005-windows-recovery-replacement.md). Quarantine copy and
+source-cleanup directory barriers also flush the exact held records or
+quarantine directory. A handle-based Windows Cloud Files query loaded by its absolute
 System32 path checks the parent, state, recovery, records, and quarantine
 handles before recovery writes; an unavailable API or unrecognized result also
 refuses recovery. Other synchronization and redirection models remain
@@ -720,9 +741,9 @@ network, cluster, shared-folder, and user-space file systems are refused. Every 
 quarantine operation is relative to the held descriptors, a removed directory
 refuses new content, and retirement unlinks a name in its held private
 directory right after confirming that it still identifies the held object.
-M4-H1 remains in progress until the remaining Windows record operations become
-handle-relative and redirected or synchronized roots are detected, with native
-evidence.
+M4-H1 remains in progress until redirected or other synchronized roots are
+classified, the complete native fault and race fixture matrix passes, and
+exact-head CI validates the change.
 
 Each dirty session owns one versioned record:
 
@@ -758,7 +779,10 @@ successful in-boundary Unix recovery commit needs a displaced-file cleanup. A
 failed attempt retains at most that one stage and later attempts return
 `ResourceBusy` until startup review or explicit owned-artifact cleanup.
 Windows reserves one deterministic stage and one deterministic backup per
-instance. Replacement reconciliation holds the exact destination handle while
+instance. Before closing a written stage, it binds the intended snapshot to
+the opened file's identity, length, and BLAKE3 fingerprint, then refuses a
+replacement if the stage name no longer identifies that snapshot. Replacement
+reconciliation holds the exact destination handle while
 verified stage and backup handles are cleaned. Any failure retains only those
 slots, and later retries return `ResourceBusy` before creating another artifact.
 Cleanup or parent-sync failure is a failed transfer and keeps any predecessor

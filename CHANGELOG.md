@@ -8,6 +8,46 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Bind Windows recovery directory traversal and private child creation to the
+  held parent handle, so a drive-letter remap cannot redirect a child open or
+  create an empty recovery directory under a different pathname.
+- Keep Windows startup recovery review moving when a private records folder
+  contains an entry with an ambiguous Windows name. Retain and report the
+  unsafe entry without exposing its spelling, while still offering valid
+  recovery snapshots.
+- Classify every opened Windows recovery directory's backing volume from its
+  handle and refuse remote, removable, portable, read-only, WebDAV, CSV,
+  virtual, or non-disk devices before recovery writes. This limits a
+  drive-letter mapping race left by the earlier path-based fixed-drive check.
+- Store new Windows recovery copies under the user's LocalAppData known folder
+  while keeping preferences in RoamingAppData. Startup still reviews existing
+  Roaming recovery records; Restore first persists a successor locally, and
+  Discard deletes only the claimed old record. If an interrupted transfer
+  leaves a schema-v2 predecessor and successor, restoring the local copy offers
+  explicit cleanup of its older Roaming predecessor. A successful retry clears
+  that copy's cleanup warning without hiding another cleanup failure. Failed deletion
+  retains the retry action, and only an exact schema-v2 successor relationship
+  labels a Roaming record as its older copy. A linked schema-v1 or generation-gap
+  Roaming record stays intact and gets a separate Restore / Later / Discard
+  review after the restored local document is saved without a durability
+  warning. Save and Exit pauses for that review in the same GUI or terminal
+  session.
+  A Save with a durability warning keeps the document in the editor,
+  retains or creates its private recovery copy, and asks for another Save.
+- Replace existing Windows recovery records through held stage and predecessor
+  handles. Preserve a private backup across the first directory sync, install
+  the new record exclusively, and retain available snapshots for startup
+  review when a barrier or competing name stops the operation.
+- Replace deprecated Unicode formatting controls with visible placeholders in
+  terminal document views and diagnostic paths.
+- Reserve the Unix binary install stage inside a private directory and reject
+  install paths another user could replace during the copy and version check.
+  Inspect long-format macOS directory permissions so ACL grants cannot be
+  hidden from that check. On Linux, reject access using the ACL mask reflected
+  in the group mode bits.
+- Escape terminal control and text-reordering characters in startup file-load
+  errors, preventing a crafted filename from changing terminal state.
+
 - Refuse registered Windows Cloud Files sync roots at the state path or any
   bound recovery directory before writing recovery bytes. A missing or failed
   classification API also refuses recovery rather than treating an unknown
@@ -29,7 +69,7 @@ that candidate is frozen for publication.
 - Create staged Windows recovery snapshots relative to the held records
   directory. An outside destination or invalid entry name is refused without
   creating a stage or parent directory. Stage observation and existing-record
-  replacement remain pathname-based work in M4-H1.
+  replacement were completed in later M4-H1 work.
 - Delete Windows recovery entries through their opened handles. If a checked
   entry name is replaced before cleanup, the replacement is preserved.
 - Open routine Windows crash-recovery entries and create lease or quarantine
@@ -81,6 +121,19 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Move backward by characters from the caret without rescanning the document
+  prefix on every step.
+- Move backward by words without allocating a position for every preceding
+  character. This removes a large transient allocation from word navigation
+  near the end of a large document.
+- Verify source-built executables before replacing a working install on
+  Windows, macOS, and Linux; failed source builds keep the previous binary.
+- Restore a retained Windows binary before retrying an install interrupted after
+  the previous executable was moved aside. A failed retry keeps that executable,
+  while uninstall removes it.
+- Reject a rebound Windows recovery stage before replacing an existing record,
+  even when the replacement has identical bytes. The intended snapshot is
+  bound to the opened stage before its handle closes.
 - Flush the retained Windows records directory after a recovery record commit.
   A directory-barrier failure now reports a persistence warning while keeping
   the committed record available for later recovery. Quarantine copy and

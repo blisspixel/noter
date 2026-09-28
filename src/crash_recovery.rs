@@ -2,13 +2,13 @@
 //!
 //! Pure scheduling and on-disk record integrity live in `noter::core::recovery`
 //! and `noter::core::recovery_store`. This module owns process identity, wall
-//! and monotonic clocks, the private recovery root under the eframe state
-//! directory, one dedicated persist worker thread, and the small state machine
+//! and monotonic clocks, the private recovery root, one dedicated persist
+//! worker thread, and the small state machine
 //! that surfaces startup offers and persist failures without writing a user
 //! document path. Snapshot capture stays on the UI thread; durable write and
 //! `fsync` run on the worker so typing is not stalled by disk.
 
-#[cfg(test)]
+#[cfg(any(windows, test))]
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,13 +26,14 @@ use noter::core::recovery::{
     RecoveryScheduleState, RecoverySnapshot, RecoverySnapshotParts, RecoveryWallTime,
     ValidatedRecoveryMetadata,
 };
-#[cfg(test)]
+#[cfg(any(windows, test))]
 use noter::core::recovery_store::RECOVERY_STATE_SUBDIR;
 use noter::core::recovery_store::{
     RecoveryInstanceClaim, RecoveryLiveLease, RecoveryOffer, RecoveryScanDisposition,
     RecoveryStartupScan, RecoveryStore,
 };
 use noter::core::revision::Revision;
+use noter::core::save::SaveWarnings;
 
 #[cfg(test)]
 const RECOVERY_TEST_STATE_SUBDIR: &str = "state";
@@ -82,6 +83,27 @@ const RECOVERY_RESTORE_RETAINED_MESSAGE: &str = "Noter could not safely transfer
 /// Maximum length of a quarantine notice shown at startup.
 const MAX_QUARANTINE_NOTICE_BYTES: usize = 240;
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum SaveDurabilityRisk {
+    #[default]
+    Clear,
+    Warning,
+}
+
+impl SaveDurabilityRisk {
+    pub fn from_warnings(warnings: &SaveWarnings) -> Self {
+        if warnings.durability().is_empty() {
+            Self::Clear
+        } else {
+            Self::Warning
+        }
+    }
+
+    pub const fn is_at_risk(self) -> bool {
+        matches!(self, Self::Warning)
+    }
+}
+
 struct PersistJob {
     store: RecoveryStore,
     snapshot: RecoverySnapshot,
@@ -108,7 +130,7 @@ struct PreparedRecoveryIdentity {
     live_lease: RecoveryLiveLease,
 }
 
-/// Resolves the per-user state directory used for preferences and recovery.
+/// Resolves the eframe state directory used for preferences and legacy Windows recovery.
 ///
 /// Matches eframe's `storage_dir("Noter")` layout documented in INSTALLATION.md.
 #[must_use]
@@ -118,6 +140,20 @@ pub fn noter_state_directory() -> Option<PathBuf> {
         return Some(PathBuf::from(path));
     }
     eframe::storage_dir(NOTER_APP_ID)
+}
+
+#[cfg(any(windows, test))]
+fn open_legacy_recovery_store(state: &Path) -> std::io::Result<Option<RecoveryStore>> {
+    match fs::symlink_metadata(state.join(RECOVERY_STATE_SUBDIR)) {
+        Ok(_) => RecoveryStore::open_in_state(state).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(any(windows, test))]
+fn local_recovery_state_from_known_folder(local_appdata: &Path) -> PathBuf {
+    local_appdata.join(NOTER_APP_ID)
 }
 
 /// Returns the private recovery root under the state directory.
@@ -132,6 +168,7 @@ pub fn recovery_root_from_state(state_dir: impl AsRef<Path>) -> PathBuf {
 pub struct StartupRecoveryOffer {
     artifact: RecoveryOffer,
     offer: RecoveryOfferState,
+    legacy: bool,
 }
 
 impl StartupRecoveryOffer {
@@ -165,8 +202,16 @@ impl StartupRecoveryOffer {
 }
 
 /// Process-owned recovery session for one editor window.
+#[derive(Default)]
+enum LegacyCleanupStatus {
+    #[default]
+    Clear,
+    Failed,
+}
+
 pub struct CrashRecoverySession {
     store: Option<RecoveryStore>,
+    legacy_store: Option<RecoveryStore>,
     schedule: RecoveryScheduleState,
     document_id: RecoveryDocumentId,
     instance_id: RecoveryInstanceId,
@@ -178,10 +223,13 @@ pub struct CrashRecoverySession {
     lineage_generation: RecoveryLineageGeneration,
     predecessor_instance: Option<RecoveryInstanceId>,
     startup_offers: Vec<StartupRecoveryOffer>,
+    pending_legacy_cleanup: Option<StartupRecoveryOffer>,
+    pending_legacy_review: Option<StartupRecoveryOffer>,
     active_offer_index: Option<usize>,
     quarantine_notices: Vec<String>,
     persist_failure: bool,
     cleanup_failure: bool,
+    pending_legacy_cleanup_status: LegacyCleanupStatus,
     unavailable: bool,
     /// Why the recovery store could not be opened, when it was refused.
     unavailable_reason: Option<String>,
@@ -193,18 +241,50 @@ pub struct CrashRecoverySession {
 }
 
 impl CrashRecoverySession {
-    /// Opens the private recovery store under the platform state directory and
-    /// scans startup records.
+    /// Opens the private recovery store and scans startup records. On Windows,
+    /// new records use `LocalAppData` and prior Roaming records remain eligible
+    /// for review.
     ///
     /// When the state directory or store cannot open, the session stays usable
     /// but does not persist recovery files (`unavailable` is true).
     pub fn open_default() -> Self {
+        #[cfg(windows)]
+        {
+            #[cfg(feature = "screenshot-qa")]
+            if std::env::var_os(SCREENSHOT_QA_STATE_DIRECTORY_ENV).is_some() {
+                return noter_state_directory().map_or_else(Self::unavailable, Self::open_in_state);
+            }
+            let local_state = noter_platform::windows_local_appdata_directory()
+                .map(|path| local_recovery_state_from_known_folder(&path));
+            let legacy_state = noter_state_directory().ok_or_else(|| {
+                std::io::Error::other("Windows RoamingAppData recovery lookup failed")
+            });
+            match local_state.and_then(|state| legacy_state.map(|legacy| (state, legacy))) {
+                Ok((state, legacy)) => Self::open_with_legacy_state(&state, Some(&legacy)),
+                Err(error) => Self::from_store_result(Err(error)),
+            }
+        }
+        #[cfg(not(windows))]
         noter_state_directory().map_or_else(Self::unavailable, Self::open_in_state)
     }
 
     /// Opens a recovery session beneath an explicit platform state root.
+    #[cfg(any(not(windows), feature = "screenshot-qa"))]
     pub fn open_in_state(state_root: impl Into<PathBuf>) -> Self {
         Self::from_store_result(RecoveryStore::open_in_state(state_root))
+    }
+
+    #[cfg(any(windows, test))]
+    pub(crate) fn open_with_legacy_state(local_state: &Path, legacy_state: Option<&Path>) -> Self {
+        let stores = RecoveryStore::open_in_state(local_state).and_then(|store| {
+            let legacy_store = legacy_state
+                .filter(|path| *path != local_state)
+                .map(open_legacy_recovery_store)
+                .transpose()?
+                .flatten();
+            Ok((store, legacy_store))
+        });
+        Self::from_store_pair_result(stores)
     }
 
     /// Opens a recovery session under an explicit recovery root (tests).
@@ -214,15 +294,22 @@ impl CrashRecoverySession {
     }
 
     fn from_store_result(store: std::io::Result<RecoveryStore>) -> Self {
+        Self::from_store_pair_result(store.map(|store| (store, None)))
+    }
+
+    fn from_store_pair_result(
+        stores: std::io::Result<(RecoveryStore, Option<RecoveryStore>)>,
+    ) -> Self {
         let mut session = Self::blank();
         if session.unavailable {
             // Identity construction failed; never attach a store with weak IDs.
             return session;
         }
-        match store {
-            Ok(store) => {
+        match stores {
+            Ok((store, legacy_store)) => {
                 session.attach_persist_worker();
                 session.store = Some(store);
+                session.legacy_store = legacy_store;
                 session.acquire_live_lease();
                 if !session.unavailable {
                     session.ingest_scan();
@@ -255,6 +342,7 @@ impl CrashRecoverySession {
         }
     }
 
+    #[cfg(any(not(windows), test, feature = "screenshot-qa"))]
     fn unavailable() -> Self {
         let mut session = Self::blank();
         session.unavailable = true;
@@ -273,6 +361,7 @@ impl CrashRecoverySession {
             };
         Self {
             store: None,
+            legacy_store: None,
             schedule: RecoveryScheduleState::default(),
             document_id,
             instance_id,
@@ -282,10 +371,13 @@ impl CrashRecoverySession {
             lineage_generation: RecoveryLineageGeneration::ROOT,
             predecessor_instance: None,
             startup_offers: Vec::new(),
+            pending_legacy_cleanup: None,
+            pending_legacy_review: None,
             active_offer_index: None,
             quarantine_notices: Vec::new(),
             persist_failure: false,
             cleanup_failure: false,
+            pending_legacy_cleanup_status: LegacyCleanupStatus::Clear,
             unavailable,
             unavailable_reason: None,
             persist_jobs: None,
@@ -304,13 +396,25 @@ impl CrashRecoverySession {
             self.unavailable = true;
             return;
         };
-        self.apply_scan_entries(scan);
-    }
-
-    fn apply_scan_entries(&mut self, scan: RecoveryStartupScan) {
+        let legacy_scan = self
+            .legacy_store
+            .as_ref()
+            .map(RecoveryStore::scan_startup)
+            .transpose();
+        let Ok(legacy_scan) = legacy_scan else {
+            self.unavailable = true;
+            return;
+        };
         self.startup_offers.clear();
         self.quarantine_notices.clear();
         self.active_offer_index = None;
+        self.apply_scan_entries(scan, false);
+        if let Some(legacy_scan) = legacy_scan {
+            self.apply_scan_entries(legacy_scan, true);
+        }
+    }
+
+    fn apply_scan_entries(&mut self, scan: RecoveryStartupScan, legacy: bool) {
         let scan_incomplete = scan.has_omissions();
         let quarantine_results_omitted = scan.quarantine_results_omitted();
         for entry in scan {
@@ -320,8 +424,11 @@ impl CrashRecoverySession {
                 RecoveryScanDisposition::Offer(artifact) => {
                     let mut offer = RecoveryOfferState::default();
                     offer.present();
-                    self.startup_offers
-                        .push(StartupRecoveryOffer { artifact, offer });
+                    self.startup_offers.push(StartupRecoveryOffer {
+                        artifact,
+                        offer,
+                        legacy,
+                    });
                 }
                 RecoveryScanDisposition::Quarantine(reason) => {
                     let message = quarantine_error.as_deref().map_or_else(
@@ -373,6 +480,10 @@ impl CrashRecoverySession {
     /// Returns whether an authorized recovery cleanup could not complete.
     pub const fn has_cleanup_failure(&self) -> bool {
         self.cleanup_failure
+            || matches!(
+                self.pending_legacy_cleanup_status,
+                LegacyCleanupStatus::Failed
+            )
     }
 
     /// Clears a dismissed persist-failure notice without claiming durability.
@@ -383,6 +494,7 @@ impl CrashRecoverySession {
     /// Hides the cleanup warning without claiming that deletion succeeded.
     pub const fn dismiss_cleanup_failure(&mut self) {
         self.cleanup_failure = false;
+        self.pending_legacy_cleanup_status = LegacyCleanupStatus::Clear;
     }
 
     /// Returns quarantine notices collected at the last scan.
@@ -402,6 +514,54 @@ impl CrashRecoverySession {
             .filter(|offer| offer.is_open())
     }
 
+    /// Whether an older Roaming copy of the restored local record awaits an
+    /// explicit cleanup decision.
+    pub const fn has_pending_legacy_cleanup(&self) -> bool {
+        self.pending_legacy_cleanup.is_some()
+    }
+
+    /// Whether a separate Roaming offer awaits review after the current
+    /// restored document is saved.
+    pub const fn has_pending_legacy_review(&self) -> bool {
+        self.pending_legacy_review.is_some()
+    }
+
+    /// Removes only the validated older Roaming copy after the user asks for it.
+    pub fn discard_pending_legacy_copy(&mut self) -> bool {
+        let (Some(store), Some(offer)) = (&self.legacy_store, &self.pending_legacy_cleanup) else {
+            return false;
+        };
+        let Ok(claim) = store.claim_offered_record(offer.artifact.primary()) else {
+            self.pending_legacy_cleanup_status = LegacyCleanupStatus::Failed;
+            return false;
+        };
+        if store
+            .load_claimed_record(offer.artifact.primary(), &claim)
+            .is_err()
+        {
+            self.pending_legacy_cleanup_status = LegacyCleanupStatus::Failed;
+            let _ = store.release_claim(claim);
+            return false;
+        }
+        let cleanup = offer
+            .artifact
+            .try_clone_for_cleanup()
+            .and_then(|artifact| cleanup_offer_artifacts(store, artifact, &claim));
+        let release = store.release_claim(claim);
+        if cleanup.is_err() {
+            self.pending_legacy_cleanup_status = LegacyCleanupStatus::Failed;
+            self.cleanup_failure |= release.is_err();
+            return false;
+        }
+        self.pending_legacy_cleanup = None;
+        self.pending_legacy_cleanup_status = LegacyCleanupStatus::Clear;
+        if release.is_err() {
+            self.cleanup_failure = true;
+            return false;
+        }
+        true
+    }
+
     /// Restores the active offer into an in-memory dirty document and selection.
     ///
     /// The offered instance record is removed only after the same bytes have
@@ -416,7 +576,19 @@ impl CrashRecoverySession {
         let index = self
             .active_offer_index
             .ok_or_else(|| "No recovery offer is open.".to_owned())?;
-        let Some(store) = self.store.clone() else {
+        let Some(target_store) = self.store.clone() else {
+            self.mark_unavailable_for_identity_failure();
+            return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
+        };
+        let legacy = self
+            .startup_offers
+            .get(index)
+            .is_some_and(|offer| offer.legacy);
+        let Some(source_store) = (if legacy {
+            self.legacy_store.clone()
+        } else {
+            Some(target_store.clone())
+        }) else {
             self.mark_unavailable_for_identity_failure();
             return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
         };
@@ -426,11 +598,12 @@ impl CrashRecoverySession {
                 .get(index)
                 .filter(|offer| offer.is_open())
                 .ok_or_else(|| "No recovery offer is open.".to_owned())?;
-            let claim = store
+            let claim = source_store
                 .claim_offered_record(offer.artifact.primary())
                 .map_err(|_| RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned())?;
-            let Ok(record) = store.load_claimed_record(offer.artifact.primary(), &claim) else {
-                self.cleanup_failure |= store.release_claim(claim).is_err();
+            let Ok(record) = source_store.load_claimed_record(offer.artifact.primary(), &claim)
+            else {
+                self.cleanup_failure |= source_store.release_claim(claim).is_err();
                 return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
             };
             (record, claim)
@@ -440,7 +613,7 @@ impl CrashRecoverySession {
         let mut document = match Document::from_bytes(record.content()) {
             Ok(document) => document,
             Err(error) => {
-                self.cleanup_failure |= store.release_claim(claim).is_err();
+                self.cleanup_failure |= source_store.release_claim(claim).is_err();
                 return Err(format!("Recovered content could not be opened: {error}"));
             }
         };
@@ -448,7 +621,7 @@ impl CrashRecoverySession {
         debug_assert!(document.is_dirty());
 
         let Ok(prepared) = self.prepare_fresh_identity(record.document_id()) else {
-            self.cleanup_failure |= store.release_claim(claim).is_err();
+            self.cleanup_failure |= source_store.release_claim(claim).is_err();
             self.mark_unavailable_for_identity_failure();
             return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
         };
@@ -468,12 +641,12 @@ impl CrashRecoverySession {
             record.metadata(),
         ) else {
             self.release_prepared_identity(prepared);
-            self.cleanup_failure |= store.release_claim(claim).is_err();
+            self.cleanup_failure |= source_store.release_claim(claim).is_err();
             return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
         };
-        if store.persist(&replacement_snapshot).is_err() {
+        if target_store.persist(&replacement_snapshot).is_err() {
             self.release_prepared_identity(prepared);
-            self.cleanup_failure |= store.release_claim(claim).is_err();
+            self.cleanup_failure |= source_store.release_claim(claim).is_err();
             return Err(RECOVERY_RESTORE_RETAINED_MESSAGE.to_owned());
         }
 
@@ -485,11 +658,31 @@ impl CrashRecoverySession {
         let restored_offer = self
             .take_offer_slot(index)
             .expect("the active recovery offer must remain present");
+        if !legacy {
+            self.hold_related_legacy_offers(record.metadata());
+        }
         self.commit_fresh_identity(prepared, lineage_generation, predecessor_instance);
-        let cleanup = cleanup_offer_artifacts(&store, restored_offer.artifact, &claim);
-        let release = store.release_claim(claim);
+        let cleanup = cleanup_offer_artifacts(&source_store, restored_offer.artifact, &claim);
+        let release = source_store.release_claim(claim);
         self.cleanup_failure |= cleanup.is_err() || release.is_err();
         Ok((document, selection))
+    }
+
+    fn hold_related_legacy_offers(&mut self, restored: &ValidatedRecoveryMetadata) {
+        if let Some(position) = self
+            .startup_offers
+            .iter()
+            .position(|offer| offer.legacy && restored.directly_supersedes(offer.metadata()))
+        {
+            self.pending_legacy_cleanup = Some(self.startup_offers.remove(position));
+        }
+        if let Some(position) = self.startup_offers.iter().position(|offer| {
+            offer.legacy
+                && offer.metadata().document_id() == restored.document_id()
+                && restored.predecessor_instance() == Some(offer.metadata().instance_id())
+        }) {
+            self.pending_legacy_review = Some(self.startup_offers.remove(position));
+        }
     }
 
     /// Discards the active startup offer and deletes its on-disk record.
@@ -503,7 +696,12 @@ impl CrashRecoverySession {
         if !offer.is_open() {
             return false;
         }
-        let Some(store) = self.store.clone() else {
+        let source_store = if offer.legacy {
+            self.legacy_store.clone()
+        } else {
+            self.store.clone()
+        };
+        let Some(store) = source_store else {
             self.cleanup_failure = true;
             return false;
         };
@@ -716,14 +914,19 @@ impl CrashRecoverySession {
     /// The scheduler normally waits for an idle pause. Advancing its clock by
     /// the longest dirty interval makes the revision due at once; time still
     /// only moves forward. Returns whether the record is known to hold this
-    /// revision.
+    /// revision. `clean_content_at_risk` covers a committed Save whose
+    /// durability warning left the in-memory bytes needing recovery.
     pub fn persist_before_exit(
         &mut self,
         document: &Document,
         selection: Selection,
         limit: Duration,
+        clean_content_at_risk: bool,
     ) -> bool {
-        if self.unavailable || self.store.is_none() || !document.is_dirty() {
+        if self.unavailable
+            || self.store.is_none()
+            || (!document.is_dirty() && !clean_content_at_risk)
+        {
             return false;
         }
         let deadline = Instant::now() + limit;
@@ -745,7 +948,7 @@ impl CrashRecoverySession {
         }
     }
 
-    /// Records a successful Save and deletes the owned recovery record.
+    /// Deletes the owned recovery record when the current document is clean.
     pub fn on_saved_clean(&mut self, revision: Revision) {
         if self.unavailable || self.store.is_none() {
             return;
@@ -759,6 +962,18 @@ impl CrashRecoverySession {
         let worker_fenced = self.fence_persist_worker();
         self.apply_schedule_effect(effect, None);
         self.persist_failure = !worker_fenced;
+    }
+
+    /// Offers an incomparable legacy copy once Save has protected current work.
+    pub fn on_committed_save(&mut self, revision: Revision) {
+        self.on_saved_clean(revision);
+        if self.unavailable || self.store.is_none() {
+            return;
+        }
+        if let Some(offer) = self.pending_legacy_review.take() {
+            self.startup_offers.push(offer);
+            self.active_offer_index = Some(self.startup_offers.len() - 1);
+        }
     }
 
     /// Records an explicit Discard and deletes the owned recovery record.
@@ -1170,10 +1385,12 @@ fn truncate_for_ui(text: &str, max_bytes: usize) -> String {
 mod tests {
     use super::*;
     use noter::core::recovery::{
-        RecoveryDocumentId, RecoveryInstanceId, RecoverySnapshot, RecoverySnapshotParts,
-        RecoveryStartupDisposition, RecoveryWallTime, validate_recovery_record,
+        RECOVERY_MAGIC, RecoveryDocumentId, RecoveryInstanceId, RecoverySnapshot,
+        RecoverySnapshotParts, RecoveryStartupDisposition, RecoveryWallTime,
+        validate_recovery_record,
     };
     use noter::core::revision::Revision;
+    use noter::core::save::ContentFingerprint;
     use noter::core::text_format::{Bom, Encoding};
     use tempfile::tempdir;
 
@@ -1214,6 +1431,369 @@ mod tests {
             content: content.to_vec(),
         })
         .expect("snapshot")
+    }
+
+    fn encode_v1(snapshot: &RecoverySnapshot) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(RECOVERY_MAGIC);
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&snapshot.document_id().as_bytes());
+        bytes.extend_from_slice(&snapshot.instance_id().as_bytes());
+        bytes.extend_from_slice(&snapshot.revision().get().to_le_bytes());
+        bytes.extend_from_slice(&snapshot.created_at().unix_millis().to_le_bytes());
+        bytes.extend_from_slice(&snapshot.updated_at().unix_millis().to_le_bytes());
+        bytes.extend_from_slice(
+            &u32::try_from(snapshot.original_path().len())
+                .expect("fixture path length")
+                .to_le_bytes(),
+        );
+        bytes.push(u8::from(snapshot.bom() == Bom::Utf8));
+        bytes.push(0);
+        bytes.extend_from_slice(
+            &u64::try_from(snapshot.selection().anchor())
+                .expect("fixture selection")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(
+            &u64::try_from(snapshot.selection().active())
+                .expect("fixture selection")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(
+            &u64::try_from(snapshot.content().len())
+                .expect("fixture content length")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(ContentFingerprint::from_bytes(snapshot.content()).as_bytes());
+        bytes.extend_from_slice(snapshot.original_path());
+        bytes.extend_from_slice(snapshot.content());
+        bytes
+    }
+
+    #[test]
+    fn legacy_recovery_offer_restores_into_the_local_store() {
+        let directory = tempdir().expect("tempdir");
+        let local_state = directory.path().join("local");
+        let legacy_state = directory.path().join("legacy");
+        let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
+        let old = sample_snapshot(81, b"unsaved legacy text");
+        legacy_store.persist(&old).expect("persist legacy record");
+
+        let mut session =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        assert!(!session.is_unavailable());
+        assert!(session.active_offer().expect("legacy offer").legacy);
+        let (document, _) = session
+            .restore_active_offer()
+            .expect("restore legacy offer");
+        assert_eq!(String::from(document.rope()), "unsaved legacy text");
+
+        let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
+        assert_eq!(recovery_record_count(&local_store), 1);
+        assert_eq!(recovery_record_count(&legacy_store), 0);
+    }
+
+    #[test]
+    fn interrupted_legacy_transfer_exposes_explicit_old_copy_cleanup() {
+        let directory = tempdir().expect("tempdir");
+        let local_state = directory.path().join("local");
+        let legacy_state = directory.path().join("legacy");
+        let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
+        let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
+        let ancestor = sample_snapshot(80, b"unsaved legacy text");
+        legacy_store
+            .persist(&ancestor)
+            .expect("persist legacy ancestor");
+        let old = RecoverySnapshot::try_new_with_lineage(
+            RecoverySnapshotParts {
+                document_id: ancestor.document_id(),
+                instance_id: RecoveryInstanceId::new([81; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(3),
+                updated_at: RecoveryWallTime::from_unix_millis(4),
+                original_path: b"notes.txt".to_vec(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::caret(0),
+                content: b"unsaved legacy text".to_vec(),
+            },
+            RecoveryLineageGeneration::new(1),
+            Some(ancestor.instance_id()),
+        )
+        .expect("legacy successor");
+        legacy_store.persist(&old).expect("persist legacy record");
+        let old_bytes = fs::read(legacy_store.record_path(old.instance_id())).expect("old bytes");
+        let RecoveryStartupDisposition::Offer(old_record) = validate_recovery_record(&old_bytes)
+        else {
+            panic!("valid old record");
+        };
+        let successor = RecoverySnapshot::try_new_successor(
+            RecoverySnapshotParts {
+                document_id: old.document_id(),
+                instance_id: RecoveryInstanceId::new([82; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(3),
+                updated_at: RecoveryWallTime::from_unix_millis(4),
+                original_path: b"notes.txt".to_vec(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::caret(0),
+                content: b"unsaved legacy text".to_vec(),
+            },
+            old_record.metadata(),
+        )
+        .expect("successor");
+        local_store.persist(&successor).expect("persist successor");
+
+        let mut session =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        assert_eq!(
+            session
+                .active_offer()
+                .expect("local offer")
+                .metadata()
+                .instance_id(),
+            successor.instance_id()
+        );
+        let (document, _) = session.restore_active_offer().expect("restore local copy");
+        assert_eq!(String::from(document.rope()), "unsaved legacy text");
+        session.defer_startup_offers();
+        assert!(session.active_offer().is_none());
+        assert!(session.has_pending_legacy_cleanup());
+        assert_eq!(recovery_record_count(&legacy_store), 2);
+        let busy_old_copy = legacy_store
+            .try_hold_live_lease(old.instance_id())
+            .expect("hold old copy busy");
+        assert!(!session.discard_pending_legacy_copy());
+        assert!(session.has_cleanup_failure());
+        assert!(session.has_pending_legacy_cleanup());
+        assert_eq!(recovery_record_count(&legacy_store), 2);
+        session.on_saved_clean(document.revision());
+        assert!(session.has_pending_legacy_cleanup());
+        assert_eq!(recovery_record_count(&legacy_store), 2);
+        drop(busy_old_copy);
+        fs::remove_file(legacy_store.live_path(old.instance_id())).expect("remove test lease");
+        let busy_ancestor = legacy_store
+            .try_hold_live_lease(ancestor.instance_id())
+            .expect("hold ancestor busy");
+        assert!(!session.discard_pending_legacy_copy());
+        assert!(session.has_pending_legacy_cleanup());
+        assert_eq!(recovery_record_count(&legacy_store), 2);
+        drop(busy_ancestor);
+        fs::remove_file(legacy_store.live_path(ancestor.instance_id()))
+            .expect("remove ancestor test lease");
+        assert!(session.discard_pending_legacy_copy());
+        assert!(!session.has_pending_legacy_cleanup());
+        assert!(!session.has_cleanup_failure());
+        assert_eq!(recovery_record_count(&legacy_store), 0);
+    }
+
+    #[test]
+    fn generation_gap_does_not_label_a_roaming_offer_as_obsolete() {
+        let directory = tempdir().expect("tempdir");
+        let local_state = directory.path().join("local");
+        let legacy_state = directory.path().join("legacy");
+        let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
+        let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
+        let old = sample_snapshot(81, b"independent roaming work");
+        legacy_store.persist(&old).expect("persist roaming record");
+        let local = RecoverySnapshot::try_new_with_lineage(
+            RecoverySnapshotParts {
+                document_id: old.document_id(),
+                instance_id: RecoveryInstanceId::new([82; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(3),
+                updated_at: RecoveryWallTime::from_unix_millis(4),
+                original_path: b"notes.txt".to_vec(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::caret(0),
+                content: b"independent local work".to_vec(),
+            },
+            RecoveryLineageGeneration::new(2),
+            Some(old.instance_id()),
+        )
+        .expect("independent local record");
+        local_store.persist(&local).expect("persist local record");
+
+        let mut session =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        let (document, _) = session
+            .restore_active_offer()
+            .expect("restore local record");
+        assert_eq!(String::from(document.rope()), "independent local work");
+        session.defer_startup_offers();
+        assert!(!session.has_pending_legacy_cleanup());
+        assert!(session.has_pending_legacy_review());
+        assert_eq!(recovery_record_count(&legacy_store), 1);
+        session.on_saved_clean(document.revision());
+        assert!(session.has_pending_legacy_review());
+        assert!(session.active_offer().is_none());
+        session.on_committed_save(document.revision());
+        assert!(!session.has_pending_legacy_review());
+        let offer = session.active_offer().expect("separate Roaming review");
+        assert!(offer.legacy);
+        assert_eq!(offer.metadata().instance_id(), old.instance_id());
+        assert_eq!(recovery_record_count(&legacy_store), 1);
+        assert!(session.discard_active_offer());
+        assert_eq!(recovery_record_count(&legacy_store), 0);
+    }
+
+    #[test]
+    fn schema_v1_roaming_predecessor_is_offered_after_local_save() {
+        let directory = tempdir().expect("tempdir");
+        let local_state = directory.path().join("local");
+        let legacy_state = directory.path().join("legacy");
+        let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
+        let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
+        let old = sample_snapshot(86, b"older roaming work");
+        fs::write(legacy_store.record_path(old.instance_id()), encode_v1(&old))
+            .expect("persist v1 Roaming record");
+        let local = RecoverySnapshot::try_new_with_lineage(
+            RecoverySnapshotParts {
+                document_id: old.document_id(),
+                instance_id: RecoveryInstanceId::new([87; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(3),
+                updated_at: RecoveryWallTime::from_unix_millis(4),
+                original_path: b"notes.txt".to_vec(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::caret(0),
+                content: b"local unsaved work".to_vec(),
+            },
+            RecoveryLineageGeneration::new(1),
+            Some(old.instance_id()),
+        )
+        .expect("local successor");
+        local_store
+            .persist(&local)
+            .expect("persist local successor");
+
+        let mut session =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        let (document, _) = session
+            .restore_active_offer()
+            .expect("restore local successor");
+        assert_eq!(String::from(document.rope()), "local unsaved work");
+        session.defer_startup_offers();
+        assert!(!session.has_pending_legacy_cleanup());
+        assert!(session.has_pending_legacy_review());
+        assert_eq!(recovery_record_count(&legacy_store), 1);
+
+        session.on_committed_save(document.revision());
+        let offer = session.active_offer().expect("schema-v1 review offer");
+        assert!(offer.legacy);
+        assert_eq!(offer.metadata().schema_version(), 1);
+        assert_eq!(offer.metadata().instance_id(), old.instance_id());
+        assert_eq!(recovery_record_count(&legacy_store), 1);
+        session.defer_startup_offers();
+        assert_eq!(recovery_record_count(&legacy_store), 1);
+    }
+
+    #[test]
+    fn legacy_offer_survives_when_local_successor_storage_is_unavailable() {
+        let directory = tempdir().expect("tempdir");
+        let local_state = directory.path().join("local");
+        let legacy_state = directory.path().join("legacy");
+        let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
+        let snapshot = sample_snapshot(85, b"only legacy recovery");
+        legacy_store
+            .persist(&snapshot)
+            .expect("persist legacy record");
+
+        let mut session =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        assert!(session.active_offer().expect("legacy offer").legacy);
+        session.store = None;
+
+        let Err(error) = session.restore_active_offer() else {
+            panic!("local store must stop the legacy transfer");
+        };
+        assert_eq!(error, RECOVERY_RESTORE_RETAINED_MESSAGE);
+        assert!(session.is_unavailable());
+        assert!(session.active_offer().is_some());
+        assert_eq!(
+            fs::read(legacy_store.record_path(snapshot.instance_id())).expect("retained record"),
+            snapshot.encode()
+        );
+    }
+
+    #[test]
+    fn local_and_legacy_offers_discard_from_their_own_roots() {
+        let directory = tempdir().expect("tempdir");
+        let local_state = directory.path().join("local");
+        let legacy_state = directory.path().join("legacy");
+        let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
+        let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
+        local_store
+            .persist(&sample_snapshot(82, b"local text"))
+            .expect("persist local record");
+        legacy_store
+            .persist(&sample_snapshot(83, b"legacy text"))
+            .expect("persist legacy record");
+
+        let mut session =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        assert!(!session.active_offer().expect("local offer").legacy);
+        assert!(session.discard_active_offer());
+        assert_eq!(recovery_record_count(&local_store), 0);
+        assert_eq!(recovery_record_count(&legacy_store), 1);
+        assert!(session.active_offer().expect("legacy offer").legacy);
+        assert!(session.discard_active_offer());
+        assert_eq!(recovery_record_count(&legacy_store), 0);
+    }
+
+    #[test]
+    fn absent_legacy_root_is_not_created_by_startup_review() {
+        let directory = tempdir().expect("tempdir");
+        let local_state = directory.path().join("local");
+        let legacy_state = directory.path().join("absent-legacy");
+
+        let session =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        assert!(!session.is_unavailable());
+        assert!(!legacy_state.exists());
+    }
+
+    #[test]
+    fn fresh_local_appdata_parent_can_open_recovery_without_prior_noter_directory() {
+        let local_appdata = tempdir().expect("local appdata fixture");
+        let local_state = local_recovery_state_from_known_folder(local_appdata.path());
+        assert!(!local_state.exists());
+
+        let session = CrashRecoverySession::open_with_legacy_state(&local_state, None);
+        assert!(!session.is_unavailable());
+        assert_eq!(
+            session
+                .recovery_root_for_test()
+                .expect("local recovery root"),
+            local_state.join(RECOVERY_STATE_SUBDIR)
+        );
+    }
+
+    #[test]
+    fn invalid_legacy_root_refuses_recovery_instead_of_hiding_records() {
+        let directory = tempdir().expect("tempdir");
+        let local_state = directory.path().join("local");
+        let legacy_state = directory.path().join("legacy");
+        let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
+        local_store
+            .persist(&sample_snapshot(84, b"untouched local recovery"))
+            .expect("persist local record");
+        fs::create_dir(&legacy_state).expect("legacy state directory");
+        let invalid_root = legacy_state.join(RECOVERY_STATE_SUBDIR);
+        fs::write(&invalid_root, b"not a recovery directory").expect("invalid root");
+
+        let session =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        assert!(session.is_unavailable());
+        assert!(session.active_offer().is_none());
+        assert_eq!(
+            fs::read(&invalid_root).expect("retained entry"),
+            b"not a recovery directory"
+        );
+        assert_eq!(recovery_record_count(&local_store), 1);
     }
 
     fn snapshot_for(

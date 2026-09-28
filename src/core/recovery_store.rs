@@ -13,7 +13,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 use noter_platform::{CommitReceipt, InstallNewOutcome, ReplaceExistingOutcome};
 #[cfg(unix)]
 use noter_platform::{UnixRecoveryDirectory, UnixRecoveryNamespace};
@@ -86,6 +86,16 @@ impl RecoveryRecordHandle {
     pub const fn metadata(&self) -> &ValidatedRecoveryMetadata {
         &self.metadata
     }
+
+    fn try_clone_for_cleanup(&self) -> io::Result<Self> {
+        Ok(Self {
+            path: self.path.clone(),
+            metadata: self.metadata.clone(),
+            file: self.file.try_clone()?,
+            facts: self.facts,
+            encoded_len: self.encoded_len,
+        })
+    }
 }
 
 /// One bounded restore offer and exact causally superseded artifacts.
@@ -97,6 +107,24 @@ pub struct RecoveryOffer {
 }
 
 impl RecoveryOffer {
+    /// Clones the exact open handles so a failed deletion can retain the
+    /// original offer for an in-session retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if any handle cannot be cloned.
+    pub fn try_clone_for_cleanup(&self) -> io::Result<Self> {
+        Ok(Self {
+            primary: Box::new(self.primary.try_clone_for_cleanup()?),
+            superseded: self
+                .superseded
+                .iter()
+                .map(RecoveryRecordHandle::try_clone_for_cleanup)
+                .collect::<io::Result<Vec<_>>>()?,
+            superseded_omitted: self.superseded_omitted,
+        })
+    }
+
     /// Returns the primary exact artifact selected for restore.
     pub const fn primary(&self) -> &RecoveryRecordHandle {
         &self.primary
@@ -921,6 +949,21 @@ impl RecoveryStore {
                 break;
             }
             let path = next?;
+            #[cfg(windows)]
+            if path
+                .file_name()
+                .is_none_or(|name| WindowsRecoveryEntryName::new(name).is_err())
+            {
+                retain_quarantine_result(
+                    &mut scan,
+                    retained_quarantine_entry(
+                        path,
+                        RecoveryQuarantineReason::UnsafeName,
+                        "Noter left this entry unchanged because its Windows name cannot be opened unambiguously.",
+                    ),
+                );
+                continue;
+            }
             let Some(is_file) = startup_entry_is_file(self, &path)? else {
                 continue;
             };
@@ -1496,17 +1539,21 @@ fn consider_offer(
         return;
     }
 
-    while let Some(index) = offers
-        .iter()
-        .position(|offer| directly_supersedes(&candidate.primary.metadata, &offer.primary.metadata))
-    {
+    while let Some(index) = offers.iter().position(|offer| {
+        candidate
+            .primary
+            .metadata
+            .directly_supersedes(&offer.primary.metadata)
+    }) {
         let older = offers.remove(index);
         absorb_superseded(&mut candidate, older);
     }
-    if let Some(index) = offers
-        .iter()
-        .position(|offer| directly_supersedes(&offer.primary.metadata, &candidate.primary.metadata))
-    {
+    if let Some(index) = offers.iter().position(|offer| {
+        offer
+            .primary
+            .metadata
+            .directly_supersedes(&candidate.primary.metadata)
+    }) {
         absorb_superseded(&mut offers[index], candidate);
         return;
     }
@@ -1547,20 +1594,6 @@ fn absorb_superseded(target: &mut RecoveryOffer, older: RecoveryOffer) {
     }
     push_superseded(target, *older.primary);
     target.superseded_omitted |= older.superseded_omitted;
-}
-
-fn directly_supersedes(
-    candidate: &ValidatedRecoveryMetadata,
-    current: &ValidatedRecoveryMetadata,
-) -> bool {
-    candidate.schema_version() == RECOVERY_SCHEMA_VERSION
-        && current.schema_version() == RECOVERY_SCHEMA_VERSION
-        && candidate.document_id() == current.document_id()
-        && candidate.predecessor_instance() == Some(current.instance_id())
-        && current
-            .lineage_generation()
-            .and_then(super::recovery::RecoveryLineageGeneration::checked_next)
-            == candidate.lineage_generation()
 }
 
 fn offer_sort_key(offer: &RecoveryOffer) -> ([u8; 16], [u8; 16], &Path) {
@@ -1834,7 +1867,7 @@ const fn complete_bound_read_matches(
     bytes_read_match && facts_match && length_matches
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 const fn reconciled_cleanup_state_is_exact(
     destination_matches: bool,
     stage_matches_or_is_absent: bool,
@@ -2083,27 +2116,133 @@ fn write_atomic_private_windows(
     instance_id: RecoveryInstanceId,
     bytes: &[u8],
 ) -> io::Result<()> {
-    let (_, destination_name) = store.windows_bound_entry(destination)?;
-    WindowsRecoveryEntryName::new(destination_name)?;
-    write_atomic_private_with_sync_and_create(
-        RecoveryWriteRequest {
-            destination,
-            instance_id,
-            bytes,
-        },
-        WindowsRecoveryArtifactAccess::Bound(store),
-        |stage| store.entry_create_private_new(stage),
-        |file, _, destination| {
-            let (directory, name) = store.windows_bound_entry(destination)?;
-            directory.install_new_from_open(file, name)
-        },
-        noter_platform::replace_existing,
-        |receipt| {
-            let _ = receipt.sync()?;
-            let (directory, _) = store.windows_bound_entry(destination)?;
-            directory.sync()
-        },
+    write_atomic_private_windows_bound_with(
+        store,
+        destination,
+        instance_id,
+        bytes,
+        |_, directory| directory.sync().map(|_| ()),
     )
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WindowsRecoveryBarrier {
+    Backup,
+    Stage,
+    Cleanup,
+}
+
+#[cfg(windows)]
+fn write_atomic_private_windows_bound_with(
+    store: &RecoveryStore,
+    destination: &Path,
+    instance_id: RecoveryInstanceId,
+    bytes: &[u8],
+    mut barrier: impl FnMut(WindowsRecoveryBarrier, &WindowsRecoveryDirectory) -> io::Result<()>,
+) -> io::Result<()> {
+    let (directory, destination_name) = store.windows_bound_entry(destination)?;
+    WindowsRecoveryEntryName::new(destination_name)?;
+    let stage_path =
+        exclusive_stage_path(directory.path(), instance_id, TemporaryArtifactKind::Stage)?;
+    let backup_path =
+        exclusive_stage_path(directory.path(), instance_id, TemporaryArtifactKind::Backup)?;
+    let (_, stage_name) = store.windows_bound_entry(&stage_path)?;
+    let (_, backup_name) = store.windows_bound_entry(&backup_path)?;
+    let access = WindowsRecoveryArtifactAccess::Bound(store);
+    let initial = inspect_windows_recovery_artifact(access, destination)?;
+
+    let mut created = store.entry_create_private_new(&stage_path)?;
+    created.write_all(bytes)?;
+    created.flush()?;
+    noter_platform::sync_file(&created)?;
+    let intended = observe_windows_recovery_artifact(access, &stage_path, &created)?;
+    if !requested_windows_stage_matches(intended, bytes)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery stage differs from the requested snapshot",
+        ));
+    }
+    drop(created);
+
+    let stage = directory.open_for_bound_replacement(stage_name)?;
+    if observe_windows_recovery_artifact(access, &stage_path, &stage)? != intended {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery stage changed before installation",
+        ));
+    }
+    let predecessor =
+        classify_windows_predecessor_open(directory.open_for_bound_replacement(destination_name))?;
+    let Some(predecessor) = predecessor else {
+        if initial.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "recovery predecessor disappeared before installation",
+            ));
+        }
+        let _ = directory
+            .install_new_from_open(&stage, destination_name)?
+            .into_parts();
+        barrier(WindowsRecoveryBarrier::Stage, directory)?;
+        return Ok(());
+    };
+    let predecessor_observation =
+        observe_windows_recovery_artifact(access, destination, &predecessor)?;
+    if initial != Some(predecessor_observation) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery predecessor changed before replacement",
+        ));
+    }
+
+    // The first barrier makes the predecessor's private backup durable before
+    // the new record can take its canonical name. Failures before cleanup
+    // retain both snapshots for startup review.
+    let _ = directory
+        .install_new_from_open(&predecessor, backup_name)?
+        .into_parts();
+    barrier(WindowsRecoveryBarrier::Backup, directory)?;
+    let _ = directory
+        .install_new_from_open(&stage, destination_name)?
+        .into_parts();
+    barrier(WindowsRecoveryBarrier::Stage, directory)?;
+
+    let installed = observe_windows_recovery_artifact(access, destination, &stage)?;
+    let backed_up = observe_windows_recovery_artifact(access, &backup_path, &predecessor)?;
+    if !windows_replacement_observations_match(
+        installed,
+        intended,
+        backed_up,
+        predecessor_observation,
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery record changed after replacement",
+        ));
+    }
+    noter_platform::delete_open_file(&predecessor)?;
+    drop(predecessor);
+    barrier(WindowsRecoveryBarrier::Cleanup, directory)
+}
+
+#[cfg(windows)]
+fn classify_windows_predecessor_open(result: io::Result<File>) -> io::Result<Option<File>> {
+    match result {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn windows_replacement_observations_match(
+    installed: RecoveryArtifactObservation,
+    intended: RecoveryArtifactObservation,
+    backed_up: RecoveryArtifactObservation,
+    predecessor: RecoveryArtifactObservation,
+) -> bool {
+    installed == intended && backed_up == predecessor
 }
 
 #[cfg(all(windows, test))]
@@ -2153,7 +2292,7 @@ fn write_atomic_private_with_sync(
     )
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn write_atomic_private_with_sync_and_create(
     request: RecoveryWriteRequest<'_>,
     #[cfg(windows)] access: WindowsRecoveryArtifactAccess<'_>,
@@ -2199,7 +2338,7 @@ fn write_atomic_private_with_sync_and_create(
     sync_parent(success.parent_sync).map(|_| ())
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 #[derive(Debug)]
 enum RecoveryParentSync {
     Bound(noter_platform::ParentSyncReceipt),
@@ -2207,20 +2346,20 @@ enum RecoveryParentSync {
     UnsupportedAfterReconciliation,
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 #[derive(Debug)]
 struct RecoveryCommitSuccess {
     parent_sync: RecoveryParentSync,
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 impl RecoveryCommitSuccess {
     const fn clean(parent_sync: RecoveryParentSync) -> Self {
         Self { parent_sync }
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 impl RecoveryParentSync {
     const fn bound(receipt: noter_platform::ParentSyncReceipt) -> Self {
         Self::Bound(receipt)
@@ -2237,13 +2376,13 @@ impl RecoveryParentSync {
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 #[derive(Debug)]
 struct RecoveryCommitFailure {
     error: io::Error,
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct RecoveryWriteRequest<'a> {
     destination: &'a Path,
@@ -2251,7 +2390,7 @@ struct RecoveryWriteRequest<'a> {
     bytes: &'a [u8],
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct RecoveryStagedPaths<'a> {
     stage: &'a Path,
@@ -2259,7 +2398,7 @@ struct RecoveryStagedPaths<'a> {
     backup: &'a Path,
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 impl RecoveryCommitFailure {
     #[cfg(windows)]
     const fn preserve_windows_artifacts(error: io::Error) -> Self {
@@ -2267,14 +2406,14 @@ impl RecoveryCommitFailure {
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 impl From<io::Error> for RecoveryCommitFailure {
     fn from(error: io::Error) -> Self {
         Self { error }
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn commit_staged_record_with(
     paths: RecoveryStagedPaths<'_>,
     bytes: &[u8],
@@ -2296,6 +2435,18 @@ fn commit_staged_record_with(
     file.write_all(bytes)?;
     file.flush()?;
     noter_platform::sync_file(&file)?;
+    #[cfg(windows)]
+    let intended = {
+        let observed = observe_windows_recovery_artifact(access, stage, &file)?;
+        if !requested_windows_stage_matches(observed, bytes)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recovery stage differs from the requested snapshot",
+            )
+            .into());
+        }
+        IntendedWindowsRecoveryContent::from_observation(observed)
+    };
 
     if destination.exists() {
         drop(file);
@@ -2303,6 +2454,8 @@ fn commit_staged_record_with(
             paths,
             #[cfg(windows)]
             access,
+            #[cfg(windows)]
+            intended,
             replace,
         )
     } else {
@@ -2327,6 +2480,8 @@ fn commit_staged_record_with(
                     paths,
                     #[cfg(windows)]
                     access,
+                    #[cfg(windows)]
+                    intended,
                     replace,
                 )
             }
@@ -2335,10 +2490,11 @@ fn commit_staged_record_with(
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn finish_replace_with(
     paths: RecoveryStagedPaths<'_>,
     #[cfg(windows)] access: WindowsRecoveryArtifactAccess<'_>,
+    #[cfg(windows)] intended: IntendedWindowsRecoveryContent,
     replace: impl FnOnce(
         &Path,
         &Path,
@@ -2351,12 +2507,25 @@ fn finish_replace_with(
         backup,
     } = paths;
     #[cfg(windows)]
-    let intended = inspect_windows_recovery_artifact(access, stage)?.ok_or_else(|| {
+    let stage_observation = inspect_windows_recovery_artifact(access, stage)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "recovery stage disappeared before replacement",
         )
     })?;
+    #[cfg(windows)]
+    if !intended.matches(stage_observation) {
+        let cause = io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery stage changed before replacement",
+        );
+        return Err(uncertain_windows_recovery_failure(
+            stage,
+            backup,
+            &cause,
+            "the recovery stage no longer identifies the intended snapshot",
+        ));
+    }
     #[cfg(windows)]
     let expected = inspect_windows_recovery_artifact(access, destination)?.ok_or_else(|| {
         io::Error::new(
@@ -2374,12 +2543,7 @@ fn finish_replace_with(
                     {
                         let success = io::Error::other("recovery replacement reported success");
                         finalize_reconciled_windows_recovery(
-                            access,
-                            paths,
-                            IntendedWindowsRecoveryContent::from_observation(intended),
-                            expected,
-                            &success,
-                            true,
+                            access, paths, intended, expected, &success, true,
                         )?;
                         Ok(RecoveryCommitSuccess::clean(RecoveryParentSync::bound(
                             parent_sync,
@@ -2404,14 +2568,8 @@ fn finish_replace_with(
         }
         Err(error) => {
             #[cfg(windows)]
-            return reconcile_windows_recovery_replace(
-                access,
-                paths,
-                IntendedWindowsRecoveryContent::from_observation(intended),
-                expected,
-                error,
-            )
-            .map(RecoveryCommitSuccess::clean);
+            return reconcile_windows_recovery_replace(access, paths, intended, expected, error)
+                .map(RecoveryCommitSuccess::clean);
             #[cfg(not(windows))]
             Err(error.into())
         }
@@ -2426,13 +2584,13 @@ struct RecoveryArtifactObservation {
     length: u64,
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct IntendedWindowsRecoveryContent {
     observation: RecoveryArtifactObservation,
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 impl IntendedWindowsRecoveryContent {
     const fn from_observation(observation: RecoveryArtifactObservation) -> Self {
         Self { observation }
@@ -2441,6 +2599,20 @@ impl IntendedWindowsRecoveryContent {
     fn matches(self, actual: RecoveryArtifactObservation) -> bool {
         self.observation == actual
     }
+}
+
+#[cfg(windows)]
+fn requested_windows_stage_matches(
+    observed: RecoveryArtifactObservation,
+    bytes: &[u8],
+) -> io::Result<bool> {
+    let length = u64::try_from(bytes.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "recovery record length is too large",
+        )
+    })?;
+    Ok(observed.length == length && observed.fingerprint == ContentFingerprint::from_bytes(bytes))
 }
 
 #[cfg(windows)]
@@ -2461,6 +2633,7 @@ impl WindowsRecoveryArtifactAccess<'_> {
         }
     }
 
+    #[cfg(test)]
     fn open_for_cleanup(self, path: &Path) -> io::Result<File> {
         match self {
             Self::Bound(store) => store.entry_open_for_cleanup(path),
@@ -2480,6 +2653,7 @@ impl WindowsRecoveryArtifactAccess<'_> {
         }
     }
 
+    #[cfg(test)]
     fn install_new_from_verified_stage(
         self,
         stage: &Path,
@@ -2517,14 +2691,14 @@ fn inspect_windows_recovery_artifact(
     observe_windows_recovery_artifact(access, path, &file).map(Some)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 #[derive(Debug)]
 struct OpenRecoveryArtifact {
     file: File,
     observation: RecoveryArtifactObservation,
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn open_windows_recovery_artifact_for_cleanup(
     access: WindowsRecoveryArtifactAccess<'_>,
     path: &Path,
@@ -2538,7 +2712,7 @@ fn open_windows_recovery_artifact_for_cleanup(
     Ok(Some(OpenRecoveryArtifact { file, observation }))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn open_windows_recovery_artifact_for_ratification(
     access: WindowsRecoveryArtifactAccess<'_>,
     path: &Path,
@@ -2552,7 +2726,7 @@ fn open_windows_recovery_artifact_for_ratification(
     Ok(Some(OpenRecoveryArtifact { file, observation }))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn delete_verified_windows_recovery_artifact(artifact: OpenRecoveryArtifact) -> io::Result<()> {
     noter_platform::delete_open_file(&artifact.file)?;
     drop(artifact.file);
@@ -2629,7 +2803,7 @@ fn fingerprint_bound_open_windows_file(
     Ok(fingerprint)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn reconcile_windows_recovery_replace(
     access: WindowsRecoveryArtifactAccess<'_>,
     paths: RecoveryStagedPaths<'_>,
@@ -2726,7 +2900,7 @@ fn reconcile_windows_recovery_replace(
     ))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn complete_missing_windows_recovery_destination(
     access: WindowsRecoveryArtifactAccess<'_>,
     paths: RecoveryStagedPaths<'_>,
@@ -2763,7 +2937,7 @@ fn complete_missing_windows_recovery_destination(
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn finalize_reconciled_windows_recovery(
     access: WindowsRecoveryArtifactAccess<'_>,
     paths: RecoveryStagedPaths<'_>,
@@ -2783,7 +2957,7 @@ fn finalize_reconciled_windows_recovery(
     )
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn finalize_reconciled_windows_recovery_with_cleanup_hook(
     access: WindowsRecoveryArtifactAccess<'_>,
     paths: RecoveryStagedPaths<'_>,
@@ -2883,7 +3057,7 @@ fn finalize_reconciled_windows_recovery_with_cleanup_hook(
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn uncertain_windows_recovery_failure(
     stage: &Path,
     backup: &Path,
@@ -2904,7 +3078,7 @@ fn uncertain_windows_recovery_failure(
     ))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn windows_recovery_artifact_label(path: &Path, fallback: &str) -> String {
     path.file_name().map_or_else(
         || fallback.to_owned(),
@@ -3624,6 +3798,59 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn predecessor_open_distinguishes_absence_from_other_failures() -> io::Result<()> {
+        assert!(classify_windows_predecessor_open(Err(io::ErrorKind::NotFound.into()))?.is_none());
+        assert_eq!(
+            classify_windows_predecessor_open(Err(io::ErrorKind::PermissionDenied.into()))
+                .expect_err("access failure cannot mean an absent predecessor")
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        let dir = tempdir()?;
+        let path = dir.path().join("predecessor");
+        fs::write(&path, b"previous recovery")?;
+        assert!(
+            classify_windows_predecessor_open(File::open(&path)).is_ok_and(|file| file.is_some())
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replacement_requires_both_opened_artifacts_to_match() -> io::Result<()> {
+        let dir = tempdir()?;
+        let paths = [
+            dir.path().join("installed"),
+            dir.path().join("backup"),
+            dir.path().join("other"),
+        ];
+        for (path, bytes) in paths.iter().zip([b"new".as_slice(), b"old", b"other"]) {
+            fs::write(path, bytes)?;
+        }
+        let observed = paths
+            .iter()
+            .map(|path| {
+                inspect_windows_recovery_artifact(WindowsRecoveryArtifactAccess::PathOnly, path)
+                    .map(|item| item.expect("fixture exists"))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let [installed, backup, other] = observed.as_slice() else {
+            panic!("three fixture observations")
+        };
+        assert!(windows_replacement_observations_match(
+            *installed, *installed, *backup, *backup
+        ));
+        assert!(!windows_replacement_observations_match(
+            *other, *installed, *backup, *backup
+        ));
+        assert!(!windows_replacement_observations_match(
+            *installed, *installed, *other, *backup
+        ));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn staged_windows_write_refuses_an_unbound_parent_without_side_effects() -> io::Result<()> {
         let dir = tempdir()?;
         let store = RecoveryStore::open(dir.path())?;
@@ -3655,6 +3882,301 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
         assert!(fs::read_dir(store.records_dir())?.next().is_none());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bound_windows_replacement_commits_new_record_and_retires_backup() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let predecessor = snapshot_at(70, 1, 1, b"previous recovery");
+        let replacement = snapshot_at(70, 2, 2, b"latest recovery");
+        let destination = store.record_path(predecessor.instance_id());
+        store.persist(&predecessor)?;
+        store.persist(&replacement)?;
+
+        assert_eq!(fs::read(&destination)?, replacement.encode());
+        for kind in [TemporaryArtifactKind::Stage, TemporaryArtifactKind::Backup] {
+            let path = exclusive_stage_path(&store.records_dir(), predecessor.instance_id(), kind)?;
+            assert!(!path.exists());
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn occupied_windows_backup_refuses_replacement_before_staging() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let predecessor = snapshot_at(76, 1, 1, b"previous recovery");
+        let replacement = snapshot_at(76, 2, 2, b"latest recovery");
+        let destination = store.record_path(predecessor.instance_id());
+        let stage = exclusive_stage_path(
+            &store.records_dir(),
+            predecessor.instance_id(),
+            TemporaryArtifactKind::Stage,
+        )?;
+        let backup = exclusive_stage_path(
+            &store.records_dir(),
+            predecessor.instance_id(),
+            TemporaryArtifactKind::Backup,
+        )?;
+        store.persist(&predecessor)?;
+        fs::write(&backup, predecessor.encode())?;
+
+        assert_eq!(
+            store.persist(&replacement).unwrap_err().kind(),
+            io::ErrorKind::ResourceBusy
+        );
+        assert!(!stage.exists());
+        assert_eq!(fs::read(&destination)?, predecessor.encode());
+        assert_eq!(fs::read(&backup)?, predecessor.encode());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_predecessor_barrier_retains_both_recovery_snapshots() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let predecessor = snapshot_at(71, 1, 1, b"previous recovery");
+        let replacement = snapshot_at(71, 2, 2, b"latest recovery");
+        let destination = store.record_path(predecessor.instance_id());
+        let stage = exclusive_stage_path(
+            &store.records_dir(),
+            predecessor.instance_id(),
+            TemporaryArtifactKind::Stage,
+        )?;
+        let backup = exclusive_stage_path(
+            &store.records_dir(),
+            predecessor.instance_id(),
+            TemporaryArtifactKind::Backup,
+        )?;
+        store.persist(&predecessor)?;
+
+        let error = write_atomic_private_windows_bound_with(
+            &store,
+            &destination,
+            predecessor.instance_id(),
+            &replacement.encode(),
+            |point, directory| {
+                if point == WindowsRecoveryBarrier::Backup {
+                    return Err(io::Error::other("injected predecessor barrier failure"));
+                }
+                directory.sync().map(|_| ())
+            },
+        )
+        .expect_err("a failed backup barrier must stop before stage installation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected predecessor barrier failure")
+        );
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&stage)?, replacement.encode());
+        assert_eq!(fs::read(&backup)?, predecessor.encode());
+        let scan = store.scan_startup()?;
+        let offers: Vec<_> = scan
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry.disposition() {
+                RecoveryScanDisposition::Offer(offer) => Some(offer),
+                RecoveryScanDisposition::Quarantine(_) => None,
+            })
+            .collect();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].metadata().revision(), replacement.revision());
+        assert_eq!(offers[0].superseded().len(), 1);
+        assert_eq!(
+            store.persist(&replacement).unwrap_err().kind(),
+            io::ErrorKind::ResourceBusy
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_new_record_barrier_retains_durable_predecessor_backup() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let predecessor = snapshot_at(72, 1, 1, b"previous recovery");
+        let replacement = snapshot_at(72, 2, 2, b"latest recovery");
+        let destination = store.record_path(predecessor.instance_id());
+        let backup = exclusive_stage_path(
+            &store.records_dir(),
+            predecessor.instance_id(),
+            TemporaryArtifactKind::Backup,
+        )?;
+        store.persist(&predecessor)?;
+
+        let error = write_atomic_private_windows_bound_with(
+            &store,
+            &destination,
+            predecessor.instance_id(),
+            &replacement.encode(),
+            |point, directory| {
+                if point == WindowsRecoveryBarrier::Stage {
+                    return Err(io::Error::other("injected new-record barrier failure"));
+                }
+                directory.sync().map(|_| ())
+            },
+        )
+        .expect_err("a failed new-record barrier must retain the predecessor");
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected new-record barrier failure")
+        );
+        assert_eq!(fs::read(&destination)?, replacement.encode());
+        assert_eq!(fs::read(&backup)?, predecessor.encode());
+        let scan = store.scan_startup()?;
+        let offers: Vec<_> = scan
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry.disposition() {
+                RecoveryScanDisposition::Offer(offer) => Some(offer),
+                RecoveryScanDisposition::Quarantine(_) => None,
+            })
+            .collect();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].metadata().revision(), replacement.revision());
+        assert_eq!(offers[0].superseded().len(), 1);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn competed_windows_record_name_preserves_stage_backup_and_competitor() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let predecessor = snapshot_at(73, 1, 1, b"previous recovery");
+        let replacement = snapshot_at(73, 2, 2, b"latest recovery");
+        let destination = store.record_path(predecessor.instance_id());
+        let stage = exclusive_stage_path(
+            &store.records_dir(),
+            predecessor.instance_id(),
+            TemporaryArtifactKind::Stage,
+        )?;
+        let backup = exclusive_stage_path(
+            &store.records_dir(),
+            predecessor.instance_id(),
+            TemporaryArtifactKind::Backup,
+        )?;
+        store.persist(&predecessor)?;
+
+        let error = write_atomic_private_windows_bound_with(
+            &store,
+            &destination,
+            predecessor.instance_id(),
+            &replacement.encode(),
+            |point, directory| {
+                directory.sync()?;
+                if point == WindowsRecoveryBarrier::Backup {
+                    fs::write(&destination, b"competing recovery")?;
+                }
+                Ok(())
+            },
+        )
+        .expect_err("a competing name must block exclusive stage installation");
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&destination)?, b"competing recovery");
+        assert_eq!(fs::read(&stage)?, replacement.encode());
+        assert_eq!(fs::read(&backup)?, predecessor.encode());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_cleanup_barrier_keeps_the_committed_new_record() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let predecessor = snapshot_at(74, 1, 1, b"previous recovery");
+        let replacement = snapshot_at(74, 2, 2, b"latest recovery");
+        let destination = store.record_path(predecessor.instance_id());
+        let backup = exclusive_stage_path(
+            &store.records_dir(),
+            predecessor.instance_id(),
+            TemporaryArtifactKind::Backup,
+        )?;
+        store.persist(&predecessor)?;
+
+        let error = write_atomic_private_windows_bound_with(
+            &store,
+            &destination,
+            predecessor.instance_id(),
+            &replacement.encode(),
+            |point, directory| {
+                if point == WindowsRecoveryBarrier::Cleanup {
+                    return Err(io::Error::other("injected cleanup barrier failure"));
+                }
+                directory.sync().map(|_| ())
+            },
+        )
+        .expect_err("a failed cleanup barrier must be reported");
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected cleanup barrier failure")
+        );
+        assert_eq!(fs::read(&destination)?, replacement.encode());
+        assert!(!backup.exists());
+        let scan = store.scan_startup()?;
+        let offers: Vec<_> = scan
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry.disposition() {
+                RecoveryScanDisposition::Offer(offer) => Some(offer),
+                RecoveryScanDisposition::Quarantine(_) => None,
+            })
+            .collect();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].metadata().revision(), replacement.revision());
+        assert!(offers[0].superseded().is_empty());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_first_record_barrier_retains_the_installed_snapshot() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let snapshot = snapshot_at(75, 1, 1, b"first recovery");
+        let destination = store.record_path(snapshot.instance_id());
+
+        let error = write_atomic_private_windows_bound_with(
+            &store,
+            &destination,
+            snapshot.instance_id(),
+            &snapshot.encode(),
+            |point, _| {
+                assert_eq!(point, WindowsRecoveryBarrier::Stage);
+                Err(io::Error::other("injected first-record barrier failure"))
+            },
+        )
+        .expect_err("the first record must report its failed directory barrier");
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected first-record barrier failure")
+        );
+        assert_eq!(fs::read(&destination)?, snapshot.encode());
+        let scan = store.scan_startup()?;
+        let offers: Vec<_> = scan
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry.disposition() {
+                RecoveryScanDisposition::Offer(offer) => Some(offer),
+                RecoveryScanDisposition::Quarantine(_) => None,
+            })
+            .collect();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].metadata().revision(), snapshot.revision());
         Ok(())
     }
 
@@ -3828,6 +4350,68 @@ mod tests {
         );
         assert_eq!(fs::read(&stage)?, b"quarantined bytes");
         assert!(!destination.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replacement_refuses_a_rebound_stage_with_identical_bytes() -> io::Result<()> {
+        let parent = tempdir()?;
+        let stage = parent.path().join("record.stage");
+        let moved_stage = parent.path().join("moved.stage");
+        let destination = parent.path().join("record.rec");
+        let backup = parent.path().join("record.backup");
+        let bytes = snapshot_at(64, 9, 21, b"intended recovery").encode();
+
+        let failure = commit_staged_record_with(
+            RecoveryStagedPaths {
+                stage: &stage,
+                destination: &destination,
+                backup: &backup,
+            },
+            &bytes,
+            WindowsRecoveryArtifactAccess::PathOnly,
+            noter_platform::create_private_new_file,
+            |_, stage, _| {
+                fs::rename(stage, &moved_stage)?;
+                fs::write(stage, &bytes)?;
+                Err(io::Error::from(io::ErrorKind::AlreadyExists))
+            },
+            |_, _, _| panic!("a rebound stage cannot be committed"),
+        )
+        .expect_err("replacement must stay bound to the original stage");
+
+        assert_eq!(failure.error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(&stage)?, bytes);
+        assert_eq!(fs::read(&moved_stage)?, bytes);
+        assert!(!destination.exists());
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stage_snapshot_requires_both_exact_length_and_fingerprint() -> io::Result<()> {
+        let parent = tempdir()?;
+        let path = parent.path().join("record.stage");
+        fs::write(&path, b"record")?;
+        let file = noter_platform::open_existing_no_follow(&path)?;
+        let observed = RecoveryArtifactObservation {
+            identity: noter_platform::file_facts(&file)?.identity(),
+            fingerprint: ContentFingerprint::from_bytes(b"record"),
+            length: 6,
+        };
+
+        assert!(requested_windows_stage_matches(observed, b"record")?);
+        assert!(!requested_windows_stage_matches(
+            RecoveryArtifactObservation {
+                length: 5,
+                ..observed
+            },
+            b"record"
+        )?);
+        assert!(!requested_windows_stage_matches(observed, b"recor")?);
+        assert!(!requested_windows_stage_matches(observed, b"recOrd")?);
         Ok(())
     }
 
@@ -5507,6 +6091,39 @@ mod tests {
         assert!(scan.is_empty());
         assert!(directory.is_dir());
         assert!(store.quarantine_dir().read_dir()?.next().is_none());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_scan_retains_an_unsafe_windows_name_without_hiding_valid_offers() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let snapshot = sample_snapshot(3, b"recoverable text");
+        store.persist(&snapshot)?;
+
+        let unsafe_path = store.records_dir().join("unsafe.漢.");
+        let verbatim = PathBuf::from(format!(r"\\?\{}", unsafe_path.display()));
+        fs::write(&verbatim, b"untrusted neighbor")?;
+        let scan = store.scan_startup();
+        assert_eq!(fs::read(&verbatim)?, b"untrusted neighbor");
+        fs::remove_file(&verbatim)?;
+        let scan = scan?;
+
+        assert!(scan.iter().any(|entry| matches!(
+            entry.disposition(),
+            RecoveryScanDisposition::Offer(offer)
+                if offer.metadata().instance_id() == snapshot.instance_id()
+        )));
+        assert!(scan.iter().any(|entry| {
+            matches!(
+                entry.disposition(),
+                RecoveryScanDisposition::Quarantine(RecoveryQuarantineReason::UnsafeName)
+            ) && entry.path() == unsafe_path
+                && entry
+                    .quarantine_error()
+                    .is_some_and(|message| !message.contains("unsafe.漢."))
+        }));
         Ok(())
     }
 

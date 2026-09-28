@@ -173,6 +173,17 @@ Feature presence alone is not verification.
   the general temporary directory. Recovery is available only when the state
   root and recovery subdirectories are opened without following links and
   verified as stable, owner-controlled directories with least-permission access.
+  On Windows, new recovery records use the per-user LocalAppData known folder,
+  separate from preferences in RoamingAppData. Existing recovery records in
+  the former RoamingAppData location remain eligible for bounded startup review
+  until explicitly restored or discarded; changing the default location must
+  never silently delete or hide them. If an interrupted transfer leaves both
+  copies, restoring the validated local successor must expose an explicit
+  cleanup action for its older Roaming predecessor in that session. If the
+  records lack a provable direct schema-v2 lineage, the separate Roaming copy
+  remains available for ordinary Restore / Later / Discard review after the
+  restored local document is saved without a durability warning. Save and Exit
+  must show that review before closing the GUI or terminal editor.
 - **FR-063 Recovery point objective:** After the first edit or detection that
   the loaded clean revision was replaced externally, persist a valid recovery
   record after at most 15 seconds of continued activity and normally within 2
@@ -384,7 +395,10 @@ The complete release and verification contract is in
   Not Committed, and Commit State Unknown. A post-commit barrier failure is
   Committed with every durability warning preserved; a failed file barrier
   reports Best Effort even if parent synchronization succeeds. An uncertain
-  commit retains dirty state and recovery until reconciliation.
+  commit retains dirty state and recovery until reconciliation. A Committed
+  result with a durability warning keeps the document at risk in the interface
+  and retains or creates a private recovery copy until a later warning-free
+  Save or explicit Discard.
 - **NFR-REL-03 Revision safety:** A successful save clears dirty state only when
   the committed revision is still the current revision.
 - **NFR-REL-04 Undo fidelity:** Applying edits and their inverse transactions

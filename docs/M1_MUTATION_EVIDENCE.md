@@ -474,3 +474,20 @@ scope while running three deterministic Linux partitions, six deterministic
 Windows partitions, and the macOS scope. One always-evaluated `mutation-gate`
 requires the complete matrix. These focused local results are repair evidence,
 not a substitute for the still-required complete exact-head hosted campaign.
+
+## 2026-09-28 UTC cross-root lineage predicate
+
+At source commit `27f47eb`, a local Windows campaign targeted
+`ValidatedRecoveryMetadata::directly_supersedes`. The first run filtered to
+the focused predicate test and caught all 11 predicate mutants, but also
+included one unrelated scheduler mutant that the narrow test did not cover.
+Repeating the same selection against the full library tests caught all 12
+selected mutants in about two minutes, with no miss or timeout:
+
+```powershell
+cargo mutants --in-place -p noter -F 'ValidatedRecoveryMetadata::directly_supersedes' --test-package noter --test-workspace false -- --lib
+```
+
+This is focused local evidence for the shared schema-v2 direct-successor
+check. It does not replace the complete hosted mutation matrix or its
+exact-head gate.

@@ -158,6 +158,8 @@ impl RecoveryClock {
 /// Why a loaded recovery artifact cannot be offered for restore.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum RecoveryQuarantineReason {
+    /// The entry name cannot be opened without Windows pathname ambiguity.
+    UnsafeName,
     /// The file does not begin with the recovery magic.
     InvalidMagic,
     /// The schema version is newer or unsupported.
@@ -186,6 +188,9 @@ impl RecoveryQuarantineReason {
     /// Returns a short user-facing explanation without paths or content.
     pub const fn description(self) -> &'static str {
         match self {
+            Self::UnsafeName => {
+                "The recovery entry has an unsafe pathname spelling and was retained for manual review."
+            }
             Self::InvalidMagic => "The recovery file is not a Noter recovery record.",
             Self::UnknownSchema => "The recovery record uses an unsupported schema version.",
             Self::Truncated => "The recovery record is incomplete or truncated.",
@@ -250,6 +255,19 @@ impl ValidatedRecoveryMetadata {
     /// Returns the immediate predecessor instance when recorded by schema v2.
     pub const fn predecessor_instance(&self) -> Option<RecoveryInstanceId> {
         self.predecessor_instance
+    }
+
+    /// Whether this schema-v2 record is the immediate successor of another
+    /// schema-v2 record. Legacy records remain separate offers.
+    pub fn directly_supersedes(&self, predecessor: &Self) -> bool {
+        self.schema_version == RECOVERY_SCHEMA_VERSION
+            && predecessor.schema_version == RECOVERY_SCHEMA_VERSION
+            && self.document_id == predecessor.document_id
+            && self.predecessor_instance == Some(predecessor.instance_id)
+            && predecessor
+                .lineage_generation
+                .and_then(RecoveryLineageGeneration::checked_next)
+                == self.lineage_generation
     }
 
     /// Returns the content revision captured in the record.
@@ -1629,6 +1647,82 @@ mod tests {
     }
 
     #[test]
+    fn directly_supersedes_requires_two_v2_records_and_exact_next_generation() {
+        let parent = sample_snapshot(b"parent", Selection::caret(0));
+        let RecoveryStartupDisposition::Offer(parent_record) =
+            validate_recovery_record(&parent.encode())
+        else {
+            panic!("parent record");
+        };
+        let make_child = |document_id, instance_id, generation, predecessor_instance| {
+            let snapshot = RecoverySnapshot::try_new_with_lineage(
+                RecoverySnapshotParts {
+                    document_id,
+                    instance_id,
+                    revision: Revision::new(1),
+                    created_at: RecoveryWallTime::from_unix_millis(3),
+                    updated_at: RecoveryWallTime::from_unix_millis(4),
+                    original_path: Vec::new(),
+                    bom: Bom::Absent,
+                    encoding: Encoding::Utf8,
+                    selection: Selection::caret(0),
+                    content: b"child".to_vec(),
+                },
+                RecoveryLineageGeneration::new(generation),
+                Some(predecessor_instance),
+            )
+            .expect("child snapshot");
+            let RecoveryStartupDisposition::Offer(record) =
+                validate_recovery_record(&snapshot.encode())
+            else {
+                panic!("child record");
+            };
+            record.metadata().clone()
+        };
+        let direct = make_child(
+            parent.document_id(),
+            RecoveryInstanceId::new([3; 16]),
+            1,
+            parent.instance_id(),
+        );
+        assert!(direct.directly_supersedes(parent_record.metadata()));
+        assert!(!parent_record.metadata().directly_supersedes(&direct));
+        assert!(
+            !make_child(
+                parent.document_id(),
+                RecoveryInstanceId::new([4; 16]),
+                2,
+                parent.instance_id(),
+            )
+            .directly_supersedes(parent_record.metadata())
+        );
+        assert!(
+            !make_child(
+                RecoveryDocumentId::new([9; 16]),
+                RecoveryInstanceId::new([5; 16]),
+                1,
+                parent.instance_id(),
+            )
+            .directly_supersedes(parent_record.metadata())
+        );
+        assert!(
+            !make_child(
+                parent.document_id(),
+                RecoveryInstanceId::new([6; 16]),
+                1,
+                RecoveryInstanceId::new([7; 16]),
+            )
+            .directly_supersedes(parent_record.metadata())
+        );
+        let RecoveryStartupDisposition::Offer(legacy_parent) =
+            validate_recovery_record(&encode_v1(&parent))
+        else {
+            panic!("legacy parent record");
+        };
+        assert!(!direct.directly_supersedes(legacy_parent.metadata()));
+    }
+
+    #[test]
     fn bom_content_round_trips_with_matching_tag() {
         let mut content = Bom::UTF8_BYTES.to_vec();
         content.extend_from_slice("café".as_bytes());
@@ -2716,6 +2810,7 @@ mod tests {
     #[test]
     fn quarantine_reasons_have_nonempty_descriptions() {
         for reason in [
+            RecoveryQuarantineReason::UnsafeName,
             RecoveryQuarantineReason::InvalidMagic,
             RecoveryQuarantineReason::UnknownSchema,
             RecoveryQuarantineReason::Truncated,

@@ -77,6 +77,61 @@ path_hint() {
     esac
 }
 
+# A private stage is only private if no other user can replace its directory
+# or an ancestor while the installer copies and executes it. Check the
+# requested spelling before resolving links as well as the resolved path.
+trusted_install_directory() {
+    current_uid=$(id -u)
+    platform=$(uname -s)
+    directory=$1
+    while :; do
+        case "$platform" in
+            Darwin) metadata=$(stat -L -f '%u %Lp' "$directory" 2>/dev/null) || fail "cannot inspect install directory permissions." ;;
+            *) metadata=$(stat -L -c '%u %a' "$directory" 2>/dev/null) || fail "cannot inspect install directory permissions." ;;
+        esac
+        set -- $metadata
+        owner=$1
+        mode=$2
+        case "$owner:$mode" in
+            *[!0-9:]* | :* | *:) fail "cannot inspect install directory permissions." ;;
+        esac
+        [ "$owner" = "$current_uid" ] || [ "$owner" = 0 ] ||
+            fail "install directory is owned by another user."
+        if [ "$platform" = Darwin ]; then
+            listing=$(LC_ALL=C ls -Llde "$directory" 2>/dev/null) ||
+                fail "cannot inspect install directory permissions."
+            acl_entries=$(printf '%s\n' "$listing" | sed '1d')
+            if [ -n "$acl_entries" ] &&
+                printf '%s\n' "$acl_entries" | grep -v ' deny ' >/dev/null; then
+                fail "install directory has an unsupported access control list."
+            fi
+        fi
+        # On Linux the stat group bits are the ACL mask, so a named ACL
+        # cannot grant write when the group write bit is clear.
+        permissions=$((0$mode))
+        if [ "$((permissions & 022))" -ne 0 ]; then
+            fail "install directory is writable by another user."
+        fi
+        [ "$directory" = / ] && break
+        directory=$(dirname -- "$directory")
+    done
+}
+
+prepare_trusted_bin_dir() {
+    bin_dir=$install_root/bin
+    existing_dir=$bin_dir
+    while [ ! -e "$existing_dir" ]; do
+        [ ! -L "$existing_dir" ] || fail "install path contains a broken symbolic link."
+        existing_dir=$(dirname -- "$existing_dir")
+    done
+    [ -d "$existing_dir" ] || fail "install path contains a non-directory entry."
+    trusted_install_directory "$existing_dir"
+    mkdir -p "$bin_dir"
+    bin_dir=$(CDPATH='' cd -- "$bin_dir" 2>/dev/null && pwd -P) ||
+        fail "cannot resolve the install directory."
+    trusted_install_directory "$bin_dir"
+}
+
 install_from_source() {
     manifest=$source_dir/Cargo.toml
     [ -f "$manifest" ] || fail "Noter source manifest not found at '$manifest'."
@@ -96,18 +151,26 @@ install_from_source() {
         return
     fi
 
-    (cd "$source_dir" && cargo install --path "$source_dir" --locked --force --root "$install_root")
+    build_root=$(mktemp -d "${TMPDIR:-/tmp}/noter-source.XXXXXX") ||
+        fail "cannot reserve a private source build root."
+    stage_dir=
+    trap 'rm -rf "$build_root"; if [ -n "$stage_dir" ]; then rm -rf "$stage_dir"; fi' EXIT HUP INT TERM
+    (cd "$source_dir" && cargo install --path "$source_dir" --locked --force --root "$build_root")
 
-    installed_binary=$install_root/bin/noter
-    [ -x "$installed_binary" ] || fail "Cargo reported success, but '$installed_binary' was not found."
-    [ "$("$installed_binary" --version)" = "noter $expected_version" ] ||
-        fail "the installed executable did not report the expected Noter version $expected_version."
+    built_binary=$build_root/bin/noter
+    [ -x "$built_binary" ] || fail "Cargo reported success, but the staged Noter binary was not found."
+    prepare_trusted_bin_dir
+    stage_dir=$(mktemp -d "$bin_dir/.noter.install.XXXXXXXX") ||
+        fail "cannot reserve a private install stage."
+    cp "$built_binary" "$stage_dir/noter"
+    chmod 755 "$stage_dir/noter"
 
-    cli_temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/noter-install.XXXXXX")
-    trap 'rm -rf "$cli_temp_dir"' EXIT HUP INT TERM
-    invalid_stdout=$cli_temp_dir/invalid.stdout
-    invalid_stderr=$cli_temp_dir/invalid.stderr
-    if "$installed_binary" --theme invalid >"$invalid_stdout" 2>"$invalid_stderr"; then
+    [ "$("$stage_dir/noter" --version)" = "noter $expected_version" ] ||
+        fail "the staged executable did not report the expected Noter version $expected_version."
+
+    invalid_stdout=$build_root/invalid.stdout
+    invalid_stderr=$build_root/invalid.stderr
+    if "$stage_dir/noter" --theme invalid >"$invalid_stdout" 2>"$invalid_stderr"; then
         invalid_status=0
     else
         invalid_status=$?
@@ -116,9 +179,12 @@ install_from_source() {
         [ ! -s "$invalid_stdout" ] &&
         grep -F 'unknown theme `invalid`; expected system, light, dark, green, or amber' "$invalid_stderr" >/dev/null &&
         grep -F 'Usage:' "$invalid_stderr" >/dev/null ||
-        fail "the installed executable did not preserve the release command-line error contract."
+        fail "the staged executable did not preserve the release command-line error contract."
+    [ ! -d "$bin_dir/noter" ] || fail "the install destination is a directory."
+    mv -f "$stage_dir/noter" "$bin_dir/noter"
+    installed_binary=$bin_dir/noter
     printf "Installed Noter %s at '%s'.\n" "$expected_version" "$installed_binary"
-    path_hint "$install_root/bin"
+    path_hint "$bin_dir"
 }
 
 install_from_release() {
@@ -162,9 +228,9 @@ install_from_release() {
     command -v xz >/dev/null 2>&1 || fail "xz is required to unpack the release; install xz-utils or xz."
 
     bin_dir=$install_root/bin
-    staged=$bin_dir/.noter.install.$$
     cli_temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/noter-install.XXXXXX")
-    trap 'rm -rf "$cli_temp_dir"; rm -f "$staged"' EXIT HUP INT TERM
+    stage_dir=
+    trap 'rm -rf "$cli_temp_dir"; if [ -n "$stage_dir" ]; then rm -rf "$stage_dir"; fi' EXIT HUP INT TERM
 
     printf "Downloading Noter %s for %s...\n" "$tag" "$target"
     download_to_file "$archive_url" "$cli_temp_dir/$archive"
@@ -182,19 +248,21 @@ install_from_release() {
     found_binary=$(find "$cli_temp_dir" -type f -name noter | head -n 1)
     [ -n "$found_binary" ] || fail "the release archive did not contain the noter binary."
 
-    mkdir -p "$bin_dir"
+    prepare_trusted_bin_dir
     # Stage beside the destination and rename, so the install is atomic and a
     # running copy keeps its file until it exits.
+    stage_dir=$(mktemp -d "$bin_dir/.noter.install.XXXXXXXX") ||
+        fail "cannot reserve a private install stage."
+    staged=$stage_dir/noter
     cp "$found_binary" "$staged"
     chmod 755 "$staged"
     staged_version=$("$staged" --version) || {
-        rm -f "$staged"
         fail "the downloaded binary did not run on this system."
     }
     [ "$staged_version" = "noter ${tag#v}" ] || {
-        rm -f "$staged"
         fail "the downloaded binary reported '$staged_version', expected 'noter ${tag#v}'."
     }
+    [ ! -d "$bin_dir/noter" ] || fail "the install destination is a directory."
     mv -f "$staged" "$bin_dir/noter"
     printf "Installed %s at '%s'.\n" "$staged_version" "$bin_dir/noter"
     path_hint "$bin_dir"

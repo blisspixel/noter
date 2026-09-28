@@ -1,10 +1,9 @@
 //! Windows recovery-directory namespace binding.
 //!
 //! This module binds the state and recovery directories to retained handles.
-//! Its entry creation, open, classification, enumeration, and new-record
-//! installation and directory synchronization use those handles.
-//! Existing-record replacement and complete root classification remain
-//! separate M4-H1 work.
+//! Its entry creation, open, classification, enumeration, installation, and
+//! directory synchronization use those handles. Complete root classification
+//! remains M4-H1 work.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -18,8 +17,14 @@ use std::sync::Mutex;
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation, NtCreateFile, NtSetInformationFile,
+    FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+    FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT, FileFsDeviceInformation,
+    FileRenameInformation, NtCreateFile, NtQueryVolumeInformationFile, NtSetInformationFile,
+};
+use windows_sys::Wdk::System::SystemServices::{
+    FILE_CHARACTERISTIC_CSV, FILE_CHARACTERISTIC_WEBDAV_DEVICE, FILE_FS_DEVICE_INFORMATION,
+    FILE_PORTABLE_DEVICE, FILE_READ_ONLY_DEVICE, FILE_REMOTE_DEVICE, FILE_REMOVABLE_MEDIA,
+    FILE_VIRTUAL_VOLUME,
 };
 use windows_sys::Win32::Foundation::{
     ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT, ERROR_NO_MORE_FILES, FreeLibrary, GENERIC_READ, HANDLE,
@@ -30,22 +35,26 @@ use windows_sys::Win32::Storage::CloudFilters::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_DEVICE_DISK, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY,
     FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK,
     FileBasicInfo, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo,
     GetDriveTypeW, GetFileInformationByHandleEx, GetFileType, GetVolumeInformationByHandleW,
     READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
 };
+use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::LibraryLoader::{
     GetModuleFileNameW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
+use windows_sys::Win32::UI::Shell::{
+    FOLDERID_LocalAppData, KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath,
+};
 
 use crate::imp::{
-    windows_create_private_directory, windows_create_private_new_at,
+    windows_create_private_directory_at, windows_create_private_new_at,
     windows_tighten_private_directory_security, windows_verify_owner_controlled_state_directory,
     windows_verify_private_directory_security,
 };
@@ -58,6 +67,75 @@ const RECORDS_DIRECTORY_NAME: &str = "records";
 const QUARANTINE_DIRECTORY_NAME: &str = "quarantine";
 const FILE_SYSTEM_NAME_CAPACITY: usize = 32;
 const DIRECTORY_ENUMERATION_BUFFER_BYTES: usize = 65_536;
+const KNOWN_FOLDER_PATH_LIMIT: usize = 32_767;
+
+struct KnownFolderAllocation {
+    path: *mut u16,
+    release: unsafe extern "system" fn(*const std::ffi::c_void),
+}
+
+impl Drop for KnownFolderAllocation {
+    fn drop(&mut self) {
+        // SAFETY: SHGetKnownFolderPath allocates this pointer with the COM task
+        // allocator; it stays owned here and is freed exactly once.
+        #[allow(unsafe_code)]
+        unsafe {
+            (self.release)(self.path.cast());
+        }
+    }
+}
+
+/// Returns the current user's `LocalAppData` known-folder path.
+///
+/// # Errors
+///
+/// Returns an error when Windows cannot resolve a bounded, nonempty path.
+pub fn windows_local_appdata_directory() -> io::Result<PathBuf> {
+    let mut raw = std::ptr::null_mut();
+    // SAFETY: Windows writes one task-allocated null-terminated path pointer
+    // into `raw`. A null token requests the current user.
+    #[allow(unsafe_code)]
+    let status = unsafe {
+        SHGetKnownFolderPath(
+            &FOLDERID_LocalAppData,
+            KF_FLAG_DONT_VERIFY as u32,
+            std::ptr::null_mut(),
+            &raw mut raw,
+        )
+    };
+    let allocation = KnownFolderAllocation {
+        path: raw,
+        release: CoTaskMemFree,
+    };
+    if status != 0 {
+        return Err(io::Error::other(format!(
+            "Windows LocalAppData lookup failed with HRESULT {status:#010x}"
+        )));
+    }
+    let path = std::ptr::NonNull::new(allocation.path)
+        .ok_or_else(|| io::Error::other("Windows LocalAppData lookup returned no path"))?;
+    let mut units = Vec::new();
+    for offset in 0..KNOWN_FOLDER_PATH_LIMIT {
+        // SAFETY: successful SHGetKnownFolderPath returns a null-terminated
+        // allocation. The loop reads only through that terminator.
+        #[allow(unsafe_code)]
+        let unit = unsafe { *path.as_ptr().add(offset) };
+        if unit == 0 {
+            if units.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Windows LocalAppData path is empty",
+                ));
+            }
+            return Ok(PathBuf::from(OsString::from_wide(&units)));
+        }
+        units.push(unit);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "Windows LocalAppData path exceeds the supported length",
+    ))
+}
 
 /// Stable preferred Windows identity of one retained directory handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -163,6 +241,27 @@ impl WindowsRecoveryDirectory {
             FILE_SHARE_READ,
             options,
         )?;
+        verify_regular_entry_handle(&file)?;
+        Ok(file)
+    }
+
+    /// Opens one entry for a handle-relative rename while denying competing
+    /// writes and renames until the caller finishes its directory barriers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entry is invalid, missing, not regular, or
+    /// cannot be opened with both delete access and exclusive rename sharing.
+    pub fn open_for_bound_replacement(&self, name: &OsStr) -> io::Result<File> {
+        let options = combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT),
+            FILE_SYNCHRONOUS_IO_NONALERT,
+        );
+        let access = combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(GENERIC_READ, DELETE),
+            SYNCHRONIZE,
+        );
+        let file = open_entry_relative_with(&self.handle, name, access, FILE_SHARE_READ, options)?;
         verify_regular_entry_handle(&file)?;
         Ok(file)
     }
@@ -555,8 +654,8 @@ fn regular_entry_handle(file: &File) -> io::Result<bool> {
 /// remain outside the supported recovery boundary.
 ///
 /// Entry creation, open, classification, enumeration, new-record installation,
-/// replacement reconciliation, and directory synchronization use these
-/// handles. Existing-record replacement still requires handle-relative work.
+/// existing-record backup and installation, and directory synchronization use
+/// these handles.
 pub struct WindowsRecoveryNamespace {
     state: WindowsRecoveryDirectory,
     recovery: WindowsRecoveryDirectory,
@@ -606,7 +705,15 @@ impl WindowsRecoveryNamespace {
             .ok_or_else(invalid_state_root_error)?;
         for component in parent_names {
             current.push(component);
-            traversal_guards.push(bind_existing_directory(&current, Some(expected_volume))?);
+            let parent = traversal_guards
+                .last()
+                .ok_or_else(invalid_state_root_error)?;
+            traversal_guards.push(bind_existing_child_directory(
+                parent.handle(),
+                component,
+                &current,
+                expected_volume,
+            )?);
         }
         check_cloud_root(
             traversal_guards
@@ -616,17 +723,40 @@ impl WindowsRecoveryNamespace {
         )?;
 
         current.push(state_name);
-        let state = bind_state_directory(&current, expected_volume)?;
+        let state = bind_state_directory(
+            traversal_guards
+                .last()
+                .ok_or_else(invalid_state_root_error)?
+                .handle(),
+            state_name,
+            &current,
+            expected_volume,
+        )?;
         check_cloud_root(state.handle())?;
         current.push(recovery_name.as_os_str());
-        let recovery = bind_private_directory(&current, expected_volume)?;
+        let recovery = bind_private_directory(
+            state.handle(),
+            recovery_name.as_os_str(),
+            &current,
+            expected_volume,
+        )?;
         check_cloud_root(recovery.handle())?;
         let mut records_path = current.clone();
         records_path.push(records_name.as_os_str());
-        let records = bind_private_directory(&records_path, expected_volume)?;
+        let records = bind_private_directory(
+            recovery.handle(),
+            records_name.as_os_str(),
+            &records_path,
+            expected_volume,
+        )?;
         check_cloud_root(records.handle())?;
         current.push(quarantine_name.as_os_str());
-        let quarantine = bind_private_directory(&current, expected_volume)?;
+        let quarantine = bind_private_directory(
+            recovery.handle(),
+            quarantine_name.as_os_str(),
+            &current,
+            expected_volume,
+        )?;
         check_cloud_root(quarantine.handle())?;
 
         Ok(Self {
@@ -991,8 +1121,35 @@ fn bind_existing_directory(
     })
 }
 
-fn bind_state_directory(path: &Path, expected_volume: u64) -> io::Result<WindowsRecoveryDirectory> {
-    let handle = open_or_create_private_directory(path)?;
+fn bind_existing_child_directory(
+    parent: &File,
+    name: &OsStr,
+    path: &Path,
+    expected_volume: u64,
+) -> io::Result<WindowsRecoveryDirectory> {
+    let handle = open_directory_relative(parent, name, DirectorySharePolicy::Traversal)?;
+    let identity = verify_directory_handle(&handle)?;
+    if identity.volume_serial != expected_volume {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery state directory crossed a volume boundary",
+        ));
+    }
+    Ok(WindowsRecoveryDirectory {
+        handle,
+        enumeration_lock: Mutex::new(()),
+        identity,
+        path: path.to_path_buf(),
+    })
+}
+
+fn bind_state_directory(
+    parent: &File,
+    name: &OsStr,
+    path: &Path,
+    expected_volume: u64,
+) -> io::Result<WindowsRecoveryDirectory> {
+    let handle = open_or_create_private_directory(parent, name)?;
     let identity = verify_directory_handle(&handle)?;
     if identity.volume_serial != expected_volume {
         return Err(io::Error::new(
@@ -1010,10 +1167,12 @@ fn bind_state_directory(path: &Path, expected_volume: u64) -> io::Result<Windows
 }
 
 fn bind_private_directory(
+    parent: &File,
+    name: &OsStr,
     path: &Path,
     expected_volume: u64,
 ) -> io::Result<WindowsRecoveryDirectory> {
-    let handle = open_or_create_private_directory(path)?;
+    let handle = open_or_create_private_directory(parent, name)?;
     let identity = verify_directory_handle(&handle)?;
     if identity.volume_serial != expected_volume {
         return Err(io::Error::new(
@@ -1033,23 +1192,32 @@ fn bind_private_directory(
     })
 }
 
-fn open_or_create_private_directory(path: &Path) -> io::Result<File> {
-    let handle = match open_directory_no_follow(path, DirectorySharePolicy::BoundPrivate) {
+fn open_or_create_private_directory(parent: &File, name: &OsStr) -> io::Result<File> {
+    let handle = match open_directory_relative(parent, name, DirectorySharePolicy::BoundPrivate) {
         Ok(handle) => handle,
         Err(error) => match classify_directory_open_error(&error) {
             DirectoryOpenError::Missing => {
-                if let Err(error) = windows_create_private_directory(path) {
-                    match classify_directory_creation_error(&error) {
-                        DirectoryCreationError::Raced => {}
-                        DirectoryCreationError::Fatal => return Err(error),
-                    }
+                match windows_create_private_directory_at(parent, name) {
+                    Ok(created) => created,
+                    Err(error) => recover_private_directory_creation_error(parent, name, error)?,
                 }
-                open_directory_no_follow(path, DirectorySharePolicy::BoundPrivate)?
             }
             DirectoryOpenError::Fatal => return Err(error),
         },
     };
     Ok(handle)
+}
+
+fn recover_private_directory_creation_error(
+    parent: &File,
+    name: &OsStr,
+    error: io::Error,
+) -> io::Result<File> {
+    if classify_directory_creation_error(&error) == DirectoryCreationError::Raced {
+        open_directory_relative(parent, name, DirectorySharePolicy::BoundPrivate)
+    } else {
+        Err(error)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1084,8 +1252,29 @@ enum DirectorySharePolicy {
     BoundPrivate,
 }
 
-fn open_directory_no_follow(path: &Path, share_policy: DirectorySharePolicy) -> io::Result<File> {
-    let (security_access, share_mode) = match share_policy {
+fn open_directory_relative(
+    parent: &File,
+    name: &OsStr,
+    share_policy: DirectorySharePolicy,
+) -> io::Result<File> {
+    let (security_access, share_mode) = directory_access_and_share(share_policy);
+    let read_access = combine_disjoint_flag_bits(FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES);
+    let access_mode = combine_disjoint_flag_bits(
+        combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(read_access, READ_CONTROL),
+            security_access,
+        ),
+        SYNCHRONIZE,
+    );
+    let options = combine_disjoint_flag_bits(
+        combine_disjoint_flag_bits(FILE_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT),
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    );
+    open_entry_relative_with(parent, name, access_mode, share_mode, options)
+}
+
+const fn directory_access_and_share(share_policy: DirectorySharePolicy) -> (u32, u32) {
+    match share_policy {
         DirectorySharePolicy::Traversal => (
             0,
             combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
@@ -1094,7 +1283,11 @@ fn open_directory_no_follow(path: &Path, share_policy: DirectorySharePolicy) -> 
             combine_disjoint_flag_bits(WRITE_DAC, FILE_ADD_FILE),
             combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
         ),
-    };
+    }
+}
+
+fn open_directory_no_follow(path: &Path, share_policy: DirectorySharePolicy) -> io::Result<File> {
+    let (security_access, share_mode) = directory_access_and_share(share_policy);
     let read_access = combine_disjoint_flag_bits(FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES);
     let read_and_control_access = combine_disjoint_flag_bits(read_access, READ_CONTROL);
     let access_mode = combine_disjoint_flag_bits(read_and_control_access, security_access);
@@ -1120,6 +1313,8 @@ fn verify_directory_handle(handle: &File) -> io::Result<WindowsDirectoryIdentity
             "recovery path did not resolve to a disk object",
         ));
     }
+
+    verify_local_disk_device(handle)?;
 
     let mut basic = FILE_BASIC_INFO::default();
     let basic_size = u32::try_from(size_of::<FILE_BASIC_INFO>()).map_err(|_| {
@@ -1158,6 +1353,53 @@ fn verify_directory_handle(handle: &File) -> io::Result<WindowsDirectoryIdentity
         ));
     }
     Ok(first)
+}
+
+const fn supported_local_disk_device(info: FILE_FS_DEVICE_INFORMATION) -> bool {
+    info.DeviceType == FILE_DEVICE_DISK
+        && info.Characteristics & FILE_REMOTE_DEVICE == 0
+        && info.Characteristics & FILE_REMOVABLE_MEDIA == 0
+        && info.Characteristics & FILE_PORTABLE_DEVICE == 0
+        && info.Characteristics & FILE_READ_ONLY_DEVICE == 0
+        && info.Characteristics & FILE_CHARACTERISTIC_WEBDAV_DEVICE == 0
+        && info.Characteristics & FILE_CHARACTERISTIC_CSV == 0
+        && info.Characteristics & FILE_VIRTUAL_VOLUME == 0
+}
+
+const fn complete_device_query(status: i32, returned_bytes: usize) -> bool {
+    status == 0 && returned_bytes >= size_of::<FILE_FS_DEVICE_INFORMATION>()
+}
+
+fn verify_local_disk_device(handle: &File) -> io::Result<()> {
+    let mut status_block = IO_STATUS_BLOCK::default();
+    let mut info = FILE_FS_DEVICE_INFORMATION::default();
+    let length = u32::try_from(size_of::<FILE_FS_DEVICE_INFORMATION>())
+        .map_err(|_| invalid_state_root_error())?;
+    // SAFETY: the directory handle stays live, and both output structures are
+    // writable for the exact synchronous query size.
+    #[allow(unsafe_code)]
+    let status = unsafe {
+        NtQueryVolumeInformationFile(
+            handle.as_raw_handle(),
+            &raw mut status_block,
+            (&raw mut info).cast(),
+            length,
+            FileFsDeviceInformation,
+        )
+    };
+    if !complete_device_query(status, status_block.Information) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("recovery volume device classification failed with NTSTATUS {status:#010x}"),
+        ));
+    }
+    if !supported_local_disk_device(info) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "recovery state requires a local fixed disk device",
+        ));
+    }
+    Ok(())
 }
 
 fn query_preferred_identity(handle: &File) -> io::Result<WindowsDirectoryIdentity> {
@@ -1228,35 +1470,47 @@ mod tests {
     use std::mem::{offset_of, size_of};
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::os::windows::fs::{OpenOptionsExt, symlink_dir, symlink_file};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tempfile::tempdir;
 
     use super::{
-        DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, ParsedStatePath,
-        WindowsRecoveryDirectory, WindowsRecoveryEntryName, WindowsRecoveryNamespace,
-        bounded_windows_path_length, classify_cloud_sync_root_result,
-        classify_directory_creation_error, classify_directory_open_error,
+        DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, KnownFolderAllocation,
+        ParsedStatePath, WindowsRecoveryDirectory, WindowsRecoveryEntryName,
+        WindowsRecoveryNamespace, bind_existing_child_directory, bind_existing_directory,
+        bind_private_directory, bounded_windows_path_length, classify_cloud_sync_root_result,
+        classify_directory_creation_error, classify_directory_open_error, complete_device_query,
         directory_attributes_are_safe, entry_names_from_handle, nt_open_handle_usable,
-        open_directory_no_follow, parse_directory_entry_batch, query_preferred_identity,
-        reject_cloud_sync_root, system_cloud_library_path, verify_fixed_drive,
-        verify_loaded_cloud_library, verify_ntfs,
+        open_directory_no_follow, open_or_create_private_directory, parse_directory_entry_batch,
+        query_preferred_identity, recover_private_directory_creation_error, reject_cloud_sync_root,
+        supported_local_disk_device, system_cloud_library_path, verify_fixed_drive,
+        verify_loaded_cloud_library, verify_local_disk_device, verify_ntfs,
+        windows_local_appdata_directory,
     };
     use crate::imp::{
         windows_create_owner_controlled_readable_directory_for_test,
+        windows_create_private_directory, windows_create_private_directory_at,
         windows_verify_private_directory_security,
     };
     use crate::{InstallNewOutcome, ParentSyncOutcome};
+    use windows_sys::Wdk::System::SystemServices::{
+        FILE_CHARACTERISTIC_CSV, FILE_CHARACTERISTIC_WEBDAV_DEVICE, FILE_FS_DEVICE_INFORMATION,
+        FILE_PORTABLE_DEVICE, FILE_READ_ONLY_DEVICE, FILE_REMOTE_DEVICE, FILE_REMOVABLE_MEDIA,
+        FILE_VIRTUAL_VOLUME,
+    };
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::CloudFilters::{
         CF_HYDRATION_POLICY_ALWAYS_FULL, CF_POPULATION_POLICY_ALWAYS_FULL, CF_REGISTER_FLAG_NONE,
         CF_SYNC_POLICIES, CF_SYNC_REGISTRATION, CfRegisterSyncRoot, CfUnregisterSyncRoot,
     };
+    use windows_sys::Win32::Storage::FileSystem::GetLogicalDrives;
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_ID_BOTH_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DEVICE_DISK,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_BOTH_DIR_INFO, FILE_LIST_DIRECTORY,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
 
     #[test]
@@ -1337,6 +1591,34 @@ mod tests {
     }
 
     #[test]
+    fn local_appdata_known_folder_is_an_absolute_directory() -> io::Result<()> {
+        let path = windows_local_appdata_directory()?;
+        assert!(path.is_absolute());
+        assert!(path.is_dir());
+        Ok(())
+    }
+
+    #[test]
+    fn known_folder_allocation_releases_its_owned_pointer() {
+        static RELEASES: AtomicUsize = AtomicUsize::new(0);
+
+        extern "system" fn record_release(pointer: *const std::ffi::c_void) {
+            assert_eq!(
+                pointer,
+                std::ptr::NonNull::<u16>::dangling().as_ptr().cast()
+            );
+            RELEASES.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let before = RELEASES.load(Ordering::SeqCst);
+        drop(KnownFolderAllocation {
+            path: std::ptr::NonNull::<u16>::dangling().as_ptr(),
+            release: record_release,
+        });
+        assert_eq!(RELEASES.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
     fn native_volume_checks_reject_non_volume_inputs() -> io::Result<()> {
         assert_eq!(
             verify_fixed_drive(Path::new(r"?:\"))
@@ -1346,7 +1628,67 @@ mod tests {
         );
         let null_device = File::open("NUL")?;
         assert!(verify_ntfs(&null_device).is_err());
+        assert!(verify_local_disk_device(&null_device).is_err());
+        let local = tempdir()?;
+        let directory = fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(local.path())?;
+        verify_local_disk_device(&directory)?;
         Ok(())
+    }
+
+    #[test]
+    fn binding_rejects_a_different_expected_volume() -> io::Result<()> {
+        let local = tempdir()?;
+        let bound = bind_existing_directory(local.path(), None)?;
+        let wrong_volume = bound.identity.volume_serial ^ 1;
+        assert_eq!(
+            bind_existing_directory(local.path(), Some(wrong_volume))
+                .expect_err("a volume mismatch must be refused")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(bind_existing_directory(local.path(), Some(bound.identity.volume_serial)).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn device_policy_rejects_nonlocal_or_weak_volume_flags() {
+        let local = FILE_FS_DEVICE_INFORMATION {
+            DeviceType: FILE_DEVICE_DISK,
+            Characteristics: 0,
+        };
+        assert!(supported_local_disk_device(local));
+        assert!(!supported_local_disk_device(FILE_FS_DEVICE_INFORMATION {
+            DeviceType: 0,
+            ..local
+        }));
+        for flag in [
+            FILE_REMOTE_DEVICE,
+            FILE_REMOVABLE_MEDIA,
+            FILE_PORTABLE_DEVICE,
+            FILE_READ_ONLY_DEVICE,
+            FILE_CHARACTERISTIC_WEBDAV_DEVICE,
+            FILE_CHARACTERISTIC_CSV,
+            FILE_VIRTUAL_VOLUME,
+        ] {
+            assert!(!supported_local_disk_device(FILE_FS_DEVICE_INFORMATION {
+                Characteristics: flag,
+                ..local
+            }));
+        }
+    }
+
+    #[test]
+    fn device_query_requires_success_and_the_complete_native_structure() {
+        let size = size_of::<FILE_FS_DEVICE_INFORMATION>();
+        assert!(!complete_device_query(-1, size));
+        assert!(!complete_device_query(0, 0));
+        assert!(!complete_device_query(0, size - 1));
+        assert!(complete_device_query(0, size));
+        assert!(complete_device_query(0, size + 1));
     }
 
     #[test]
@@ -1419,6 +1761,13 @@ mod tests {
         let local = tempdir()?;
         let child = local.path().join("child");
         fs::create_dir(&child)?;
+        // Registration requires WRITE_DATA or WRITE_DAC on the sync root.
+        let writable_root = fs::OpenOptions::new()
+            .access_mode(windows_sys::Win32::Storage::FileSystem::WRITE_DAC)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(local.path())?;
+        drop(writable_root);
         let path: Vec<u16> = local
             .path()
             .as_os_str()
@@ -1619,6 +1968,286 @@ mod tests {
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(!target.join("state").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn native_reparse_private_child_is_rejected_without_creating_target_content() -> io::Result<()>
+    {
+        let root = tempdir()?;
+        let state = root.path().join("state");
+        let target = root.path().join("target");
+        windows_create_private_directory(&state)?;
+        windows_create_private_directory(&target)?;
+        let sentinel = target.join("keep.txt");
+        fs::write(&sentinel, b"keep")?;
+        symlink_dir(&target, state.join("recovery"))?;
+
+        let result = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"));
+        let Err(error) = result else {
+            panic!("a reparse private child must be rejected");
+        };
+        // NT can refuse the reparse handle's requested security rights before
+        // the post-open attribute check runs.
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied
+        ));
+        assert_eq!(fs::read(sentinel)?, b"keep");
+        assert!(!target.join("records").exists());
+        assert!(!target.join("quarantine").exists());
+
+        fs::remove_dir(state.join("recovery"))?;
+        let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
+        assert!(namespace.records().path().is_dir());
+        Ok(())
+    }
+
+    #[test]
+    fn child_directory_binding_uses_the_held_parent_when_the_path_points_elsewhere()
+    -> io::Result<()> {
+        let root = tempdir()?;
+        let held_parent_path = root.path().join("held");
+        let other_parent_path = root.path().join("other");
+        let held_child_path = held_parent_path.join("child");
+        let other_child_path = other_parent_path.join("child");
+        fs::create_dir(&held_parent_path)?;
+        fs::create_dir(&other_parent_path)?;
+        fs::create_dir(&held_child_path)?;
+        fs::create_dir(&other_child_path)?;
+
+        let held_parent =
+            open_directory_no_follow(&held_parent_path, DirectorySharePolicy::Traversal)?;
+        let expected = query_preferred_identity(&open_directory_no_follow(
+            &held_child_path,
+            DirectorySharePolicy::Traversal,
+        )?)?;
+        let unrelated = query_preferred_identity(&open_directory_no_follow(
+            &other_child_path,
+            DirectorySharePolicy::Traversal,
+        )?)?;
+        assert_ne!(expected, unrelated);
+
+        let bound = bind_existing_child_directory(
+            &held_parent,
+            OsStr::new("child"),
+            &other_child_path,
+            query_preferred_identity(&held_parent)?.volume_serial,
+        )?;
+        assert_eq!(bound.identity, expected);
+        let private = open_or_create_private_directory(&held_parent, OsStr::new("child"))?;
+        assert_eq!(query_preferred_identity(&private)?, expected);
+        assert_eq!(
+            windows_create_private_directory_at(&held_parent, OsStr::new("child"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+
+        let held_new_path = held_parent_path.join("new");
+        let other_new_path = other_parent_path.join("new");
+        let created = bind_private_directory(
+            &held_parent,
+            OsStr::new("new"),
+            &other_new_path,
+            query_preferred_identity(&held_parent)?.volume_serial,
+        )?;
+        assert_eq!(
+            created.identity,
+            query_preferred_identity(&open_directory_no_follow(
+                &held_new_path,
+                DirectorySharePolicy::Traversal,
+            )?)?
+        );
+        assert!(!other_new_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn native_drive_remap_keeps_state_binding_under_the_held_parent() -> io::Result<()> {
+        struct SubstDrive {
+            drive: String,
+            executable: PathBuf,
+            active: bool,
+        }
+
+        impl SubstDrive {
+            fn mount(&mut self, target: &Path) -> io::Result<()> {
+                self.unmount()?;
+                let status = Command::new(&self.executable)
+                    .arg(&self.drive)
+                    .arg(target)
+                    .status()?;
+                if !status.success() {
+                    return Err(io::Error::other(format!(
+                        "temporary drive mapping failed: {status}"
+                    )));
+                }
+                self.active = true;
+                Ok(())
+            }
+
+            fn unmount(&mut self) -> io::Result<()> {
+                if !self.active {
+                    return Ok(());
+                }
+                let status = Command::new(&self.executable)
+                    .arg(&self.drive)
+                    .arg("/D")
+                    .status()?;
+                if !status.success() {
+                    return Err(io::Error::other(format!(
+                        "temporary drive unmapping failed: {status}"
+                    )));
+                }
+                self.active = false;
+                Ok(())
+            }
+        }
+
+        impl Drop for SubstDrive {
+            fn drop(&mut self) {
+                let _ = self.unmount();
+            }
+        }
+
+        // SAFETY: GetLogicalDrives reads the current drive-letter bitmap.
+        #[allow(unsafe_code)]
+        let occupied = unsafe { GetLogicalDrives() };
+        if occupied == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let letter = (b'P'..=b'Z')
+            .rev()
+            .find(|letter| occupied & (1_u32 << (letter - b'A')) == 0)
+            .ok_or_else(|| io::Error::other("no free drive letter for the remapping fixture"))?;
+        let root = tempdir()?;
+        let source = root.path().join("source");
+        let unrelated = root.path().join("unrelated");
+        let source_parent = source.join("parent");
+        let unrelated_parent = unrelated.join("parent");
+        fs::create_dir_all(&source_parent)?;
+        fs::create_dir_all(&unrelated_parent)?;
+        let source_state = source_parent.join("state");
+        let unrelated_state = unrelated_parent.join("state");
+        windows_create_private_directory(&source_state)?;
+        windows_create_private_directory(&unrelated_state)?;
+        let source_identity = query_preferred_identity(&open_directory_no_follow(
+            &source_state,
+            DirectorySharePolicy::Traversal,
+        )?)?;
+        let unrelated_identity = query_preferred_identity(&open_directory_no_follow(
+            &unrelated_state,
+            DirectorySharePolicy::Traversal,
+        )?)?;
+        assert_ne!(source_identity, unrelated_identity);
+
+        let mut mapping = SubstDrive {
+            drive: format!("{}:", char::from(letter)),
+            executable: system_cloud_library_path()?.with_file_name("subst.exe"),
+            active: false,
+        };
+        mapping.mount(&source)?;
+        let mapped_state = PathBuf::from(format!("{}\\parent\\state", mapping.drive));
+        let mut remapped = false;
+        let namespace = WindowsRecoveryNamespace::open_or_create_with_cloud_check(
+            &mapped_state,
+            OsStr::new("recovery"),
+            |parent| {
+                reject_cloud_sync_root(parent)?;
+                if !remapped {
+                    mapping.mount(&unrelated)?;
+                    remapped = true;
+                }
+                Ok(())
+            },
+        )?;
+        assert!(remapped);
+        assert_eq!(namespace.state_identity(), source_identity);
+        assert!(source_state.join("recovery").join("records").is_dir());
+        write_and_verify_held_record(&namespace, &source_state)?;
+        assert!(!unrelated_state.join("recovery").exists());
+        mapping.unmount()?;
+        Ok(())
+    }
+
+    fn write_and_verify_held_record(
+        namespace: &WindowsRecoveryNamespace,
+        source_state: &Path,
+    ) -> io::Result<()> {
+        let mut record = namespace
+            .records()
+            .create_private_new(OsStr::new("held.rec"))?;
+        record.write_all(b"held recovery bytes")?;
+        record.sync_all()?;
+        let (outcome, _) = namespace
+            .records()
+            .install_new_from_open(&record, OsStr::new("installed.rec"))?
+            .into_parts();
+        assert!(matches!(outcome, InstallNewOutcome::Clean));
+        assert!(matches!(
+            namespace.records().sync()?,
+            ParentSyncOutcome::Synced
+        ));
+        drop(record);
+        assert_eq!(
+            namespace.records().entry_names(1)?,
+            [OsString::from("installed.rec")]
+        );
+        assert!(
+            !source_state
+                .join("recovery")
+                .join("records")
+                .join("held.rec")
+                .exists()
+        );
+        assert_eq!(
+            fs::read(
+                source_state
+                    .join("recovery")
+                    .join("records")
+                    .join("installed.rec")
+            )?,
+            b"held recovery bytes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn private_directory_create_race_reopens_only_an_existing_child() -> io::Result<()> {
+        let root = tempdir()?;
+        let child_path = root.path().join("child");
+        fs::create_dir(&child_path)?;
+        let parent = open_directory_no_follow(root.path(), DirectorySharePolicy::Traversal)?;
+        let expected = query_preferred_identity(&open_directory_no_follow(
+            &child_path,
+            DirectorySharePolicy::Traversal,
+        )?)?;
+
+        let reopened = recover_private_directory_creation_error(
+            &parent,
+            OsStr::new("child"),
+            io::Error::from(io::ErrorKind::AlreadyExists),
+        )?;
+        assert_eq!(query_preferred_identity(&reopened)?, expected);
+
+        let denied = recover_private_directory_creation_error(
+            &parent,
+            OsStr::new("child"),
+            io::Error::from(io::ErrorKind::PermissionDenied),
+        )
+        .unwrap_err();
+        assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            recover_private_directory_creation_error(
+                &parent,
+                OsStr::new("missing"),
+                io::Error::from(io::ErrorKind::AlreadyExists),
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::NotFound
+        );
         Ok(())
     }
 
@@ -1900,6 +2529,70 @@ mod tests {
                 .kind(),
             io::ErrorKind::InvalidInput
         );
+        Ok(())
+    }
+
+    #[test]
+    fn held_predecessor_can_move_to_backup_before_exclusive_stage_install() -> io::Result<()> {
+        let parent = tempdir()?;
+        let state = parent.path().join("state");
+        let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
+        let records = namespace.records();
+        let stage_path = records.path().join("stage.rec");
+        let destination_path = records.path().join("current.rec");
+        let backup_path = records.path().join("backup.rec");
+        let competitor_path = records.path().join("competitor.rec");
+        fs::write(&stage_path, b"new snapshot")?;
+        fs::write(&destination_path, b"old snapshot")?;
+        fs::write(&competitor_path, b"raced snapshot")?;
+
+        let opened_stage = records.open_for_bound_replacement(OsStr::new("stage.rec"))?;
+        let predecessor = records.open_for_bound_replacement(OsStr::new("current.rec"))?;
+
+        assert!(fs::rename(&competitor_path, &destination_path).is_err());
+        fs::write(&backup_path, b"retained backup")?;
+        assert_eq!(
+            records
+                .install_new_from_open(&predecessor, OsStr::new("backup.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&destination_path)?, b"old snapshot");
+        assert_eq!(fs::read(&backup_path)?, b"retained backup");
+        fs::remove_file(&backup_path)?;
+        let (outcome, _) = records
+            .install_new_from_open(&predecessor, OsStr::new("backup.rec"))?
+            .into_parts();
+        assert!(matches!(outcome, InstallNewOutcome::Clean));
+        assert!(matches!(records.sync()?, ParentSyncOutcome::Synced));
+        assert!(!destination_path.exists());
+        assert_eq!(fs::read(&backup_path)?, b"old snapshot");
+
+        fs::rename(&competitor_path, &destination_path)?;
+        assert_eq!(
+            records
+                .install_new_from_open(&opened_stage, OsStr::new("current.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&destination_path)?, b"raced snapshot");
+        assert_eq!(fs::read(&stage_path)?, b"new snapshot");
+        assert_eq!(fs::read(&backup_path)?, b"old snapshot");
+
+        fs::remove_file(&destination_path)?;
+        let (outcome, _) = records
+            .install_new_from_open(&opened_stage, OsStr::new("current.rec"))?
+            .into_parts();
+        assert!(matches!(outcome, InstallNewOutcome::Clean));
+        assert!(matches!(records.sync()?, ParentSyncOutcome::Synced));
+        assert_eq!(fs::read(&destination_path)?, b"new snapshot");
+        assert_eq!(fs::read(&backup_path)?, b"old snapshot");
+        crate::delete_open_file(&predecessor)?;
+        drop(predecessor);
+        assert!(!backup_path.exists());
+        assert!(matches!(records.sync()?, ParentSyncOutcome::Synced));
         Ok(())
     }
 

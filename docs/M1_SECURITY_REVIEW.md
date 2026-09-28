@@ -261,3 +261,477 @@ the UI-independent trust kernel. The scopes overlap and are not claimed as a
 new deduplicated cross-platform union. The current target-filtered Windows
 adapter command enumerates 108 candidates. The native filesystem and
 crash-persistence gaps above remain open.
+
+## 2026-09-28 UTC terminal formatting-control follow-up
+
+The terminal display classifier did not include U+206A through U+206F, six
+deprecated Unicode formatting controls. They could pass through the terminal
+document view and diagnostic path output unchanged. This is a display-integrity
+gap; no terminal command execution was established. A focused regression failed
+against the old classifier and passed after all six characters were classified
+as unsafe. A Windows-local TUI frame test also renders the characters in
+Text and Markdown views and verifies that none reach the output frame. It does
+not exercise a real console.
+
+This branch is based on `3ed0283`. The complete Windows workspace tests,
+Clippy, Rustdoc, formatting, Ruff, script tests, documentation links, release
+configuration check, and cached advisory audit passed. Local line coverage is
+93.37 percent for the whole workspace and 92.65 percent with the declared UI
+exclusions. Two independent read-only checker passes scored all seven quality
+categories at least 4 out of 5. Exact-head hosted CI and Linux and macOS native
+results remain pending. Real-console behavior is not established by this test.
+
+A focused Windows-local `cargo mutants --regex 'terminal_text' -j 4` run on
+`e76adbd` completed 50 of 50 mutants as caught, with zero missed, timed out,
+or unviable. The campaign's selected application tests passed at baseline.
+This tests the terminal text module's mutation scope; it does not replace the
+complete CI campaign.
+
+## 2026-09-28 UTC local branch security review
+
+A source-backed security diff scan reviewed all 17 changed source-like files in
+the immutable local range `91fef57..8c5b77d`, plus supporting recovery,
+installer, save, terminal, and release boundaries. It found no plausible new
+vulnerability in that diff. The completed local scan is
+`de5b5626-d6b9-4b74-afd1-23764d616654`. It was a read-only source review,
+not native runtime validation or exact-head hosted CI. The existing Windows
+recovery replacement gap in M4-H1 is not closed by this result.
+
+The current Windows recovery implementation binds a written stage's identity,
+length, and BLAKE3 fingerprint before closing its handle, then rechecks the
+stage before `ReplaceFileW`. The replacement operation itself still names the
+stage and destination by path. A Windows native probe tested a possible
+handle-relative replacement using `NtSetInformationFile` with
+`FileRenameInformationEx`, `FILE_RENAME_REPLACE_IF_EXISTS`, and
+`FILE_RENAME_POSIX_SEMANTICS`. With a held destination handle that denied delete
+sharing, a competing rename was blocked, but the replacement failed with NT
+`0xC0000043` and Win32 error 32. Allowing delete sharing let the replacement
+succeed, but also let a competing rename replace the destination while that
+handle remained open. The old handle still read the predecessor bytes. Both
+probe modes exited successfully after asserting their expected observations.
+
+This local result rules out claiming that those tested flags alone both lock
+the destination name against a race and perform a handle-relative replacement.
+It does not prove behavior on every Windows version or filesystem. M4-H1 still
+needs a predecessor-preserving protocol, native final-window race and fault
+fixtures, and exact-head CI. The API contracts are documented by Microsoft:
+[ReplaceFileW](https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-replacefilew),
+[FILE_RENAME_INFORMATION](https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information),
+and [FILE_LINK_INFORMATION](https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_link_information).
+
+A subsequent native NTFS fixture,
+`held_predecessor_can_move_to_backup_before_exclusive_stage_install`, exercises
+the existing handle-relative exclusive rename primitive with a held predecessor
+opened for deletion while denying delete sharing. It confirms that an occupied
+backup is not overwritten, a competing rename cannot replace the held
+destination, the predecessor can move to the backup name, and a competitor that
+then occupies the destination prevents stage installation. In that case the
+stage, backup, and competitor bytes all remain available. When the competing
+entry is removed, the held stage installs under the destination name. The
+fixture checks a records-directory sync after each successful rename, then
+deletes the exact opened predecessor and syncs the directory again. The focused
+native fixture, platform-package Clippy, formatting, and documentation links
+pass with that final test body. An earlier candidate body, before the final
+opened-handle deletion assertion, passed all 75 platform tests and the complete
+Windows workspace test command. A full platform-package retry with the final
+body passed 74 tests but the unchanged Cloud Files registration fixture failed
+because `CfRegisterSyncRoot` returned access denied (`0x80070005`); an isolated
+retry reproduced that failure. The full current gate is therefore unverified.
+This is
+evidence for the native primitive and its failure state; production recovery
+still uses `ReplaceFileW` for existing records. The two-step protocol needs
+application integration, crash and barrier fault tests, independent review,
+and exact-head hosted CI before M4-H1 can claim completion.
+
+## 2026-09-28 UTC Windows replacement integration
+
+The local branch now routes production Windows recovery replacement through
+the held records directory. It opens the verified stage and predecessor while
+denying delete sharing, moves the predecessor exclusively to a reserved backup,
+syncs the directory, installs the stage exclusively at the canonical name,
+syncs again, verifies both exact artifacts, deletes the opened predecessor,
+and syncs cleanup. [ADR-0005](adr/0005-windows-recovery-replacement.md) records
+the safety and availability tradeoff.
+
+Focused recovery-store tests pass for ordinary replacement, failed backup,
+new-record, and cleanup barriers, an occupied canonical name, and first-record
+installation failure. The backup and new-record barrier tests also confirm
+that startup scanning offers the latest snapshot and retains the predecessor
+as superseded. On this Windows machine, the current local tree passes
+`cargo fmt --all -- --check`, full-workspace Clippy, full-workspace tests
+including all 75 platform tests, Rustdoc with denied warnings, document links,
+206 script tests with 11 skips, and both `cargo llvm-cov` thresholds. Whole
+workspace line coverage is 93.34 percent; the quality-standard filtered
+coverage is 91.85 percent. The broader native fault and race matrix,
+independent review, and hosted exact-head CI remain unverified.
+
+A focused Windows-local mutation campaign at `abec535` ran
+`cargo mutants --regex 'write_atomic_private_windows_bound_with|open_for_bound_replacement' -j 4 --colors never`.
+Its unmutated baseline passed and all 11 selected mutants were caught in four
+minutes. This covers the selected Windows recovery replacement function and
+does not substitute for the full sharded CI campaign.
+
+A completed source-backed security diff scan of immutable local range
+`00f22c9..1b77e17` reviewed both changed source files and their supporting
+Windows recovery boundaries. It found no plausible newly introduced
+vulnerability. Scan ID: `43e626a4-91a2-441f-986f-7a752e84d979`. Its
+independent recovery-store review checked the held stage and predecessor,
+exclusive renames, barrier failures, exact cleanup, and startup recovery. The
+result does not close arbitrary root synchronization and redirection models,
+the broader native crash and race matrix, or hosted exact-head CI.
+
+## 2026-09-28 UTC Windows local recovery migration
+
+Source inspection of pinned eframe 0.35.0 found that its Windows
+`storage_dir("Noter")` selects RoamingAppData. The default recovery session
+used that same directory, so unsaved recovery bytes could be included in a
+roaming profile. The local migration branch now selects the LocalAppData known
+folder for new recovery writes and keeps exact-handle startup offers from an
+existing Roaming recovery root. Restore persists a local successor before
+removing the legacy offer. An unavailable local successor or invalid legacy
+root leaves existing records untouched. A native test resolves the Windows
+known folder. A fresh-root test caught and corrected an initial extra `data`
+path component that would have made first-launch recovery unavailable.
+
+The current local tree passes focused dual-root tests, all application-package
+tests, full-workspace Clippy, formatting, Rustdoc, documentation links, and a
+Linux-target binary check. Application-package line coverage is 93.77 percent;
+the quality-standard UI-excluded application figure is 92.54 percent. The
+full Windows workspace test command passed its application and integration
+tests but its unchanged Cloud Files registration fixture failed with access
+denied `0x80070005`; one platform-package retry reproduced that result. The
+fixture remains enabled. A focused Windows known-folder campaign caught all
+three generated mutants after separating status and null-pointer validation.
+Full-workspace coverage, broader mutation evidence, and hosted exact-head CI
+remain pending.
+
+The independent migration diff review at `1b77e17..918e4c2` completed with
+one low-severity privacy finding, scan
+`0f2b883f-a6ac-4ebf-83f0-77e9cc8da37b`. A crash after persisting a local
+successor but before retiring its Roaming predecessor could leave the older
+copy hidden after the local offer was restored. The local remediation retains
+that exact older offer in the session and exposes an explicit Discard action.
+The focused test checks retention while the old record is busy and after Save,
+then exact cleanup after the blocker is released. It also checks that a
+successful retry clears the warning caused by that blocked attempt. Fresh
+native screenshots were rendered and reviewed in five themes and views. The
+capture script now uses an isolated
+private QA state root; its previous run showed a recovery-unavailable banner
+because the script's temporary root inherited broad permissions.
+
+Fresh review of the local remediation found two additional failure paths.
+A consumed cleanup offer hid the retry action after exact deletion failed;
+cleanup now uses cloned open handles and retains the original offer until
+deletion succeeds. A cross-root match based only on IDs could label a valid
+generation-gap record as obsolete; both roots now use the same schema-v2,
+next-generation predicate. Focused tests cover busy predecessor cleanup and
+the generation gap. The focused library mutation campaign caught all 12
+generated mutants, including the unrelated scheduler mutant included by the
+repository's mutation configuration. The broader native race matrix remains
+open. Schema-v1 and generation-gap records remain separate under the core
+lineage rule. The local follow-up now retains a linked incomparable Roaming
+offer in the current session and presents ordinary Restore / Later / Discard
+review only after a committed Save protects the restored local document.
+Focused tests verify both record forms, retention before Save, and later
+review without deletion. Independent review found that the terminal save path
+did not activate the deferred offer; its committed-save transition now does,
+with a TUI test that saves a restored local document and reviews the separate
+Roaming record. This does not prove a v1 record is causally older;
+that uncertainty is why it is reviewed separately instead of receiving the
+older-copy cleanup action.
+
+The latest local full-workspace Windows test run passed 369 library tests, 562
+application tests, and the application integration suites. The native platform
+suite passed 75 tests and stopped at the unchanged Cloud Files fixture:
+`CfRegisterSyncRoot` returned `0x80070005` in this environment. No test or
+threshold was disabled. Application-package line coverage is 93.76 percent;
+the UI-excluded application figure is 92.61 percent. Hosted exact-head CI and
+the native fixture result remain open.
+
+The formal security diff scan for `8a09f38..efc97e9` reviewed all four changed
+source files and found no new reportable vulnerability. Scan ID:
+`4c6ba1b5-5a36-4a03-afd5-6adda90efb69`. This is diff-scoped evidence, not
+a completed repository-wide audit or a substitute for hosted CI.
+
+A subsequent Save-outcome review found a separate risk: `Committed` can carry a
+post-commit durability warning, but both front ends previously cleared private
+recovery and allowed the editor to close as if persistence were assured. The
+local follow-up keeps the document at risk, schedules a private recovery copy,
+and requires a later warning-free Save or explicit Discard before closing.
+Focused GUI and TUI tests assert the warning, persisted recovery record,
+blocked ordinary close, and clearing after a clean retry. This follow-up is
+outside the completed diff scan above and needs its own exact-head review.
+Independent fresh-context review found that terminal hangup persistence still
+required `Document::is_dirty()`; a warning had cleared that flag. The emergency
+path now accepts the retained durability risk, and the TUI test exercises it
+before the scheduled background write.
+
+On this follow-up source, the full local Windows workspace suite passes: 369
+library tests, 563 application tests, the application integration suites, and
+all 76 native platform tests, including the Cloud Files fixture. Workspace
+Clippy, formatting, Rustdoc, documentation links, Python tests, Ruff, and the
+README asset check pass. Application-package line coverage is 93.80 percent;
+the UI-excluded application figure is 92.69 percent. Hosted exact-head CI is
+still required before integration.
+
+The formal security diff scan for `dfa72c5..2e2636c` reviewed all four
+changed source-like files and found no reportable vulnerability. Scan ID:
+`1dc3cd3f-b80f-49e0-893a-2156e7038597`. Its static review traced the
+durability warning through GUI and TUI close, emergency persistence, and the
+clean retry. It did not inject a live filesystem sync failure.
+
+A later terminal flow review found that Save and Exit could expose a deferred
+Roaming recovery offer and exit before showing it. The terminal now waits for
+the offer decision in the same session. The focused test fails without that
+change. The resulting local Windows workspace run passes all tests and the
+exact 80 percent whole-workspace and 90 percent UI-excluded line thresholds:
+93.33 and 91.93 percent, respectively. Clippy, formatting, Rustdoc, README
+assets, Python checks, and documentation links also pass. The preceding
+security diff scan does not cover this later source change.
+
+The cached RustSec database scan covers all 415 locked dependencies with
+`cargo audit --deny warnings --no-fetch`; `cargo deny --locked --offline check`
+passes advisories, bans, licenses, and sources. Both commands
+used a disposable workspace Cargo home because the sandbox cannot acquire
+locks in the read-only user Cargo directory. These are local cached checks;
+they do not replace CI's fresh advisory fetch.
+
+A following GUI lifecycle test found that Save on a pending Quit could reveal
+the separate Roaming review offer and still authorize the window to close.
+The GUI now treats that offer as a blocking Save follow-up, cancelling the
+pending destructive intent so the ordinary review appears in the same session.
+The focused test fails without the change, and independent fresh-context
+review found no further lifecycle regression. The local Windows workspace
+suite passes 369 library, 564 application, and 76 native platform tests;
+whole-workspace line coverage is 93.34 percent and UI-excluded line coverage
+is 91.96 percent. Clippy, formatting, Rustdoc, Python checks, documentation
+links, and regenerated README screenshot assets pass. The earlier formal diff
+scan does not cover this new GUI source change.
+
+The formal security diff scan for `fc20020..cd82b93` reviewed both changed
+source-like files, including the GUI lifecycle change, and found no reportable
+vulnerability. Scan ID: `46126ba7-54f8-487e-a819-ce7ef5d2a96e`. It is
+diff-scoped static review; the regression test injects a committed Save rather
+than a live filesystem failure.
+
+## 2026-09-28 UTC Windows handle-based recovery device classification
+
+The Windows namespace now queries `FileFsDeviceInformation` on each opened
+directory handle before accepting it for recovery. It refuses non-disk,
+remote, removable, portable, read-only, WebDAV, CSV, and virtual volumes and
+fails closed if the query fails or returns too few bytes. The existing
+path-based fixed-drive and NTFS checks remain. The native fixture accepts an
+ordinary local directory and rejects a non-filesystem handle; the pure policy
+fixture checks each refused flag. All 76 other platform tests and the Windows
+workspace library, binary, and integration tests pass locally. Clippy,
+formatting, Rustdoc, Python checks, documentation links, cached audit and deny,
+and regenerated README screenshots pass. The five screenshot image hashes did
+not change after regeneration and full-size review.
+
+The exact all-targets test and coverage commands are not green on this machine:
+the existing Cloud Files registration fixture returns access denied
+(`0x80070005`) when run alone or with the suite. Filter inspection also
+returns access denied, so the local filter attachment cannot be verified.
+The runnable suite, with only that fixture omitted from the command line,
+measures 93.17 percent whole-workspace and 91.64 percent UI-excluded line
+coverage. Those numbers do not replace the exact gates. Independent review
+found and closed a missing virtual-volume flag; it found no native-call defect.
+A real drive-remapping or remote-volume fixture and exact-head hosted CI remain
+necessary before this Windows root-classification work can be claimed complete.
+
+The formal security diff scan for `36edc9e..a4b3196` reviewed all three
+changed source-like files and found no reportable vulnerability. Scan ID:
+`726316ad-2650-45ba-8ab6-928feefbf67d`. This is static diff coverage;
+it does not establish the missing native remote-volume, drive-remapping, or
+exact-head CI evidence.
+
+A follow-up mutation review replaced the equivalent OR-to-XOR flag-mask
+mutants with individually checked device characteristics and isolated the
+native response-length decision for exact boundary testing. The local Windows
+campaign caught all 5 response-length mutants and all 34 classifier and
+wrapper mutants. Each campaign also caught one unrelated recovery-scheduler
+mutant selected by the mutation tool. Both ran the unmodified test baseline
+with only the Cloud Files registration fixture omitted from the command line
+because it still returned access denied on this machine. The repository's CI
+mutation scope and exclusions were not changed; its full hosted gate remains
+unverified. The post-refactor runnable suite passes 93.18 percent
+whole-workspace and 91.64 percent UI-excluded line coverage. The exact
+all-targets test still stops at that Cloud Files fixture.
+
+## 2026-09-28 UTC unsafe Windows recovery entry names
+
+A native NTFS fixture creates an entry with a wide character and a trailing
+period through a verbatim Windows path next to a valid recovery snapshot. The
+prior startup scan aborted with `InvalidInput` when its bound entry validator
+refused the ambiguous name, suppressing the valid restore offer for that
+session. The scan now retains the unsafe entry, reports a fixed manual-review
+notice without its spelling, and continues to offer the valid snapshot. The
+fixture fails before the change and passes afterward. No record bytes are
+read or deleted through the unsafe name. An independent fresh-context review
+found no concrete data-safety issue in the diff. The runnable Windows suite,
+format, Clippy, Rustdoc, documentation links, script tests, Ruff, screenshot
+assets, offline dependency checks, and cached advisory audit pass. Runnable
+coverage is 93.20 percent whole-workspace and 91.70 percent UI-excluded.
+The exact all-targets Windows test still fails only at Cloud Files fixture
+registration (`0x80070005`); full exact-head CI remains unverified.
+Formal diff scan `dc4e235f-7afe-4165-8bdc-f51934ff85fa` reviewed all three
+changed source-like files in `6b9a008..7c866a5` and found no reportable
+security vulnerability. Its scope does not establish repository-wide coverage.
+A focused local `scan_startup` mutation campaign passed its baseline with only
+the unavailable Cloud Files registration fixture omitted. Four relevant
+mutants were caught and one was unviable; the tool also selected and caught
+one unrelated recovery-scheduler mutant. This does not replace the hosted
+mutation gate or directly mutate the new unsafe-name predicate.
+
+## 2026-09-28 UTC Windows parent-relative directory binding
+
+The prior namespace walk held each parent but opened its child by a full
+pathname. A drive-letter mapping change between those steps could bind an
+unrelated same-volume child. Missing private children were also created by
+pathname, potentially leaving an empty directory outside the held tree. The
+walk and exclusive private creation now use the held parent handle; the drive
+root remains the one absolute directory open. A native NTFS fixture supplies a
+child pathname in a different tree and proves both existing-child binding and
+missing-child creation select the held parent instead. It also verifies that
+exclusive creation reports an occupied name. Replacing either relative open
+with its old pathname open makes the fixture fail. An independent fresh-context
+review found no remaining concrete issue in this diff. The fixture simulates a
+changed path mapping; a real drive-remapping fixture remains outstanding, as
+do exact-head hosted CI and the local Cloud Files registration fixture. The
+creation-race recovery also has a native test for an occupied child,
+permission failure, and a vanished child. A focused local mutation campaign
+passed its baseline with only the unavailable Cloud Files fixture omitted:
+three mutants were caught, four were unviable, and none survived. One caught
+mutant was an unrelated scheduler mutation selected by the tool. The mutation
+campaign does not replace the hosted gate. The runnable Windows suite, format,
+Clippy, Rustdoc, documentation links, script
+tests, Ruff, screenshot assets, offline deny, and cached advisory audit pass.
+Runnable line coverage is 93.18 percent whole-workspace and 91.63 percent
+UI-excluded. All five regenerated README screenshots match the previously
+reviewed image hashes. The exact all-targets local test still fails only at
+Cloud Files registration (`0x80070005`), with 79 other platform tests passing.
+Formal diff scan `aec6e4b5-a2e3-4641-84f4-b927a81d6e05` reviewed all three
+changed source-like files in `d35b692..56cb716` and found no reportable
+security vulnerability. It does not establish repository-wide coverage or the
+missing native and hosted evidence above.
+
+## 2026-09-28 UTC Windows private-child reparse fixture
+
+A native fixture places a directory symlink at the recovery child name under
+an owner-protected state directory and points it to another owner-protected
+directory. Namespace opening fails before any records or quarantine directory
+appears in the symlink target, and a target
+sentinel remains unchanged. Removing only the symlink then allows the same
+protected state root to bind, proving the rejected child caused the first
+failure. Windows returns permission denied when its requested security rights
+are refused before the post-open reparse check; the
+fixture also accepts invalid data from that check. This covers the final
+private-child boundary separately from the existing ancestor traversal and
+record-entry reparse fixtures. It does not establish the outstanding actual
+drive-remapping or remote-volume cases.
+
+An independent fresh-context review identified the need for the successful
+same-root control and approved the revised fixture. The focused test fails
+when the relative directory open is manually changed to follow reparse
+points, and passes after the no-follow flag is restored. The exact all-targets
+Windows test still fails only at Cloud Files registration (`0x80070005`),
+with 80 other platform tests passing. The runnable suite, formatting, Clippy,
+Rustdoc, script tests, documentation links, Ruff, screenshot assets, offline
+deny, and cached advisory audit pass. Runnable line coverage is 93.18 percent
+whole-workspace and 91.67 percent UI-excluded. All five regenerated README
+screenshots match their previously reviewed image hashes. Hosted exact-head CI
+remains unverified.
+
+## 2026-09-28 UTC Windows namespace verification and Cloud Files diagnostic
+
+A focused local mutation campaign over namespace construction and opened
+directory verification passed its baseline with only the unavailable Cloud
+Files registration fixture omitted. Four relevant mutants were caught, two
+function replacements were unviable, and none survived. The tool also caught
+one unrelated recovery-scheduler mutant. This does not replace the hosted
+mutation gate.
+
+The Cloud Files fixture now proves its temporary root can be opened with
+`WRITE_DAC` before requesting sync-root registration. On this machine that
+open succeeds, but registration still returns `0x80070005`. This separates a
+missing fixture-directory permission from the remaining registration denial;
+it does not establish the exact external cause or make the local all-targets
+suite pass. No production Cloud Files behavior or CI exclusion changed.
+
+The exact test has 80 other platform tests passing. The runnable suite,
+formatting, Clippy, Rustdoc, script tests, documentation links, Ruff,
+screenshot assets, offline deny, and cached advisory audit pass. Runnable line
+coverage is 93.17 percent whole-workspace and 91.61 percent UI-excluded. All
+five regenerated README screenshots match the previously reviewed image
+hashes. An independent fresh-context review confirmed the probe and mutation
+record; hosted exact-head CI remains unavailable.
+The same Cloud Files fixture returned `0x80070005` when its temporary root was
+placed inside the writable workspace, so the default temp location alone does
+not explain the denial.
+
+## 2026-09-28 UTC owned recovery cleanup mutation review
+
+A focused local mutation campaign covered bounded owned-artifact cleanup and
+missing-file deletion handling. Its baseline passed with only the unavailable
+Cloud Files registration fixture omitted. Nine relevant mutants were caught,
+two generated boolean substitutions were unviable, and none survived. The
+tool also caught one unrelated recovery-scheduler mutant. The existing tests
+therefore detect changes to the canonical and keyed artifact removal,
+directory-entry bound, foreign-artifact filter, and missing-file error policy
+in this campaign. This is local focused evidence, not the full hosted gate.
+
+## 2026-09-28 UTC native Windows drive-remapping fixture
+
+A native fixture uses an unused temporary drive letter mapped to one NTFS tree,
+opens and holds its traversal parent, then remaps that drive letter to a
+different tree on the same volume before state binding. Both trees contain a
+private state directory, so an absolute state open could succeed against the
+wrong object. The namespace instead binds the original state identity and
+creates recovery records under the held tree; the unrelated state gains no
+recovery subtree. The fixture launches the system-directory `subst.exe` by
+absolute path and unmaps the temporary drive before removing the test tree.
+Replacing the relative state bind with an absolute pathname open makes the
+focused test fail on the different file identity, and restoring the relative
+open makes it pass.
+This covers one actual drive-letter remap window, not every redirected-root
+classification or the remaining fault and race matrix.
+
+Independent review confirmed the executable origin, cleanup order, and
+identity assertions. On this Windows host the full all-targets suite passed,
+including all 82 platform tests and the native Cloud Files fixture. Format,
+Clippy with warnings denied, Rustdoc with warnings denied, Python tests,
+Ruff, doc links, README asset validation, offline deny, cached advisory audit,
+and `git diff --check` passed. Coverage was 93.32 percent for the workspace
+and 92.72 percent with the specified UI files excluded, above the 80 and
+90 percent thresholds. The five regenerated screenshots were byte-identical
+to the approved assets; only their source-input digest changed. Hosted
+exact-head CI remains unverified.
+
+The fixture was later extended to create a record, install the opened file
+under a new name, sync the held records directory, and enumerate the result
+after the drive letter has been remapped. The bytes appear under the held
+records directory; the unrelated tree remains untouched. Replacing
+handle-relative record creation with an absolute pathname open makes the
+focused test fail
+because the rebound path does not contain the records directory. Restoring
+handle-relative creation makes it pass. Independent review approved the new
+assertions. The exact local all-targets Windows suite passed, including all
+82 platform tests. Format, Clippy, Rustdoc, Python tests, Ruff, doc links,
+README asset validation, offline deny, cached advisory audit, and diff checks
+passed. Coverage was 93.32 percent workspace-wide and 92.71 percent with the
+specified UI files excluded. All five regenerated screenshots had identical
+decoded pixels to the approved assets; four PNG encodings differed, so the
+approved tracked images were retained and the source-input digest updated.
+Hosted exact-head CI remains unverified.
+
+## 2026-09-28 UTC Windows native-fixture security diff scan
+
+Formal security diff scan `09705b5d-aba6-466b-a0bb-c2bcf9bb5106` reviewed
+the immutable `3fd9b6a..2b10037` range. Both changed source-like files were
+accounted for: the Windows recovery namespace tests and the README screenshot
+freshness checker. The sealed report and SARIF are in the scan's managed state
+directory. It found zero reportable vulnerabilities. This is changed-code
+coverage, not a repository-wide audit. In isolated local reruns the existing
+Cloud Files registration fixture sometimes returned access denied before its
+assertions, while the exact all-targets suite passed on `2b10037`. Hosted
+exact-head CI remains unverified.

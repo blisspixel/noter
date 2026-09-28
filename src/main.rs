@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use app::{DocumentView, InterfaceRequest, LaunchOptions, NoterApp, RELEASES_URL, UPDATE_STATUS};
 use noter::core::file_observation::preflight_regular_file;
+use noter::core::terminal_text::escaped_cli_path;
 use theme::AppTheme;
 
 const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --gui\n  --tui\n  --theme system|light|dark|green|amber\n  --view text|markdown\n  -h, --help\n  -V, --version\n\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` shows the local update status and makes no network request.\nOption values are case-insensitive.\n\nWithout --gui or --tui, Noter opens a window. On non-macOS Unix, such as\nLinux or BSD, with no DISPLAY, WAYLAND_DISPLAY, or WAYLAND_SOCKET and a\nterminal on standard input and output, it opens the terminal interface\ninstead, and `noter update` prints its status.";
@@ -367,22 +368,6 @@ fn parse_view(value: &str) -> Result<DocumentView, String> {
 
 fn escaped_cli_value(value: &str) -> String {
     value.escape_debug().collect()
-}
-
-/// Escapes only control characters so a reported path stays readable.
-///
-/// Full debug escaping would double every separator in a Windows path, which
-/// makes the message harder to read than the mistake it reports.
-fn escaped_cli_path(path: &Path) -> String {
-    let mut escaped = String::new();
-    for character in path.display().to_string().chars() {
-        if character.is_control() {
-            escaped.extend(character.escape_debug());
-        } else {
-            escaped.push(character);
-        }
-    }
-    escaped
 }
 
 #[cfg(test)]

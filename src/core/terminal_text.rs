@@ -11,6 +11,7 @@
 //! and combining marks take none, following Unicode Standard Annex #11 as
 //! implemented by `unicode-width`.
 
+use std::path::Path;
 use unicode_width::UnicodeWidthChar;
 
 /// Column interval between tab stops when a tab character is drawn.
@@ -37,7 +38,22 @@ pub const fn is_terminal_unsafe(character: char) -> bool {
             | '\u{200F}'
             | '\u{202A}'..='\u{202E}'
             | '\u{2066}'..='\u{2069}'
+            | '\u{206A}'..='\u{206F}'
     )
+}
+
+/// Escapes terminal controls in a diagnostic path while keeping ordinary
+/// separators and printable characters readable.
+pub fn escaped_cli_path(path: &Path) -> String {
+    let mut escaped = String::new();
+    for character in path.display().to_string().chars() {
+        if is_terminal_unsafe(character) {
+            escaped.extend(character.escape_debug());
+        } else {
+            escaped.push(character);
+        }
+    }
+    escaped
 }
 
 /// Returns the cells `character` occupies when drawn starting at `column`.
@@ -138,19 +154,46 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn diagnostic_paths_escape_terminal_commands_and_reordering() {
+        let path = Path::new("notes\u{1b}]52;c;YQ==\u{7}\u{1b}\\\n\t\u{9b}\u{202e}\u{2028}.md");
+        let escaped = escaped_cli_path(path);
+
+        assert!(!escaped.chars().any(is_terminal_unsafe));
+        assert!(escaped.contains("\\u{1b}]52;c;YQ==\\u{7}"));
+        assert!(escaped.contains("\\n\\t\\u{9b}\\u{202e}\\u{2028}"));
+        assert_eq!(
+            escaped_cli_path(Path::new("a/b c/世界.md")),
+            "a/b c/世界.md"
+        );
+    }
+
+    #[test]
     fn control_and_reordering_characters_are_unsafe() {
         for character in [
             '\u{0}', '\u{7}', '\u{1B}', '\u{7F}', '\u{80}', '\u{9B}', '\u{9F}', '\u{2028}',
             '\u{2029}', '\u{061C}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202E}', '\u{2066}',
-            '\u{2069}',
+            '\u{2069}', '\u{206A}', '\u{206F}',
         ] {
             assert!(is_terminal_unsafe(character), "{character:?}");
         }
-        for character in [
-            'a', ' ', '\u{A0}', 'é', '世', '\u{200D}', '\u{2030}', '\u{206A}',
-        ] {
+        for character in ['a', ' ', '\u{A0}', 'é', '世', '\u{200D}', '\u{2030}'] {
             assert!(!is_terminal_unsafe(character), "{character:?}");
         }
+    }
+
+    #[test]
+    fn deprecated_format_controls_are_inert_in_terminal_output() {
+        let controls = "\u{206A}\u{206B}\u{206C}\u{206D}\u{206E}\u{206F}";
+        assert_eq!(sanitize_line(controls), REPLACEMENT.to_string().repeat(6));
+        assert_eq!(
+            fit_line(&format!("界{controls}a"), 9),
+            format!("界{}a", REPLACEMENT.to_string().repeat(6))
+        );
+        assert_eq!(display_width(controls), 6);
+        assert_eq!(
+            escaped_cli_path(Path::new(controls)),
+            "\\u{206a}\\u{206b}\\u{206c}\\u{206d}\\u{206e}\\u{206f}"
+        );
     }
 
     #[test]

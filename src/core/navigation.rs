@@ -179,10 +179,9 @@ fn move_by_character(source: &str, offset: usize, direction: MoveDirection) -> u
                 debug_assert!(offset >= 2);
                 return offset - 2;
             }
-            source
+            source[..offset]
                 .char_indices()
-                .take_while(|(index, _)| *index < offset)
-                .last()
+                .next_back()
                 .map_or(0, |(index, _)| index)
         }
         MoveDirection::Forward => {
@@ -236,21 +235,16 @@ fn move_by_word(source: &str, offset: usize, direction: MoveDirection) -> usize 
             if offset == 0 {
                 return 0;
             }
-            // Finite reverse walk over scalars (allocation is bounded by offset).
-            let mut chars: Vec<(usize, char)> = source[..offset].char_indices().collect();
+            let mut chars = source[..offset].char_indices().rev();
             // Skip trailing whitespace so Ctrl+Left lands on the prior token start.
-            while chars.last().is_some_and(|(_, ch)| ch.is_whitespace()) {
-                chars.pop();
-            }
-            let Some((_, last)) = chars.pop() else {
+            let Some((_, last)) = chars.find(|(_, ch)| !ch.is_whitespace()) else {
                 return 0;
             };
             let class = is_word_scalar(last);
-            while let Some((index, ch)) = chars.last().copied() {
+            for (index, ch) in chars {
                 if ch.is_whitespace() || is_word_scalar(ch) != class {
                     return index + ch.len_utf8();
                 }
-                chars.pop();
             }
             0
         }

@@ -95,3 +95,70 @@ and mutation result carry the stronger decision-path evidence for this scope.
   behavior, long-session memory bounds, or release readiness.
 - M3 remains In Progress until every roadmap exit criterion has same-commit
   evidence.
+
+## 2026-09-28 UTC backward-word memory follow-up
+
+This is separate Windows-local evidence for a navigation fix based on
+`49eaab40fad1b78cc58f0c5a14c0c6190e42c2de`. The candidate
+`src/core/navigation.rs` has Git blob
+`d43ea14f7c8e4a1c76f8e02d3404bf26874ece8e`. Hosted exact-head CI and
+non-Windows peak-memory evidence are pending.
+
+`python scripts/navigation_memory_check.py` builds the real navigation fixture,
+moves backward through a 16 MiB ASCII prefix with wide and bidi-control
+characters at the end, and checks the held process's peak working set against a
+160 MiB ceiling. On Windows, the prior vector implementation failed at
+289,267,712 bytes. The candidate passed at 37,576,704 bytes. Restoring the
+candidate after that negative check made the same test pass again. A separate
+allocation-count probe measured 234,881,136 requested allocation bytes for the
+old 8 MiB backward move, zero for the candidate at 8 MiB, and zero for the
+candidate at 64 MiB. Single-run timing was not used as an acceptance threshold.
+
+The candidate passed the full Windows workspace tests, 206 repository script
+tests with 11 skips, Clippy, Rustdoc, formatting, Ruff, documentation links,
+and release-config validation. Local line coverage was 93.36 percent for the
+whole workspace and 92.63 percent with the declared UI-adapter exclusions. The
+memory regression runs on Linux and Windows in the cached CI test job. macOS
+still runs the Rust fixture's Unicode offset checks, but its current baseline
+can sample only held resident memory, not the transient peak required for this
+assertion.
+
+A focused Windows-local `cargo mutants --regex 'move_by_word' -j 4` run on
+navigation source blob `d43ea14f7c8e4a1c76f8e02d3404bf26874ece8e`
+completed 17 of 17 mutants as caught, with zero missed, timed out, or
+unviable. The campaign's selected application tests passed at baseline. This
+is evidence for the word-movement mutation subset, not the complete CI
+mutation campaign.
+
+## 2026-09-28 UTC backward-character latency follow-up
+
+This Windows-local fix is based on `8d79ef3`. The candidate navigation source
+has Git blob `728c918dffcb9128169f52f7b05dfe850cf93a89`. The prior
+backward-character implementation scanned from the document start for every
+step. On a 64 MiB document with an ASCII prefix and a nine-byte wide,
+bidirectional-control, and combining-character suffix,
+`cargo test --locked --bench navigation_latency -- --nocapture` failed the
+two-second bound: 128 backward character steps took 10.6648241 seconds.
+Replacing the scan with a reverse iterator over the prefix made the corrected
+fixture pass in 1.2 microseconds. The timing threshold excludes text creation
+and is deliberately far above the candidate measurement; these local runs do
+not establish other-machine latency.
+
+The complete application-package tests, Clippy, Rustdoc, formatting, Ruff,
+repository script tests, documentation links, release configuration check, and
+cached advisory audit passed. `cargo deny --locked check --disable-fetch` could
+not acquire its advisory database lock on a read-only path in this sandbox.
+Package-only line coverage was 93.84 percent, and the declared
+UI-excluded calculation was 92.64 percent. The complete workspace test run
+failed in the unchanged Windows Cloud Files registration fixture with access
+denied (`0x80070005`); a direct platform-package retry reproduced it. Full
+workspace coverage, independent review, and exact-head hosted CI are pending.
+
+A Windows-local `cargo mutants --regex 'move_by_character' -j 4` run on
+`e6b18c4` finished 11 of 11 selected mutants as caught, with zero missed,
+timed out, or unviable. Ten selected candidates were in character navigation;
+one unrelated recovery candidate also matched the tool's selection. The
+campaign's selected application tests passed at baseline. A subsequent direct
+full-workspace retry still failed in the Cloud Files registration fixture with
+`0x80070005`. This focused mutation result does not establish the complete
+workspace gate.
