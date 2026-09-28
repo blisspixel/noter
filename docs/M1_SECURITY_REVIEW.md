@@ -370,3 +370,12 @@ A focused Windows-local mutation campaign at `abec535` ran
 Its unmutated baseline passed and all 11 selected mutants were caught in four
 minutes. This covers the selected Windows recovery replacement function and
 does not substitute for the full sharded CI campaign.
+
+A completed source-backed security diff scan of immutable local range
+`00f22c9..1b77e17` reviewed both changed source files and their supporting
+Windows recovery boundaries. It found no plausible newly introduced
+vulnerability. Scan ID: `43e626a4-91a2-441f-986f-7a752e84d979`. Its
+independent recovery-store review checked the held stage and predecessor,
+exclusive renames, barrier failures, exact cleanup, and startup recovery. The
+result does not close arbitrary root synchronization and redirection models,
+the broader native crash and race matrix, or hosted exact-head CI.
