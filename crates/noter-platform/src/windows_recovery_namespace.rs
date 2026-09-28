@@ -18,7 +18,13 @@ use std::sync::Mutex;
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation, NtCreateFile, NtSetInformationFile,
+    FILE_SYNCHRONOUS_IO_NONALERT, FileFsDeviceInformation, FileRenameInformation, NtCreateFile,
+    NtQueryVolumeInformationFile, NtSetInformationFile,
+};
+use windows_sys::Wdk::System::SystemServices::{
+    FILE_CHARACTERISTIC_CSV, FILE_CHARACTERISTIC_WEBDAV_DEVICE, FILE_FS_DEVICE_INFORMATION,
+    FILE_PORTABLE_DEVICE, FILE_READ_ONLY_DEVICE, FILE_REMOTE_DEVICE, FILE_REMOVABLE_MEDIA,
+    FILE_VIRTUAL_VOLUME,
 };
 use windows_sys::Win32::Foundation::{
     ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT, ERROR_NO_MORE_FILES, FreeLibrary, GENERIC_READ, HANDLE,
@@ -29,7 +35,7 @@ use windows_sys::Win32::Storage::CloudFilters::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_DEVICE_DISK, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY,
     FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK,
     FileBasicInfo, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo,
@@ -1208,6 +1214,8 @@ fn verify_directory_handle(handle: &File) -> io::Result<WindowsDirectoryIdentity
         ));
     }
 
+    verify_local_disk_device(handle)?;
+
     let mut basic = FILE_BASIC_INFO::default();
     let basic_size = u32::try_from(size_of::<FILE_BASIC_INFO>()).map_err(|_| {
         io::Error::new(
@@ -1245,6 +1253,49 @@ fn verify_directory_handle(handle: &File) -> io::Result<WindowsDirectoryIdentity
         ));
     }
     Ok(first)
+}
+
+const fn supported_local_disk_device(info: FILE_FS_DEVICE_INFORMATION) -> bool {
+    const UNSUPPORTED: u32 = FILE_REMOTE_DEVICE
+        | FILE_REMOVABLE_MEDIA
+        | FILE_PORTABLE_DEVICE
+        | FILE_READ_ONLY_DEVICE
+        | FILE_CHARACTERISTIC_WEBDAV_DEVICE
+        | FILE_CHARACTERISTIC_CSV
+        | FILE_VIRTUAL_VOLUME;
+    info.DeviceType == FILE_DEVICE_DISK && info.Characteristics & UNSUPPORTED == 0
+}
+
+fn verify_local_disk_device(handle: &File) -> io::Result<()> {
+    let mut status_block = IO_STATUS_BLOCK::default();
+    let mut info = FILE_FS_DEVICE_INFORMATION::default();
+    let length = u32::try_from(size_of::<FILE_FS_DEVICE_INFORMATION>())
+        .map_err(|_| invalid_state_root_error())?;
+    // SAFETY: the directory handle stays live, and both output structures are
+    // writable for the exact synchronous query size.
+    #[allow(unsafe_code)]
+    let status = unsafe {
+        NtQueryVolumeInformationFile(
+            handle.as_raw_handle(),
+            &raw mut status_block,
+            (&raw mut info).cast(),
+            length,
+            FileFsDeviceInformation,
+        )
+    };
+    if status != 0 || status_block.Information < size_of::<FILE_FS_DEVICE_INFORMATION>() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("recovery volume device classification failed with NTSTATUS {status:#010x}"),
+        ));
+    }
+    if !supported_local_disk_device(info) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "recovery state requires a local fixed disk device",
+        ));
+    }
+    Ok(())
 }
 
 fn query_preferred_identity(handle: &File) -> io::Result<WindowsDirectoryIdentity> {
@@ -1327,23 +1378,29 @@ mod tests {
         classify_directory_creation_error, classify_directory_open_error,
         directory_attributes_are_safe, entry_names_from_handle, nt_open_handle_usable,
         open_directory_no_follow, parse_directory_entry_batch, query_preferred_identity,
-        reject_cloud_sync_root, system_cloud_library_path, verify_fixed_drive,
-        verify_loaded_cloud_library, verify_ntfs, windows_local_appdata_directory,
+        reject_cloud_sync_root, supported_local_disk_device, system_cloud_library_path,
+        verify_fixed_drive, verify_loaded_cloud_library, verify_local_disk_device, verify_ntfs,
+        windows_local_appdata_directory,
     };
     use crate::imp::{
         windows_create_owner_controlled_readable_directory_for_test,
         windows_verify_private_directory_security,
     };
     use crate::{InstallNewOutcome, ParentSyncOutcome};
+    use windows_sys::Wdk::System::SystemServices::{
+        FILE_CHARACTERISTIC_CSV, FILE_CHARACTERISTIC_WEBDAV_DEVICE, FILE_FS_DEVICE_INFORMATION,
+        FILE_PORTABLE_DEVICE, FILE_READ_ONLY_DEVICE, FILE_REMOTE_DEVICE, FILE_REMOVABLE_MEDIA,
+        FILE_VIRTUAL_VOLUME,
+    };
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::CloudFilters::{
         CF_HYDRATION_POLICY_ALWAYS_FULL, CF_POPULATION_POLICY_ALWAYS_FULL, CF_REGISTER_FLAG_NONE,
         CF_SYNC_POLICIES, CF_SYNC_REGISTRATION, CfRegisterSyncRoot, CfUnregisterSyncRoot,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_ID_BOTH_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DEVICE_DISK,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_BOTH_DIR_INFO, FILE_LIST_DIRECTORY,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
 
     #[test]
@@ -1441,7 +1498,42 @@ mod tests {
         );
         let null_device = File::open("NUL")?;
         assert!(verify_ntfs(&null_device).is_err());
+        assert!(verify_local_disk_device(&null_device).is_err());
+        let local = tempdir()?;
+        let directory = fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(local.path())?;
+        verify_local_disk_device(&directory)?;
         Ok(())
+    }
+
+    #[test]
+    fn device_policy_rejects_nonlocal_or_weak_volume_flags() {
+        let local = FILE_FS_DEVICE_INFORMATION {
+            DeviceType: FILE_DEVICE_DISK,
+            Characteristics: 0,
+        };
+        assert!(supported_local_disk_device(local));
+        assert!(!supported_local_disk_device(FILE_FS_DEVICE_INFORMATION {
+            DeviceType: 0,
+            ..local
+        }));
+        for flag in [
+            FILE_REMOTE_DEVICE,
+            FILE_REMOVABLE_MEDIA,
+            FILE_PORTABLE_DEVICE,
+            FILE_READ_ONLY_DEVICE,
+            FILE_CHARACTERISTIC_WEBDAV_DEVICE,
+            FILE_CHARACTERISTIC_CSV,
+            FILE_VIRTUAL_VOLUME,
+        ] {
+            assert!(!supported_local_disk_device(FILE_FS_DEVICE_INFORMATION {
+                Characteristics: flag,
+                ..local
+            }));
+        }
     }
 
     #[test]

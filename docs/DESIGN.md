@@ -682,15 +682,20 @@ the migration decision and limits.
 
 The first M4-H1 Windows slice now validates and retains the complete drive-root
 through quarantine directory chain before production recovery opens. It accepts
-only a drive-rooted fixed NTFS path with non-reparse, same-volume directories
-and stable preferred identities. The state directory must belong to the current
-user; SYSTEM and Administrators may mutate it, while every other principal is
-limited to read and execute access. Noter's recovery, records, and quarantine
-directories are created or tightened through retained handles to an exact
-protected inheritable user-and-SYSTEM DACL. Every held directory denies delete
-sharing for the namespace lifetime. The store's routine entry opens, startup
-entry classification, staged record creation, and lease or quarantine creation
-are relative to the held records or quarantine directory, validate a single
+only a drive-rooted fixed NTFS path with non-reparse, same-volume directories.
+Each opened directory handle must also report a local fixed disk device;
+remote, removable, portable, read-only, WebDAV, CSV, and virtual
+characteristics are refused, including after a drive-letter mapping changes
+between checks. The directories must also have stable preferred identities.
+The state directory must belong to the current user; SYSTEM and Administrators
+may mutate it, while every other principal is limited to read and execute
+access. Noter's recovery, records, and quarantine directories are created or
+tightened through
+retained handles to an exact protected inheritable user-and-SYSTEM DACL. Every
+held directory denies delete sharing for the namespace lifetime. The store's
+routine entry opens, startup entry classification, staged record creation,
+and lease or quarantine creation are relative to the held records or
+quarantine directory, validate a single
 entry component, and refuse final reparse points. Classification treats
 directories and final reparse points as non-files.
 Private creation applies the owner-and-SYSTEM descriptor at creation time and

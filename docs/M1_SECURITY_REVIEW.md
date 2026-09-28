@@ -513,3 +513,28 @@ source-like files, including the GUI lifecycle change, and found no reportable
 vulnerability. Scan ID: `46126ba7-54f8-487e-a819-ce7ef5d2a96e`. It is
 diff-scoped static review; the regression test injects a committed Save rather
 than a live filesystem failure.
+
+## 2026-09-28 UTC Windows handle-based recovery device classification
+
+The Windows namespace now queries `FileFsDeviceInformation` on each opened
+directory handle before accepting it for recovery. It refuses non-disk,
+remote, removable, portable, read-only, WebDAV, CSV, and virtual volumes and
+fails closed if the query fails or returns too few bytes. The existing
+path-based fixed-drive and NTFS checks remain. The native fixture accepts an
+ordinary local directory and rejects a non-filesystem handle; the pure policy
+fixture checks each refused flag. All 76 other platform tests and the Windows
+workspace library, binary, and integration tests pass locally. Clippy,
+formatting, Rustdoc, Python checks, documentation links, cached audit and deny,
+and regenerated README screenshots pass. The five screenshot image hashes did
+not change after regeneration and full-size review.
+
+The exact all-targets test and coverage commands are not green on this machine:
+the existing Cloud Files registration fixture returns access denied
+(`0x80070005`) when run alone or with the suite. Filter inspection also
+returns access denied, so the local filter attachment cannot be verified.
+The runnable suite, with only that fixture omitted from the command line,
+measures 93.17 percent whole-workspace and 91.64 percent UI-excluded line
+coverage. Those numbers do not replace the exact gates. Independent review
+found and closed a missing virtual-volume flag; it found no native-call defect.
+A real drive-remapping or remote-volume fixture and exact-head hosted CI remain
+necessary before this Windows root-classification work can be claimed complete.

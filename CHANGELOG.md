@@ -8,6 +8,10 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Classify every opened Windows recovery directory's backing volume from its
+  handle and refuse remote, removable, portable, read-only, WebDAV, CSV,
+  virtual, or non-disk devices before recovery writes. This limits a
+  drive-letter mapping race left by the earlier path-based fixed-drive check.
 - Store new Windows recovery copies under the user's LocalAppData known folder
   while keeping preferences in RoamingAppData. Startup still reviews existing
   Roaming recovery records; Restore first persists a successor locally, and

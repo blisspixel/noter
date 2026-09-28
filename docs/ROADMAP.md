@@ -632,12 +632,15 @@ and competitor. Barrier failures retain available snapshots for startup review.
 See [ADR-0005](adr/0005-windows-recovery-replacement.md).
 
 The first Windows foundation validates the drive-rooted state path on fixed
-NTFS, checks every bound state and recovery directory for registered Windows
-Cloud Files sync roots before writing recovery bytes, rejects reparse and
-cross-volume directory components, verifies stable
-preferred identities, retains every traversed and recovery-directory handle
-without delete sharing, rejects state DACLs that grant unprivileged mutation,
-and applies an exact protected inheritable user-and-SYSTEM DACL to the owned
+NTFS and classifies each opened directory handle's backing device. A remote,
+removable, portable, read-only, WebDAV, CSV, virtual, or non-disk device is
+refused even if a drive-letter mapping changes after the path-based fixed-drive
+check. It checks every bound state and recovery directory for registered
+Windows Cloud Files sync roots before writing recovery bytes, rejects reparse
+and cross-volume directory components, verifies stable preferred identities,
+retains every traversed and recovery-directory handle without delete sharing,
+rejects state DACLs that grant unprivileged mutation, and applies an exact
+protected inheritable user-and-SYSTEM DACL to the owned
 recovery subtree. Routine store entry opens, startup entry classification,
 staged record creation, new-record installation from the opened stage, and
 lease or quarantine creation are handle-relative and have native fixtures for
@@ -651,8 +654,9 @@ after a failed barrier while retaining the original for review. Existing-record
 reconciliation binds the intended stage identity and bytes before its handle
 closes, so a rebound stage cannot redefine the snapshot to commit.
 Existing-record replacement has local native primitive and injected barrier
-tests. Detection of redirected or other synchronized roots, the complete native
-fault and race fixture matrix, and exact-head hosted CI keep M4-H1 in progress.
+tests. Classification of other redirected or synchronized roots, a native
+drive-remapping fixture, the remaining fault and race matrix, and exact-head
+hosted CI keep M4-H1 in progress.
 The local branch moves new Windows recovery writes to the LocalAppData known
 folder while eframe preferences remain under RoamingAppData. It opens an
 existing legacy recovery root through the verified namespace, reviews both
