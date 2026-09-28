@@ -77,6 +77,50 @@ path_hint() {
     esac
 }
 
+# A private stage is only private if no other user can replace its directory
+# or an ancestor while the installer copies and executes it. Check the
+# requested spelling before resolving links as well as the resolved path.
+trusted_install_directory() {
+    current_uid=$(id -u)
+    platform=$(uname -s)
+    directory=$1
+    while :; do
+        case "$platform" in
+            Darwin) metadata=$(stat -L -f '%u %Lp' "$directory" 2>/dev/null) || fail "cannot inspect install directory permissions." ;;
+            *) metadata=$(stat -L -c '%u %a' "$directory" 2>/dev/null) || fail "cannot inspect install directory permissions." ;;
+        esac
+        set -- $metadata
+        owner=$1
+        mode=$2
+        case "$owner:$mode" in
+            *[!0-9:]* | :* | *:) fail "cannot inspect install directory permissions." ;;
+        esac
+        [ "$owner" = "$current_uid" ] || [ "$owner" = 0 ] ||
+            fail "install directory is owned by another user."
+        if [ "$platform" = Darwin ]; then
+            listing=$(LC_ALL=C ls -Lde "$directory" 2>/dev/null) ||
+                fail "cannot inspect install directory permissions."
+            acl_entries=$(printf '%s\n' "$listing" | sed '1d')
+            if [ -n "$acl_entries" ] &&
+                printf '%s\n' "$acl_entries" | grep -v ' deny ' >/dev/null; then
+                fail "install directory has an unsupported access control list."
+            fi
+        else
+            listing=$(LC_ALL=C ls -Ld "$directory" 2>/dev/null) ||
+                fail "cannot inspect install directory permissions."
+            case "${listing%% *}" in
+                *+) fail "install directory has an unsupported access control list." ;;
+            esac
+        fi
+        permissions=$((0$mode))
+        if [ "$((permissions & 022))" -ne 0 ]; then
+            fail "install directory is writable by another user."
+        fi
+        [ "$directory" = / ] && break
+        directory=$(dirname -- "$directory")
+    done
+}
+
 install_from_source() {
     manifest=$source_dir/Cargo.toml
     [ -f "$manifest" ] || fail "Noter source manifest not found at '$manifest'."
@@ -162,9 +206,9 @@ install_from_release() {
     command -v xz >/dev/null 2>&1 || fail "xz is required to unpack the release; install xz-utils or xz."
 
     bin_dir=$install_root/bin
-    staged=$bin_dir/.noter.install.$$
     cli_temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/noter-install.XXXXXX")
-    trap 'rm -rf "$cli_temp_dir"; rm -f "$staged"' EXIT HUP INT TERM
+    stage_dir=
+    trap 'rm -rf "$cli_temp_dir"; if [ -n "$stage_dir" ]; then rm -rf "$stage_dir"; fi' EXIT HUP INT TERM
 
     printf "Downloading Noter %s for %s...\n" "$tag" "$target"
     download_to_file "$archive_url" "$cli_temp_dir/$archive"
@@ -182,19 +226,31 @@ install_from_release() {
     found_binary=$(find "$cli_temp_dir" -type f -name noter | head -n 1)
     [ -n "$found_binary" ] || fail "the release archive did not contain the noter binary."
 
+    existing_dir=$bin_dir
+    while [ ! -e "$existing_dir" ]; do
+        [ ! -L "$existing_dir" ] || fail "install path contains a broken symbolic link."
+        existing_dir=$(dirname -- "$existing_dir")
+    done
+    [ -d "$existing_dir" ] || fail "install path contains a non-directory entry."
+    trusted_install_directory "$existing_dir"
     mkdir -p "$bin_dir"
+    bin_dir=$(CDPATH='' cd -- "$bin_dir" 2>/dev/null && pwd -P) ||
+        fail "cannot resolve the install directory."
+    trusted_install_directory "$bin_dir"
     # Stage beside the destination and rename, so the install is atomic and a
     # running copy keeps its file until it exits.
+    stage_dir=$(mktemp -d "$bin_dir/.noter.install.XXXXXXXX") ||
+        fail "cannot reserve a private install stage."
+    staged=$stage_dir/noter
     cp "$found_binary" "$staged"
     chmod 755 "$staged"
     staged_version=$("$staged" --version) || {
-        rm -f "$staged"
         fail "the downloaded binary did not run on this system."
     }
     [ "$staged_version" = "noter ${tag#v}" ] || {
-        rm -f "$staged"
         fail "the downloaded binary reported '$staged_version', expected 'noter ${tag#v}'."
     }
+    [ ! -d "$bin_dir/noter" ] || fail "the install destination is a directory."
     mv -f "$staged" "$bin_dir/noter"
     printf "Installed %s at '%s'.\n" "$staged_version" "$bin_dir/noter"
     path_hint "$bin_dir"

@@ -54,12 +54,20 @@ The binary installer:
 3. downloads the matching archive and its SHA-256 sidecar and verifies the
    checksum before extraction;
 4. checks that the downloaded binary reports the expected version;
-5. copies it beside the destination and renames it into place, into
+5. stages it beside the destination and renames it into place. On macOS and
+   Linux, the stage has a private, exclusively created directory. The install
+   location is
    `%LOCALAPPDATA%\Programs\Noter\bin` on Windows or `~/.local/bin` on macOS
    and Linux (`--root` / `-InstallRoot` chooses another root);
 6. on Windows, adds that directory to the user `PATH`, keeping existing
    `%VARIABLE%` entries unexpanded; on macOS and Linux, prints a reminder when
    the directory is not on `PATH`.
+
+On macOS and Linux, a binary install refuses a requested or resolved
+destination with an ancestor owned by neither the installer nor root, writable
+by other users, or bearing an unsupported access-control list. A link
+inside a private directory may point to another private location. Use a private
+install root rather than a shared writable directory.
 
 `--uninstall` (`-Uninstall`) removes the binary, and on Windows its `PATH`
 entry when the directory is otherwise empty. Documents, settings, and recovery
