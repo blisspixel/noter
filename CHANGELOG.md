@@ -8,6 +8,8 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Replace deprecated Unicode formatting controls with visible placeholders in
+  terminal document views and diagnostic paths.
 - Reserve the Unix binary install stage inside a private directory and reject
   install paths another user could replace during the copy and version check.
 - Escape terminal control and text-reordering characters in startup file-load

@@ -2819,13 +2819,16 @@ mod tests {
     fn document_escape_sequences_are_drawn_inert() {
         let mut session = untitled();
         session.insert_str(
-            "title\u{1B}]0;owned\u{7}\nclip\u{1B}]52;c;ZWNobw==\u{7}\n\u{9B}2J\u{202E}txt",
+            "title\u{1B}]0;owned\u{7}\nclip\u{1B}]52;c;ZWNobw==\u{7}\n\u{9B}2J\u{202E}txt\u{206A}\u{206B}\u{206C}\u{206D}\u{206E}\u{206F}",
         );
         for view in [DocumentView::Text, DocumentView::Markdown] {
             session.view = view;
             let frame = render_frame(&session, 80, 24);
             assert!(!frame.contains("\u{1B}]"));
             assert!(!frame.contains('\u{7}'));
+            assert!(!frame.contains([
+                '\u{206A}', '\u{206B}', '\u{206C}', '\u{206D}', '\u{206E}', '\u{206F}'
+            ]));
             assert_frame_is_terminal_safe(&frame, 80);
         }
     }

@@ -261,3 +261,22 @@ the UI-independent trust kernel. The scopes overlap and are not claimed as a
 new deduplicated cross-platform union. The current target-filtered Windows
 adapter command enumerates 108 candidates. The native filesystem and
 crash-persistence gaps above remain open.
+
+## 2026-09-28 UTC terminal formatting-control follow-up
+
+The terminal display classifier did not include U+206A through U+206F, six
+deprecated Unicode formatting controls. They could pass through the terminal
+document view and diagnostic path output unchanged. This is a display-integrity
+gap; no terminal command execution was established. A focused regression failed
+against the old classifier and passed after all six characters were classified
+as unsafe. A Windows-local TUI frame test also renders the characters in
+Text and Markdown views and verifies that none reach the output frame. It does
+not exercise a real console.
+
+This branch is based on `3ed0283`. The complete Windows workspace tests,
+Clippy, Rustdoc, formatting, Ruff, script tests, documentation links, release
+configuration check, and cached advisory audit passed. Local line coverage is
+93.37 percent for the whole workspace and 92.65 percent with the declared UI
+exclusions. Two independent read-only checker passes scored all seven quality
+categories at least 4 out of 5. Exact-head hosted CI and Linux and macOS native
+results remain pending. Real-console behavior is not established by this test.
