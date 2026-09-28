@@ -666,9 +666,19 @@ M4-H1 closes that gap for beta.2. Preferences may use eframe storage
 (`app.ron`); recovery records do not. The library modules are
 `core::recovery` (pure schedule and integrity) and `core::recovery_store`
 (durable private files). The binary adapter `crash_recovery` opens
-`eframe::storage_dir("Noter")/recovery`, drives the pure scheduler, presents
+the platform recovery root, drives the pure scheduler, presents
 startup Restore / Discard offers, and surfaces persist failures without writing
 user document paths.
+
+On Windows, new recovery snapshots use the current user's LocalAppData known
+folder under `Noter/recovery`; eframe preferences stay under RoamingAppData.
+If the former RoamingAppData recovery root exists, startup opens it through the
+same verified namespace and includes its bounded offers. Each offer retains
+its source root for exact Restore or Discard. Restoring a legacy offer persists
+a durable successor in LocalAppData before deleting the offered legacy record.
+An invalid legacy root makes recovery unavailable rather than hiding its
+possible records. [ADR-0006](adr/0006-windows-local-recovery-root.md) records
+the migration decision and limits.
 
 The first M4-H1 Windows slice now validates and retains the complete drive-root
 through quarantine directory chain before production recovery opens. It accepts

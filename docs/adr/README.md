@@ -12,3 +12,4 @@ requirements.
 | [0003](0003-durable-replacement.md) | Accepted | Durable platform replacement protocol |
 | [0004](0004-unix-recovery-namespace.md) | Accepted | Unix recovery namespace binding and retirement |
 | [0005](0005-windows-recovery-replacement.md) | Accepted | Windows predecessor-preserving recovery replacement |
+| [0006](0006-windows-local-recovery-root.md) | Accepted | Windows local recovery root and legacy review |

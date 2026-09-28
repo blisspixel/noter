@@ -1,10 +1,9 @@
 //! Windows recovery-directory namespace binding.
 //!
 //! This module binds the state and recovery directories to retained handles.
-//! Its entry creation, open, classification, enumeration, and new-record
-//! installation and directory synchronization use those handles.
-//! Existing-record replacement and complete root classification remain
-//! separate M4-H1 work.
+//! Its entry creation, open, classification, enumeration, installation, and
+//! directory synchronization use those handles. Complete root classification
+//! remains M4-H1 work.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -37,12 +36,16 @@ use windows_sys::Win32::Storage::FileSystem::{
     GetDriveTypeW, GetFileInformationByHandleEx, GetFileType, GetVolumeInformationByHandleW,
     READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
 };
+use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::LibraryLoader::{
     GetModuleFileNameW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
+use windows_sys::Win32::UI::Shell::{
+    FOLDERID_LocalAppData, KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath,
+};
 
 use crate::imp::{
     windows_create_private_directory, windows_create_private_new_at,
@@ -58,6 +61,67 @@ const RECORDS_DIRECTORY_NAME: &str = "records";
 const QUARANTINE_DIRECTORY_NAME: &str = "quarantine";
 const FILE_SYSTEM_NAME_CAPACITY: usize = 32;
 const DIRECTORY_ENUMERATION_BUFFER_BYTES: usize = 65_536;
+const KNOWN_FOLDER_PATH_LIMIT: usize = 32_767;
+
+struct KnownFolderAllocation(*mut u16);
+
+impl Drop for KnownFolderAllocation {
+    fn drop(&mut self) {
+        // SAFETY: SHGetKnownFolderPath allocates this pointer with the COM task
+        // allocator; it stays owned here and is freed exactly once.
+        #[allow(unsafe_code)]
+        unsafe {
+            CoTaskMemFree(self.0.cast());
+        }
+    }
+}
+
+/// Returns the current user's `LocalAppData` known-folder path.
+///
+/// # Errors
+///
+/// Returns an error when Windows cannot resolve a bounded, nonempty path.
+pub fn windows_local_appdata_directory() -> io::Result<PathBuf> {
+    let mut raw = std::ptr::null_mut();
+    // SAFETY: Windows writes one task-allocated null-terminated path pointer
+    // into `raw`. A null token requests the current user.
+    #[allow(unsafe_code)]
+    let status = unsafe {
+        SHGetKnownFolderPath(
+            &FOLDERID_LocalAppData,
+            KF_FLAG_DONT_VERIFY as u32,
+            std::ptr::null_mut(),
+            &raw mut raw,
+        )
+    };
+    let allocation = KnownFolderAllocation(raw);
+    if status != 0 || allocation.0.is_null() {
+        return Err(io::Error::other(format!(
+            "Windows LocalAppData lookup failed with HRESULT {status:#010x}"
+        )));
+    }
+    let mut units = Vec::new();
+    for offset in 0..KNOWN_FOLDER_PATH_LIMIT {
+        // SAFETY: successful SHGetKnownFolderPath returns a null-terminated
+        // allocation. The loop reads only through that terminator.
+        #[allow(unsafe_code)]
+        let unit = unsafe { *allocation.0.add(offset) };
+        if unit == 0 {
+            if units.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Windows LocalAppData path is empty",
+                ));
+            }
+            return Ok(PathBuf::from(OsString::from_wide(&units)));
+        }
+        units.push(unit);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "Windows LocalAppData path exceeds the supported length",
+    ))
+}
 
 /// Stable preferred Windows identity of one retained directory handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1262,7 +1326,7 @@ mod tests {
         directory_attributes_are_safe, entry_names_from_handle, nt_open_handle_usable,
         open_directory_no_follow, parse_directory_entry_batch, query_preferred_identity,
         reject_cloud_sync_root, system_cloud_library_path, verify_fixed_drive,
-        verify_loaded_cloud_library, verify_ntfs,
+        verify_loaded_cloud_library, verify_ntfs, windows_local_appdata_directory,
     };
     use crate::imp::{
         windows_create_owner_controlled_readable_directory_for_test,
@@ -1355,6 +1419,14 @@ mod tests {
             FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT
         ));
         assert!(!directory_attributes_are_safe(FILE_ATTRIBUTE_REPARSE_POINT));
+    }
+
+    #[test]
+    fn local_appdata_known_folder_is_an_absolute_directory() -> io::Result<()> {
+        let path = windows_local_appdata_directory()?;
+        assert!(path.is_absolute());
+        assert!(path.is_dir());
+        Ok(())
     }
 
     #[test]

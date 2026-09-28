@@ -653,6 +653,15 @@ closes, so a rebound stage cannot redefine the snapshot to commit.
 Existing-record replacement has local native primitive and injected barrier
 tests. Detection of redirected or other synchronized roots, the complete native
 fault and race fixture matrix, and exact-head hosted CI keep M4-H1 in progress.
+The local branch moves new Windows recovery writes to the LocalAppData known
+folder while eframe preferences remain under RoamingAppData. It opens an
+existing legacy recovery root through the verified namespace, reviews both
+roots, restores legacy offers by durably persisting a successor locally before
+deleting the old record, and refuses recovery if the legacy root is invalid.
+Focused dual-root tests and application-package coverage pass; full-workspace
+native, coverage, mutation, and hosted exact-head evidence for this migration
+remain pending. See
+[ADR-0006](adr/0006-windows-local-recovery-root.md).
 
 The Unix cleanup ADR was required either to provide a genuinely object-bound
 retirement strategy or to retain and safely neutralize the exact opened object

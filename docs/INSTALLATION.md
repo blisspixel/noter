@@ -309,10 +309,13 @@ under the following directory:
 
 Inspect that directory before deleting it.
 
-Owner-restricted crash-recovery files use a subdirectory of that state root
-(`recovery/records` for active instance records and `recovery/quarantine` for
-damaged files). Dirty editing sessions persist recovery copies there; Save and
-explicit Discard remove the owned record.
+Owner-restricted crash-recovery files use `recovery/records` for active instance
+records and `recovery/quarantine` for damaged files. On macOS and Linux these
+are under the state root above. The current unreleased Windows build writes new
+recovery copies under `%LOCALAPPDATA%\Noter\recovery`, while preferences
+remain under `%APPDATA%\Noter\data`. Startup also reviews an existing legacy
+`%APPDATA%\Noter\data\recovery` root. Do not remove that old root until its
+records have been explicitly restored or discarded.
 
 Alpha.2 recovery is supported only when the selected state path resolves to a
 normally permissioned, local, owner-controlled per-user directory. The
@@ -336,6 +339,10 @@ remains visible as a recovery persistence warning and leaves available records
 for startup review. Quarantine directory barriers also use the held
 directories. Other synchronization and redirection models are not yet
 classified.
+An old Roaming recovery record is restored by persisting a successor under
+LocalAppData before deleting the old record. If the old recovery root exists
+but cannot be verified, recovery is unavailable and its records remain in
+place for later review.
 
 The current unreleased Linux and macOS builds bind the recovery namespace. If a
 directory on the path to the state directory can be changed by another user,
@@ -352,7 +359,7 @@ Uninstall and cleanup distinguish:
 | Kind | Location | Safe to delete when |
 | --- | --- | --- |
 | Preferences | `app.ron` in the state directory above | You want default theme, wrap, and zoom |
-| Recovery records | `recovery/` under the same state root | You have saved or discarded all unsaved work |
+| Recovery records | Windows: `%LOCALAPPDATA%\Noter\recovery`, plus any legacy `%APPDATA%\Noter\data\recovery`; macOS and Linux: `recovery/` under the state root | You have saved or discarded all unsaved work |
 
 ## Troubleshooting
 

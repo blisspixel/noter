@@ -23,7 +23,7 @@ pub use unix_recovery_namespace::{UnixRecoveryDirectory, UnixRecoveryNamespace};
 #[cfg(windows)]
 pub use windows_recovery_namespace::{
     WindowsDirectoryIdentity, WindowsRecoveryDirectory, WindowsRecoveryEntryName,
-    WindowsRecoveryNamespace,
+    WindowsRecoveryNamespace, windows_local_appdata_directory,
 };
 
 #[cfg(unix)]

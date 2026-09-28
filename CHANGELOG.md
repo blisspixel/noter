@@ -8,6 +8,10 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Store new Windows recovery copies under the user's LocalAppData known folder
+  while keeping preferences in RoamingAppData. Startup still reviews existing
+  Roaming recovery records; Restore first persists a successor locally, and
+  Discard deletes only the claimed old record.
 - Replace existing Windows recovery records through held stage and predecessor
   handles. Preserve a private backup across the first directory sync, install
   the new record exclusively, and retain available snapshots for startup

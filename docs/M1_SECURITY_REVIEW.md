@@ -379,3 +379,26 @@ independent recovery-store review checked the held stage and predecessor,
 exclusive renames, barrier failures, exact cleanup, and startup recovery. The
 result does not close arbitrary root synchronization and redirection models,
 the broader native crash and race matrix, or hosted exact-head CI.
+
+## 2026-09-28 UTC Windows local recovery migration
+
+Source inspection of pinned eframe 0.35.0 found that its Windows
+`storage_dir("Noter")` selects RoamingAppData. The default recovery session
+used that same directory, so unsaved recovery bytes could be included in a
+roaming profile. The local migration branch now selects the LocalAppData known
+folder for new recovery writes and keeps exact-handle startup offers from an
+existing Roaming recovery root. Restore persists a local successor before
+removing the legacy offer. An unavailable local successor or invalid legacy
+root leaves existing records untouched. A native test resolves the Windows
+known folder. A fresh-root test caught and corrected an initial extra `data`
+path component that would have made first-launch recovery unavailable.
+
+The current local tree passes focused dual-root tests, all application-package
+tests, full-workspace Clippy, formatting, Rustdoc, documentation links, and a
+Linux-target binary check. Application-package line coverage is 93.77 percent;
+the quality-standard UI-excluded application figure is 92.53 percent. The
+full Windows workspace test command passed its application and integration
+tests but its unchanged Cloud Files registration fixture failed with access
+denied `0x80070005`; one platform-package retry reproduced that result. The
+fixture remains enabled. Full-workspace coverage, focused mutation evidence,
+independent migration review, and hosted exact-head CI remain pending.
