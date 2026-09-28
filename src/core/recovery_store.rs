@@ -2038,9 +2038,12 @@ fn write_atomic_private_windows(
     let (_, destination_name) = store.windows_bound_entry(destination)?;
     WindowsRecoveryEntryName::new(destination_name)?;
     write_atomic_private_with_sync_and_create(
-        destination,
-        instance_id,
-        bytes,
+        RecoveryWriteRequest {
+            destination,
+            instance_id,
+            bytes,
+        },
+        WindowsRecoveryArtifactAccess::Bound(store),
         |stage| store.entry_create_private_new(stage),
         |file, _, destination| {
             let (directory, name) = store.windows_bound_entry(destination)?;
@@ -2084,9 +2087,13 @@ fn write_atomic_private_with_sync(
     sync_parent: impl FnOnce(RecoveryParentSync) -> io::Result<noter_platform::ParentSyncOutcome>,
 ) -> io::Result<()> {
     write_atomic_private_with_sync_and_create(
-        destination,
-        instance_id,
-        bytes,
+        RecoveryWriteRequest {
+            destination,
+            instance_id,
+            bytes,
+        },
+        #[cfg(windows)]
+        WindowsRecoveryArtifactAccess::PathOnly,
         noter_platform::create_private_new_file,
         |_, stage, destination| noter_platform::install_new(stage, destination),
         replace,
@@ -2096,9 +2103,8 @@ fn write_atomic_private_with_sync(
 
 #[cfg(any(windows, test))]
 fn write_atomic_private_with_sync_and_create(
-    destination: &Path,
-    instance_id: RecoveryInstanceId,
-    bytes: &[u8],
+    request: RecoveryWriteRequest<'_>,
+    #[cfg(windows)] access: WindowsRecoveryArtifactAccess<'_>,
     create: impl FnOnce(&Path) -> io::Result<File>,
     install: impl FnOnce(&File, &Path, &Path) -> io::Result<CommitReceipt<InstallNewOutcome>>,
     replace: impl FnOnce(
@@ -2108,15 +2114,24 @@ fn write_atomic_private_with_sync_and_create(
     ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
     sync_parent: impl FnOnce(RecoveryParentSync) -> io::Result<noter_platform::ParentSyncOutcome>,
 ) -> io::Result<()> {
+    let RecoveryWriteRequest {
+        destination,
+        instance_id,
+        bytes,
+    } = request;
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
 
     let stage = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Stage)?;
     let backup = exclusive_stage_path(parent, instance_id, TemporaryArtifactKind::Backup)?;
     let write_result = commit_staged_record_with(
-        &stage,
-        destination,
-        &backup,
+        RecoveryStagedPaths {
+            stage: &stage,
+            destination,
+            backup: &backup,
+        },
         bytes,
+        #[cfg(windows)]
+        access,
         create,
         install,
         replace,
@@ -2177,6 +2192,22 @@ struct RecoveryCommitFailure {
 }
 
 #[cfg(any(windows, test))]
+#[derive(Clone, Copy)]
+struct RecoveryWriteRequest<'a> {
+    destination: &'a Path,
+    instance_id: RecoveryInstanceId,
+    bytes: &'a [u8],
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy)]
+struct RecoveryStagedPaths<'a> {
+    stage: &'a Path,
+    destination: &'a Path,
+    backup: &'a Path,
+}
+
+#[cfg(any(windows, test))]
 impl RecoveryCommitFailure {
     #[cfg(windows)]
     const fn preserve_windows_artifacts(error: io::Error) -> Self {
@@ -2193,10 +2224,9 @@ impl From<io::Error> for RecoveryCommitFailure {
 
 #[cfg(any(windows, test))]
 fn commit_staged_record_with(
-    stage: &Path,
-    destination: &Path,
-    backup: &Path,
+    paths: RecoveryStagedPaths<'_>,
     bytes: &[u8],
+    #[cfg(windows)] access: WindowsRecoveryArtifactAccess<'_>,
     create: impl FnOnce(&Path) -> io::Result<File>,
     install: impl FnOnce(&File, &Path, &Path) -> io::Result<CommitReceipt<InstallNewOutcome>>,
     replace: impl FnOnce(
@@ -2205,6 +2235,11 @@ fn commit_staged_record_with(
         Option<&Path>,
     ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
 ) -> Result<RecoveryCommitSuccess, RecoveryCommitFailure> {
+    let RecoveryStagedPaths {
+        stage,
+        destination,
+        backup: _,
+    } = paths;
     let mut file = create(stage)?;
     file.write_all(bytes)?;
     file.flush()?;
@@ -2212,7 +2247,12 @@ fn commit_staged_record_with(
 
     if destination.exists() {
         drop(file);
-        finish_replace_with(stage, destination, backup, replace)
+        finish_replace_with(
+            paths,
+            #[cfg(windows)]
+            access,
+            replace,
+        )
     } else {
         let install_result = install(&file, stage, destination);
         drop(file);
@@ -2231,7 +2271,12 @@ fn commit_staged_record_with(
                 // A concurrent install won the destination. Replace that file
                 // with this staged snapshot instead of reporting success without
                 // committing these bytes.
-                finish_replace_with(stage, destination, backup, replace)
+                finish_replace_with(
+                    paths,
+                    #[cfg(windows)]
+                    access,
+                    replace,
+                )
             }
             Err(error) => Err(error.into()),
         }
@@ -2240,24 +2285,28 @@ fn commit_staged_record_with(
 
 #[cfg(any(windows, test))]
 fn finish_replace_with(
-    stage: &Path,
-    destination: &Path,
-    backup: &Path,
+    paths: RecoveryStagedPaths<'_>,
+    #[cfg(windows)] access: WindowsRecoveryArtifactAccess<'_>,
     replace: impl FnOnce(
         &Path,
         &Path,
         Option<&Path>,
     ) -> io::Result<CommitReceipt<ReplaceExistingOutcome>>,
 ) -> Result<RecoveryCommitSuccess, RecoveryCommitFailure> {
+    let RecoveryStagedPaths {
+        stage,
+        destination,
+        backup,
+    } = paths;
     #[cfg(windows)]
-    let intended = inspect_windows_recovery_artifact(stage)?.ok_or_else(|| {
+    let intended = inspect_windows_recovery_artifact(access, stage)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "recovery stage disappeared before replacement",
         )
     })?;
     #[cfg(windows)]
-    let expected = inspect_windows_recovery_artifact(destination)?.ok_or_else(|| {
+    let expected = inspect_windows_recovery_artifact(access, destination)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "recovery destination disappeared before replacement",
@@ -2273,9 +2322,8 @@ fn finish_replace_with(
                     {
                         let success = io::Error::other("recovery replacement reported success");
                         finalize_reconciled_windows_recovery(
-                            stage,
-                            destination,
-                            backup,
+                            access,
+                            paths,
                             IntendedWindowsRecoveryContent::from_observation(intended),
                             expected,
                             &success,
@@ -2305,9 +2353,8 @@ fn finish_replace_with(
         Err(error) => {
             #[cfg(windows)]
             return reconcile_windows_recovery_replace(
-                stage,
-                destination,
-                backup,
+                access,
+                paths,
                 IntendedWindowsRecoveryContent::from_observation(intended),
                 expected,
                 error,
@@ -2345,15 +2392,77 @@ impl IntendedWindowsRecoveryContent {
 }
 
 #[cfg(windows)]
+#[derive(Clone, Copy)]
+enum WindowsRecoveryArtifactAccess<'a> {
+    Bound(&'a RecoveryStore),
+    #[cfg(test)]
+    PathOnly,
+}
+
+#[cfg(windows)]
+impl WindowsRecoveryArtifactAccess<'_> {
+    fn open_existing(self, path: &Path) -> io::Result<File> {
+        match self {
+            Self::Bound(store) => store.entry_open_existing(path),
+            #[cfg(test)]
+            Self::PathOnly => noter_platform::open_existing_no_follow(path),
+        }
+    }
+
+    fn open_for_cleanup(self, path: &Path) -> io::Result<File> {
+        match self {
+            Self::Bound(store) => store.entry_open_for_cleanup(path),
+            #[cfg(test)]
+            Self::PathOnly => noter_platform::open_for_cleanup(path),
+        }
+    }
+
+    fn open_for_ratification(self, path: &Path) -> io::Result<File> {
+        match self {
+            Self::Bound(store) => {
+                let (directory, name) = store.windows_bound_entry(path)?;
+                directory.open_for_reconciliation(name)
+            }
+            #[cfg(test)]
+            Self::PathOnly => noter_platform::open_for_reconciliation(path),
+        }
+    }
+
+    fn install_new_from_verified_stage(
+        self,
+        stage: &Path,
+        destination: &Path,
+        artifact: &OpenRecoveryArtifact,
+    ) -> io::Result<CommitReceipt<InstallNewOutcome>> {
+        match self {
+            Self::Bound(store) => {
+                let (stage_directory, _) = store.windows_bound_entry(stage)?;
+                let (destination_directory, name) = store.windows_bound_entry(destination)?;
+                if !std::ptr::eq(stage_directory, destination_directory) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "the recovery stage and destination must share a bound directory",
+                    ));
+                }
+                destination_directory.install_new_from_open(&artifact.file, name)
+            }
+            #[cfg(test)]
+            Self::PathOnly => noter_platform::install_new(stage, destination),
+        }
+    }
+}
+
+#[cfg(windows)]
 fn inspect_windows_recovery_artifact(
+    access: WindowsRecoveryArtifactAccess<'_>,
     path: &Path,
 ) -> io::Result<Option<RecoveryArtifactObservation>> {
-    let file = match noter_platform::open_existing_no_follow(path) {
+    let file = match access.open_for_ratification(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    observe_windows_recovery_artifact(path, &file).map(Some)
+    observe_windows_recovery_artifact(access, path, &file).map(Some)
 }
 
 #[cfg(windows)]
@@ -2365,27 +2474,29 @@ struct OpenRecoveryArtifact {
 
 #[cfg(windows)]
 fn open_windows_recovery_artifact_for_cleanup(
+    access: WindowsRecoveryArtifactAccess<'_>,
     path: &Path,
 ) -> io::Result<Option<OpenRecoveryArtifact>> {
-    let file = match noter_platform::open_for_cleanup(path) {
+    let file = match access.open_for_cleanup(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    let observation = observe_windows_recovery_artifact(path, &file)?;
+    let observation = observe_windows_recovery_artifact(access, path, &file)?;
     Ok(Some(OpenRecoveryArtifact { file, observation }))
 }
 
 #[cfg(windows)]
 fn open_windows_recovery_artifact_for_ratification(
+    access: WindowsRecoveryArtifactAccess<'_>,
     path: &Path,
 ) -> io::Result<Option<OpenRecoveryArtifact>> {
-    let file = match noter_platform::open_for_reconciliation(path) {
+    let file = match access.open_for_ratification(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    let observation = observe_windows_recovery_artifact(path, &file)?;
+    let observation = observe_windows_recovery_artifact(access, path, &file)?;
     Ok(Some(OpenRecoveryArtifact { file, observation }))
 }
 
@@ -2398,6 +2509,7 @@ fn delete_verified_windows_recovery_artifact(artifact: OpenRecoveryArtifact) -> 
 
 #[cfg(windows)]
 fn observe_windows_recovery_artifact(
+    access: WindowsRecoveryArtifactAccess<'_>,
     path: &Path,
     file: &File,
 ) -> io::Result<RecoveryArtifactObservation> {
@@ -2417,11 +2529,7 @@ fn observe_windows_recovery_artifact(
     }
 
     let fingerprint = fingerprint_bound_open_windows_file(file, facts, metadata.len())?;
-    require_same_artifact(
-        &noter_platform::open_existing_no_follow(path)?,
-        facts,
-        metadata.len(),
-    )?;
+    require_same_artifact(&access.open_existing(path)?, facts, metadata.len())?;
     Ok(RecoveryArtifactObservation {
         identity: facts.identity(),
         fingerprint,
@@ -2471,15 +2579,19 @@ fn fingerprint_bound_open_windows_file(
 
 #[cfg(windows)]
 fn reconcile_windows_recovery_replace(
-    stage: &Path,
-    destination: &Path,
-    backup: &Path,
+    access: WindowsRecoveryArtifactAccess<'_>,
+    paths: RecoveryStagedPaths<'_>,
     intended: IntendedWindowsRecoveryContent,
     expected: RecoveryArtifactObservation,
     platform_error: io::Error,
 ) -> Result<RecoveryParentSync, RecoveryCommitFailure> {
-    let destination_ratification = open_windows_recovery_artifact_for_ratification(destination)
-        .map_err(|error| {
+    let RecoveryStagedPaths {
+        stage,
+        destination,
+        backup,
+    } = paths;
+    let destination_ratification =
+        open_windows_recovery_artifact_for_ratification(access, destination).map_err(|error| {
             uncertain_windows_recovery_failure(
                 stage,
                 backup,
@@ -2490,33 +2602,33 @@ fn reconcile_windows_recovery_replace(
     let destination_state = destination_ratification
         .as_ref()
         .map(|artifact| artifact.observation);
-    let stage_artifact = open_windows_recovery_artifact_for_cleanup(stage).map_err(|error| {
-        uncertain_windows_recovery_failure(
-            stage,
-            backup,
-            &error,
-            "the staged recovery snapshot could not be verified after replacement failure",
-        )
-    })?;
-    let backup_artifact = open_windows_recovery_artifact_for_cleanup(backup).map_err(|error| {
-        uncertain_windows_recovery_failure(
-            stage,
-            backup,
-            &error,
-            "the predecessor recovery backup could not be verified after replacement failure",
-        )
-    })?;
+    let stage_artifact =
+        open_windows_recovery_artifact_for_cleanup(access, stage).map_err(|error| {
+            uncertain_windows_recovery_failure(
+                stage,
+                backup,
+                &error,
+                "the staged recovery snapshot could not be verified after replacement failure",
+            )
+        })?;
+    let backup_artifact =
+        open_windows_recovery_artifact_for_cleanup(access, backup).map_err(|error| {
+            uncertain_windows_recovery_failure(
+                stage,
+                backup,
+                &error,
+                "the predecessor recovery backup could not be verified after replacement failure",
+            )
+        })?;
     let stage_state = stage_artifact.as_ref().map(|artifact| artifact.observation);
     let backup_state = backup_artifact
         .as_ref()
         .map(|artifact| artifact.observation);
     if destination_state.is_some_and(|actual| intended.matches(actual)) {
-        drop(stage_artifact);
-        drop(backup_artifact);
+        drop((stage_artifact, backup_artifact));
         return finalize_reconciled_windows_recovery(
-            stage,
-            destination,
-            backup,
+            access,
+            paths,
             intended,
             expected,
             &platform_error,
@@ -2542,34 +2654,16 @@ fn reconcile_windows_recovery_replace(
     }
 
     if destination_state.is_none() && stage_is_intended && backup_state == Some(expected) {
-        drop(stage_artifact);
         drop(backup_artifact);
-        let completion = noter_platform::install_new(stage, destination);
-        return match completion {
-            Ok(receipt) => {
-                let (_outcome, parent_sync) = receipt.into_parts();
-                finalize_reconciled_windows_recovery(
-                    stage,
-                    destination,
-                    backup,
-                    intended,
-                    expected,
-                    &platform_error,
-                    false,
-                )
-                .map(|()| RecoveryParentSync::bound(parent_sync))
-            }
-            Err(completion_error) => finalize_reconciled_windows_recovery(
-                stage,
-                destination,
-                backup,
-                intended,
-                expected,
-                &completion_error,
-                false,
-            )
-            .map(|()| RecoveryParentSync::UnsupportedAfterReconciliation),
-        };
+        let artifact = stage_artifact.expect("the verified intended stage must be open");
+        return complete_missing_windows_recovery_destination(
+            access,
+            paths,
+            artifact,
+            intended,
+            expected,
+            &platform_error,
+        );
     }
 
     Err(uncertain_windows_recovery_failure(
@@ -2581,19 +2675,54 @@ fn reconcile_windows_recovery_replace(
 }
 
 #[cfg(windows)]
+fn complete_missing_windows_recovery_destination(
+    access: WindowsRecoveryArtifactAccess<'_>,
+    paths: RecoveryStagedPaths<'_>,
+    artifact: OpenRecoveryArtifact,
+    intended: IntendedWindowsRecoveryContent,
+    expected: RecoveryArtifactObservation,
+    platform_error: &io::Error,
+) -> Result<RecoveryParentSync, RecoveryCommitFailure> {
+    let completion =
+        access.install_new_from_verified_stage(paths.stage, paths.destination, &artifact);
+    drop(artifact);
+    match completion {
+        Ok(receipt) => {
+            let (_outcome, parent_sync) = receipt.into_parts();
+            finalize_reconciled_windows_recovery(
+                access,
+                paths,
+                intended,
+                expected,
+                platform_error,
+                false,
+            )
+            .map(|()| RecoveryParentSync::bound(parent_sync))
+        }
+        Err(completion_error) => finalize_reconciled_windows_recovery(
+            access,
+            paths,
+            intended,
+            expected,
+            &completion_error,
+            false,
+        )
+        .map(|()| RecoveryParentSync::UnsupportedAfterReconciliation),
+    }
+}
+
+#[cfg(windows)]
 fn finalize_reconciled_windows_recovery(
-    stage: &Path,
-    destination: &Path,
-    backup: &Path,
+    access: WindowsRecoveryArtifactAccess<'_>,
+    paths: RecoveryStagedPaths<'_>,
     intended: IntendedWindowsRecoveryContent,
     expected: RecoveryArtifactObservation,
     cause: &io::Error,
     backup_required: bool,
 ) -> Result<(), RecoveryCommitFailure> {
     finalize_reconciled_windows_recovery_with_cleanup_hook(
-        stage,
-        destination,
-        backup,
+        access,
+        paths,
         intended,
         expected,
         cause,
@@ -2603,19 +2732,22 @@ fn finalize_reconciled_windows_recovery(
 }
 
 #[cfg(windows)]
-#[allow(clippy::too_many_arguments)]
 fn finalize_reconciled_windows_recovery_with_cleanup_hook(
-    stage: &Path,
-    destination: &Path,
-    backup: &Path,
+    access: WindowsRecoveryArtifactAccess<'_>,
+    paths: RecoveryStagedPaths<'_>,
     intended: IntendedWindowsRecoveryContent,
     expected: RecoveryArtifactObservation,
     cause: &io::Error,
     backup_required: bool,
     before_cleanup: impl FnOnce() -> io::Result<()>,
 ) -> Result<(), RecoveryCommitFailure> {
-    let destination_ratification = open_windows_recovery_artifact_for_ratification(destination)
-        .map_err(|error| {
+    let RecoveryStagedPaths {
+        stage,
+        destination,
+        backup,
+    } = paths;
+    let destination_ratification =
+        open_windows_recovery_artifact_for_ratification(access, destination).map_err(|error| {
             uncertain_windows_recovery_failure(
                 stage,
                 backup,
@@ -2626,22 +2758,24 @@ fn finalize_reconciled_windows_recovery_with_cleanup_hook(
     let destination_state = destination_ratification
         .as_ref()
         .map(|artifact| artifact.observation);
-    let stage_artifact = open_windows_recovery_artifact_for_cleanup(stage).map_err(|error| {
-        uncertain_windows_recovery_failure(
-            stage,
-            backup,
-            &error,
-            "the recovery stage could not be verified after reconciliation",
-        )
-    })?;
-    let backup_artifact = open_windows_recovery_artifact_for_cleanup(backup).map_err(|error| {
-        uncertain_windows_recovery_failure(
-            stage,
-            backup,
-            &error,
-            "the recovery backup could not be verified after reconciliation",
-        )
-    })?;
+    let stage_artifact =
+        open_windows_recovery_artifact_for_cleanup(access, stage).map_err(|error| {
+            uncertain_windows_recovery_failure(
+                stage,
+                backup,
+                &error,
+                "the recovery stage could not be verified after reconciliation",
+            )
+        })?;
+    let backup_artifact =
+        open_windows_recovery_artifact_for_cleanup(access, backup).map_err(|error| {
+            uncertain_windows_recovery_failure(
+                stage,
+                backup,
+                &error,
+                "the recovery backup could not be verified after reconciliation",
+            )
+        })?;
     let stage_state = stage_artifact.as_ref().map(|artifact| artifact.observation);
     let backup_state = backup_artifact
         .as_ref()
@@ -3482,9 +3616,12 @@ mod tests {
         let destination = store.live_path(snapshot.instance_id());
 
         write_atomic_private_with_sync_and_create(
-            &destination,
-            snapshot.instance_id(),
-            &encoded,
+            RecoveryWriteRequest {
+                destination: &destination,
+                instance_id: snapshot.instance_id(),
+                bytes: &encoded,
+            },
+            WindowsRecoveryArtifactAccess::Bound(&store),
             |stage| store.entry_create_private_new(stage),
             |file, _, destination| {
                 let mut raced = store.entry_create_private_new(destination)?;
@@ -3500,6 +3637,145 @@ mod tests {
 
         assert_eq!(fs::read(&destination)?, encoded);
         assert_eq!(fs::read_dir(store.records_dir())?.count(), 1);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replacement_observation_uses_only_bound_recovery_entries() -> io::Result<()> {
+        let parent = tempdir()?;
+        let store = RecoveryStore::open(parent.path())?;
+        let record = store.records_dir().join("bound.rec");
+        let outside = parent.path().join("outside.rec");
+        fs::write(&record, b"bound")?;
+        fs::write(&outside, b"outside")?;
+        let access = WindowsRecoveryArtifactAccess::Bound(&store);
+
+        assert!(inspect_windows_recovery_artifact(access, &record)?.is_some());
+        assert_eq!(
+            inspect_windows_recovery_artifact(access, &outside)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            open_windows_recovery_artifact_for_cleanup(access, &outside)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            open_windows_recovery_artifact_for_ratification(access, &outside)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(fs::read(&outside)?, b"outside");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bound_reconciliation_keeps_intended_destination_and_retires_verified_backup()
+    -> io::Result<()> {
+        let parent = tempdir()?;
+        let store = RecoveryStore::open(parent.path())?;
+        let stage = store.records_dir().join("record.stage");
+        let destination = store.records_dir().join("record.rec");
+        let backup = store.records_dir().join("record.backup");
+        let intended = snapshot_at(62, 9, 21, b"intended recovery").encode();
+        let predecessor = snapshot_at(62, 8, 20, b"predecessor recovery").encode();
+        fs::write(&destination, &intended)?;
+        fs::write(&backup, &predecessor)?;
+        let access = WindowsRecoveryArtifactAccess::Bound(&store);
+        let intended_observation = inspect_windows_recovery_artifact(access, &destination)?
+            .expect("the intended destination exists");
+        let expected =
+            inspect_windows_recovery_artifact(access, &backup)?.expect("the backup exists");
+
+        let parent_sync = reconcile_windows_recovery_replace(
+            access,
+            RecoveryStagedPaths {
+                stage: &stage,
+                destination: &destination,
+                backup: &backup,
+            },
+            IntendedWindowsRecoveryContent::from_observation(intended_observation),
+            expected,
+            io::Error::other("injected replacement failure"),
+        )
+        .map_err(|failure| failure.error)?;
+        assert_eq!(
+            parent_sync.sync()?,
+            noter_platform::ParentSyncOutcome::Unsupported
+        );
+        assert_eq!(fs::read(&destination)?, intended);
+        assert!(!stage.exists());
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bound_reconciliation_installs_verified_stage_when_destination_is_absent() -> io::Result<()> {
+        let parent = tempdir()?;
+        let store = RecoveryStore::open(parent.path())?;
+        let stage = store.records_dir().join("record.stage");
+        let destination = store.records_dir().join("record.rec");
+        let backup = store.records_dir().join("record.backup");
+        let intended = snapshot_at(63, 9, 21, b"intended recovery").encode();
+        let predecessor = snapshot_at(63, 8, 20, b"predecessor recovery").encode();
+        fs::write(&stage, &intended)?;
+        fs::write(&backup, &predecessor)?;
+        let access = WindowsRecoveryArtifactAccess::Bound(&store);
+        let intended_observation =
+            inspect_windows_recovery_artifact(access, &stage)?.expect("the stage exists");
+        let expected =
+            inspect_windows_recovery_artifact(access, &backup)?.expect("the backup exists");
+
+        let parent_sync = reconcile_windows_recovery_replace(
+            access,
+            RecoveryStagedPaths {
+                stage: &stage,
+                destination: &destination,
+                backup: &backup,
+            },
+            IntendedWindowsRecoveryContent::from_observation(intended_observation),
+            expected,
+            io::Error::other("injected partial replacement"),
+        )
+        .map_err(|failure| failure.error)?;
+        assert_eq!(
+            parent_sync.sync()?,
+            noter_platform::ParentSyncOutcome::Unsupported
+        );
+        assert_eq!(fs::read(&destination)?, intended);
+        assert!(!stage.exists());
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bound_completion_refuses_a_stage_from_another_recovery_directory() -> io::Result<()> {
+        let parent = tempdir()?;
+        let store = RecoveryStore::open(parent.path())?;
+        let stage = store.quarantine_dir().join("record.stage");
+        let destination = store.records_dir().join("record.rec");
+        fs::write(&stage, b"quarantined bytes")?;
+        let access = WindowsRecoveryArtifactAccess::Bound(&store);
+        let artifact = open_windows_recovery_artifact_for_cleanup(access, &stage)?
+            .expect("the quarantine stage exists");
+
+        assert_eq!(
+            access
+                .install_new_from_verified_stage(&stage, &destination, &artifact)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(fs::read(&stage)?, b"quarantined bytes");
+        assert!(!destination.exists());
         Ok(())
     }
 
@@ -3601,17 +3877,24 @@ mod tests {
         fs::write(&destination, &intended)?;
         fs::write(&backup, &predecessor)?;
         let intended = IntendedWindowsRecoveryContent::from_observation(
-            inspect_windows_recovery_artifact(&destination)?
-                .expect("the intended destination should be inspectable"),
+            inspect_windows_recovery_artifact(
+                WindowsRecoveryArtifactAccess::PathOnly,
+                &destination,
+            )?
+            .expect("the intended destination should be inspectable"),
         );
-        let expected = inspect_windows_recovery_artifact(&backup)?
-            .expect("the predecessor backup should be inspectable");
+        let expected =
+            inspect_windows_recovery_artifact(WindowsRecoveryArtifactAccess::PathOnly, &backup)?
+                .expect("the predecessor backup should be inspectable");
         let cause = io::Error::other("injected successful replacement");
 
         finalize_reconciled_windows_recovery_with_cleanup_hook(
-            &stage,
-            &destination,
-            &backup,
+            WindowsRecoveryArtifactAccess::PathOnly,
+            RecoveryStagedPaths {
+                stage: &stage,
+                destination: &destination,
+                backup: &backup,
+            },
             intended,
             expected,
             &cause,
@@ -3645,17 +3928,24 @@ mod tests {
         fs::write(&destination, &intended_bytes)?;
         fs::write(&backup, &predecessor)?;
         let intended = IntendedWindowsRecoveryContent::from_observation(
-            inspect_windows_recovery_artifact(&destination)?
-                .expect("the intended destination should be inspectable"),
+            inspect_windows_recovery_artifact(
+                WindowsRecoveryArtifactAccess::PathOnly,
+                &destination,
+            )?
+            .expect("the intended destination should be inspectable"),
         );
-        let expected = inspect_windows_recovery_artifact(&backup)?
-            .expect("the predecessor backup should be inspectable");
+        let expected =
+            inspect_windows_recovery_artifact(WindowsRecoveryArtifactAccess::PathOnly, &backup)?
+                .expect("the predecessor backup should be inspectable");
         let cause = io::Error::other("injected successful replacement");
 
         finalize_reconciled_windows_recovery_with_cleanup_hook(
-            &stage,
-            &destination,
-            &backup,
+            WindowsRecoveryArtifactAccess::PathOnly,
+            RecoveryStagedPaths {
+                stage: &stage,
+                destination: &destination,
+                backup: &backup,
+            },
             intended,
             expected,
             &cause,
@@ -3750,17 +4040,24 @@ mod tests {
         fs::write(&destination, &intended_bytes)?;
         fs::write(&backup, &predecessor)?;
         let intended = IntendedWindowsRecoveryContent::from_observation(
-            inspect_windows_recovery_artifact(&destination)?
-                .expect("the intended destination should be inspectable"),
+            inspect_windows_recovery_artifact(
+                WindowsRecoveryArtifactAccess::PathOnly,
+                &destination,
+            )?
+            .expect("the intended destination should be inspectable"),
         );
-        let expected = inspect_windows_recovery_artifact(&backup)?
-            .expect("the predecessor backup should be inspectable");
+        let expected =
+            inspect_windows_recovery_artifact(WindowsRecoveryArtifactAccess::PathOnly, &backup)?
+                .expect("the predecessor backup should be inspectable");
         let cause = io::Error::other("injected successful replacement");
 
         finalize_reconciled_windows_recovery_with_cleanup_hook(
-            &stage,
-            &destination,
-            &backup,
+            WindowsRecoveryArtifactAccess::PathOnly,
+            RecoveryStagedPaths {
+                stage: &stage,
+                destination: &destination,
+                backup: &backup,
+            },
             intended,
             expected,
             &cause,
@@ -3788,8 +4085,11 @@ mod tests {
         let stage = directory.path().join("record.stage");
         let displaced_stage = directory.path().join("displaced.stage");
         fs::write(&stage, snapshot_at(60, 8, 17, b"verified stage").encode())?;
-        let artifact = open_windows_recovery_artifact_for_cleanup(&stage)?
-            .expect("the recovery stage should be inspectable");
+        let artifact = open_windows_recovery_artifact_for_cleanup(
+            WindowsRecoveryArtifactAccess::PathOnly,
+            &stage,
+        )?
+        .expect("the recovery stage should be inspectable");
 
         fs::rename(&stage, &displaced_stage)?;
         fs::write(&stage, b"rebound stage")?;
@@ -3813,8 +4113,11 @@ mod tests {
         fs::write(&present, &bytes)?;
         fs::write(&blocked, &bytes)?;
 
-        let cleanup = open_windows_recovery_artifact_for_cleanup(&present)?
-            .expect("an existing regular recovery artifact must open for cleanup");
+        let cleanup = open_windows_recovery_artifact_for_cleanup(
+            WindowsRecoveryArtifactAccess::PathOnly,
+            &present,
+        )?
+        .expect("an existing regular recovery artifact must open for cleanup");
         assert_eq!(cleanup.observation.length, bytes.len() as u64);
         assert_eq!(
             cleanup.observation.fingerprint,
@@ -3822,8 +4125,11 @@ mod tests {
         );
         drop(cleanup);
 
-        let ratification = open_windows_recovery_artifact_for_ratification(&present)?
-            .expect("an existing regular recovery artifact must open for ratification");
+        let ratification = open_windows_recovery_artifact_for_ratification(
+            WindowsRecoveryArtifactAccess::PathOnly,
+            &present,
+        )?
+        .expect("an existing regular recovery artifact must open for ratification");
         assert_eq!(ratification.observation.length, bytes.len() as u64);
         assert_eq!(
             ratification.observation.fingerprint,
@@ -3831,19 +4137,37 @@ mod tests {
         );
         drop(ratification);
 
-        assert!(open_windows_recovery_artifact_for_cleanup(&missing)?.is_none());
-        assert!(open_windows_recovery_artifact_for_ratification(&missing)?.is_none());
+        assert!(
+            open_windows_recovery_artifact_for_cleanup(
+                WindowsRecoveryArtifactAccess::PathOnly,
+                &missing
+            )?
+            .is_none()
+        );
+        assert!(
+            open_windows_recovery_artifact_for_ratification(
+                WindowsRecoveryArtifactAccess::PathOnly,
+                &missing
+            )?
+            .is_none()
+        );
 
         let exclusive = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .share_mode(0)
             .open(&blocked)?;
-        let cleanup_error = open_windows_recovery_artifact_for_cleanup(&blocked)
-            .expect_err("a sharing failure must not be classified as a missing artifact");
+        let cleanup_error = open_windows_recovery_artifact_for_cleanup(
+            WindowsRecoveryArtifactAccess::PathOnly,
+            &blocked,
+        )
+        .expect_err("a sharing failure must not be classified as a missing artifact");
         assert_ne!(cleanup_error.kind(), io::ErrorKind::NotFound);
-        let ratification_error = open_windows_recovery_artifact_for_ratification(&blocked)
-            .expect_err("a sharing failure must not be classified as a missing artifact");
+        let ratification_error = open_windows_recovery_artifact_for_ratification(
+            WindowsRecoveryArtifactAccess::PathOnly,
+            &blocked,
+        )
+        .expect_err("a sharing failure must not be classified as a missing artifact");
         assert_ne!(ratification_error.kind(), io::ErrorKind::NotFound);
         drop(exclusive);
         Ok(())
@@ -3862,7 +4186,11 @@ mod tests {
 
         let file = noter_platform::open_existing_no_follow(&primary)?;
         let facts = noter_platform::file_facts(&file)?;
-        let observation = observe_windows_recovery_artifact(&primary, &file)?;
+        let observation = observe_windows_recovery_artifact(
+            WindowsRecoveryArtifactAccess::PathOnly,
+            &primary,
+            &file,
+        )?;
         assert_eq!(observation.identity, facts.identity());
         assert_eq!(observation.length, bytes.len() as u64);
         assert_eq!(
@@ -3889,8 +4217,12 @@ mod tests {
 
         fs::hard_link(&primary, &alias)?;
         let linked_file = noter_platform::open_existing_no_follow(&primary)?;
-        let linked = observe_windows_recovery_artifact(&primary, &linked_file)
-            .expect_err("a multiply linked recovery artifact is not private");
+        let linked = observe_windows_recovery_artifact(
+            WindowsRecoveryArtifactAccess::PathOnly,
+            &primary,
+            &linked_file,
+        )
+        .expect_err("a multiply linked recovery artifact is not private");
         assert_eq!(linked.kind(), io::ErrorKind::InvalidData);
         Ok(())
     }
@@ -4044,12 +4376,18 @@ mod tests {
 
         // Absent path: reported as no artifact, not as an error.
         let missing = dir.path().join("not-created.rec");
-        assert!(inspect_windows_recovery_artifact(&missing)?.is_none());
+        assert!(
+            inspect_windows_recovery_artifact(WindowsRecoveryArtifactAccess::PathOnly, &missing)?
+                .is_none()
+        );
 
         // Present path: reported as an artifact.
         let present = dir.path().join("present.rec");
         fs::write(&present, b"recovery artifact bytes")?;
-        assert!(inspect_windows_recovery_artifact(&present)?.is_some());
+        assert!(
+            inspect_windows_recovery_artifact(WindowsRecoveryArtifactAccess::PathOnly, &present)?
+                .is_some()
+        );
 
         // Present but unopenable: a sharing violation is not absence.
         let locked = dir.path().join("locked.rec");
@@ -4058,8 +4396,9 @@ mod tests {
             .read(true)
             .share_mode(0)
             .open(&locked)?;
-        let error = inspect_windows_recovery_artifact(&locked)
-            .expect_err("a denied open must not be reported as a missing artifact");
+        let error =
+            inspect_windows_recovery_artifact(WindowsRecoveryArtifactAccess::PathOnly, &locked)
+                .expect_err("a denied open must not be reported as a missing artifact");
         assert_ne!(error.kind(), io::ErrorKind::NotFound);
 
         Ok(())

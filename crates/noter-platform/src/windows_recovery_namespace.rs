@@ -124,6 +124,29 @@ impl WindowsRecoveryDirectory {
         open_entry_relative(&self.handle, name, true)
     }
 
+    /// Opens one entry through the held directory while denying competing
+    /// writes and renames during replacement reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is invalid, the entry is missing, or a
+    /// competing handle prevents the exclusive observation share mode.
+    pub fn open_for_reconciliation(&self, name: &OsStr) -> io::Result<File> {
+        let options = combine_disjoint_flag_bits(
+            combine_disjoint_flag_bits(FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT),
+            FILE_SYNCHRONOUS_IO_NONALERT,
+        );
+        let file = open_entry_relative_with(
+            &self.handle,
+            name,
+            combine_disjoint_flag_bits(GENERIC_READ, SYNCHRONIZE),
+            FILE_SHARE_READ,
+            options,
+        )?;
+        verify_regular_entry_handle(&file)?;
+        Ok(file)
+    }
+
     /// Classifies an entry through the retained directory without following a
     /// final reparse point. Directories and reparse points are not files.
     ///
@@ -1030,9 +1053,10 @@ mod tests {
 
     use super::{
         DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, ParsedStatePath,
-        WindowsRecoveryEntryName, WindowsRecoveryNamespace, classify_directory_creation_error,
-        classify_directory_open_error, directory_attributes_are_safe, entry_names_from_handle,
-        nt_open_handle_usable, open_directory_no_follow, parse_directory_entry_batch,
+        WindowsRecoveryDirectory, WindowsRecoveryEntryName, WindowsRecoveryNamespace,
+        classify_directory_creation_error, classify_directory_open_error,
+        directory_attributes_are_safe, entry_names_from_handle, nt_open_handle_usable,
+        open_directory_no_follow, parse_directory_entry_batch, query_preferred_identity,
         verify_fixed_drive, verify_ntfs,
     };
     use crate::InstallNewOutcome;
@@ -1301,6 +1325,79 @@ mod tests {
         );
         assert_eq!(fs::read(&quarantined)?, b"quarantine");
         assert!(super::verify_regular_entry_handle(&File::open("NUL")?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn reconciliation_open_blocks_mutation_and_rejects_final_links() -> io::Result<()> {
+        let parent = tempdir()?;
+        let state = parent.path().join("state");
+        let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
+        let record = namespace.records().path().join("entry.rec");
+        let moved = namespace.records().path().join("moved.rec");
+        fs::write(&record, b"record")?;
+
+        let mut opened = namespace
+            .records()
+            .open_for_reconciliation(OsStr::new("entry.rec"))?;
+        let mut bytes = Vec::new();
+        opened.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, b"record");
+        assert!(fs::OpenOptions::new().write(true).open(&record).is_err());
+        assert!(fs::rename(&record, &moved).is_err());
+        assert!(fs::remove_file(&record).is_err());
+        drop(opened);
+
+        assert_eq!(
+            namespace
+                .records()
+                .open_for_reconciliation(OsStr::new("..\\entry.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let link = namespace.records().path().join("link.rec");
+        symlink_file(&record, &link)?;
+        assert_eq!(
+            namespace
+                .records()
+                .open_for_reconciliation(OsStr::new("link.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::rename(&record, &moved)?;
+        Ok(())
+    }
+
+    #[test]
+    fn reconciliation_open_uses_held_directory_after_path_rebind() -> io::Result<()> {
+        let parent = tempdir()?;
+        let original = parent.path().join("original");
+        let moved = parent.path().join("moved");
+        fs::create_dir(&original)?;
+        fs::write(original.join("entry.rec"), b"original")?;
+        let handle = fs::OpenOptions::new()
+            .access_mode(FILE_LIST_DIRECTORY)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&original)?;
+        let identity = query_preferred_identity(&handle)?;
+        let directory = WindowsRecoveryDirectory {
+            handle,
+            enumeration_lock: std::sync::Mutex::new(()),
+            identity,
+            path: original.clone(),
+        };
+        fs::rename(&original, &moved)?;
+        fs::create_dir(&original)?;
+        fs::write(original.join("entry.rec"), b"decoy")?;
+
+        let mut opened = directory.open_for_reconciliation(OsStr::new("entry.rec"))?;
+        let mut bytes = Vec::new();
+        opened.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, b"original");
+        assert_eq!(fs::read(original.join("entry.rec"))?, b"decoy");
         Ok(())
     }
 
