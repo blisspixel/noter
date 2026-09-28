@@ -42,8 +42,9 @@ that candidate is frozen for publication.
   terminal document views and diagnostic paths.
 - Reserve the Unix binary install stage inside a private directory and reject
   install paths another user could replace during the copy and version check.
-  Inspect long-format directory permissions so macOS ACL grants and Linux ACL
-  markers cannot be hidden from that check.
+  Inspect long-format macOS directory permissions so ACL grants cannot be
+  hidden from that check. On Linux, reject access using the ACL mask reflected
+  in the group mode bits.
 - Escape terminal control and text-reordering characters in startup file-load
   errors, preventing a crafted filename from changing terminal state.
 

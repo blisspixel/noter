@@ -105,13 +105,9 @@ trusted_install_directory() {
                 printf '%s\n' "$acl_entries" | grep -v ' deny ' >/dev/null; then
                 fail "install directory has an unsupported access control list."
             fi
-        else
-            listing=$(LC_ALL=C ls -Lld "$directory" 2>/dev/null) ||
-                fail "cannot inspect install directory permissions."
-            case "${listing%% *}" in
-                *+) fail "install directory has an unsupported access control list." ;;
-            esac
         fi
+        # On Linux the stat group bits are the ACL mask, so a named ACL
+        # cannot grant write when the group write bit is clear.
         permissions=$((0$mode))
         if [ "$((permissions & 022))" -ne 0 ]; then
             fail "install directory is writable by another user."
