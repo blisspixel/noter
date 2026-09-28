@@ -665,3 +665,17 @@ coverage is 93.17 percent whole-workspace and 91.61 percent UI-excluded. All
 five regenerated README screenshots match the previously reviewed image
 hashes. An independent fresh-context review confirmed the probe and mutation
 record; hosted exact-head CI remains unavailable.
+The same Cloud Files fixture returned `0x80070005` when its temporary root was
+placed inside the writable workspace, so the default temp location alone does
+not explain the denial.
+
+## 2026-09-28 UTC owned recovery cleanup mutation review
+
+A focused local mutation campaign covered bounded owned-artifact cleanup and
+missing-file deletion handling. Its baseline passed with only the unavailable
+Cloud Files registration fixture omitted. Nine relevant mutants were caught,
+two generated boolean substitutions were unviable, and none survived. The
+tool also caught one unrelated recovery-scheduler mutant. The existing tests
+therefore detect changes to the canonical and keyed artifact removal,
+directory-entry bound, foreign-artifact filter, and missing-file error policy
+in this campaign. This is local focused evidence, not the full hosted gate.
