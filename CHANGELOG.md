@@ -8,6 +8,9 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Escape terminal control and text-reordering characters in startup file-load
+  errors, preventing a crafted filename from changing terminal state.
+
 - Refuse registered Windows Cloud Files sync roots at the state path or any
   bound recovery directory before writing recovery bytes. A missing or failed
   classification API also refuses recovery rather than treating an unknown

@@ -37,7 +37,8 @@ use noter::core::save_recovery::{
 };
 use noter::core::search::{LiteralSearch, MatchCase, SearchDirection};
 use noter::core::terminal_text::{
-    cell_width, column_of, display_width, fit_line, offset_at_column, push_display,
+    cell_width, column_of, display_width, escaped_cli_path, fit_line, offset_at_column,
+    push_display,
 };
 use noter::core::undo::{
     HistoryApplyOutcome, HistoryError, HistoryLimits, HistoryRecordOutcome, UndoHistory,
@@ -249,7 +250,7 @@ impl TuiSession {
     pub fn new(options: &LaunchOptions, recovery: CrashRecoverySession) -> Result<Self, String> {
         let document = if let Some(path) = &options.initial_path {
             Document::from_path(path)
-                .map_err(|e| format!("cannot load `{}`: {e}", path.display()))?
+                .map_err(|e| format!("cannot load `{}`: {e}", escaped_cli_path(path)))?
         } else {
             Document::new()
         };
@@ -2137,6 +2138,30 @@ fn trigger_exit(session: &mut TuiSession) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_load_escapes_control_characters_in_filename() {
+        use noter::core::terminal_text::is_terminal_unsafe;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notes\u{1b}]52;c;YQ==\u{7}.md");
+        std::fs::write(&path, [0xff]).unwrap();
+        let result = TuiSession::new(
+            &LaunchOptions {
+                initial_path: Some(path),
+                ..LaunchOptions::default()
+            },
+            CrashRecoverySession::disabled_for_test(),
+        );
+        let Err(error) = result else {
+            panic!("invalid UTF-8 must fail to load");
+        };
+
+        assert!(error.starts_with("cannot load `"));
+        assert!(error.contains("\\u{1b}]52;c;YQ==\\u{7}.md"));
+        assert!(!error.chars().any(is_terminal_unsafe));
+    }
 
     #[test]
     fn tui_session_typing_undo_and_redo() {

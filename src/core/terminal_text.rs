@@ -11,6 +11,7 @@
 //! and combining marks take none, following Unicode Standard Annex #11 as
 //! implemented by `unicode-width`.
 
+use std::path::Path;
 use unicode_width::UnicodeWidthChar;
 
 /// Column interval between tab stops when a tab character is drawn.
@@ -38,6 +39,20 @@ pub const fn is_terminal_unsafe(character: char) -> bool {
             | '\u{202A}'..='\u{202E}'
             | '\u{2066}'..='\u{2069}'
     )
+}
+
+/// Escapes terminal controls in a diagnostic path while keeping ordinary
+/// separators and printable characters readable.
+pub fn escaped_cli_path(path: &Path) -> String {
+    let mut escaped = String::new();
+    for character in path.display().to_string().chars() {
+        if is_terminal_unsafe(character) {
+            escaped.extend(character.escape_debug());
+        } else {
+            escaped.push(character);
+        }
+    }
+    escaped
 }
 
 /// Returns the cells `character` occupies when drawn starting at `column`.
@@ -136,6 +151,20 @@ pub fn offset_at_column(line: &str, column: usize) -> usize {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn diagnostic_paths_escape_terminal_commands_and_reordering() {
+        let path = Path::new("notes\u{1b}]52;c;YQ==\u{7}\u{1b}\\\n\t\u{9b}\u{202e}\u{2028}.md");
+        let escaped = escaped_cli_path(path);
+
+        assert!(!escaped.chars().any(is_terminal_unsafe));
+        assert!(escaped.contains("\\u{1b}]52;c;YQ==\\u{7}"));
+        assert!(escaped.contains("\\n\\t\\u{9b}\\u{202e}\\u{2028}"));
+        assert_eq!(
+            escaped_cli_path(Path::new("a/b c/世界.md")),
+            "a/b c/世界.md"
+        );
+    }
 
     #[test]
     fn control_and_reordering_characters_are_unsafe() {
