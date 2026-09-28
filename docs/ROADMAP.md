@@ -662,8 +662,8 @@ An interrupted schema-v2 transfer's older Roaming copy remains available for
 explicit cleanup after its local successor is restored. Schema-v1 and
 generation-gap Roaming records remain separate offers and are presented for
 ordinary Restore / Later / Discard review after the restored local document
-is successfully saved; they are never classified as obsolete from an ID link
-alone.
+is saved without a durability warning; they are never classified as obsolete
+from an ID link alone.
 Focused dual-root tests and application-package coverage pass; full-workspace
 native, coverage, mutation, and hosted exact-head evidence for this migration
 remain pending. See

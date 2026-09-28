@@ -48,6 +48,7 @@ use noter::error::NoterError;
 use crate::app::{DocumentView, LaunchOptions};
 use crate::crash_recovery::{
     CrashRecoverySession, RECOVERY_CLEANUP_FAILURE_MESSAGE, RECOVERY_PERSIST_FAILURE_MESSAGE,
+    SaveDurabilityRisk,
 };
 
 mod input;
@@ -224,6 +225,7 @@ pub struct TuiSession {
     pub history: UndoHistory,
     /// Private crash-recovery records, shared with the window's store.
     pub recovery: CrashRecoverySession,
+    save_durability: SaveDurabilityRisk,
     /// Monotonic origin for edit timestamps, so typing coalesces into Undo
     /// steps by the same rules as the window.
     pub started: Instant,
@@ -275,6 +277,7 @@ impl TuiSession {
             show_help: false,
             history,
             recovery,
+            save_durability: SaveDurabilityRisk::Clear,
             started: Instant::now(),
             should_exit: false,
             after_save: AfterSave::Stay,
@@ -297,15 +300,19 @@ impl TuiSession {
     }
 
     /// Tells crash recovery whether the text now needs a private copy, after
-    /// Undo, Redo, or a save, as the window's `synchronize_crash_recovery`
+    /// Undo or Redo, as the window's `synchronize_crash_recovery`
     /// does. A direct edit uses `on_edited` instead, also as the window does.
     fn sync_recovery(&mut self) {
         let selection = Selection::caret(self.caret_byte);
-        if self.document.is_dirty() {
+        if self.has_unsaved_state() {
             self.recovery.on_retained(&self.document, selection);
         } else {
             self.recovery.on_saved_clean(self.document.revision());
         }
+    }
+
+    fn has_unsaved_state(&self) -> bool {
+        self.document.is_dirty() || self.save_durability.is_at_risk()
     }
 
     /// Runs recovery work that has come due, reports a failed write once,
@@ -330,8 +337,12 @@ impl TuiSession {
     /// not choose, such as a terminal hangup.
     pub fn persist_before_exit(&mut self) -> bool {
         let selection = Selection::caret(self.caret_byte);
-        self.recovery
-            .persist_before_exit(&self.document, selection, EXIT_PERSIST_LIMIT)
+        self.recovery.persist_before_exit(
+            &self.document,
+            selection,
+            EXIT_PERSIST_LIMIT,
+            self.save_durability.is_at_risk(),
+        )
     }
 
     /// Answers the startup recovery offer that is showing.
@@ -340,6 +351,7 @@ impl TuiSession {
             RecoveryDecision::Restore => match self.recovery.restore_active_offer() {
                 Ok((document, selection)) => {
                     self.document = document;
+                    self.save_durability = SaveDurabilityRisk::Clear;
                     self.caret_byte = selection.active();
                     self.history.reset(self.document.revision());
                     self.recovery.on_edited(&self.document, selection);
@@ -780,11 +792,21 @@ impl TuiSession {
                 ..
             }) => {
                 let warning_count = warnings.cleanup().len() + warnings.durability().len();
-                self.recovery.on_committed_save(self.document.revision());
-                if self.recovery.active_offer().is_some() {
-                    self.prompt = PromptMode::RecoveryOffer;
+                self.save_durability = SaveDurabilityRisk::from_warnings(&warnings);
+                if self.save_durability.is_at_risk() {
+                    self.recovery
+                        .on_retained(&self.document, Selection::caret(self.caret_byte));
+                } else {
+                    self.recovery.on_committed_save(self.document.revision());
+                    if self.recovery.active_offer().is_some() {
+                        self.prompt = PromptMode::RecoveryOffer;
+                    }
                 }
-                if warning_count == 0 {
+                if self.save_durability.is_at_risk() {
+                    self.set_status(
+                        "Saved with uncertain durability. Keep this editor open and Save again.",
+                    );
+                } else if warning_count == 0 {
                     self.set_status(format!("Wrote {} bytes", observation.length()));
                 } else {
                     self.set_status(format!(
@@ -837,8 +859,10 @@ impl TuiSession {
     pub fn finish_save(&mut self, step: SaveStep) {
         match step {
             SaveStep::Committed => {
-                if self.after_save == AfterSave::Exit {
+                if self.after_save == AfterSave::Exit && !self.save_durability.is_at_risk() {
                     self.should_exit = true;
+                } else if self.save_durability.is_at_risk() {
+                    self.after_save = AfterSave::Stay;
                 }
             }
             SaveStep::NotSaved => self.after_save = AfterSave::Stay,
@@ -1397,7 +1421,7 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
                 .into_owned()
         },
     );
-    let dirty = if session.document.is_dirty() {
+    let dirty = if session.has_unsaved_state() {
         " *"
     } else {
         ""
@@ -2131,7 +2155,7 @@ fn trigger_exit(session: &mut TuiSession) {
         session.set_status(UNCERTAIN_SAVE_GUIDANCE);
         return;
     }
-    if session.document.is_dirty() {
+    if session.has_unsaved_state() {
         session.prompt = PromptMode::ExitConfirm;
     } else {
         session.should_exit = true;
@@ -2542,6 +2566,76 @@ mod tests {
 
     fn storage_error(message: &str) -> noter::core::save::StorageError {
         noter::core::save::StorageError::new(noter::core::save::SaveStage::Replace, message)
+    }
+
+    #[test]
+    fn durability_warning_keeps_terminal_work_and_recovery_until_a_clean_save() {
+        use noter::core::save::{
+            ContentFingerprint, Durability, FileChangeToken, FileIdentity, FileObservation,
+            SaveStage, SaveWarnings, StorageError,
+        };
+
+        let root = tempfile::tempdir().expect("recovery root");
+        let path = root.path().join("note.txt");
+        std::fs::write(&path, "text").expect("fixture file");
+        let recovery = CrashRecoverySession::open_at(root.path().join("private"));
+        let mut session = TuiSession::new(
+            &LaunchOptions {
+                initial_path: Some(path.clone()),
+                ..LaunchOptions::default()
+            },
+            recovery,
+        )
+        .expect("titled session");
+        let observation = FileObservation::new(
+            FileIdentity::new(1, 2),
+            ContentFingerprint::from_bytes(b"text"),
+            4,
+            1,
+            FileChangeToken::new(3, 4),
+        );
+        session.after_save = AfterSave::Exit;
+        let reservation = session
+            .reserve_save_recovery(path)
+            .expect("save reservation");
+        let step = session.report_save(
+            reservation,
+            Ok(SaveOutcome::Committed {
+                revision: session.document.revision(),
+                durability: Durability::FileSynced,
+                observation,
+                warnings: SaveWarnings::new(
+                    Vec::new(),
+                    vec![StorageError::new(SaveStage::SyncParent, "barrier failed")],
+                ),
+            }),
+        );
+        session.finish_save(step);
+        assert!(session.save_durability.is_at_risk());
+        assert!(session.has_unsaved_state());
+        assert!(!session.should_exit);
+        assert_eq!(session.after_save, AfterSave::Stay);
+        assert!(session.recovery.next_persist_delay().is_some());
+        session
+            .recovery
+            .force_due_persist_for_test(&session.document, Selection::caret(session.caret_byte));
+        let records_dir =
+            crate::crash_recovery::recovery_store_root_for_test(&root.path().join("private"))
+                .join("records");
+        assert!(
+            std::fs::read_dir(records_dir)
+                .expect("recovery records")
+                .filter_map(Result::ok)
+                .any(|entry| entry.path().extension().is_some_and(|ext| ext == "rec"))
+        );
+        trigger_exit(&mut session);
+        assert_eq!(session.prompt, PromptMode::ExitConfirm);
+        key(&mut session, TuiKey::Escape);
+        assert!(!session.should_exit);
+
+        assert_eq!(session.save(), SaveStep::Committed);
+        assert!(!session.save_durability.is_at_risk());
+        assert!(!session.has_unsaved_state());
     }
 
     #[test]
@@ -3167,10 +3261,7 @@ mod tests {
         {
             let mut session = untitled_with_store(store.path());
             type_text(&mut session, "saved text");
-            session.recovery.force_due_persist_for_test(
-                &session.document,
-                Selection::caret(session.caret_byte),
-            );
+            assert!(session.persist_before_exit());
             key(&mut session, TuiKey::Ctrl('s'));
             type_text(
                 &mut session,

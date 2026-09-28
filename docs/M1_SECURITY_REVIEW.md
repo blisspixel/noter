@@ -452,3 +452,24 @@ The formal security diff scan for `8a09f38..efc97e9` reviewed all four changed
 source files and found no new reportable vulnerability. Scan ID:
 `4c6ba1b5-5a36-4a03-afd5-6adda90efb69`. This is diff-scoped evidence, not
 a completed repository-wide audit or a substitute for hosted CI.
+
+A subsequent Save-outcome review found a separate risk: `Committed` can carry a
+post-commit durability warning, but both front ends previously cleared private
+recovery and allowed the editor to close as if persistence were assured. The
+local follow-up keeps the document at risk, schedules a private recovery copy,
+and requires a later warning-free Save or explicit Discard before closing.
+Focused GUI and TUI tests assert the warning, persisted recovery record,
+blocked ordinary close, and clearing after a clean retry. This follow-up is
+outside the completed diff scan above and needs its own exact-head review.
+Independent fresh-context review found that terminal hangup persistence still
+required `Document::is_dirty()`; a warning had cleared that flag. The emergency
+path now accepts the retained durability risk, and the TUI test exercises it
+before the scheduled background write.
+
+On this follow-up source, the full local Windows workspace suite passes: 369
+library tests, 563 application tests, the application integration suites, and
+all 76 native platform tests, including the Cloud Files fixture. Workspace
+Clippy, formatting, Rustdoc, documentation links, Python tests, Ruff, and the
+README asset check pass. Application-package line coverage is 93.80 percent;
+the UI-excluded application figure is 92.69 percent. Hosted exact-head CI is
+still required before integration.

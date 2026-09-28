@@ -182,7 +182,7 @@ Feature presence alone is not verification.
   cleanup action for its older Roaming predecessor in that session. If the
   records lack a provable direct schema-v2 lineage, the separate Roaming copy
   remains available for ordinary Restore / Later / Discard review after the
-  restored local document is successfully saved.
+  restored local document is saved without a durability warning.
 - **FR-063 Recovery point objective:** After the first edit or detection that
   the loaded clean revision was replaced externally, persist a valid recovery
   record after at most 15 seconds of continued activity and normally within 2
@@ -394,7 +394,10 @@ The complete release and verification contract is in
   Not Committed, and Commit State Unknown. A post-commit barrier failure is
   Committed with every durability warning preserved; a failed file barrier
   reports Best Effort even if parent synchronization succeeds. An uncertain
-  commit retains dirty state and recovery until reconciliation.
+  commit retains dirty state and recovery until reconciliation. A Committed
+  result with a durability warning keeps the document at risk in the interface
+  and retains or creates a private recovery copy until a later warning-free
+  Save or explicit Discard.
 - **NFR-REL-03 Revision safety:** A successful save clears dirty state only when
   the committed revision is still the current revision.
 - **NFR-REL-04 Undo fidelity:** Applying edits and their inverse transactions

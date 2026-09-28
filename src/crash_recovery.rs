@@ -33,6 +33,7 @@ use noter::core::recovery_store::{
     RecoveryStartupScan, RecoveryStore,
 };
 use noter::core::revision::Revision;
+use noter::core::save::SaveWarnings;
 
 #[cfg(test)]
 const RECOVERY_TEST_STATE_SUBDIR: &str = "state";
@@ -81,6 +82,27 @@ const RECOVERY_RESTORE_RETAINED_MESSAGE: &str = "Noter could not safely transfer
 
 /// Maximum length of a quarantine notice shown at startup.
 const MAX_QUARANTINE_NOTICE_BYTES: usize = 240;
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum SaveDurabilityRisk {
+    #[default]
+    Clear,
+    Warning,
+}
+
+impl SaveDurabilityRisk {
+    pub fn from_warnings(warnings: &SaveWarnings) -> Self {
+        if warnings.durability().is_empty() {
+            Self::Clear
+        } else {
+            Self::Warning
+        }
+    }
+
+    pub const fn is_at_risk(self) -> bool {
+        matches!(self, Self::Warning)
+    }
+}
 
 struct PersistJob {
     store: RecoveryStore,
@@ -891,14 +913,19 @@ impl CrashRecoverySession {
     /// The scheduler normally waits for an idle pause. Advancing its clock by
     /// the longest dirty interval makes the revision due at once; time still
     /// only moves forward. Returns whether the record is known to hold this
-    /// revision.
+    /// revision. `clean_content_at_risk` covers a committed Save whose
+    /// durability warning left the in-memory bytes needing recovery.
     pub fn persist_before_exit(
         &mut self,
         document: &Document,
         selection: Selection,
         limit: Duration,
+        clean_content_at_risk: bool,
     ) -> bool {
-        if self.unavailable || self.store.is_none() || !document.is_dirty() {
+        if self.unavailable
+            || self.store.is_none()
+            || (!document.is_dirty() && !clean_content_at_risk)
+        {
             return false;
         }
         let deadline = Instant::now() + limit;

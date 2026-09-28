@@ -18,7 +18,9 @@ that candidate is frozen for publication.
   retains the retry action, and only an exact schema-v2 successor relationship
   labels a Roaming record as its older copy. A linked schema-v1 or generation-gap
   Roaming record stays intact and gets a separate Restore / Later / Discard
-  review after the restored local document is saved.
+  review after the restored local document is saved without a durability
+  warning. A Save with a durability warning keeps the document in the editor,
+  retains or creates its private recovery copy, and asks for another Save.
 - Replace existing Windows recovery records through held stage and predecessor
   handles. Preserve a private backup across the first directory sync, install
   the new record exclusively, and retain available snapshots for startup

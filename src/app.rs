@@ -37,6 +37,7 @@ use crate::bounded_text_input::{
 };
 use crate::crash_recovery::{
     CrashRecoverySession, RECOVERY_CLEANUP_FAILURE_MESSAGE, RECOVERY_PERSIST_FAILURE_MESSAGE,
+    SaveDurabilityRisk,
 };
 #[cfg(test)]
 use crate::crash_recovery::{
@@ -626,6 +627,7 @@ pub struct NoterApp {
     lifecycle: LifecycleState,
     conflict: ConflictState,
     external_memory_at_risk: bool,
+    save_durability: SaveDurabilityRisk,
     last_external_inspect_at: Option<f64>,
     crash_recovery: CrashRecoverySession,
     /// Present only in a real window, so tests never scan system fonts.
@@ -690,6 +692,7 @@ impl NoterApp {
             lifecycle: LifecycleState::default(),
             conflict: ConflictState::default(),
             external_memory_at_risk: false,
+            save_durability: SaveDurabilityRisk::Clear,
             last_external_inspect_at: None,
             crash_recovery,
             font_fallback: None,
@@ -799,6 +802,7 @@ impl NoterApp {
         self.text = String::from(document.rope());
         self.observe_glyphs_in_text();
         self.document = document;
+        self.save_durability = SaveDurabilityRisk::Clear;
         self.history.reset(self.document.revision());
         self.selection = Selection::caret(0);
         self.pending_selection_restore = Some(self.selection);
@@ -991,21 +995,35 @@ impl NoterApp {
         self.error_msg = match result {
             Ok(SaveOutcome::Committed { ref warnings, .. }) if warnings.is_empty() => {
                 self.reset_external_conflict_state();
+                self.save_durability = SaveDurabilityRisk::Clear;
                 self.crash_recovery
                     .on_committed_save(self.document.revision());
                 None
             }
             Ok(SaveOutcome::Committed { warnings, .. }) => {
                 self.reset_external_conflict_state();
-                self.crash_recovery
-                    .on_committed_save(self.document.revision());
+                self.save_durability = SaveDurabilityRisk::from_warnings(&warnings);
+                if self.save_durability.is_at_risk() {
+                    self.crash_recovery
+                        .on_retained(&self.document, self.selection);
+                } else {
+                    self.crash_recovery
+                        .on_committed_save(self.document.revision());
+                }
                 let mut details: Vec<String> =
                     warnings.cleanup().iter().map(ToString::to_string).collect();
                 details.extend(warnings.durability().iter().map(ToString::to_string));
-                Some(format!(
-                    "Saved, but follow-up is required: {}",
-                    details.join("; ")
-                ))
+                if self.save_durability.is_at_risk() {
+                    Some(format!(
+                        "Saved, but storage durability is uncertain. Keep this window open and Save again: {}",
+                        details.join("; ")
+                    ))
+                } else {
+                    Some(format!(
+                        "Saved, but follow-up is required: {}",
+                        details.join("; ")
+                    ))
+                }
             }
             Ok(SaveOutcome::Conflict { cleanup_error, .. }) => {
                 let mut message =
@@ -1070,7 +1088,9 @@ impl NoterApp {
     }
 
     fn has_unsaved_state(&self) -> bool {
-        self.document.is_dirty() || self.external_memory_at_risk
+        self.document.is_dirty()
+            || self.external_memory_at_risk
+            || self.save_durability.is_at_risk()
     }
 
     fn synchronize_crash_recovery(&mut self) {
@@ -1143,6 +1163,7 @@ impl NoterApp {
     fn start_new_document_unchecked(&mut self) {
         self.text.clear();
         self.document = Document::new();
+        self.save_durability = SaveDurabilityRisk::Clear;
         self.history.reset(self.document.revision());
         self.selection = Selection::caret(0);
         self.pending_selection_restore = Some(self.selection);
@@ -2883,7 +2904,10 @@ impl NoterApp {
             column,
             selected_characters,
         } = self.status_snapshot();
-        let modified_label = persistence_status_label(&self.document, self.external_memory_at_risk);
+        let modified_label = persistence_status_label(
+            &self.document,
+            self.external_memory_at_risk || self.save_durability.is_at_risk(),
+        );
         egui::Frame::NONE
             .fill(ui.visuals().panel_fill)
             .stroke(egui::Stroke::new(1.0, ui.visuals().window_stroke.color))
@@ -3952,7 +3976,7 @@ impl NoterApp {
         egui::Panel::top("legacy_recovery_review").show(ui, |ui| {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                "A separate RoamingAppData recovery copy needs review after you Save this document.",
+                "A separate RoamingAppData recovery copy needs review after this document saves safely.",
             );
         });
     }
@@ -4029,6 +4053,7 @@ impl NoterApp {
         self.text = String::from(document.rope());
         self.observe_glyphs_in_text();
         self.document = document;
+        self.save_durability = SaveDurabilityRisk::Clear;
         self.history.reset(self.document.revision());
         self.selection = valid_selection_or_end(&self.text, selection);
         self.pending_selection_restore = Some(self.selection);
@@ -11272,7 +11297,75 @@ mod tests {
 
         assert_eq!(
             app.error_msg.as_deref(),
-            Some("Saved, but follow-up is required: SyncParent failed: directory sync failed")
+            Some(
+                "Saved, but storage durability is uncertain. Keep this window open and Save again: SyncParent failed: directory sync failed"
+            )
+        );
+        assert!(app.save_durability.is_at_risk());
+        assert!(app.has_unsaved_state());
+        assert!(app.crash_recovery.next_persist_delay().is_some());
+        app.crash_recovery
+            .force_due_persist_for_test(&app.document, app.selection);
+        let state_root = app.test_recovery_root.as_ref().expect("test recovery root");
+        let records_dir = recovery_store_root_for_test(state_root.path()).join("records");
+        assert!(
+            fs::read_dir(records_dir)
+                .expect("recovery records")
+                .filter_map(Result::ok)
+                .any(|entry| entry.path().extension().is_some_and(|ext| ext == "rec"))
+        );
+        let context = egui::Context::default();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            app.request_close(ui.ctx());
+        });
+        assert!(
+            output
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .expect("root viewport")
+                .commands
+                .contains(&egui::ViewportCommand::CancelClose)
+        );
+        app.cancel_pending_abandon();
+
+        let reservation = test_save_recovery_reservation(
+            &mut app,
+            SaveAttempt::Current(PathBuf::from("note.txt")),
+        );
+        app.handle_save_result(
+            Ok(SaveOutcome::Committed {
+                revision: Revision::INITIAL,
+                durability: Durability::FileAndDirectorySynced,
+                observation,
+                warnings: SaveWarnings::default(),
+            }),
+            reservation,
+        );
+        assert!(!app.save_durability.is_at_risk());
+        assert!(!app.has_unsaved_state());
+
+        let reservation = test_save_recovery_reservation(
+            &mut app,
+            SaveAttempt::Current(PathBuf::from("note.txt")),
+        );
+        app.handle_save_result(
+            Ok(SaveOutcome::Committed {
+                revision: Revision::INITIAL,
+                durability: Durability::FileAndDirectorySynced,
+                observation,
+                warnings: SaveWarnings::new(
+                    vec![StorageError::new(SaveStage::Cleanup, "backup remains")],
+                    Vec::new(),
+                ),
+            }),
+            reservation,
+        );
+        assert!(!app.save_durability.is_at_risk());
+        assert!(!app.has_unsaved_state());
+        assert!(
+            app.error_msg
+                .as_deref()
+                .is_some_and(|text| text.contains("backup remains"))
         );
     }
 
