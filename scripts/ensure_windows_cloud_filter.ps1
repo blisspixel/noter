@@ -21,7 +21,7 @@ if ($LASTEXITCODE -ne 0 -or -not ($filters -match '^\s*CldFlt\s')) {
 
 # Record the filter's volume attachments so CI can distinguish a loaded filter
 # from one that cannot serve the job's test volume.
-& fltmc.exe instances CldFlt
+& fltmc.exe instances -f CldFlt
 if ($LASTEXITCODE -ne 0) {
     throw 'Cannot inspect Cloud Files filter volume attachments.'
 }
