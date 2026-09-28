@@ -280,3 +280,8 @@ configuration check, and cached advisory audit passed. Local line coverage is
 exclusions. Two independent read-only checker passes scored all seven quality
 categories at least 4 out of 5. Exact-head hosted CI and Linux and macOS native
 results remain pending. Real-console behavior is not established by this test.
+
+A focused Windows-local `cargo mutants --regex 'terminal_text' -j 4` run on
+`e76adbd` completed 50 of 50 mutants as caught, with zero missed, timed out,
+or unviable. Its full workspace test baseline passed. This tests the terminal
+text module's mutation scope; it does not replace the complete CI campaign.
