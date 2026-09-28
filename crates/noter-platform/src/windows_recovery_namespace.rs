@@ -1714,6 +1714,13 @@ mod tests {
         let local = tempdir()?;
         let child = local.path().join("child");
         fs::create_dir(&child)?;
+        // Registration requires WRITE_DATA or WRITE_DAC on the sync root.
+        let writable_root = fs::OpenOptions::new()
+            .access_mode(windows_sys::Win32::Storage::FileSystem::WRITE_DAC)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(local.path())?;
+        drop(writable_root);
         let path: Vec<u16> = local
             .path()
             .as_os_str()

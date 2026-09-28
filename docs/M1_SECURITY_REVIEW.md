@@ -638,6 +638,30 @@ Windows test still fails only at Cloud Files registration (`0x80070005`),
 with 80 other platform tests passing. The runnable suite, formatting, Clippy,
 Rustdoc, script tests, documentation links, Ruff, screenshot assets, offline
 deny, and cached advisory audit pass. Runnable line coverage is 93.18 percent
-whole-workspace and 91.67 percent
-UI-excluded. All five regenerated README screenshots match their previously
-reviewed image hashes. Hosted exact-head CI remains unverified.
+whole-workspace and 91.67 percent UI-excluded. All five regenerated README
+screenshots match their previously reviewed image hashes. Hosted exact-head CI
+remains unverified.
+
+## 2026-09-28 UTC Windows namespace verification and Cloud Files diagnostic
+
+A focused local mutation campaign over namespace construction and opened
+directory verification passed its baseline with only the unavailable Cloud
+Files registration fixture omitted. Four relevant mutants were caught, two
+function replacements were unviable, and none survived. The tool also caught
+one unrelated recovery-scheduler mutant. This does not replace the hosted
+mutation gate.
+
+The Cloud Files fixture now proves its temporary root can be opened with
+`WRITE_DAC` before requesting sync-root registration. On this machine that
+open succeeds, but registration still returns `0x80070005`. This separates a
+missing fixture-directory permission from the remaining registration denial;
+it does not establish the exact external cause or make the local all-targets
+suite pass. No production Cloud Files behavior or CI exclusion changed.
+
+The exact test has 80 other platform tests passing. The runnable suite,
+formatting, Clippy, Rustdoc, script tests, documentation links, Ruff,
+screenshot assets, offline deny, and cached advisory audit pass. Runnable line
+coverage is 93.17 percent whole-workspace and 91.61 percent UI-excluded. All
+five regenerated README screenshots match the previously reviewed image
+hashes. An independent fresh-context review confirmed the probe and mutation
+record; hosted exact-head CI remains unavailable.
