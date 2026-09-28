@@ -2172,11 +2172,8 @@ fn write_atomic_private_windows_bound_with(
             "recovery stage changed before installation",
         ));
     }
-    let predecessor = match directory.open_for_bound_replacement(destination_name) {
-        Ok(file) => Some(file),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
+    let predecessor =
+        classify_windows_predecessor_open(directory.open_for_bound_replacement(destination_name))?;
     let Some(predecessor) = predecessor else {
         if initial.is_some() {
             return Err(io::Error::new(
@@ -2211,10 +2208,14 @@ fn write_atomic_private_windows_bound_with(
         .into_parts();
     barrier(WindowsRecoveryBarrier::Stage, directory)?;
 
-    if observe_windows_recovery_artifact(access, destination, &stage)? != intended
-        || observe_windows_recovery_artifact(access, &backup_path, &predecessor)?
-            != predecessor_observation
-    {
+    let installed = observe_windows_recovery_artifact(access, destination, &stage)?;
+    let backed_up = observe_windows_recovery_artifact(access, &backup_path, &predecessor)?;
+    if !windows_replacement_observations_match(
+        installed,
+        intended,
+        backed_up,
+        predecessor_observation,
+    ) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery record changed after replacement",
@@ -2223,6 +2224,25 @@ fn write_atomic_private_windows_bound_with(
     noter_platform::delete_open_file(&predecessor)?;
     drop(predecessor);
     barrier(WindowsRecoveryBarrier::Cleanup, directory)
+}
+
+#[cfg(windows)]
+fn classify_windows_predecessor_open(result: io::Result<File>) -> io::Result<Option<File>> {
+    match result {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn windows_replacement_observations_match(
+    installed: RecoveryArtifactObservation,
+    intended: RecoveryArtifactObservation,
+    backed_up: RecoveryArtifactObservation,
+    predecessor: RecoveryArtifactObservation,
+) -> bool {
+    installed == intended && backed_up == predecessor
 }
 
 #[cfg(all(windows, test))]
@@ -3773,6 +3793,59 @@ mod tests {
                 .contains("injected parent barrier failure")
         );
         assert_eq!(fs::read(&destination)?, bytes);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn predecessor_open_distinguishes_absence_from_other_failures() -> io::Result<()> {
+        assert!(classify_windows_predecessor_open(Err(io::ErrorKind::NotFound.into()))?.is_none());
+        assert_eq!(
+            classify_windows_predecessor_open(Err(io::ErrorKind::PermissionDenied.into()))
+                .expect_err("access failure cannot mean an absent predecessor")
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        let dir = tempdir()?;
+        let path = dir.path().join("predecessor");
+        fs::write(&path, b"previous recovery")?;
+        assert!(
+            classify_windows_predecessor_open(File::open(&path)).is_ok_and(|file| file.is_some())
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replacement_requires_both_opened_artifacts_to_match() -> io::Result<()> {
+        let dir = tempdir()?;
+        let paths = [
+            dir.path().join("installed"),
+            dir.path().join("backup"),
+            dir.path().join("other"),
+        ];
+        for (path, bytes) in paths.iter().zip([b"new".as_slice(), b"old", b"other"]) {
+            fs::write(path, bytes)?;
+        }
+        let observed = paths
+            .iter()
+            .map(|path| {
+                inspect_windows_recovery_artifact(WindowsRecoveryArtifactAccess::PathOnly, path)
+                    .map(|item| item.expect("fixture exists"))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let [installed, backup, other] = observed.as_slice() else {
+            panic!("three fixture observations")
+        };
+        assert!(windows_replacement_observations_match(
+            *installed, *installed, *backup, *backup
+        ));
+        assert!(!windows_replacement_observations_match(
+            *other, *installed, *backup, *backup
+        ));
+        assert!(!windows_replacement_observations_match(
+            *installed, *installed, *other, *backup
+        ));
         Ok(())
     }
 

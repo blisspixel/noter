@@ -69,7 +69,10 @@ const FILE_SYSTEM_NAME_CAPACITY: usize = 32;
 const DIRECTORY_ENUMERATION_BUFFER_BYTES: usize = 65_536;
 const KNOWN_FOLDER_PATH_LIMIT: usize = 32_767;
 
-struct KnownFolderAllocation(*mut u16);
+struct KnownFolderAllocation {
+    path: *mut u16,
+    release: unsafe extern "system" fn(*const std::ffi::c_void),
+}
 
 impl Drop for KnownFolderAllocation {
     fn drop(&mut self) {
@@ -77,7 +80,7 @@ impl Drop for KnownFolderAllocation {
         // allocator; it stays owned here and is freed exactly once.
         #[allow(unsafe_code)]
         unsafe {
-            CoTaskMemFree(self.0.cast());
+            (self.release)(self.path.cast());
         }
     }
 }
@@ -100,13 +103,16 @@ pub fn windows_local_appdata_directory() -> io::Result<PathBuf> {
             &raw mut raw,
         )
     };
-    let allocation = KnownFolderAllocation(raw);
+    let allocation = KnownFolderAllocation {
+        path: raw,
+        release: CoTaskMemFree,
+    };
     if status != 0 {
         return Err(io::Error::other(format!(
             "Windows LocalAppData lookup failed with HRESULT {status:#010x}"
         )));
     }
-    let path = std::ptr::NonNull::new(allocation.0)
+    let path = std::ptr::NonNull::new(allocation.path)
         .ok_or_else(|| io::Error::other("Windows LocalAppData lookup returned no path"))?;
     let mut units = Vec::new();
     for offset in 0..KNOWN_FOLDER_PATH_LIMIT {
@@ -1269,10 +1275,13 @@ fn open_directory_relative(
 
 const fn directory_access_and_share(share_policy: DirectorySharePolicy) -> (u32, u32) {
     match share_policy {
-        DirectorySharePolicy::Traversal => (0, FILE_SHARE_READ | FILE_SHARE_WRITE),
+        DirectorySharePolicy::Traversal => (
+            0,
+            combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
+        ),
         DirectorySharePolicy::BoundPrivate => (
-            WRITE_DAC | FILE_ADD_FILE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            combine_disjoint_flag_bits(WRITE_DAC, FILE_ADD_FILE),
+            combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
         ),
     }
 }
@@ -1464,18 +1473,19 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tempfile::tempdir;
 
     use super::{
-        DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, ParsedStatePath,
-        WindowsRecoveryDirectory, WindowsRecoveryEntryName, WindowsRecoveryNamespace,
-        bind_existing_child_directory, bind_private_directory, bounded_windows_path_length,
-        classify_cloud_sync_root_result, classify_directory_creation_error,
-        classify_directory_open_error, complete_device_query, directory_attributes_are_safe,
-        entry_names_from_handle, nt_open_handle_usable, open_directory_no_follow,
-        open_or_create_private_directory, parse_directory_entry_batch, query_preferred_identity,
-        recover_private_directory_creation_error, reject_cloud_sync_root,
+        DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, KnownFolderAllocation,
+        ParsedStatePath, WindowsRecoveryDirectory, WindowsRecoveryEntryName,
+        WindowsRecoveryNamespace, bind_existing_child_directory, bind_existing_directory,
+        bind_private_directory, bounded_windows_path_length, classify_cloud_sync_root_result,
+        classify_directory_creation_error, classify_directory_open_error, complete_device_query,
+        directory_attributes_are_safe, entry_names_from_handle, nt_open_handle_usable,
+        open_directory_no_follow, open_or_create_private_directory, parse_directory_entry_batch,
+        query_preferred_identity, recover_private_directory_creation_error, reject_cloud_sync_root,
         supported_local_disk_device, system_cloud_library_path, verify_fixed_drive,
         verify_loaded_cloud_library, verify_local_disk_device, verify_ntfs,
         windows_local_appdata_directory,
@@ -1589,6 +1599,26 @@ mod tests {
     }
 
     #[test]
+    fn known_folder_allocation_releases_its_owned_pointer() {
+        static RELEASES: AtomicUsize = AtomicUsize::new(0);
+
+        extern "system" fn record_release(pointer: *const std::ffi::c_void) {
+            assert_eq!(
+                pointer,
+                std::ptr::NonNull::<u16>::dangling().as_ptr().cast()
+            );
+            RELEASES.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let before = RELEASES.load(Ordering::SeqCst);
+        drop(KnownFolderAllocation {
+            path: std::ptr::NonNull::<u16>::dangling().as_ptr(),
+            release: record_release,
+        });
+        assert_eq!(RELEASES.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
     fn native_volume_checks_reject_non_volume_inputs() -> io::Result<()> {
         assert_eq!(
             verify_fixed_drive(Path::new(r"?:\"))
@@ -1606,6 +1636,21 @@ mod tests {
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(local.path())?;
         verify_local_disk_device(&directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn binding_rejects_a_different_expected_volume() -> io::Result<()> {
+        let local = tempdir()?;
+        let bound = bind_existing_directory(local.path(), None)?;
+        let wrong_volume = bound.identity.volume_serial ^ 1;
+        assert_eq!(
+            bind_existing_directory(local.path(), Some(wrong_volume))
+                .expect_err("a volume mismatch must be refused")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(bind_existing_directory(local.path(), Some(bound.identity.volume_serial)).is_ok());
         Ok(())
     }
 
