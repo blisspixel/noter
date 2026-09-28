@@ -2135,17 +2135,33 @@ mod tests {
             .create_private_new(OsStr::new("held.rec"))?;
         record.write_all(b"held recovery bytes")?;
         record.sync_all()?;
+        let (outcome, _) = namespace
+            .records()
+            .install_new_from_open(&record, OsStr::new("installed.rec"))?
+            .into_parts();
+        assert!(matches!(outcome, InstallNewOutcome::Clean));
+        assert!(matches!(
+            namespace.records().sync()?,
+            ParentSyncOutcome::Synced
+        ));
         drop(record);
         assert_eq!(
             namespace.records().entry_names(1)?,
-            [OsString::from("held.rec")]
+            [OsString::from("installed.rec")]
+        );
+        assert!(
+            !source_state
+                .join("recovery")
+                .join("records")
+                .join("held.rec")
+                .exists()
         );
         assert_eq!(
             fs::read(
                 source_state
                     .join("recovery")
                     .join("records")
-                    .join("held.rec")
+                    .join("installed.rec")
             )?,
             b"held recovery bytes"
         );

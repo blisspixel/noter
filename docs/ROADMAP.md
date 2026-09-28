@@ -626,8 +626,8 @@ enumeration run through the held directory handle with their entry limits.
 Windows child traversal and private directory creation now use the held parent
 handle, so a changed drive-letter mapping cannot redirect their objects.
 A native fixture remaps an unused drive letter after binding the parent and
-confirms state and recovery creation, then record creation and enumeration,
-stay under the held directories.
+confirms state and recovery creation, then record creation, exclusive
+installation, directory sync, and enumeration, stay under the held directories.
 Startup retains and reports an ambiguously named Windows entry without
 aborting review of other valid records.
 A native fixture confirms a reparse point at the private recovery child name
@@ -1011,13 +1011,17 @@ is the next safety prerequisite; the M5 editor feasibility gate follows it.
    with the immutable implementation commit, and `v0.1.0-alpha.2` was tagged at
    the protected-main head `dbb419f` after that exact commit passed CI.
 6. **In progress, before `0.1.0-beta.2`:** M4-H1 recovery namespace binding.
-   Complete the remaining handle-relative Windows record operations and
-   redirected-root classification, and record every remaining native
-   adversarial fixture.
-   The Linux and macOS namespace adapters and Unix cleanup contract are in tree.
+   Next, verify the consolidated recovery branch with exact-head CI and close
+   its mutation findings. Complete redirected and synchronized root
+   classification, then the remaining native final-window swap, fault, and
+   weak or remote filesystem fixtures on Windows, Linux, and macOS. The Linux
+   and macOS namespace adapters and Unix cleanup contract are in tree. Record
+   the platform matrix before marking this milestone verified.
 7. **Then, `0.1.0-beta.2`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
-   production editor contract is stable.
+   production editor contract is stable. A beta.2 release follows a clean
+   protected-main commit with the required CI, mutation, manual platform, and
+   release evidence; M4-H1 and M5 remain release blockers.
 8. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
    dogfood, public release.
 

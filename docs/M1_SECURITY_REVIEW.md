@@ -707,18 +707,22 @@ and 92.72 percent with the specified UI files excluded, above the 80 and
 to the approved assets; only their source-input digest changed. Hosted
 exact-head CI remains unverified.
 
-The fixture was later extended to create and enumerate a record after the
-drive letter has been remapped. The bytes appear under the held records
-directory; the unrelated tree remains untouched. Replacing handle-relative
-record creation with an absolute pathname open makes the focused test fail
+The fixture was later extended to create a record, install the opened file
+under a new name, sync the held records directory, and enumerate the result
+after the drive letter has been remapped. The bytes appear under the held
+records directory; the unrelated tree remains untouched. Replacing
+handle-relative record creation with an absolute pathname open makes the
+focused test fail
 because the rebound path does not contain the records directory. Restoring
 handle-relative creation makes it pass. Independent review approved the new
 assertions. The exact local all-targets Windows suite passed, including all
 82 platform tests. Format, Clippy, Rustdoc, Python tests, Ruff, doc links,
 README asset validation, offline deny, cached advisory audit, and diff checks
 passed. Coverage was 93.32 percent workspace-wide and 92.71 percent with the
-specified UI files excluded. The regenerated screenshot images were
-byte-identical to the approved assets. Hosted exact-head CI remains unverified.
+specified UI files excluded. All five regenerated screenshots had identical
+decoded pixels to the approved assets; four PNG encodings differed, so the
+approved tracked images were retained and the source-input digest updated.
+Hosted exact-head CI remains unverified.
 
 ## 2026-09-28 UTC Windows native-fixture security diff scan
 
