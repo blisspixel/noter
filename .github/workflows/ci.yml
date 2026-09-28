@@ -75,6 +75,11 @@ jobs:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
+      - name: Enable Cloud Files native test support
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/ensure_windows_cloud_filter.ps1
+
       - name: Build (debug)
         run: cargo build --locked --verbose --workspace --all-features
 
@@ -208,6 +213,10 @@ jobs:
         with:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Enable Cloud Files native test support
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/ensure_windows_cloud_filter.ps1
       - name: Install cargo-mutants
         uses: taiki-e/install-action@e62b3bdab54265ba809383c8707cb0600da93f19
         with:

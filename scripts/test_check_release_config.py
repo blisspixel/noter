@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from check_release_config import (
     REPOSITORY_ROOT,
@@ -19,6 +20,21 @@ from check_release_config import (
 
 
 class ReleaseConfigurationTests(unittest.TestCase):
+    def test_rejects_unreviewed_windows_cloud_filter_helper_changes(self) -> None:
+        original_read = read_regular_file
+
+        def changed_read(path):
+            contents = original_read(path)
+            if path.name == "ensure_windows_cloud_filter.ps1":
+                return contents + b"\n# unreviewed change\n"
+            return contents
+
+        with patch("check_release_config.read_regular_file", side_effect=changed_read):
+            errors = validate_repository()
+        self.assertIn(
+            "Windows Cloud Files CI helper differs from its reviewed source", errors
+        )
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.manifest = read_regular_file(REPOSITORY_ROOT / "Cargo.toml").decode("utf-8")
