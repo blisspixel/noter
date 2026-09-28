@@ -364,3 +364,9 @@ including all 75 platform tests, Rustdoc with denied warnings, document links,
 workspace line coverage is 93.34 percent; the quality-standard filtered
 coverage is 91.85 percent. The broader native fault and race matrix,
 independent review, and hosted exact-head CI remain unverified.
+
+A focused Windows-local mutation campaign at `abec535` ran
+`cargo mutants --regex 'write_atomic_private_windows_bound_with|open_for_bound_replacement' -j 4 --colors never`.
+Its unmutated baseline passed and all 11 selected mutants were caught in four
+minutes. This covers the selected Windows recovery replacement function and
+does not substitute for the full sharded CI campaign.
