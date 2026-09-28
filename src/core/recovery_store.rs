@@ -2167,8 +2167,8 @@ fn write_atomic_private_windows_bound_with(
     }
 
     // The first barrier makes the predecessor's private backup durable before
-    // the new record can take its canonical name. Every failure keeps the
-    // opened stage and predecessor available for startup review.
+    // the new record can take its canonical name. Failures before cleanup
+    // retain both snapshots for startup review.
     let _ = directory
         .install_new_from_open(&predecessor, backup_name)?
         .into_parts();
@@ -4019,6 +4019,18 @@ mod tests {
         );
         assert_eq!(fs::read(&destination)?, replacement.encode());
         assert!(!backup.exists());
+        let scan = store.scan_startup()?;
+        let offers: Vec<_> = scan
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry.disposition() {
+                RecoveryScanDisposition::Offer(offer) => Some(offer),
+                RecoveryScanDisposition::Quarantine(_) => None,
+            })
+            .collect();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].metadata().revision(), replacement.revision());
+        assert!(offers[0].superseded().is_empty());
         Ok(())
     }
 
@@ -4048,6 +4060,17 @@ mod tests {
                 .contains("injected first-record barrier failure")
         );
         assert_eq!(fs::read(&destination)?, snapshot.encode());
+        let scan = store.scan_startup()?;
+        let offers: Vec<_> = scan
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry.disposition() {
+                RecoveryScanDisposition::Offer(offer) => Some(offer),
+                RecoveryScanDisposition::Quarantine(_) => None,
+            })
+            .collect();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].metadata().revision(), snapshot.revision());
         Ok(())
     }
 
