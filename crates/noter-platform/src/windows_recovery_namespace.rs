@@ -2,8 +2,9 @@
 //!
 //! This module binds the state and recovery directories to retained handles.
 //! Its entry creation, open, classification, enumeration, and new-record
-//! installation use those handles. Existing-record replacement and complete
-//! root classification remain separate M4-H1 work.
+//! installation and directory synchronization use those handles.
+//! Existing-record replacement and complete root classification remain
+//! separate M4-H1 work.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -28,13 +29,13 @@ use windows_sys::Win32::Storage::CloudFilters::{
     CF_SYNC_ROOT_BASIC_INFO, CF_SYNC_ROOT_INFO_BASIC, CF_SYNC_ROOT_INFO_CLASS,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, FileBasicInfo,
-    FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo, GetDriveTypeW,
-    GetFileInformationByHandleEx, GetFileType, GetVolumeInformationByHandleW, READ_CONTROL,
-    SYNCHRONIZE, WRITE_DAC,
+    DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK,
+    FileBasicInfo, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo,
+    GetDriveTypeW, GetFileInformationByHandleEx, GetFileType, GetVolumeInformationByHandleW,
+    READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::LibraryLoader::{
@@ -48,7 +49,10 @@ use crate::imp::{
     windows_tighten_private_directory_security, windows_verify_owner_controlled_state_directory,
     windows_verify_private_directory_security,
 };
-use crate::{CommitReceipt, InstallNewOutcome, ParentSyncReceipt, combine_disjoint_flag_bits};
+use crate::{
+    CommitReceipt, InstallNewOutcome, ParentSyncOutcome, ParentSyncReceipt,
+    combine_disjoint_flag_bits,
+};
 
 const RECORDS_DIRECTORY_NAME: &str = "records";
 const QUARANTINE_DIRECTORY_NAME: &str = "quarantine";
@@ -108,6 +112,16 @@ impl WindowsRecoveryDirectory {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Flushes metadata for this exact retained directory after an entry change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an operating-system error if the directory barrier fails.
+    pub fn sync(&self) -> io::Result<ParentSyncOutcome> {
+        self.handle.sync_all()?;
+        Ok(ParentSyncOutcome::Synced)
     }
 
     /// Opens one entry relative to this retained directory handle.
@@ -541,8 +555,8 @@ fn regular_entry_handle(file: &File) -> io::Result<bool> {
 /// remain outside the supported recovery boundary.
 ///
 /// Entry creation, open, classification, enumeration, new-record installation,
-/// and replacement reconciliation use these handles. Existing-record
-/// replacement and synchronization still require handle-relative operations.
+/// replacement reconciliation, and directory synchronization use these
+/// handles. Existing-record replacement still requires handle-relative work.
 pub struct WindowsRecoveryNamespace {
     state: WindowsRecoveryDirectory,
     recovery: WindowsRecoveryDirectory,
@@ -1077,7 +1091,7 @@ fn open_directory_no_follow(path: &Path, share_policy: DirectorySharePolicy) -> 
             combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
         ),
         DirectorySharePolicy::BoundPrivate => (
-            WRITE_DAC,
+            combine_disjoint_flag_bits(WRITE_DAC, FILE_ADD_FILE),
             combine_disjoint_flag_bits(FILE_SHARE_READ, FILE_SHARE_WRITE),
         ),
     };
@@ -1215,6 +1229,7 @@ mod tests {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::os::windows::fs::{OpenOptionsExt, symlink_dir, symlink_file};
     use std::path::Path;
+    use std::sync::Mutex;
 
     use tempfile::tempdir;
 
@@ -1228,11 +1243,11 @@ mod tests {
         reject_cloud_sync_root, system_cloud_library_path, verify_fixed_drive,
         verify_loaded_cloud_library, verify_ntfs,
     };
-    use crate::InstallNewOutcome;
     use crate::imp::{
         windows_create_owner_controlled_readable_directory_for_test,
         windows_verify_private_directory_security,
     };
+    use crate::{InstallNewOutcome, ParentSyncOutcome};
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::CloudFilters::{
         CF_HYDRATION_POLICY_ALWAYS_FULL, CF_POPULATION_POLICY_ALWAYS_FULL, CF_REGISTER_FLAG_NONE,
@@ -1474,6 +1489,36 @@ mod tests {
         assert_eq!(
             reject_cloud_sync_root(&device).unwrap_err().kind(),
             io::ErrorKind::Unsupported
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bound_records_directory_accepts_a_native_metadata_barrier() -> io::Result<()> {
+        let parent = tempdir()?;
+        let state = parent.path().join("state");
+        let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
+        assert_eq!(namespace.records().sync()?, ParentSyncOutcome::Synced);
+        Ok(())
+    }
+
+    #[test]
+    fn directory_barrier_reports_a_missing_write_right() -> io::Result<()> {
+        let parent = tempdir()?;
+        let state = parent.path().join("state");
+        let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
+        let path = namespace.records().path().to_path_buf();
+        let handle = open_directory_no_follow(&path, DirectorySharePolicy::Traversal)?;
+        let identity = query_preferred_identity(&handle)?;
+        let read_only = WindowsRecoveryDirectory {
+            handle,
+            enumeration_lock: Mutex::new(()),
+            identity,
+            path,
+        };
+        assert_eq!(
+            read_only.sync().unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
         );
         Ok(())
     }

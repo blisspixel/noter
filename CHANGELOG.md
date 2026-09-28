@@ -81,6 +81,12 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Flush the retained Windows records directory after a recovery record commit.
+  A directory-barrier failure now reports a persistence warning while keeping
+  the committed record available for later recovery. Quarantine copy and
+  source-cleanup barriers now flush their held directories too. A failed
+  quarantine barrier retains one bounded copy for review instead of creating
+  another copy on every retry.
 - Pause every terminal Save and Save As after an uncertain commit. `^R` now
   shows a bounded record for each unresolved destination, its recovery detail,
   an explicit exact path-copy action, and a per-record reconciliation decision.
