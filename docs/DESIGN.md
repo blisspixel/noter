@@ -690,8 +690,10 @@ name. Startup and owned-artifact enumeration run through the held directory
 handle with bounded entries. Replacement stage, destination, and backup
 observations open relative to the held records directory. Ratification and
 cleanup operate on their exact opened files. Failure completion installs the
-opened stage relative to that directory. Existing-record replacement and
-synchronization remain pathname-based inside the held, delete-protected
+opened stage relative to that directory. After a recovery record commit,
+Windows flushes the held records directory and reports a failed barrier
+without discarding the record. Existing-record replacement and other
+synchronization operations remain pathname-based inside the held, delete-protected
 directories. A handle-based Windows Cloud Files query loaded by its absolute
 System32 path checks the parent, state, recovery, records, and quarantine
 handles before recovery writes; an unavailable API or unrecognized result also

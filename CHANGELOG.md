@@ -81,6 +81,9 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Flush the retained Windows records directory after a recovery record commit.
+  A directory-barrier failure now reports a persistence warning while keeping
+  the committed record available for later recovery.
 - Pause every terminal Save and Save As after an uncertain commit. `^R` now
   shows a bounded record for each unresolved destination, its recovery detail,
   an explicit exact path-copy action, and a per-record reconciliation decision.

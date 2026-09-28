@@ -2050,7 +2050,11 @@ fn write_atomic_private_windows(
             directory.install_new_from_open(file, name)
         },
         noter_platform::replace_existing,
-        RecoveryParentSync::sync,
+        |receipt| {
+            let _ = receipt.sync()?;
+            let (directory, _) = store.windows_bound_entry(destination)?;
+            directory.sync()
+        },
     )
 }
 
@@ -3542,7 +3546,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn atomic_recovery_parent_sync_failure_preserves_committed_record() -> io::Result<()> {
         let directory = tempdir()?;

@@ -640,9 +640,10 @@ staged record creation, new-record installation from the opened stage, and
 lease or quarantine creation are handle-relative and have native fixtures for
 exclusive private creation, regular-file and directory classification, final
 links, name replacement after open, and rejection of an unbound parent or
-invalid stage destination before writing.
-Existing-record replacement, synchronization, and detection of redirected or
-other synchronized roots keep M4-H1 in progress.
+invalid stage destination before writing. Recovery record commits flush the
+held records directory on Windows NTFS and surface a failed directory barrier.
+Existing-record replacement, remaining synchronization, and detection of
+redirected or other synchronized roots keep M4-H1 in progress.
 
 The Unix cleanup ADR was required either to provide a genuinely object-bound
 retirement strategy or to retain and safely neutralize the exact opened object
