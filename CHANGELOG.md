@@ -86,6 +86,9 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Restore a retained Windows binary before retrying an install interrupted after
+  the previous executable was moved aside. A failed retry keeps that executable,
+  while uninstall removes it.
 - Reject a rebound Windows recovery stage before replacing an existing record,
   even when the replacement has identical bytes. The intended snapshot is
   bound to the opened stage before its handle closes.

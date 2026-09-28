@@ -69,6 +69,10 @@ by other users, or bearing an unsupported access-control list. A link
 inside a private directory may point to another private location. Use a private
 install root rather than a shared writable directory.
 
+On Windows, retrying after an interrupted binary replacement restores
+`noter.exe.old` if `noter.exe` is missing before another download or build.
+Uninstall also removes this retained executable.
+
 `--uninstall` (`-Uninstall`) removes the binary, and on Windows its `PATH`
 entry when the directory is otherwise empty. Documents, settings, and recovery
 records are not touched. `--check` (`-Check`) validates the plan without

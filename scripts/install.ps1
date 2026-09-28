@@ -114,12 +114,41 @@ function Test-SamePath {
     [string]::Equals($Left.TrimEnd('\'), $Right.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Get-InterruptedBinaryBackup {
+    param([Parameter(Mandatory)][string]$PreviousBinary)
+
+    $previous = Get-Item -LiteralPath $previousBinary -Force -ErrorAction SilentlyContinue
+    if ($null -ne $previous -and
+        ($previous.PSIsContainer -or ($previous.Attributes -band [System.IO.FileAttributes]::ReparsePoint))) {
+        throw 'An interrupted install backup is not an ordinary file.'
+    }
+    $previous
+}
+
+function Restore-InterruptedBinaryInstall {
+    param([Parameter(Mandatory)][string]$BinDir)
+
+    $installedBinary = Join-Path $BinDir 'noter.exe'
+    $previousBinary = Join-Path $BinDir 'noter.exe.old'
+    $previous = Get-InterruptedBinaryBackup -PreviousBinary $previousBinary
+    if ($null -eq $previous) {
+        return
+    }
+    if (-not (Test-Path -LiteralPath $installedBinary)) {
+        Move-Item -LiteralPath $previousBinary -Destination $installedBinary
+    }
+}
+
 function Install-FromSource {
     param(
         [Parameter(Mandatory)][string]$ResolvedSource,
         [Parameter(Mandatory)][string]$ResolvedInstallRoot,
         [switch]$CheckOnly
     )
+
+    if (-not $CheckOnly) {
+        Restore-InterruptedBinaryInstall -BinDir (Join-Path $ResolvedInstallRoot 'bin')
+    }
 
     $manifest = Join-Path $ResolvedSource 'Cargo.toml'
     if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
@@ -202,6 +231,12 @@ function Install-FromRelease {
         [switch]$CheckOnly
     )
 
+    if (-not $CheckOnly) {
+        $binDir = Join-Path $ResolvedInstallRoot 'bin'
+        New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+        Restore-InterruptedBinaryInstall -BinDir $binDir
+    }
+
     # Only an x64 build is published. Windows on ARM runs it through x64
     # emulation.
     $target = 'x86_64-pc-windows-msvc'
@@ -214,8 +249,6 @@ function Install-FromRelease {
         return
     }
 
-    $binDir = Join-Path $ResolvedInstallRoot 'bin'
-    New-Item -ItemType Directory -Path $binDir -Force | Out-Null
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('noter-install-' + [System.Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     try {
@@ -257,9 +290,9 @@ function Install-FromRelease {
         $stagedBinary = Join-Path $binDir 'noter.exe.new'
         $previousBinary = Join-Path $binDir 'noter.exe.old'
         Copy-Item -LiteralPath $extractedBinary.FullName -Destination $stagedBinary -Force
-        Remove-Item -LiteralPath $previousBinary -Force -ErrorAction SilentlyContinue
         $hadPrevious = Test-Path -LiteralPath $installedBinary
         if ($hadPrevious) {
+            Remove-Item -LiteralPath $previousBinary -Force -ErrorAction SilentlyContinue
             Move-Item -LiteralPath $installedBinary -Destination $previousBinary -Force
         }
         try {
@@ -292,13 +325,20 @@ function Uninstall-Noter {
 
     $binDir = Join-Path $ResolvedInstallRoot 'bin'
     $installedBinary = Join-Path $binDir 'noter.exe'
+    $previousBinary = Join-Path $binDir 'noter.exe.old'
     if ($CheckOnly) {
-        Write-Output "Would remove '$installedBinary'."
+        Write-Output "Would remove '$installedBinary' and any retained '$previousBinary'."
         return
+    }
+    $previous = Get-InterruptedBinaryBackup -PreviousBinary $previousBinary
+    if ($null -ne $previous) {
+        Remove-Item -LiteralPath $previousBinary -Force
     }
     if (Test-Path -LiteralPath $installedBinary) {
         Remove-Item -LiteralPath $installedBinary -Force
         Write-Output "Removed '$installedBinary'. Documents and settings were not touched."
+    } elseif ($null -ne $previous) {
+        Write-Output "Removed the retained Noter binary at '$previousBinary'. Documents and settings were not touched."
     } else {
         Write-Output "No Noter binary at '$installedBinary'."
     }
