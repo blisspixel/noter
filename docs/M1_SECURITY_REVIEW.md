@@ -318,3 +318,27 @@ fixtures, and exact-head CI. The API contracts are documented by Microsoft:
 [ReplaceFileW](https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-replacefilew),
 [FILE_RENAME_INFORMATION](https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information),
 and [FILE_LINK_INFORMATION](https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_link_information).
+
+A subsequent native NTFS fixture,
+`held_predecessor_can_move_to_backup_before_exclusive_stage_install`, exercises
+the existing handle-relative exclusive rename primitive with a held predecessor
+opened for deletion while denying delete sharing. It confirms that an occupied
+backup is not overwritten, a competing rename cannot replace the held
+destination, the predecessor can move to the backup name, and a competitor that
+then occupies the destination prevents stage installation. In that case the
+stage, backup, and competitor bytes all remain available. When the competing
+entry is removed, the held stage installs under the destination name. The
+fixture checks a records-directory sync after each successful rename, then
+deletes the exact opened predecessor and syncs the directory again. The focused
+native fixture, platform-package Clippy, formatting, and documentation links
+pass with that final test body. An earlier candidate body, before the final
+opened-handle deletion assertion, passed all 75 platform tests and the complete
+Windows workspace test command. A full platform-package retry with the final
+body passed 74 tests but the unchanged Cloud Files registration fixture failed
+because `CfRegisterSyncRoot` returned access denied (`0x80070005`); an isolated
+retry reproduced that failure. The full current gate is therefore unverified.
+This is
+evidence for the native primitive and its failure state; production recovery
+still uses `ReplaceFileW` for existing records. The two-step protocol needs
+application integration, crash and barrier fault tests, independent review,
+and exact-head hosted CI before M4-H1 can claim completion.

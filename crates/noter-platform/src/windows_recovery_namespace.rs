@@ -1234,29 +1234,30 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, ParsedStatePath,
+        DirectoryCreationError, DirectoryOpenError, DirectorySharePolicy, FILE_NON_DIRECTORY_FILE,
+        FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, ParsedStatePath,
         WindowsRecoveryDirectory, WindowsRecoveryEntryName, WindowsRecoveryNamespace,
         bounded_windows_path_length, classify_cloud_sync_root_result,
         classify_directory_creation_error, classify_directory_open_error,
         directory_attributes_are_safe, entry_names_from_handle, nt_open_handle_usable,
-        open_directory_no_follow, parse_directory_entry_batch, query_preferred_identity,
-        reject_cloud_sync_root, system_cloud_library_path, verify_fixed_drive,
-        verify_loaded_cloud_library, verify_ntfs,
+        open_directory_no_follow, open_entry_relative_with, parse_directory_entry_batch,
+        query_preferred_identity, reject_cloud_sync_root, system_cloud_library_path,
+        verify_fixed_drive, verify_loaded_cloud_library, verify_ntfs,
     };
     use crate::imp::{
         windows_create_owner_controlled_readable_directory_for_test,
         windows_verify_private_directory_security,
     };
     use crate::{InstallNewOutcome, ParentSyncOutcome};
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::CloudFilters::{
         CF_HYDRATION_POLICY_ALWAYS_FULL, CF_POPULATION_POLICY_ALWAYS_FULL, CF_REGISTER_FLAG_NONE,
         CF_SYNC_POLICIES, CF_SYNC_REGISTRATION, CfRegisterSyncRoot, CfUnregisterSyncRoot,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+        DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
         FILE_ID_BOTH_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
     };
 
     #[test]
@@ -1900,6 +1901,85 @@ mod tests {
                 .kind(),
             io::ErrorKind::InvalidInput
         );
+        Ok(())
+    }
+
+    #[test]
+    fn held_predecessor_can_move_to_backup_before_exclusive_stage_install() -> io::Result<()> {
+        let parent = tempdir()?;
+        let state = parent.path().join("state");
+        let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
+        let records = namespace.records();
+        let stage_path = records.path().join("stage.rec");
+        let destination_path = records.path().join("current.rec");
+        let backup_path = records.path().join("backup.rec");
+        let competitor_path = records.path().join("competitor.rec");
+        fs::write(&stage_path, b"new snapshot")?;
+        fs::write(&destination_path, b"old snapshot")?;
+        fs::write(&competitor_path, b"raced snapshot")?;
+
+        let access = GENERIC_READ | DELETE | SYNCHRONIZE;
+        let options =
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT;
+        let opened_stage = open_entry_relative_with(
+            records.handle(),
+            OsStr::new("stage.rec"),
+            access,
+            FILE_SHARE_READ,
+            options,
+        )?;
+        let predecessor = open_entry_relative_with(
+            records.handle(),
+            OsStr::new("current.rec"),
+            access,
+            FILE_SHARE_READ,
+            options,
+        )?;
+
+        assert!(fs::rename(&competitor_path, &destination_path).is_err());
+        fs::write(&backup_path, b"retained backup")?;
+        assert_eq!(
+            records
+                .install_new_from_open(&predecessor, OsStr::new("backup.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&destination_path)?, b"old snapshot");
+        assert_eq!(fs::read(&backup_path)?, b"retained backup");
+        fs::remove_file(&backup_path)?;
+        let (outcome, _) = records
+            .install_new_from_open(&predecessor, OsStr::new("backup.rec"))?
+            .into_parts();
+        assert!(matches!(outcome, InstallNewOutcome::Clean));
+        assert!(matches!(records.sync()?, ParentSyncOutcome::Synced));
+        assert!(!destination_path.exists());
+        assert_eq!(fs::read(&backup_path)?, b"old snapshot");
+
+        fs::rename(&competitor_path, &destination_path)?;
+        assert_eq!(
+            records
+                .install_new_from_open(&opened_stage, OsStr::new("current.rec"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&destination_path)?, b"raced snapshot");
+        assert_eq!(fs::read(&stage_path)?, b"new snapshot");
+        assert_eq!(fs::read(&backup_path)?, b"old snapshot");
+
+        fs::remove_file(&destination_path)?;
+        let (outcome, _) = records
+            .install_new_from_open(&opened_stage, OsStr::new("current.rec"))?
+            .into_parts();
+        assert!(matches!(outcome, InstallNewOutcome::Clean));
+        assert!(matches!(records.sync()?, ParentSyncOutcome::Synced));
+        assert_eq!(fs::read(&destination_path)?, b"new snapshot");
+        assert_eq!(fs::read(&backup_path)?, b"old snapshot");
+        crate::delete_open_file(&predecessor)?;
+        drop(predecessor);
+        assert!(!backup_path.exists());
+        assert!(matches!(records.sync()?, ParentSyncOutcome::Synced));
         Ok(())
     }
 
