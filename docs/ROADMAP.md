@@ -753,10 +753,8 @@ egui shapes each font run, but mixed-direction lines are not yet reordered by
 the Unicode bidirectional algorithm; that stays part of the text-engine gate
 below. The current renderer's emoji
 output is monochrome and is not accepted as final cross-platform appearance
-evidence. A status bar ordering inversion currently renders cursor coordinates
-before the active editor, introducing a 1-frame lag and forced repaint on caret
-navigation that will be eliminated by resolving cursor metrics prior to chrome.
-No spell-check provider is implemented.
+evidence. The status bar now renders after the editor and has a same-frame
+caret-coordinate test. No spell-check provider is implemented.
 
 Research completed on 2026-08-23 makes the next decision narrower. The current
 egui `TextEdit` remains the correctness adapter, but stock egui 0.35 with
