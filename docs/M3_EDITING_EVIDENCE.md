@@ -128,3 +128,27 @@ navigation source blob `d43ea14f7c8e4a1c76f8e02d3404bf26874ece8e`
 completed 17 of 17 mutants as caught, with zero missed, timed out, or
 unviable. The full workspace test baseline passed. This is evidence for the
 word-movement mutation subset, not the complete CI mutation campaign.
+
+## 2026-09-28 UTC backward-character latency follow-up
+
+This Windows-local fix is based on `8d79ef3`. The candidate navigation source
+has Git blob `728c918dffcb9128169f52f7b05dfe850cf93a89`. The prior
+backward-character implementation scanned from the document start for every
+step. On a 64 MiB document with an ASCII prefix and a nine-byte wide,
+bidirectional-control, and combining-character suffix,
+`cargo test --locked --bench navigation_latency -- --nocapture` failed the
+two-second bound: 128 backward character steps took 10.6648241 seconds.
+Replacing the scan with a reverse iterator over the prefix made the corrected
+fixture pass in 1.2 microseconds. The timing threshold excludes text creation
+and is deliberately far above the candidate measurement; these local runs do
+not establish other-machine latency.
+
+The complete application-package tests, Clippy, Rustdoc, formatting, Ruff,
+repository script tests, documentation links, release configuration check, and
+cached advisory audit passed. `cargo deny --locked check --disable-fetch` could
+not acquire its advisory database lock on a read-only path in this sandbox.
+Package-only line coverage was 93.84 percent, and the declared
+UI-excluded calculation was 92.64 percent. The complete workspace test run
+failed in the unchanged Windows Cloud Files registration fixture with access
+denied (`0x80070005`); a direct platform-package retry reproduced it. Full
+workspace coverage, independent review, and exact-head hosted CI are pending.

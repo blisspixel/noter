@@ -179,10 +179,9 @@ fn move_by_character(source: &str, offset: usize, direction: MoveDirection) -> u
                 debug_assert!(offset >= 2);
                 return offset - 2;
             }
-            source
+            source[..offset]
                 .char_indices()
-                .take_while(|(index, _)| *index < offset)
-                .last()
+                .next_back()
                 .map_or(0, |(index, _)| index)
         }
         MoveDirection::Forward => {

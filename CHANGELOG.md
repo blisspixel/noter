@@ -88,6 +88,8 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Move backward by characters from the caret without rescanning the document
+  prefix on every step.
 - Move backward by words without allocating a position for every preceding
   character. This removes a large transient allocation from word navigation
   near the end of a large document.
