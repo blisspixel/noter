@@ -2120,8 +2120,35 @@ mod tests {
         assert!(remapped);
         assert_eq!(namespace.state_identity(), source_identity);
         assert!(source_state.join("recovery").join("records").is_dir());
+        write_and_verify_held_record(&namespace, &source_state)?;
         assert!(!unrelated_state.join("recovery").exists());
         mapping.unmount()?;
+        Ok(())
+    }
+
+    fn write_and_verify_held_record(
+        namespace: &WindowsRecoveryNamespace,
+        source_state: &Path,
+    ) -> io::Result<()> {
+        let mut record = namespace
+            .records()
+            .create_private_new(OsStr::new("held.rec"))?;
+        record.write_all(b"held recovery bytes")?;
+        record.sync_all()?;
+        drop(record);
+        assert_eq!(
+            namespace.records().entry_names(1)?,
+            [OsString::from("held.rec")]
+        );
+        assert_eq!(
+            fs::read(
+                source_state
+                    .join("recovery")
+                    .join("records")
+                    .join("held.rec")
+            )?,
+            b"held recovery bytes"
+        );
         Ok(())
     }
 

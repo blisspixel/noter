@@ -690,9 +690,9 @@ wrong object. The namespace instead binds the original state identity and
 creates recovery records under the held tree; the unrelated state gains no
 recovery subtree. The fixture launches the system-directory `subst.exe` by
 absolute path and unmaps the temporary drive before removing the test tree.
-Replacing the relative
-state bind with an absolute pathname open makes the focused test fail on the
-different file identity, and restoring the relative open makes it pass.
+Replacing the relative state bind with an absolute pathname open makes the
+focused test fail on the different file identity, and restoring the relative
+open makes it pass.
 This covers one actual drive-letter remap window, not every redirected-root
 classification or the remaining fault and race matrix.
 
@@ -706,6 +706,19 @@ and 92.72 percent with the specified UI files excluded, above the 80 and
 90 percent thresholds. The five regenerated screenshots were byte-identical
 to the approved assets; only their source-input digest changed. Hosted
 exact-head CI remains unverified.
+
+The fixture was later extended to create and enumerate a record after the
+drive letter has been remapped. The bytes appear under the held records
+directory; the unrelated tree remains untouched. Replacing handle-relative
+record creation with an absolute pathname open makes the focused test fail
+because the rebound path does not contain the records directory. Restoring
+handle-relative creation makes it pass. Independent review approved the new
+assertions. The exact local all-targets Windows suite passed, including all
+82 platform tests. Format, Clippy, Rustdoc, Python tests, Ruff, doc links,
+README asset validation, offline deny, cached advisory audit, and diff checks
+passed. Coverage was 93.32 percent workspace-wide and 92.71 percent with the
+specified UI files excluded. The regenerated screenshot images were
+byte-identical to the approved assets. Hosted exact-head CI remains unverified.
 
 ## 2026-09-28 UTC Windows native-fixture security diff scan
 

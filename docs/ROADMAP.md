@@ -626,7 +626,8 @@ enumeration run through the held directory handle with their entry limits.
 Windows child traversal and private directory creation now use the held parent
 handle, so a changed drive-letter mapping cannot redirect their objects.
 A native fixture remaps an unused drive letter after binding the parent and
-confirms state and recovery creation stay under that held directory.
+confirms state and recovery creation, then record creation and enumeration,
+stay under the held directories.
 Startup retains and reports an ambiguously named Windows entry without
 aborting review of other valid records.
 A native fixture confirms a reparse point at the private recovery child name
