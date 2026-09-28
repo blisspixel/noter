@@ -34,11 +34,14 @@ surfaces the failure instead of silently hiding an existing record.
 
 Unresolved legacy records remain in their original location until the user
 restores or discards them. A cleanup failure can leave both a local successor
-and the old legacy offer. If startup finds that exact predecessor relationship,
-restoring the local successor keeps the older Roaming copy available for an
-explicit cleanup action in the current editor session. The old copy is never
-deleted from metadata alone. Each root has its own bounded startup scan, so a
-dual-root launch can review up to twice one root's limits while still leaving
-overflow untouched. LocalAppData is the Windows nonroaming known folder, but
-arbitrary third-party synchronization of that folder cannot be proven absent;
+and the old legacy offer. If startup finds a schema-v2 predecessor link with
+exactly the next generation, restoring the local successor keeps the older
+Roaming copy available for an explicit cleanup action in the current editor
+session. Incomparable records, including legacy schema-v1 records, remain
+separate offers. A failed exact cleanup retains its offer for retry. The old
+copy is never deleted from metadata alone. Each root has its own bounded
+startup scan, so a dual-root launch can review up to twice one root's limits
+while still leaving overflow untouched. LocalAppData is the Windows nonroaming
+known folder, but arbitrary third-party synchronization of that folder cannot
+be proven absent;
 the verified-root policy still fails closed for supported detectable cases.

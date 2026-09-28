@@ -14,7 +14,9 @@ that candidate is frozen for publication.
   Discard deletes only the claimed old record. If an interrupted transfer
   leaves both copies, restoring the local successor offers explicit cleanup
   of its older Roaming predecessor. A successful retry clears that copy's
-  cleanup warning without hiding another cleanup failure.
+  cleanup warning without hiding another cleanup failure. Failed deletion
+  retains the retry action, and only an exact schema-v2 successor relationship
+  labels a Roaming record as its older copy.
 - Replace existing Windows recovery records through held stage and predecessor
   handles. Preserve a private backup across the first directory sync, install
   the new record exclusively, and retain available snapshots for startup

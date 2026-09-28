@@ -512,17 +512,22 @@ impl CrashRecoverySession {
             let _ = store.release_claim(claim);
             return false;
         }
-        let offer = self
-            .pending_legacy_cleanup
-            .take()
-            .expect("the offered copy remains present until cleanup");
-        let cleanup = cleanup_offer_artifacts(store, offer.artifact, &claim);
+        let cleanup = offer
+            .artifact
+            .try_clone_for_cleanup()
+            .and_then(|artifact| cleanup_offer_artifacts(store, artifact, &claim));
         let release = store.release_claim(claim);
-        if cleanup.is_err() || release.is_err() {
+        if cleanup.is_err() {
             self.pending_legacy_cleanup_status = LegacyCleanupStatus::Failed;
+            self.cleanup_failure |= release.is_err();
             return false;
         }
+        self.pending_legacy_cleanup = None;
         self.pending_legacy_cleanup_status = LegacyCleanupStatus::Clear;
+        if release.is_err() {
+            self.cleanup_failure = true;
+            return false;
+        }
         true
     }
 
@@ -624,11 +629,11 @@ impl CrashRecoverySession {
             .expect("the active recovery offer must remain present");
         if !legacy {
             let restored = record.metadata();
-            if let Some(position) = self.startup_offers.iter().position(|offer| {
-                offer.legacy
-                    && offer.metadata().document_id() == restored.document_id()
-                    && restored.predecessor_instance() == Some(offer.metadata().instance_id())
-            }) {
+            if let Some(position) = self
+                .startup_offers
+                .iter()
+                .position(|offer| offer.legacy && restored.directly_supersedes(offer.metadata()))
+            {
                 self.pending_legacy_cleanup = Some(self.startup_offers.remove(position));
             }
         }
@@ -1398,7 +1403,27 @@ mod tests {
         let legacy_state = directory.path().join("legacy");
         let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
         let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
-        let old = sample_snapshot(81, b"unsaved legacy text");
+        let ancestor = sample_snapshot(80, b"unsaved legacy text");
+        legacy_store
+            .persist(&ancestor)
+            .expect("persist legacy ancestor");
+        let old = RecoverySnapshot::try_new_with_lineage(
+            RecoverySnapshotParts {
+                document_id: ancestor.document_id(),
+                instance_id: RecoveryInstanceId::new([81; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(3),
+                updated_at: RecoveryWallTime::from_unix_millis(4),
+                original_path: b"notes.txt".to_vec(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::caret(0),
+                content: b"unsaved legacy text".to_vec(),
+            },
+            RecoveryLineageGeneration::new(1),
+            Some(ancestor.instance_id()),
+        )
+        .expect("legacy successor");
         legacy_store.persist(&old).expect("persist legacy record");
         let old_bytes = fs::read(legacy_store.record_path(old.instance_id())).expect("old bytes");
         let RecoveryStartupDisposition::Offer(old_record) = validate_recovery_record(&old_bytes)
@@ -1438,23 +1463,71 @@ mod tests {
         session.defer_startup_offers();
         assert!(session.active_offer().is_none());
         assert!(session.has_pending_legacy_cleanup());
-        assert_eq!(recovery_record_count(&legacy_store), 1);
+        assert_eq!(recovery_record_count(&legacy_store), 2);
         let busy_old_copy = legacy_store
             .try_hold_live_lease(old.instance_id())
             .expect("hold old copy busy");
         assert!(!session.discard_pending_legacy_copy());
         assert!(session.has_cleanup_failure());
         assert!(session.has_pending_legacy_cleanup());
-        assert_eq!(recovery_record_count(&legacy_store), 1);
+        assert_eq!(recovery_record_count(&legacy_store), 2);
         session.on_saved_clean(document.revision());
         assert!(session.has_pending_legacy_cleanup());
-        assert_eq!(recovery_record_count(&legacy_store), 1);
+        assert_eq!(recovery_record_count(&legacy_store), 2);
         drop(busy_old_copy);
         fs::remove_file(legacy_store.live_path(old.instance_id())).expect("remove test lease");
+        let busy_ancestor = legacy_store
+            .try_hold_live_lease(ancestor.instance_id())
+            .expect("hold ancestor busy");
+        assert!(!session.discard_pending_legacy_copy());
+        assert!(session.has_pending_legacy_cleanup());
+        assert_eq!(recovery_record_count(&legacy_store), 2);
+        drop(busy_ancestor);
+        fs::remove_file(legacy_store.live_path(ancestor.instance_id()))
+            .expect("remove ancestor test lease");
         assert!(session.discard_pending_legacy_copy());
         assert!(!session.has_pending_legacy_cleanup());
         assert!(!session.has_cleanup_failure());
         assert_eq!(recovery_record_count(&legacy_store), 0);
+    }
+
+    #[test]
+    fn generation_gap_does_not_label_a_roaming_offer_as_obsolete() {
+        let directory = tempdir().expect("tempdir");
+        let local_state = directory.path().join("local");
+        let legacy_state = directory.path().join("legacy");
+        let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
+        let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
+        let old = sample_snapshot(81, b"independent roaming work");
+        legacy_store.persist(&old).expect("persist roaming record");
+        let local = RecoverySnapshot::try_new_with_lineage(
+            RecoverySnapshotParts {
+                document_id: old.document_id(),
+                instance_id: RecoveryInstanceId::new([82; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(3),
+                updated_at: RecoveryWallTime::from_unix_millis(4),
+                original_path: b"notes.txt".to_vec(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::caret(0),
+                content: b"independent local work".to_vec(),
+            },
+            RecoveryLineageGeneration::new(2),
+            Some(old.instance_id()),
+        )
+        .expect("independent local record");
+        local_store.persist(&local).expect("persist local record");
+
+        let mut session =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        let (document, _) = session
+            .restore_active_offer()
+            .expect("restore local record");
+        assert_eq!(String::from(document.rope()), "independent local work");
+        session.defer_startup_offers();
+        assert!(!session.has_pending_legacy_cleanup());
+        assert_eq!(recovery_record_count(&legacy_store), 1);
     }
 
     #[test]

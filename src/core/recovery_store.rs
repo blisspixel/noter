@@ -86,6 +86,16 @@ impl RecoveryRecordHandle {
     pub const fn metadata(&self) -> &ValidatedRecoveryMetadata {
         &self.metadata
     }
+
+    fn try_clone_for_cleanup(&self) -> io::Result<Self> {
+        Ok(Self {
+            path: self.path.clone(),
+            metadata: self.metadata.clone(),
+            file: self.file.try_clone()?,
+            facts: self.facts,
+            encoded_len: self.encoded_len,
+        })
+    }
 }
 
 /// One bounded restore offer and exact causally superseded artifacts.
@@ -97,6 +107,24 @@ pub struct RecoveryOffer {
 }
 
 impl RecoveryOffer {
+    /// Clones the exact open handles so a failed deletion can retain the
+    /// original offer for an in-session retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if any handle cannot be cloned.
+    pub fn try_clone_for_cleanup(&self) -> io::Result<Self> {
+        Ok(Self {
+            primary: Box::new(self.primary.try_clone_for_cleanup()?),
+            superseded: self
+                .superseded
+                .iter()
+                .map(RecoveryRecordHandle::try_clone_for_cleanup)
+                .collect::<io::Result<Vec<_>>>()?,
+            superseded_omitted: self.superseded_omitted,
+        })
+    }
+
     /// Returns the primary exact artifact selected for restore.
     pub const fn primary(&self) -> &RecoveryRecordHandle {
         &self.primary
@@ -1496,17 +1524,21 @@ fn consider_offer(
         return;
     }
 
-    while let Some(index) = offers
-        .iter()
-        .position(|offer| directly_supersedes(&candidate.primary.metadata, &offer.primary.metadata))
-    {
+    while let Some(index) = offers.iter().position(|offer| {
+        candidate
+            .primary
+            .metadata
+            .directly_supersedes(&offer.primary.metadata)
+    }) {
         let older = offers.remove(index);
         absorb_superseded(&mut candidate, older);
     }
-    if let Some(index) = offers
-        .iter()
-        .position(|offer| directly_supersedes(&offer.primary.metadata, &candidate.primary.metadata))
-    {
+    if let Some(index) = offers.iter().position(|offer| {
+        offer
+            .primary
+            .metadata
+            .directly_supersedes(&candidate.primary.metadata)
+    }) {
         absorb_superseded(&mut offers[index], candidate);
         return;
     }
@@ -1547,20 +1579,6 @@ fn absorb_superseded(target: &mut RecoveryOffer, older: RecoveryOffer) {
     }
     push_superseded(target, *older.primary);
     target.superseded_omitted |= older.superseded_omitted;
-}
-
-fn directly_supersedes(
-    candidate: &ValidatedRecoveryMetadata,
-    current: &ValidatedRecoveryMetadata,
-) -> bool {
-    candidate.schema_version() == RECOVERY_SCHEMA_VERSION
-        && current.schema_version() == RECOVERY_SCHEMA_VERSION
-        && candidate.document_id() == current.document_id()
-        && candidate.predecessor_instance() == Some(current.instance_id())
-        && current
-            .lineage_generation()
-            .and_then(super::recovery::RecoveryLineageGeneration::checked_next)
-            == candidate.lineage_generation()
 }
 
 fn offer_sort_key(offer: &RecoveryOffer) -> ([u8; 16], [u8; 16], &Path) {

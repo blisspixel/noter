@@ -395,8 +395,8 @@ path component that would have made first-launch recovery unavailable.
 
 The current local tree passes focused dual-root tests, all application-package
 tests, full-workspace Clippy, formatting, Rustdoc, documentation links, and a
-Linux-target binary check. Application-package line coverage is 93.74 percent;
-the quality-standard UI-excluded application figure is 92.55 percent. The
+Linux-target binary check. Application-package line coverage is 93.77 percent;
+the quality-standard UI-excluded application figure is 92.54 percent. The
 full Windows workspace test command passed its application and integration
 tests but its unchanged Cloud Files registration fixture failed with access
 denied `0x80070005`; one platform-package retry reproduced that result. The
@@ -418,3 +418,14 @@ native screenshots were rendered and reviewed in five themes and views. The
 capture script now uses an isolated
 private QA state root; its previous run showed a recovery-unavailable banner
 because the script's temporary root inherited broad permissions.
+
+Fresh review of the local remediation found two additional failure paths.
+A consumed cleanup offer hid the retry action after exact deletion failed;
+cleanup now uses cloned open handles and retains the original offer until
+deletion succeeds. A cross-root match based only on IDs could label a valid
+generation-gap record as obsolete; both roots now use the same schema-v2,
+next-generation predicate. Focused tests cover busy predecessor cleanup and
+the generation gap. The focused library mutation campaign caught all 12
+generated mutants, including the unrelated scheduler mutant included by the
+repository's mutation configuration. The broader native race matrix remains
+open.

@@ -252,6 +252,19 @@ impl ValidatedRecoveryMetadata {
         self.predecessor_instance
     }
 
+    /// Whether this schema-v2 record is the immediate successor of another
+    /// schema-v2 record. Legacy records remain separate offers.
+    pub fn directly_supersedes(&self, predecessor: &Self) -> bool {
+        self.schema_version == RECOVERY_SCHEMA_VERSION
+            && predecessor.schema_version == RECOVERY_SCHEMA_VERSION
+            && self.document_id == predecessor.document_id
+            && self.predecessor_instance == Some(predecessor.instance_id)
+            && predecessor
+                .lineage_generation
+                .and_then(RecoveryLineageGeneration::checked_next)
+                == self.lineage_generation
+    }
+
     /// Returns the content revision captured in the record.
     pub const fn revision(&self) -> Revision {
         self.revision
@@ -1626,6 +1639,82 @@ mod tests {
             legacy_successor.predecessor_instance(),
             Some(legacy_record.instance_id())
         );
+    }
+
+    #[test]
+    fn directly_supersedes_requires_two_v2_records_and_exact_next_generation() {
+        let parent = sample_snapshot(b"parent", Selection::caret(0));
+        let RecoveryStartupDisposition::Offer(parent_record) =
+            validate_recovery_record(&parent.encode())
+        else {
+            panic!("parent record");
+        };
+        let make_child = |document_id, instance_id, generation, predecessor_instance| {
+            let snapshot = RecoverySnapshot::try_new_with_lineage(
+                RecoverySnapshotParts {
+                    document_id,
+                    instance_id,
+                    revision: Revision::new(1),
+                    created_at: RecoveryWallTime::from_unix_millis(3),
+                    updated_at: RecoveryWallTime::from_unix_millis(4),
+                    original_path: Vec::new(),
+                    bom: Bom::Absent,
+                    encoding: Encoding::Utf8,
+                    selection: Selection::caret(0),
+                    content: b"child".to_vec(),
+                },
+                RecoveryLineageGeneration::new(generation),
+                Some(predecessor_instance),
+            )
+            .expect("child snapshot");
+            let RecoveryStartupDisposition::Offer(record) =
+                validate_recovery_record(&snapshot.encode())
+            else {
+                panic!("child record");
+            };
+            record.metadata().clone()
+        };
+        let direct = make_child(
+            parent.document_id(),
+            RecoveryInstanceId::new([3; 16]),
+            1,
+            parent.instance_id(),
+        );
+        assert!(direct.directly_supersedes(parent_record.metadata()));
+        assert!(!parent_record.metadata().directly_supersedes(&direct));
+        assert!(
+            !make_child(
+                parent.document_id(),
+                RecoveryInstanceId::new([4; 16]),
+                2,
+                parent.instance_id(),
+            )
+            .directly_supersedes(parent_record.metadata())
+        );
+        assert!(
+            !make_child(
+                RecoveryDocumentId::new([9; 16]),
+                RecoveryInstanceId::new([5; 16]),
+                1,
+                parent.instance_id(),
+            )
+            .directly_supersedes(parent_record.metadata())
+        );
+        assert!(
+            !make_child(
+                parent.document_id(),
+                RecoveryInstanceId::new([6; 16]),
+                1,
+                RecoveryInstanceId::new([7; 16]),
+            )
+            .directly_supersedes(parent_record.metadata())
+        );
+        let RecoveryStartupDisposition::Offer(legacy_parent) =
+            validate_recovery_record(&encode_v1(&parent))
+        else {
+            panic!("legacy parent record");
+        };
+        assert!(!direct.directly_supersedes(legacy_parent.metadata()));
     }
 
     #[test]
