@@ -706,3 +706,15 @@ and 92.72 percent with the specified UI files excluded, above the 80 and
 90 percent thresholds. The five regenerated screenshots were byte-identical
 to the approved assets; only their source-input digest changed. Hosted
 exact-head CI remains unverified.
+
+## 2026-09-28 UTC Windows native-fixture security diff scan
+
+Formal security diff scan `09705b5d-aba6-466b-a0bb-c2bcf9bb5106` reviewed
+the immutable `3fd9b6a..2b10037` range. Both changed source-like files were
+accounted for: the Windows recovery namespace tests and the README screenshot
+freshness checker. The sealed report and SARIF are in the scan's managed state
+directory. It found zero reportable vulnerabilities. This is changed-code
+coverage, not a repository-wide audit. In isolated local reruns the existing
+Cloud Files registration fixture sometimes returned access denied before its
+assertions, while the exact all-targets suite passed on `2b10037`. Hosted
+exact-head CI remains unverified.
