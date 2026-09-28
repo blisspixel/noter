@@ -395,10 +395,22 @@ path component that would have made first-launch recovery unavailable.
 
 The current local tree passes focused dual-root tests, all application-package
 tests, full-workspace Clippy, formatting, Rustdoc, documentation links, and a
-Linux-target binary check. Application-package line coverage is 93.77 percent;
-the quality-standard UI-excluded application figure is 92.53 percent. The
+Linux-target binary check. Application-package line coverage is 93.74 percent;
+the quality-standard UI-excluded application figure is 92.55 percent. The
 full Windows workspace test command passed its application and integration
 tests but its unchanged Cloud Files registration fixture failed with access
 denied `0x80070005`; one platform-package retry reproduced that result. The
 fixture remains enabled. Full-workspace coverage, focused mutation evidence,
-independent migration review, and hosted exact-head CI remain pending.
+and hosted exact-head CI remain pending.
+
+The independent migration diff review at `1b77e17..918e4c2` completed with
+one low-severity privacy finding, scan
+`0f2b883f-a6ac-4ebf-83f0-77e9cc8da37b`. A crash after persisting a local
+successor but before retiring its Roaming predecessor could leave the older
+copy hidden after the local offer was restored. The local remediation retains
+that exact older offer in the session and exposes an explicit Discard action.
+The focused test checks retention while the old record is busy and exact
+cleanup after the blocker is released. Fresh native screenshots were rendered
+and reviewed in five themes and views. The capture script now uses an isolated
+private QA state root; its previous run showed a recovery-unavailable banner
+because the script's temporary root inherited broad permissions.

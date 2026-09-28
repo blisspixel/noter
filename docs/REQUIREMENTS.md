@@ -177,7 +177,9 @@ Feature presence alone is not verification.
   separate from preferences in RoamingAppData. Existing recovery records in
   the former RoamingAppData location remain eligible for bounded startup review
   until explicitly restored or discarded; changing the default location must
-  never silently delete or hide them.
+  never silently delete or hide them. If an interrupted transfer leaves both
+  copies, restoring the validated local successor must expose an explicit
+  cleanup action for its older Roaming predecessor in that session.
 - **FR-063 Recovery point objective:** After the first edit or detection that
   the loaded clean revision was replaced externally, persist a valid recovery
   record after at most 15 seconds of continued activity and normally within 2

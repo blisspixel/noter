@@ -194,6 +194,7 @@ pub struct CrashRecoverySession {
     lineage_generation: RecoveryLineageGeneration,
     predecessor_instance: Option<RecoveryInstanceId>,
     startup_offers: Vec<StartupRecoveryOffer>,
+    pending_legacy_cleanup: Option<StartupRecoveryOffer>,
     active_offer_index: Option<usize>,
     quarantine_notices: Vec<String>,
     persist_failure: bool,
@@ -338,6 +339,7 @@ impl CrashRecoverySession {
             lineage_generation: RecoveryLineageGeneration::ROOT,
             predecessor_instance: None,
             startup_offers: Vec::new(),
+            pending_legacy_cleanup: None,
             active_offer_index: None,
             quarantine_notices: Vec::new(),
             persist_failure: false,
@@ -473,6 +475,42 @@ impl CrashRecoverySession {
             .filter(|offer| offer.is_open())
     }
 
+    /// Whether an older Roaming copy of the restored local record awaits an
+    /// explicit cleanup decision.
+    pub const fn has_pending_legacy_cleanup(&self) -> bool {
+        self.pending_legacy_cleanup.is_some()
+    }
+
+    /// Removes only the validated older Roaming copy after the user asks for it.
+    pub fn discard_pending_legacy_copy(&mut self) -> bool {
+        let (Some(store), Some(offer)) = (&self.legacy_store, &self.pending_legacy_cleanup) else {
+            return false;
+        };
+        let Ok(claim) = store.claim_offered_record(offer.artifact.primary()) else {
+            self.cleanup_failure = true;
+            return false;
+        };
+        if store
+            .load_claimed_record(offer.artifact.primary(), &claim)
+            .is_err()
+        {
+            self.cleanup_failure = true;
+            let _ = store.release_claim(claim);
+            return false;
+        }
+        let offer = self
+            .pending_legacy_cleanup
+            .take()
+            .expect("the offered copy remains present until cleanup");
+        let cleanup = cleanup_offer_artifacts(store, offer.artifact, &claim);
+        let release = store.release_claim(claim);
+        if cleanup.is_err() || release.is_err() {
+            self.cleanup_failure = true;
+            return false;
+        }
+        true
+    }
+
     /// Restores the active offer into an in-memory dirty document and selection.
     ///
     /// The offered instance record is removed only after the same bytes have
@@ -569,6 +607,16 @@ impl CrashRecoverySession {
         let restored_offer = self
             .take_offer_slot(index)
             .expect("the active recovery offer must remain present");
+        if !legacy {
+            let restored = record.metadata();
+            if let Some(position) = self.startup_offers.iter().position(|offer| {
+                offer.legacy
+                    && offer.metadata().document_id() == restored.document_id()
+                    && restored.predecessor_instance() == Some(offer.metadata().instance_id())
+            }) {
+                self.pending_legacy_cleanup = Some(self.startup_offers.remove(position));
+            }
+        }
         self.commit_fresh_identity(prepared, lineage_generation, predecessor_instance);
         let cleanup = cleanup_offer_artifacts(&source_store, restored_offer.artifact, &claim);
         let release = source_store.release_claim(claim);
@@ -1325,6 +1373,68 @@ mod tests {
 
         let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
         assert_eq!(recovery_record_count(&local_store), 1);
+        assert_eq!(recovery_record_count(&legacy_store), 0);
+    }
+
+    #[test]
+    fn interrupted_legacy_transfer_exposes_explicit_old_copy_cleanup() {
+        let directory = tempdir().expect("tempdir");
+        let local_state = directory.path().join("local");
+        let legacy_state = directory.path().join("legacy");
+        let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
+        let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
+        let old = sample_snapshot(81, b"unsaved legacy text");
+        legacy_store.persist(&old).expect("persist legacy record");
+        let old_bytes = fs::read(legacy_store.record_path(old.instance_id())).expect("old bytes");
+        let RecoveryStartupDisposition::Offer(old_record) = validate_recovery_record(&old_bytes)
+        else {
+            panic!("valid old record");
+        };
+        let successor = RecoverySnapshot::try_new_successor(
+            RecoverySnapshotParts {
+                document_id: old.document_id(),
+                instance_id: RecoveryInstanceId::new([82; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(3),
+                updated_at: RecoveryWallTime::from_unix_millis(4),
+                original_path: b"notes.txt".to_vec(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::caret(0),
+                content: b"unsaved legacy text".to_vec(),
+            },
+            old_record.metadata(),
+        )
+        .expect("successor");
+        local_store.persist(&successor).expect("persist successor");
+
+        let mut session =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        assert_eq!(
+            session
+                .active_offer()
+                .expect("local offer")
+                .metadata()
+                .instance_id(),
+            successor.instance_id()
+        );
+        let (document, _) = session.restore_active_offer().expect("restore local copy");
+        assert_eq!(String::from(document.rope()), "unsaved legacy text");
+        session.defer_startup_offers();
+        assert!(session.active_offer().is_none());
+        assert!(session.has_pending_legacy_cleanup());
+        assert_eq!(recovery_record_count(&legacy_store), 1);
+        let busy_old_copy = legacy_store
+            .try_hold_live_lease(old.instance_id())
+            .expect("hold old copy busy");
+        assert!(!session.discard_pending_legacy_copy());
+        assert!(session.has_cleanup_failure());
+        assert!(session.has_pending_legacy_cleanup());
+        assert_eq!(recovery_record_count(&legacy_store), 1);
+        drop(busy_old_copy);
+        fs::remove_file(legacy_store.live_path(old.instance_id())).expect("remove test lease");
+        assert!(session.discard_pending_legacy_copy());
+        assert!(!session.has_pending_legacy_cleanup());
         assert_eq!(recovery_record_count(&legacy_store), 0);
     }
 

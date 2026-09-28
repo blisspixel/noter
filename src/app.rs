@@ -3718,6 +3718,7 @@ impl NoterApp {
         self.show_crash_recovery_quarantine_notices(ui);
         self.show_crash_recovery_persist_failure(ui);
         self.show_crash_recovery_cleanup_failure(ui);
+        self.show_pending_legacy_recovery_cleanup(ui);
         self.show_save_recovery_notice(ui);
         let recovery_offer_open = self.crash_recovery.active_offer().is_some();
         let commands_enabled = !blocking_modal_at_start;
@@ -3915,6 +3916,23 @@ impl NoterApp {
                     if self.error_msg.as_deref() == Some(RECOVERY_CLEANUP_FAILURE_MESSAGE) {
                         self.error_msg = None;
                     }
+                }
+            });
+        });
+    }
+
+    fn show_pending_legacy_recovery_cleanup(&mut self, ui: &mut egui::Ui) {
+        if !self.crash_recovery.has_pending_legacy_cleanup() {
+            return;
+        }
+        egui::Panel::top("legacy_recovery_cleanup").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "An older RoamingAppData recovery copy remains from a restored document.",
+                );
+                if ui.button("Discard older copy").clicked() {
+                    self.crash_recovery.discard_pending_legacy_copy();
                 }
             });
         });
