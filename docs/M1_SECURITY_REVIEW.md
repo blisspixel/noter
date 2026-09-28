@@ -557,3 +557,20 @@ mutation scope and exclusions were not changed; its full hosted gate remains
 unverified. The post-refactor runnable suite passes 93.18 percent
 whole-workspace and 91.64 percent UI-excluded line coverage. The exact
 all-targets test still stops at that Cloud Files fixture.
+
+## 2026-09-28 UTC unsafe Windows recovery entry names
+
+A native NTFS fixture creates an entry with a wide character and a trailing
+period through a verbatim Windows path next to a valid recovery snapshot. The
+prior startup scan aborted with `InvalidInput` when its bound entry validator
+refused the ambiguous name, suppressing the valid restore offer for that
+session. The scan now retains the unsafe entry, reports a fixed manual-review
+notice without its spelling, and continues to offer the valid snapshot. The
+fixture fails before the change and passes afterward. No record bytes are
+read or deleted through the unsafe name. An independent fresh-context review
+found no concrete data-safety issue in the diff. The runnable Windows suite,
+format, Clippy, Rustdoc, documentation links, script tests, Ruff, screenshot
+assets, offline dependency checks, and cached advisory audit pass. Runnable
+coverage is 93.20 percent whole-workspace and 91.70 percent UI-excluded.
+The exact all-targets Windows test still fails only at Cloud Files fixture
+registration (`0x80070005`); full exact-head CI remains unverified.

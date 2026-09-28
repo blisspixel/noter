@@ -949,6 +949,21 @@ impl RecoveryStore {
                 break;
             }
             let path = next?;
+            #[cfg(windows)]
+            if path
+                .file_name()
+                .is_none_or(|name| WindowsRecoveryEntryName::new(name).is_err())
+            {
+                retain_quarantine_result(
+                    &mut scan,
+                    retained_quarantine_entry(
+                        path,
+                        RecoveryQuarantineReason::UnsafeName,
+                        "Noter left this entry unchanged because its Windows name cannot be opened unambiguously.",
+                    ),
+                );
+                continue;
+            }
             let Some(is_file) = startup_entry_is_file(self, &path)? else {
                 continue;
             };
@@ -6003,6 +6018,39 @@ mod tests {
         assert!(scan.is_empty());
         assert!(directory.is_dir());
         assert!(store.quarantine_dir().read_dir()?.next().is_none());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_scan_retains_an_unsafe_windows_name_without_hiding_valid_offers() -> io::Result<()> {
+        let dir = tempdir()?;
+        let store = RecoveryStore::open(dir.path())?;
+        let snapshot = sample_snapshot(3, b"recoverable text");
+        store.persist(&snapshot)?;
+
+        let unsafe_path = store.records_dir().join("unsafe.漢.");
+        let verbatim = PathBuf::from(format!(r"\\?\{}", unsafe_path.display()));
+        fs::write(&verbatim, b"untrusted neighbor")?;
+        let scan = store.scan_startup();
+        assert_eq!(fs::read(&verbatim)?, b"untrusted neighbor");
+        fs::remove_file(&verbatim)?;
+        let scan = scan?;
+
+        assert!(scan.iter().any(|entry| matches!(
+            entry.disposition(),
+            RecoveryScanDisposition::Offer(offer)
+                if offer.metadata().instance_id() == snapshot.instance_id()
+        )));
+        assert!(scan.iter().any(|entry| {
+            matches!(
+                entry.disposition(),
+                RecoveryScanDisposition::Quarantine(RecoveryQuarantineReason::UnsafeName)
+            ) && entry.path() == unsafe_path
+                && entry
+                    .quarantine_error()
+                    .is_some_and(|message| !message.contains("unsafe.漢."))
+        }));
         Ok(())
     }
 

@@ -158,6 +158,8 @@ impl RecoveryClock {
 /// Why a loaded recovery artifact cannot be offered for restore.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum RecoveryQuarantineReason {
+    /// The entry name cannot be opened without Windows pathname ambiguity.
+    UnsafeName,
     /// The file does not begin with the recovery magic.
     InvalidMagic,
     /// The schema version is newer or unsupported.
@@ -186,6 +188,9 @@ impl RecoveryQuarantineReason {
     /// Returns a short user-facing explanation without paths or content.
     pub const fn description(self) -> &'static str {
         match self {
+            Self::UnsafeName => {
+                "The recovery entry has an unsafe pathname spelling and was retained for manual review."
+            }
             Self::InvalidMagic => "The recovery file is not a Noter recovery record.",
             Self::UnknownSchema => "The recovery record uses an unsupported schema version.",
             Self::Truncated => "The recovery record is incomplete or truncated.",
@@ -2805,6 +2810,7 @@ mod tests {
     #[test]
     fn quarantine_reasons_have_nonempty_descriptions() {
         for reason in [
+            RecoveryQuarantineReason::UnsafeName,
             RecoveryQuarantineReason::InvalidMagic,
             RecoveryQuarantineReason::UnknownSchema,
             RecoveryQuarantineReason::Truncated,

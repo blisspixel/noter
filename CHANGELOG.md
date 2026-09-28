@@ -8,6 +8,10 @@ that candidate is frozen for publication.
 
 ### Security
 
+- Keep Windows startup recovery review moving when a private records folder
+  contains an entry with an ambiguous Windows name. Retain and report the
+  unsafe entry without exposing its spelling, while still offering valid
+  recovery snapshots.
 - Classify every opened Windows recovery directory's backing volume from its
   handle and refuse remote, removable, portable, read-only, WebDAV, CSV,
   virtual, or non-disk devices before recovery writes. This limits a

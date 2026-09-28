@@ -623,6 +623,8 @@ from the opened stage, and lease or quarantine creation use those handles.
 Windows cleanup deletes an opened file after any required identity check, so a
 rebound pathname cannot delete the replacement. Startup and owned-artifact
 enumeration run through the held directory handle with their entry limits.
+Startup retains and reports an ambiguously named Windows entry without
+aborting review of other valid records.
 Replacement stage, destination, and backup observations open relative to the
 held records directory. The replacement path now moves the held predecessor to
 a reserved backup, syncs, installs the held stage exclusively, syncs, verifies
