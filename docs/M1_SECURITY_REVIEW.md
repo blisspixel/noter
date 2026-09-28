@@ -447,3 +447,8 @@ suite passed 75 tests and stopped at the unchanged Cloud Files fixture:
 threshold was disabled. Application-package line coverage is 93.76 percent;
 the UI-excluded application figure is 92.61 percent. Hosted exact-head CI and
 the native fixture result remain open.
+
+The formal security diff scan for `8a09f38..efc97e9` reviewed all four changed
+source files and found no new reportable vulnerability. Scan ID:
+`4c6ba1b5-5a36-4a03-afd5-6adda90efb69`. This is diff-scoped evidence, not
+a completed repository-wide audit or a substitute for hosted CI.
