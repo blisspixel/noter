@@ -202,6 +202,7 @@ pub struct CrashRecoverySession {
     predecessor_instance: Option<RecoveryInstanceId>,
     startup_offers: Vec<StartupRecoveryOffer>,
     pending_legacy_cleanup: Option<StartupRecoveryOffer>,
+    pending_legacy_review: Option<StartupRecoveryOffer>,
     active_offer_index: Option<usize>,
     quarantine_notices: Vec<String>,
     persist_failure: bool,
@@ -252,7 +253,7 @@ impl CrashRecoverySession {
     }
 
     #[cfg(any(windows, test))]
-    fn open_with_legacy_state(local_state: &Path, legacy_state: Option<&Path>) -> Self {
+    pub(crate) fn open_with_legacy_state(local_state: &Path, legacy_state: Option<&Path>) -> Self {
         let stores = RecoveryStore::open_in_state(local_state).and_then(|store| {
             let legacy_store = legacy_state
                 .filter(|path| *path != local_state)
@@ -348,6 +349,7 @@ impl CrashRecoverySession {
             predecessor_instance: None,
             startup_offers: Vec::new(),
             pending_legacy_cleanup: None,
+            pending_legacy_review: None,
             active_offer_index: None,
             quarantine_notices: Vec::new(),
             persist_failure: false,
@@ -495,6 +497,12 @@ impl CrashRecoverySession {
         self.pending_legacy_cleanup.is_some()
     }
 
+    /// Whether a separate Roaming offer awaits review after the current
+    /// restored document is saved.
+    pub const fn has_pending_legacy_review(&self) -> bool {
+        self.pending_legacy_review.is_some()
+    }
+
     /// Removes only the validated older Roaming copy after the user asks for it.
     pub fn discard_pending_legacy_copy(&mut self) -> bool {
         let (Some(store), Some(offer)) = (&self.legacy_store, &self.pending_legacy_cleanup) else {
@@ -628,20 +636,30 @@ impl CrashRecoverySession {
             .take_offer_slot(index)
             .expect("the active recovery offer must remain present");
         if !legacy {
-            let restored = record.metadata();
-            if let Some(position) = self
-                .startup_offers
-                .iter()
-                .position(|offer| offer.legacy && restored.directly_supersedes(offer.metadata()))
-            {
-                self.pending_legacy_cleanup = Some(self.startup_offers.remove(position));
-            }
+            self.hold_related_legacy_offers(record.metadata());
         }
         self.commit_fresh_identity(prepared, lineage_generation, predecessor_instance);
         let cleanup = cleanup_offer_artifacts(&source_store, restored_offer.artifact, &claim);
         let release = source_store.release_claim(claim);
         self.cleanup_failure |= cleanup.is_err() || release.is_err();
         Ok((document, selection))
+    }
+
+    fn hold_related_legacy_offers(&mut self, restored: &ValidatedRecoveryMetadata) {
+        if let Some(position) = self
+            .startup_offers
+            .iter()
+            .position(|offer| offer.legacy && restored.directly_supersedes(offer.metadata()))
+        {
+            self.pending_legacy_cleanup = Some(self.startup_offers.remove(position));
+        }
+        if let Some(position) = self.startup_offers.iter().position(|offer| {
+            offer.legacy
+                && offer.metadata().document_id() == restored.document_id()
+                && restored.predecessor_instance() == Some(offer.metadata().instance_id())
+        }) {
+            self.pending_legacy_review = Some(self.startup_offers.remove(position));
+        }
     }
 
     /// Discards the active startup offer and deletes its on-disk record.
@@ -902,7 +920,7 @@ impl CrashRecoverySession {
         }
     }
 
-    /// Records a successful Save and deletes the owned recovery record.
+    /// Deletes the owned recovery record when the current document is clean.
     pub fn on_saved_clean(&mut self, revision: Revision) {
         if self.unavailable || self.store.is_none() {
             return;
@@ -916,6 +934,18 @@ impl CrashRecoverySession {
         let worker_fenced = self.fence_persist_worker();
         self.apply_schedule_effect(effect, None);
         self.persist_failure = !worker_fenced;
+    }
+
+    /// Offers an incomparable legacy copy once Save has protected current work.
+    pub fn on_committed_save(&mut self, revision: Revision) {
+        self.on_saved_clean(revision);
+        if self.unavailable || self.store.is_none() {
+            return;
+        }
+        if let Some(offer) = self.pending_legacy_review.take() {
+            self.startup_offers.push(offer);
+            self.active_offer_index = Some(self.startup_offers.len() - 1);
+        }
     }
 
     /// Records an explicit Discard and deletes the owned recovery record.
@@ -1327,10 +1357,12 @@ fn truncate_for_ui(text: &str, max_bytes: usize) -> String {
 mod tests {
     use super::*;
     use noter::core::recovery::{
-        RecoveryDocumentId, RecoveryInstanceId, RecoverySnapshot, RecoverySnapshotParts,
-        RecoveryStartupDisposition, RecoveryWallTime, validate_recovery_record,
+        RECOVERY_MAGIC, RecoveryDocumentId, RecoveryInstanceId, RecoverySnapshot,
+        RecoverySnapshotParts, RecoveryStartupDisposition, RecoveryWallTime,
+        validate_recovery_record,
     };
     use noter::core::revision::Revision;
+    use noter::core::save::ContentFingerprint;
     use noter::core::text_format::{Bom, Encoding};
     use tempfile::tempdir;
 
@@ -1371,6 +1403,43 @@ mod tests {
             content: content.to_vec(),
         })
         .expect("snapshot")
+    }
+
+    fn encode_v1(snapshot: &RecoverySnapshot) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(RECOVERY_MAGIC);
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&snapshot.document_id().as_bytes());
+        bytes.extend_from_slice(&snapshot.instance_id().as_bytes());
+        bytes.extend_from_slice(&snapshot.revision().get().to_le_bytes());
+        bytes.extend_from_slice(&snapshot.created_at().unix_millis().to_le_bytes());
+        bytes.extend_from_slice(&snapshot.updated_at().unix_millis().to_le_bytes());
+        bytes.extend_from_slice(
+            &u32::try_from(snapshot.original_path().len())
+                .expect("fixture path length")
+                .to_le_bytes(),
+        );
+        bytes.push(u8::from(snapshot.bom() == Bom::Utf8));
+        bytes.push(0);
+        bytes.extend_from_slice(
+            &u64::try_from(snapshot.selection().anchor())
+                .expect("fixture selection")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(
+            &u64::try_from(snapshot.selection().active())
+                .expect("fixture selection")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(
+            &u64::try_from(snapshot.content().len())
+                .expect("fixture content length")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(ContentFingerprint::from_bytes(snapshot.content()).as_bytes());
+        bytes.extend_from_slice(snapshot.original_path());
+        bytes.extend_from_slice(snapshot.content());
+        bytes
     }
 
     #[test]
@@ -1527,6 +1596,70 @@ mod tests {
         assert_eq!(String::from(document.rope()), "independent local work");
         session.defer_startup_offers();
         assert!(!session.has_pending_legacy_cleanup());
+        assert!(session.has_pending_legacy_review());
+        assert_eq!(recovery_record_count(&legacy_store), 1);
+        session.on_saved_clean(document.revision());
+        assert!(session.has_pending_legacy_review());
+        assert!(session.active_offer().is_none());
+        session.on_committed_save(document.revision());
+        assert!(!session.has_pending_legacy_review());
+        let offer = session.active_offer().expect("separate Roaming review");
+        assert!(offer.legacy);
+        assert_eq!(offer.metadata().instance_id(), old.instance_id());
+        assert_eq!(recovery_record_count(&legacy_store), 1);
+        assert!(session.discard_active_offer());
+        assert_eq!(recovery_record_count(&legacy_store), 0);
+    }
+
+    #[test]
+    fn schema_v1_roaming_predecessor_is_offered_after_local_save() {
+        let directory = tempdir().expect("tempdir");
+        let local_state = directory.path().join("local");
+        let legacy_state = directory.path().join("legacy");
+        let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
+        let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
+        let old = sample_snapshot(86, b"older roaming work");
+        fs::write(legacy_store.record_path(old.instance_id()), encode_v1(&old))
+            .expect("persist v1 Roaming record");
+        let local = RecoverySnapshot::try_new_with_lineage(
+            RecoverySnapshotParts {
+                document_id: old.document_id(),
+                instance_id: RecoveryInstanceId::new([87; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(3),
+                updated_at: RecoveryWallTime::from_unix_millis(4),
+                original_path: b"notes.txt".to_vec(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::caret(0),
+                content: b"local unsaved work".to_vec(),
+            },
+            RecoveryLineageGeneration::new(1),
+            Some(old.instance_id()),
+        )
+        .expect("local successor");
+        local_store
+            .persist(&local)
+            .expect("persist local successor");
+
+        let mut session =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        let (document, _) = session
+            .restore_active_offer()
+            .expect("restore local successor");
+        assert_eq!(String::from(document.rope()), "local unsaved work");
+        session.defer_startup_offers();
+        assert!(!session.has_pending_legacy_cleanup());
+        assert!(session.has_pending_legacy_review());
+        assert_eq!(recovery_record_count(&legacy_store), 1);
+
+        session.on_committed_save(document.revision());
+        let offer = session.active_offer().expect("schema-v1 review offer");
+        assert!(offer.legacy);
+        assert_eq!(offer.metadata().schema_version(), 1);
+        assert_eq!(offer.metadata().instance_id(), old.instance_id());
+        assert_eq!(recovery_record_count(&legacy_store), 1);
+        session.defer_startup_offers();
         assert_eq!(recovery_record_count(&legacy_store), 1);
     }
 

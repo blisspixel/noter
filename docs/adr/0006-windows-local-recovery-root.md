@@ -38,7 +38,10 @@ and the old legacy offer. If startup finds a schema-v2 predecessor link with
 exactly the next generation, restoring the local successor keeps the older
 Roaming copy available for an explicit cleanup action in the current editor
 session. Incomparable records, including legacy schema-v1 records, remain
-separate offers. A failed exact cleanup retains its offer for retry. The old
+separate offers. After the local document is successfully saved, a linked but
+incomparable Roaming offer is presented through the ordinary Restore / Later /
+Discard review. This waits until current work is safe before another Restore
+can replace it. A failed exact cleanup retains its offer for retry. The old
 copy is never deleted from metadata alone. Each root has its own bounded
 startup scan, so a dual-root launch can review up to twice one root's limits
 while still leaving overflow untouched. LocalAppData is the Windows nonroaming

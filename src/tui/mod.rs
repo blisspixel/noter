@@ -780,7 +780,10 @@ impl TuiSession {
                 ..
             }) => {
                 let warning_count = warnings.cleanup().len() + warnings.durability().len();
-                self.sync_recovery();
+                self.recovery.on_committed_save(self.document.revision());
+                if self.recovery.active_offer().is_some() {
+                    self.prompt = PromptMode::RecoveryOffer;
+                }
                 if warning_count == 0 {
                     self.set_status(format!("Wrote {} bytes", observation.length()));
                 } else {
@@ -2138,6 +2141,13 @@ fn trigger_exit(session: &mut TuiSession) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use noter::core::recovery::{
+        RecoveryDocumentId, RecoveryInstanceId, RecoveryLineageGeneration, RecoverySnapshot,
+        RecoverySnapshotParts, RecoveryWallTime,
+    };
+    use noter::core::recovery_store::RecoveryStore;
+    use noter::core::revision::Revision;
+    use noter::core::text_format::{Bom, Encoding};
 
     #[cfg(unix)]
     #[test]
@@ -3084,6 +3094,70 @@ mod tests {
             untitled_with_store(store.path()).prompt,
             PromptMode::RecoveryOffer
         );
+    }
+
+    #[test]
+    fn saving_a_restored_local_copy_offers_a_separate_roaming_copy() {
+        let root = tempfile::tempdir().expect("state root");
+        let local_state = root.path().join("local");
+        let legacy_state = root.path().join("legacy");
+        let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
+        let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
+        let parts = |instance, created_at, updated_at, content: &[u8]| RecoverySnapshotParts {
+            document_id: RecoveryDocumentId::new([91; 16]),
+            instance_id: RecoveryInstanceId::new([instance; 16]),
+            revision: Revision::new(1),
+            created_at: RecoveryWallTime::from_unix_millis(created_at),
+            updated_at: RecoveryWallTime::from_unix_millis(updated_at),
+            original_path: b"notes.txt".to_vec(),
+            bom: Bom::Absent,
+            encoding: Encoding::Utf8,
+            selection: Selection::caret(0),
+            content: content.to_vec(),
+        };
+        let old =
+            RecoverySnapshot::try_new(parts(91, 1, 2, b"roaming work")).expect("legacy snapshot");
+        legacy_store.persist(&old).expect("legacy record");
+        let local = RecoverySnapshot::try_new_with_lineage(
+            parts(92, 3, 4, b"local work"),
+            RecoveryLineageGeneration::new(2),
+            Some(old.instance_id()),
+        )
+        .expect("generation-gap successor");
+        local_store.persist(&local).expect("local record");
+
+        let recovery =
+            CrashRecoverySession::open_with_legacy_state(&local_state, Some(&legacy_state));
+        let mut session = TuiSession::new(&LaunchOptions::default(), recovery).expect("session");
+        assert_eq!(session.prompt, PromptMode::RecoveryOffer);
+        key(&mut session, TuiKey::Char('r'));
+        assert_eq!(session.text(), "local work");
+        assert_eq!(session.prompt, PromptMode::None);
+        assert!(session.recovery.has_pending_legacy_review());
+
+        key(&mut session, TuiKey::Ctrl('s'));
+        assert_eq!(session.prompt, PromptMode::SaveAs);
+        let destination = root.path().join("saved.txt");
+        type_text(&mut session, &destination.to_string_lossy());
+        key(&mut session, TuiKey::Enter);
+        assert_eq!(session.prompt, PromptMode::RecoveryOffer);
+        assert!(!session.document.is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(&destination).expect("saved document"),
+            "local work"
+        );
+        assert_eq!(
+            session
+                .recovery
+                .active_offer()
+                .expect("Roaming review")
+                .metadata()
+                .instance_id(),
+            old.instance_id()
+        );
+        key(&mut session, TuiKey::Char('l'));
+        assert_eq!(session.prompt, PromptMode::None);
+        assert!(legacy_store.record_path(old.instance_id()).exists());
     }
 
     #[test]

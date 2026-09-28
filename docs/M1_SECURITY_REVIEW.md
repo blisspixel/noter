@@ -428,6 +428,22 @@ next-generation predicate. Focused tests cover busy predecessor cleanup and
 the generation gap. The focused library mutation campaign caught all 12
 generated mutants, including the unrelated scheduler mutant included by the
 repository's mutation configuration. The broader native race matrix remains
-open. Schema-v1 records remain separate offers under the core lineage rule;
-the migration's in-session review requirement for an interrupted v1 transfer
-is not yet met.
+open. Schema-v1 and generation-gap records remain separate under the core
+lineage rule. The local follow-up now retains a linked incomparable Roaming
+offer in the current session and presents ordinary Restore / Later / Discard
+review only after a committed Save protects the restored local document.
+Focused tests verify both record forms, retention before Save, and later
+review without deletion. Independent review found that the terminal save path
+did not activate the deferred offer; its committed-save transition now does,
+with a TUI test that saves a restored local document and reviews the separate
+Roaming record. This does not prove a v1 record is causally older;
+that uncertainty is why it is reviewed separately instead of receiving the
+older-copy cleanup action.
+
+The latest local full-workspace Windows test run passed 369 library tests, 562
+application tests, and the application integration suites. The native platform
+suite passed 75 tests and stopped at the unchanged Cloud Files fixture:
+`CfRegisterSyncRoot` returned `0x80070005` in this environment. No test or
+threshold was disabled. Application-package line coverage is 93.76 percent;
+the UI-excluded application figure is 92.61 percent. Hosted exact-head CI and
+the native fixture result remain open.

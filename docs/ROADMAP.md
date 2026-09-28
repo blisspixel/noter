@@ -659,8 +659,11 @@ existing legacy recovery root through the verified namespace, reviews both
 roots, restores legacy offers by durably persisting a successor locally before
 deleting the old record, and refuses recovery if the legacy root is invalid.
 An interrupted schema-v2 transfer's older Roaming copy remains available for
-explicit cleanup after its local successor is restored. Schema-v1 records
-remain separate offers; in-session review after a local Restore is still open.
+explicit cleanup after its local successor is restored. Schema-v1 and
+generation-gap Roaming records remain separate offers and are presented for
+ordinary Restore / Later / Discard review after the restored local document
+is successfully saved; they are never classified as obsolete from an ID link
+alone.
 Focused dual-root tests and application-package coverage pass; full-workspace
 native, coverage, mutation, and hosted exact-head evidence for this migration
 remain pending. See

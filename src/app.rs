@@ -991,12 +991,14 @@ impl NoterApp {
         self.error_msg = match result {
             Ok(SaveOutcome::Committed { ref warnings, .. }) if warnings.is_empty() => {
                 self.reset_external_conflict_state();
-                self.crash_recovery.on_saved_clean(self.document.revision());
+                self.crash_recovery
+                    .on_committed_save(self.document.revision());
                 None
             }
             Ok(SaveOutcome::Committed { warnings, .. }) => {
                 self.reset_external_conflict_state();
-                self.crash_recovery.on_saved_clean(self.document.revision());
+                self.crash_recovery
+                    .on_committed_save(self.document.revision());
                 let mut details: Vec<String> =
                     warnings.cleanup().iter().map(ToString::to_string).collect();
                 details.extend(warnings.durability().iter().map(ToString::to_string));
@@ -3719,6 +3721,7 @@ impl NoterApp {
         self.show_crash_recovery_persist_failure(ui);
         self.show_crash_recovery_cleanup_failure(ui);
         self.show_pending_legacy_recovery_cleanup(ui);
+        self.show_pending_legacy_recovery_review(ui);
         self.show_save_recovery_notice(ui);
         let recovery_offer_open = self.crash_recovery.active_offer().is_some();
         let commands_enabled = !blocking_modal_at_start;
@@ -3939,6 +3942,18 @@ impl NoterApp {
                     self.error_msg = None;
                 }
             });
+        });
+    }
+
+    fn show_pending_legacy_recovery_review(&self, ui: &mut egui::Ui) {
+        if !self.crash_recovery.has_pending_legacy_review() {
+            return;
+        }
+        egui::Panel::top("legacy_recovery_review").show(ui, |ui| {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "A separate RoamingAppData recovery copy needs review after you Save this document.",
+            );
         });
     }
 

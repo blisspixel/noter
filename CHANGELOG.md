@@ -16,7 +16,9 @@ that candidate is frozen for publication.
   explicit cleanup of its older Roaming predecessor. A successful retry clears
   that copy's cleanup warning without hiding another cleanup failure. Failed deletion
   retains the retry action, and only an exact schema-v2 successor relationship
-  labels a Roaming record as its older copy.
+  labels a Roaming record as its older copy. A linked schema-v1 or generation-gap
+  Roaming record stays intact and gets a separate Restore / Later / Discard
+  review after the restored local document is saved.
 - Replace existing Windows recovery records through held stage and predecessor
   handles. Preserve a private backup across the first directory sync, install
   the new record exclusively, and retain available snapshots for startup
