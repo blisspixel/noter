@@ -98,7 +98,7 @@ trusted_install_directory() {
         [ "$owner" = "$current_uid" ] || [ "$owner" = 0 ] ||
             fail "install directory is owned by another user."
         if [ "$platform" = Darwin ]; then
-            listing=$(LC_ALL=C ls -Lde "$directory" 2>/dev/null) ||
+            listing=$(LC_ALL=C ls -Llde "$directory" 2>/dev/null) ||
                 fail "cannot inspect install directory permissions."
             acl_entries=$(printf '%s\n' "$listing" | sed '1d')
             if [ -n "$acl_entries" ] &&
@@ -106,7 +106,7 @@ trusted_install_directory() {
                 fail "install directory has an unsupported access control list."
             fi
         else
-            listing=$(LC_ALL=C ls -Ld "$directory" 2>/dev/null) ||
+            listing=$(LC_ALL=C ls -Lld "$directory" 2>/dev/null) ||
                 fail "cannot inspect install directory permissions."
             case "${listing%% *}" in
                 *+) fail "install directory has an unsupported access control list." ;;
