@@ -178,6 +178,19 @@ On X11, `libGL` (GLX) can stand in for `libEGL`. The session is Wayland when
 If one is missing, Noter names it with these packages and exits with status 1 instead of opening
 the window. The terminal interface (`noter --tui`) needs none of them.
 
+### Linux file chooser portal and desktop integration
+
+On Linux desktops, file Open and Save use the freedesktop file chooser portal or
+`zenity`. On environments such as Hyprland where `xdg-desktop-portal-hyprland`
+does not provide a `FileChooser` backend, install `xdg-desktop-portal-gtk` or
+`zenity`. Noter probes the portal bus before opening a dialog and reports the
+missing dependency instead of allowing the window to freeze.
+
+The Linux installer (`scripts/install.sh`) also installs an XDG desktop entry
+(`noter.desktop`) and SVG icon (`noter.svg`) under `$XDG_DATA_HOME`
+(`~/.local/share`), with `StartupWMClass=noter` matching the window's
+Wayland/X11 `app_id`.
+
 ## Command-line contract
 
 ```text
@@ -256,7 +269,7 @@ then verifies and replaces the executable at the selected install root.
 | `-Source <path>` | `--source <path>` | Build a different local Noter checkout |
 | `-Version <version>` | `--version <version>` | Download this release instead of the newest (binary installs only) |
 | `-InstallRoot <path>` | `--root <path>` | Install into `<path>/bin` |
-| `-Uninstall` | `--uninstall` | Remove the installed binary |
+| `-Uninstall` | `--uninstall` | Remove the installed binary (and Linux desktop files) |
 | `-Check` | `--check` | Validate the plan without installing |
 
 Examples:

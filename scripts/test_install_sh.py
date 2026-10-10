@@ -50,12 +50,16 @@ class ReleaseInstallerTests(unittest.TestCase):
             "sys.stdout.buffer.write(pathlib.Path(source).read_bytes())\n"
         )
         mock_curl.chmod(0o755)
+        self.data_home = self.root / "xdg-data"
+        self.data_home.mkdir(mode=0o700)
+        self.data_home.chmod(0o700)
         self.environment = os.environ.copy()
         self.environment.update(
             PATH=f"{mock_bin}{os.pathsep}{self.environment['PATH']}",
             TEST_ARCHIVE=str(archive),
             TEST_SIDECAR=str(sidecar),
             TEST_BIN_DIR=str(self.bin_dir),
+            XDG_DATA_HOME=str(self.data_home),
         )
 
     def install(self, root: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -209,11 +213,15 @@ class SourceInstallerTests(unittest.TestCase):
             "esac\n"
         )
         cargo.chmod(0o755)
+        self.data_home = self.root / "xdg-data"
+        self.data_home.mkdir(mode=0o700)
+        self.data_home.chmod(0o700)
         self.environment = os.environ.copy()
         self.environment.update(
             PATH=f"{mock_bin}{os.pathsep}{self.environment['PATH']}",
             TEST_SOURCE_BINARY=str(self.built),
             TEST_CARGO_ROOT_LOG=str(self.cargo_root_log),
+            XDG_DATA_HOME=str(self.data_home),
         )
 
     def install(self) -> subprocess.CompletedProcess[str]:
@@ -253,6 +261,136 @@ class SourceInstallerTests(unittest.TestCase):
         self.assertEqual(self.installed.read_bytes(), self.built.read_bytes())
         self.assertFalse(Path(self.cargo_root_log.read_text()).exists())
         self.assertFalse(list(self.bin_dir.glob(".noter.install.????????")))
+
+
+def embedded_heredoc(script: str, function_name: str) -> str:
+    signature = f"{function_name}() {{"
+    start = script.index(signature)
+    marker = script.index("<<'EOF'\n", start)
+    body = marker + len("<<'EOF'\n")
+    end = script.index("\nEOF\n", body)
+    return script[body : end + 1]
+
+
+class DesktopAssetTests(unittest.TestCase):
+    def test_installer_embeds_the_packaging_desktop_files(self) -> None:
+        script = Path(__file__).with_name("install.sh").read_text(encoding="utf-8")
+        root = Path(__file__).resolve().parents[1]
+        self.assertEqual(
+            embedded_heredoc(script, "desktop_template"),
+            (root / "packaging" / "linux" / "noter.desktop.in").read_text(
+                encoding="utf-8"
+            ),
+        )
+        self.assertEqual(
+            embedded_heredoc(script, "icon_svg"),
+            (root / "packaging" / "linux" / "noter.svg").read_text(encoding="utf-8"),
+        )
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux desktop integration")
+class LinuxDesktopInstallerTests(ReleaseInstallerTests):
+    def desktop_path(self) -> Path:
+        return self.data_home / "applications" / "noter.desktop"
+
+    def icon_path(self) -> Path:
+        return self.data_home / "icons" / "hicolor" / "scalable" / "apps" / "noter.svg"
+
+    def uninstall(self, root: Path) -> subprocess.CompletedProcess[str]:
+        installer = Path(__file__).with_name("install.sh")
+        return subprocess.run(
+            ["sh", str(installer), "--binary", "--uninstall", "--root", str(root)],
+            cwd=self.root,
+            env=self.environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    def test_binary_install_quotes_exec_and_uninstall_removes_owned_files(self) -> None:
+        spaced = self.root / "install dir"
+        result = self.install(root=spaced)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        binary = spaced / "bin" / "noter"
+        self.assertTrue(binary.is_file())
+        desktop = self.desktop_path().read_text(encoding="utf-8")
+        self.assertIn(f'Exec="{binary}"\n', desktop)
+        self.assertIn("X-Noter-Installer=true\n", desktop)
+        self.assertNotIn("@EXEC@", desktop)
+        self.assertIn("noter-installer", self.icon_path().read_text(encoding="utf-8"))
+
+        removed = self.uninstall(spaced)
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+        self.assertFalse(binary.exists())
+        self.assertFalse(self.desktop_path().exists())
+        self.assertFalse(self.icon_path().exists())
+
+    def test_uninstall_keeps_a_foreign_exec_and_a_symlink(self) -> None:
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        desktop = self.desktop_path()
+        icon = self.icon_path()
+        desktop.write_text(
+            "Exec=/usr/bin/other\nX-Noter-Installer=true\n", encoding="utf-8"
+        )
+        foreign_icon = self.root / "foreign.svg"
+        foreign_icon.write_text("<!-- noter-installer -->\n", encoding="utf-8")
+        icon.unlink()
+        icon.symlink_to(foreign_icon)
+
+        removed = self.uninstall(self.bin_dir.parent)
+
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+        self.assertEqual(
+            desktop.read_text(encoding="utf-8"),
+            "Exec=/usr/bin/other\nX-Noter-Installer=true\n",
+        )
+        self.assertTrue(icon.is_symlink())
+        self.assertTrue(foreign_icon.is_file())
+
+    def test_group_writable_data_home_is_refused_after_the_binary_is_installed(
+        self,
+    ) -> None:
+        self.data_home.chmod(0o777)
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("writable by another user", result.stderr)
+        self.assertTrue((self.bin_dir / "noter").is_file())
+        self.assertFalse(self.desktop_path().exists())
+
+    def test_relative_data_home_is_refused(self) -> None:
+        self.environment["XDG_DATA_HOME"] = "relative/share"
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("XDG_DATA_HOME must be an absolute path.", result.stderr)
+        self.assertTrue((self.bin_dir / "noter").is_file())
+
+    def test_check_prints_desktop_paths_without_creating_them(self) -> None:
+        installer = Path(__file__).with_name("install.sh")
+        result = subprocess.run(
+            [
+                "sh",
+                str(installer),
+                "--binary",
+                "--version",
+                "0.1.0-beta.1",
+                "--root",
+                str(self.bin_dir.parent),
+                "--check",
+            ],
+            cwd=self.root,
+            env=self.environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(self.desktop_path()), result.stdout)
+        self.assertIn(str(self.icon_path()), result.stdout)
+        self.assertFalse((self.data_home / "applications").exists())
+        self.assertFalse((self.bin_dir / "noter").exists())
 
 
 if __name__ == "__main__":

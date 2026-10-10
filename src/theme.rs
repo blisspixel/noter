@@ -1,6 +1,8 @@
 use eframe::egui;
 use std::sync::Arc;
 
+use crate::desktop_session::{SessionColors, SessionMode};
+
 pub const THEME_STORAGE_KEY: &str = "noter.theme";
 const NOTER_PROPORTIONAL_FONT: &str = "Inter Variable";
 pub const NOTER_PROPORTIONAL_FONT_BYTES: &[u8] =
@@ -124,6 +126,69 @@ impl AppTheme {
                 apply_palette(context, egui::Theme::Dark, VisualPalette::AmberScreen);
                 context.set_theme(egui::ThemePreference::Dark);
             }
+        }
+    }
+}
+
+/// Applies a validated session palette on top of the built-in System theme.
+///
+/// Explicit themes call [`AppTheme::apply`] and replace this overlay.
+pub fn apply_session_palette(context: &egui::Context, colors: &SessionColors) {
+    AppTheme::System.apply(context);
+    let (theme, preference) = match colors.mode() {
+        SessionMode::Light => (egui::Theme::Light, egui::ThemePreference::Light),
+        SessionMode::Dark => (egui::Theme::Dark, egui::ThemePreference::Dark),
+    };
+    context.style_mut_of(theme, |style| {
+        overlay_session_visuals(&mut style.visuals, colors);
+    });
+    context.set_theme(preference);
+}
+
+fn overlay_session_visuals(visuals: &mut egui::Visuals, colors: &SessionColors) {
+    let background = colors.background();
+    let foreground = colors.foreground();
+    visuals.override_text_color = Some(foreground);
+    visuals.panel_fill = background;
+    visuals.window_fill = background;
+    visuals.extreme_bg_color = background;
+    visuals.text_edit_bg_color = Some(background);
+    if contrast_ratio(foreground, visuals.faint_bg_color) < TEXT_CONTRAST {
+        visuals.faint_bg_color = background;
+    }
+    if contrast_ratio(foreground, visuals.code_bg_color) < TEXT_CONTRAST {
+        visuals.code_bg_color = background;
+    }
+    visuals.selection.bg_fill = colors.selection();
+    visuals.selection.stroke = egui::Stroke::new(1.0, colors.selection_text());
+    visuals.text_cursor.stroke = egui::Stroke::new(2.0, foreground);
+    if let Some(accent) = colors.accent() {
+        visuals.hyperlink_color = accent;
+    } else if contrast_ratio(visuals.hyperlink_color, background) < TEXT_CONTRAST {
+        visuals.hyperlink_color = foreground;
+    }
+    if visuals
+        .weak_text_color
+        .is_none_or(|weak| contrast_ratio(weak, background) < TEXT_CONTRAST)
+    {
+        visuals.weak_text_color = Some(foreground);
+    }
+    if contrast_ratio(visuals.error_fg_color, background) < TEXT_CONTRAST
+        || contrast_ratio(visuals.error_fg_color, visuals.panel_fill) < TEXT_CONTRAST
+    {
+        visuals.error_fg_color = foreground;
+    }
+    for widget in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.open,
+    ] {
+        if contrast_ratio(foreground, widget.bg_fill) < TEXT_CONTRAST {
+            widget.bg_fill = background;
+            widget.weak_bg_fill = background;
+            widget.fg_stroke.color = foreground;
         }
     }
 }
@@ -826,5 +891,44 @@ mod tests {
             amber_screen_palette().text
         );
         assert_eq!(amber_style.visuals.text_cursor.stroke.width, 8.0);
+    }
+
+    #[test]
+    fn session_palette_follows_system_and_clears_for_an_explicit_theme() {
+        let context = egui::Context::default();
+        configure_styles(&context);
+        let standard_dark = context.style_of(egui::Theme::Dark).visuals.clone();
+        let standard_light = context.style_of(egui::Theme::Light).visuals.clone();
+        let colors = crate::desktop_session::parse_session_palette(
+            "mode = \"dark\"\nbackground = \"#121212\"\nforeground = \"#bebebe\"\nselection = \"#2a2a2a\"\naccent = \"#e68e0d\"\n",
+        )
+        .expect("the sample session palette is valid");
+
+        apply_session_palette(&context, &colors);
+
+        assert_eq!(context.theme(), egui::Theme::Dark);
+        let overlaid = &context.style_of(egui::Theme::Dark).visuals;
+        assert_eq!(
+            overlaid.panel_fill,
+            egui::Color32::from_rgb(0x12, 0x12, 0x12)
+        );
+        assert_eq!(
+            overlaid.override_text_color,
+            Some(egui::Color32::from_rgb(0xbe, 0xbe, 0xbe))
+        );
+        assert_eq!(
+            overlaid.hyperlink_color,
+            egui::Color32::from_rgb(0xe6, 0x8e, 0x0d)
+        );
+        assert_eq!(context.style_of(egui::Theme::Light).visuals, standard_light);
+
+        AppTheme::Dark.apply(&context);
+        assert_eq!(context.style_of(egui::Theme::Dark).visuals, standard_dark);
+
+        apply_session_palette(&context, &colors);
+        AppTheme::GreenScreen.apply(&context);
+        AppTheme::System.apply(&context);
+        assert_eq!(context.style_of(egui::Theme::Dark).visuals, standard_dark);
+        assert!(crt_overlay(AppTheme::System).is_none());
     }
 }

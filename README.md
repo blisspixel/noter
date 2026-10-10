@@ -68,7 +68,8 @@ The source bytes do not change when the view changes.
 
 Each theme uses the same native text shaping, source-backed Markdown editor, and
 deterministic demo file. Green Screen and Amber Screen are complete CRT phosphor
-themes, not simple filters over a generic dark capture.
+themes, not simple filters over a generic dark capture. Under the System theme
+on Linux, Noter also adapts to session text scale and Omarchy palettes.
 
 | Dark | Green Screen | Amber Screen |
 | --- | --- | --- |
@@ -98,7 +99,8 @@ sh install-noter.sh
 ```
 
 It installs to `%LOCALAPPDATA%\Programs\Noter\bin` (added to your user
-`PATH`) on Windows and `~/.local/bin` on macOS and Linux. `--version`
+`PATH`) on Windows and `~/.local/bin` on macOS and Linux. On Linux, it also
+installs a desktop entry and icon for system application launchers. `--version`
 (`-Version`) picks a release and `--uninstall` (`-Uninstall`) removes it; see
 [docs/INSTALLATION.md](docs/INSTALLATION.md).
 

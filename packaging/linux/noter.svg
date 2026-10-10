@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- noter-installer -->
+  <rect width="128" height="128" rx="28" fill="#1f2124"/>
+  <path fill="#e6e8ec" d="M34 96V32h18.5l23 38.2V32H94v64H75.5L52.5 57.8V96H34z"/>
+</svg>

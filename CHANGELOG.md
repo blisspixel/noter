@@ -106,6 +106,16 @@ that candidate is frozen for publication.
 
 ### Added
 
+- Adapt to the Linux desktop session under the System theme. Noter reads the
+  active Omarchy palette (`colors.toml`), validates its colors against WCAG
+  contrast rules, and checks for updates every 15 seconds or when the window
+  regains focus. It also tracks the desktop text scaling factor
+  (`org.gnome.desktop.interface text-scaling-factor`) via gsettings.
+- Install a Linux desktop entry (`noter.desktop`) and SVG icon (`noter.svg`)
+  into `$XDG_DATA_HOME` via `scripts/install.sh`, with `StartupWMClass=noter`
+  matching the window's application ID. Uninstalling removes both files when
+  they belong to that install.
+- Set Linux Wayland and X11 application ID to `noter`.
 - Draw text in any script the computer has a font for in the window.
   Chinese, Japanese, Korean, Arabic, Hebrew, Indic, Thai, and other text drew
   as replacement boxes because the bundled fonts cover only Latin, Greek,
@@ -121,6 +131,10 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Preflight Linux file dialog requests to avoid freezing the window when a
+  portal backend is missing or hung (such as in Hyprland without
+  `xdg-desktop-portal-gtk` or `zenity`). Noter checks the portal bus first and
+  shows clear guidance in the window instead of blocking the UI thread.
 - Move backward by characters from the caret without rescanning the document
   prefix on every step.
 - Move backward by words without allocating a position for every preceding

@@ -43,6 +43,7 @@ use crate::crash_recovery::{
 use crate::crash_recovery::{
     RECOVERY_UNAVAILABLE_MESSAGE, RecoveryStoreTestExt, recovery_store_root_for_test,
 };
+use crate::desktop_session::{self, DESKTOP_PROBE_INTERVAL_SECS};
 use crate::editor_settings::{
     EditorZoom, PointerZoomAccumulator, TextWrap, WORD_WRAP_STORAGE_KEY, ZOOM_STORAGE_KEY,
     apply_editor_zoom,
@@ -592,6 +593,29 @@ impl UpdateStatusState {
     }
 }
 
+struct DesktopSessionState {
+    text_scale: f32,
+    text_scale_probe: Option<std::sync::mpsc::Receiver<Option<f32>>>,
+    last_probe_at: Option<f64>,
+    palette_stamp: Option<desktop_session::PaletteStamp>,
+    palette_applied: bool,
+    /// Screenshot capture keeps built-in colors and a desktop scale of 1.
+    hold_session: bool,
+}
+
+impl Default for DesktopSessionState {
+    fn default() -> Self {
+        Self {
+            text_scale: 1.0,
+            text_scale_probe: None,
+            last_probe_at: None,
+            palette_stamp: None,
+            palette_applied: false,
+            hold_session: false,
+        }
+    }
+}
+
 pub struct NoterApp {
     text: String,
     text_ime_composition: Option<TextImeComposition>,
@@ -629,6 +653,7 @@ pub struct NoterApp {
     external_memory_at_risk: bool,
     save_durability: SaveDurabilityRisk,
     last_external_inspect_at: Option<f64>,
+    desktop_session: DesktopSessionState,
     crash_recovery: CrashRecoverySession,
     /// Present only in a real window, so tests never scan system fonts.
     font_fallback: Option<FontFallback>,
@@ -694,6 +719,7 @@ impl NoterApp {
             external_memory_at_risk: false,
             save_durability: SaveDurabilityRisk::Clear,
             last_external_inspect_at: None,
+            desktop_session: DesktopSessionState::default(),
             crash_recovery,
             font_fallback: None,
             #[cfg(test)]
@@ -725,6 +751,15 @@ impl NoterApp {
         let mut app = Self::with_crash_recovery(CrashRecoverySession::open_default());
         app.font_fallback = Some(FontFallback::new(cc.egui_ctx.clone()));
         app.theme = selected_theme;
+        app.desktop_session.hold_session = options.screenshot_path.is_some();
+        // Session colors are a Linux file. Other platforms keep the theme that
+        // was just applied, including System's built-in light and dark pair.
+        if cfg!(target_os = "linux")
+            && app.theme == AppTheme::System
+            && !app.desktop_session.hold_session
+        {
+            app.refresh_session_palette(&cc.egui_ctx, true);
+        }
         app.text_wrap = TextWrap::from_storage(cc.storage);
         app.editor_zoom = EditorZoom::from_storage(cc.storage);
         app.updates = if options.show_updates {
@@ -816,10 +851,65 @@ impl NoterApp {
         self.view = DocumentView::Text;
     }
 
-    fn do_open_unchecked(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().pick_file() {
+    fn do_open_unchecked(&mut self, parent: Option<&eframe::Frame>) {
+        if let Some(path) = self.pick_open_path(parent) {
             self.open_path(&path, None);
         }
+    }
+
+    fn document_directory(&self) -> Option<PathBuf> {
+        self.document
+            .path()
+            .and_then(|path| path.parent())
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+    }
+
+    /// Returns true when the Linux file chooser must not be opened.
+    fn block_file_dialog_if_needed(&mut self) -> bool {
+        let Some(reason) = desktop_session::file_dialog_block_reason() else {
+            return false;
+        };
+        self.error_msg = Some(reason.to_owned());
+        true
+    }
+
+    fn document_dialog(&self, title: &str, parent: Option<&eframe::Frame>) -> rfd::FileDialog {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter("Markdown", &["md", "markdown"])
+            .add_filter("Text", &["txt"])
+            .add_filter("All files", &["*"]);
+        if let Some(directory) = self.document_directory() {
+            dialog = dialog.set_directory(directory);
+        }
+        if let Some(parent) = parent {
+            dialog = dialog.set_parent(parent);
+        }
+        dialog
+    }
+
+    fn pick_open_path(&mut self, parent: Option<&eframe::Frame>) -> Option<PathBuf> {
+        if self.block_file_dialog_if_needed() {
+            return None;
+        }
+        self.document_dialog("Open", parent).pick_file()
+    }
+
+    fn pick_save_path(&mut self, parent: Option<&eframe::Frame>) -> Option<PathBuf> {
+        if self.block_file_dialog_if_needed() {
+            return None;
+        }
+        let mut dialog = self.document_dialog("Save As", parent);
+        if let Some(name) = self
+            .document
+            .path()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+        {
+            dialog = dialog.set_file_name(name);
+        }
+        dialog.save_file()
     }
 
     fn reload_current_path_unchecked(&mut self) {
@@ -859,23 +949,37 @@ impl NoterApp {
         self.select_document_view(view);
     }
 
+    #[cfg(test)]
     fn request_open(&mut self, ctx: &egui::Context) {
-        self.request_destructive_action(PendingAbandonAction::Open, ctx);
+        self.request_open_with(ctx, None);
+    }
+
+    fn request_open_with(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
+        self.request_destructive_action(PendingAbandonAction::Open, ctx, parent);
     }
 
     fn request_reload(&mut self, ctx: &egui::Context) {
-        self.request_destructive_action(PendingAbandonAction::Reload, ctx);
+        self.request_destructive_action(PendingAbandonAction::Reload, ctx, None);
     }
 
+    #[cfg(test)]
     fn do_save(&mut self) {
-        self.do_save_with_retained_conflict(false);
+        self.do_save_with(None);
     }
 
-    fn do_save_for_pending_abandon(&mut self) {
-        self.do_save_with_retained_conflict(self.pending_reload_can_attempt_durable_save());
+    fn do_save_with(&mut self, parent: Option<&eframe::Frame>) {
+        self.do_save_with_retained_conflict(false, parent);
     }
 
-    fn do_save_with_retained_conflict(&mut self, allow_retained_conflict: bool) {
+    fn do_save_for_pending_abandon(&mut self, parent: Option<&eframe::Frame>) {
+        self.do_save_with_retained_conflict(self.pending_reload_can_attempt_durable_save(), parent);
+    }
+
+    fn do_save_with_retained_conflict(
+        &mut self,
+        allow_retained_conflict: bool,
+        parent: Option<&eframe::Frame>,
+    ) {
         if self.conflict.blocks_ordinary_save() && !allow_retained_conflict {
             self.error_msg = Some(EXTERNAL_CHANGE_SAVE_BLOCK_MESSAGE.to_owned());
             return;
@@ -886,7 +990,7 @@ impl NoterApp {
             return;
         }
         let Some(path) = self.document.path().map(std::path::Path::to_path_buf) else {
-            self.do_save_as();
+            self.do_save_as(parent);
             return;
         };
         let Some(reservation) = self.reserve_save_recovery_slot(SaveAttempt::Current(path.clone()))
@@ -905,13 +1009,13 @@ impl NoterApp {
         self.handle_save_result(result, reservation);
     }
 
-    fn do_save_as(&mut self) {
+    fn do_save_as(&mut self, parent: Option<&eframe::Frame>) {
         if self.save_is_blocked() {
             self.show_active_save_recovery_messages();
             self.error_msg = Some(SAVE_RECOVERY_BLOCK_MESSAGE.to_owned());
             return;
         }
-        if let Some(path) = rfd::FileDialog::new().save_file() {
+        if let Some(path) = self.pick_save_path(parent) {
             self.do_save_as_to(path);
         }
     }
@@ -1182,7 +1286,7 @@ impl NoterApp {
     }
 
     fn request_new_document(&mut self, ctx: &egui::Context) {
-        self.request_destructive_action(PendingAbandonAction::New, ctx);
+        self.request_destructive_action(PendingAbandonAction::New, ctx, None);
     }
 
     fn request_close(&mut self, ctx: &egui::Context) {
@@ -1198,7 +1302,7 @@ impl NoterApp {
         if dirty_close_is_blocked {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
-        self.apply_lifecycle_effect(effect, ctx);
+        self.apply_lifecycle_effect(effect, ctx, None);
     }
 
     fn protect_native_close(&mut self, ctx: &egui::Context) {
@@ -1213,17 +1317,22 @@ impl NoterApp {
                 revision,
             });
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.apply_lifecycle_effect(effect, ctx);
+            self.apply_lifecycle_effect(effect, ctx, None);
         }
     }
 
-    fn request_destructive_action(&mut self, intent: PendingAbandonAction, ctx: &egui::Context) {
+    fn request_destructive_action(
+        &mut self,
+        intent: PendingAbandonAction,
+        ctx: &egui::Context,
+        parent: Option<&eframe::Frame>,
+    ) {
         let effect = self.lifecycle.reduce(LifecycleCommand::Request {
             intent,
             document_dirty: self.has_unsaved_state(),
             revision: self.document.revision(),
         });
-        self.apply_lifecycle_effect(effect, ctx);
+        self.apply_lifecycle_effect(effect, ctx, parent);
     }
 
     fn cancel_pending_abandon(&mut self) {
@@ -1233,7 +1342,16 @@ impl NoterApp {
         self.show_active_save_recovery_messages();
     }
 
+    #[cfg(test)]
     fn discard_pending_abandon(&mut self, ctx: &egui::Context) {
+        self.discard_pending_abandon_with(ctx, None);
+    }
+
+    fn discard_pending_abandon_with(
+        &mut self,
+        ctx: &egui::Context,
+        parent: Option<&eframe::Frame>,
+    ) {
         let effect = self
             .lifecycle
             .reduce(LifecycleCommand::Decide(DirtyDecision::Discard));
@@ -1241,10 +1359,10 @@ impl NoterApp {
         self.surface_recovery_unavailable();
         match effect {
             LifecycleEffect::Continue(action) => {
-                self.execute_abandon_action(action, ctx);
+                self.execute_abandon_action(action, ctx, parent);
                 self.rearm_recovery_after_incomplete_abandon(action, ctx);
             }
-            other => self.apply_lifecycle_effect(other, ctx),
+            other => self.apply_lifecycle_effect(other, ctx, parent),
         }
     }
 
@@ -1278,14 +1396,23 @@ impl NoterApp {
         }
     }
 
+    #[cfg(test)]
     fn save_pending_abandon(&mut self, ctx: &egui::Context) {
+        self.save_pending_abandon_with(ctx, None);
+    }
+
+    fn save_pending_abandon_with(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
         let effect = self
             .lifecycle
             .reduce(LifecycleCommand::Decide(DirtyDecision::Save));
-        self.apply_lifecycle_effect(effect, ctx);
+        self.apply_lifecycle_effect(effect, ctx, parent);
     }
 
-    fn continue_pending_abandon_if_clean(&mut self, ctx: &egui::Context) {
+    fn continue_pending_abandon_if_clean(
+        &mut self,
+        ctx: &egui::Context,
+        parent: Option<&eframe::Frame>,
+    ) {
         let effect = self
             .lifecycle
             .reduce(LifecycleCommand::SaveSettled(SaveContinuation::new(
@@ -1294,20 +1421,25 @@ impl NoterApp {
                 self.pending_hard_link_save.is_some(),
                 self.error_msg.is_some() || self.crash_recovery.active_offer().is_some(),
             )));
-        self.apply_lifecycle_effect(effect, ctx);
+        self.apply_lifecycle_effect(effect, ctx, parent);
     }
 
-    fn apply_lifecycle_effect(&mut self, effect: LifecycleEffect, ctx: &egui::Context) {
+    fn apply_lifecycle_effect(
+        &mut self,
+        effect: LifecycleEffect,
+        ctx: &egui::Context,
+        parent: Option<&eframe::Frame>,
+    ) {
         match effect {
             LifecycleEffect::None => {}
             LifecycleEffect::PromptDirty(_) => {
                 self.show_active_save_recovery_messages();
             }
             LifecycleEffect::StartSave => {
-                self.do_save_for_pending_abandon();
-                self.continue_pending_abandon_if_clean(ctx);
+                self.do_save_for_pending_abandon(parent);
+                self.continue_pending_abandon_if_clean(ctx, parent);
             }
-            LifecycleEffect::Continue(action) => self.execute_abandon_action(action, ctx),
+            LifecycleEffect::Continue(action) => self.execute_abandon_action(action, ctx, parent),
         }
     }
 
@@ -1369,7 +1501,7 @@ impl NoterApp {
             revision,
         });
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        self.apply_lifecycle_effect(effect, ctx);
+        self.apply_lifecycle_effect(effect, ctx, None);
     }
 
     fn record_external_observation(
@@ -1402,21 +1534,36 @@ impl NoterApp {
         }
     }
 
+    #[cfg(test)]
     fn apply_conflict_effect(&mut self, effect: ConflictEffect, ctx: &egui::Context) {
+        self.apply_conflict_effect_with(effect, ctx, None);
+    }
+
+    fn apply_conflict_effect_with(
+        &mut self,
+        effect: ConflictEffect,
+        ctx: &egui::Context,
+        parent: Option<&eframe::Frame>,
+    ) {
         match effect {
             ConflictEffect::None
             | ConflictEffect::Prompt(_)
             | ConflictEffect::PromptOverwriteConfirm(_) => {}
             ConflictEffect::RequestReload if self.document.is_dirty() => self.request_reload(ctx),
             ConflictEffect::RequestReload => self.discard_retained_clean_copy_and_reload(),
-            ConflictEffect::RequestSaveAs => self.do_save_as(),
+            ConflictEffect::RequestSaveAs => self.do_save_as(parent),
             ConflictEffect::AuthorizeOverwrite(reviewed) => {
-                self.perform_authorized_overwrite(reviewed, ctx);
+                self.perform_authorized_overwrite(reviewed, ctx, parent);
             }
         }
     }
 
-    fn perform_authorized_overwrite(&mut self, reviewed: FileObservation, ctx: &egui::Context) {
+    fn perform_authorized_overwrite(
+        &mut self,
+        reviewed: FileObservation,
+        ctx: &egui::Context,
+        parent: Option<&eframe::Frame>,
+    ) {
         let Some(path) = self.document.path().map(Path::to_path_buf) else {
             self.error_msg = Some(
                 "Overwrite is unavailable because this document has not been saved yet.".to_owned(),
@@ -1426,7 +1573,7 @@ impl NoterApp {
         match inspect_target(&path, SaveStage::InspectInitial) {
             Ok(TargetState::Regular(observation)) if observation == reviewed => {
                 self.document.rebaseline_to_observed_disk(observation);
-                self.do_save();
+                self.do_save_with(parent);
             }
             Ok(observed) => {
                 self.record_external_observation(Ok(observed), ctx);
@@ -1443,12 +1590,16 @@ impl NoterApp {
         }
     }
 
-    fn show_external_change_confirmation(&mut self, ctx: &egui::Context) {
+    fn show_external_change_confirmation(
+        &mut self,
+        ctx: &egui::Context,
+        parent: Option<&eframe::Frame>,
+    ) {
         let Some(kind) = self.conflict.prompt_kind() else {
             return;
         };
         if self.conflict.is_confirming_overwrite() {
-            self.show_overwrite_second_confirmation(ctx, kind);
+            self.show_overwrite_second_confirmation(ctx, kind, parent);
             return;
         }
         let mut reload = false;
@@ -1498,22 +1649,22 @@ impl NoterApp {
             let effect = self
                 .conflict
                 .reduce(ConflictCommand::Decide(ConflictDecision::ReloadDisk));
-            self.apply_conflict_effect(effect, ctx);
+            self.apply_conflict_effect_with(effect, ctx, parent);
         } else if keep || response.should_close() {
             let effect = self
                 .conflict
                 .reduce(ConflictCommand::Decide(ConflictDecision::KeepEditing));
-            self.apply_conflict_effect(effect, ctx);
+            self.apply_conflict_effect_with(effect, ctx, parent);
         } else if save_as {
             let effect = self
                 .conflict
                 .reduce(ConflictCommand::Decide(ConflictDecision::SaveAs));
-            self.apply_conflict_effect(effect, ctx);
+            self.apply_conflict_effect_with(effect, ctx, parent);
         } else if overwrite {
             let effect = self
                 .conflict
                 .reduce(ConflictCommand::Decide(ConflictDecision::RequestOverwrite));
-            self.apply_conflict_effect(effect, ctx);
+            self.apply_conflict_effect_with(effect, ctx, parent);
         }
     }
 
@@ -1521,6 +1672,7 @@ impl NoterApp {
         &mut self,
         ctx: &egui::Context,
         kind: noter::core::conflict::ExternalChangeKind,
+        parent: Option<&eframe::Frame>,
     ) {
         let mut confirm = false;
         let mut cancel = false;
@@ -1545,19 +1697,24 @@ impl NoterApp {
             let effect = self
                 .conflict
                 .reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite));
-            self.apply_conflict_effect(effect, ctx);
+            self.apply_conflict_effect_with(effect, ctx, parent);
         } else if cancel || response.should_close() {
             let effect = self
                 .conflict
                 .reduce(ConflictCommand::Decide(ConflictDecision::CancelOverwrite));
-            self.apply_conflict_effect(effect, ctx);
+            self.apply_conflict_effect_with(effect, ctx, parent);
         }
     }
 
-    fn execute_abandon_action(&mut self, action: PendingAbandonAction, ctx: &egui::Context) {
+    fn execute_abandon_action(
+        &mut self,
+        action: PendingAbandonAction,
+        ctx: &egui::Context,
+        parent: Option<&eframe::Frame>,
+    ) {
         match action {
             PendingAbandonAction::New => self.start_new_document_unchecked(),
-            PendingAbandonAction::Open => self.do_open_unchecked(),
+            PendingAbandonAction::Open => self.do_open_unchecked(parent),
             PendingAbandonAction::Reload => self.reload_current_path_unchecked(),
             PendingAbandonAction::Quit => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1724,12 +1881,15 @@ impl NoterApp {
         shortcut: Option<InputShortcut>,
         commands_enabled: bool,
         context: &egui::Context,
+        parent: Option<&eframe::Frame>,
     ) -> bool {
         if !commands_enabled {
             return false;
         }
         match shortcut {
-            Some(InputShortcut::File(command)) => self.execute_file_command(command, context),
+            Some(InputShortcut::File(command)) => {
+                self.execute_file_command(command, context, parent);
+            }
             Some(InputShortcut::Edit(command)) => {
                 self.execute_edit_command(command, context);
                 return true;
@@ -1743,13 +1903,18 @@ impl NoterApp {
         false
     }
 
-    fn execute_file_command(&mut self, command: FileCommand, ctx: &egui::Context) {
+    fn execute_file_command(
+        &mut self,
+        command: FileCommand,
+        ctx: &egui::Context,
+        parent: Option<&eframe::Frame>,
+    ) {
         match command {
             FileCommand::New => self.request_new_document(ctx),
-            FileCommand::Open => self.request_open(ctx),
+            FileCommand::Open => self.request_open_with(ctx, parent),
             FileCommand::Reload => self.request_reload(ctx),
-            FileCommand::Save => self.do_save(),
-            FileCommand::SaveAs => self.do_save_as(),
+            FileCommand::Save => self.do_save_with(parent),
+            FileCommand::SaveAs => self.do_save_as(parent),
             FileCommand::Quit => self.request_close(ctx),
         }
     }
@@ -2605,7 +2770,114 @@ impl NoterApp {
 
     fn select_theme(&mut self, theme: AppTheme, context: &egui::Context) {
         self.theme = theme;
+        if cfg!(target_os = "linux")
+            && theme == AppTheme::System
+            && !self.desktop_session.hold_session
+        {
+            self.desktop_session.palette_stamp = None;
+            self.refresh_session_palette(context, true);
+            return;
+        }
+        self.desktop_session.palette_applied = false;
         theme.apply(context);
+    }
+
+    fn refresh_linux_desktop_session(&mut self, ctx: &egui::Context) {
+        if !cfg!(target_os = "linux") || self.desktop_session.hold_session {
+            return;
+        }
+        self.finish_text_scale_probe(ctx);
+        let (now, focus_regained, focused) = ctx.input(|input| {
+            (
+                input.time,
+                input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::WindowFocused(true))),
+                input.viewport().focused.unwrap_or(false),
+            )
+        });
+        if !focused {
+            return;
+        }
+        let due = focus_regained
+            || self
+                .desktop_session
+                .last_probe_at
+                .is_none_or(|last| now - last >= DESKTOP_PROBE_INTERVAL_SECS);
+        ctx.request_repaint_after(Duration::from_secs_f64(DESKTOP_PROBE_INTERVAL_SECS));
+        if !due {
+            return;
+        }
+        self.desktop_session.last_probe_at = Some(now);
+        if self.theme == AppTheme::System {
+            self.refresh_session_palette(ctx, false);
+        }
+        self.start_text_scale_probe(ctx);
+    }
+
+    fn finish_text_scale_probe(&mut self, ctx: &egui::Context) {
+        let Some(receiver) = self.desktop_session.text_scale_probe.take() else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(Some(factor)) => self.apply_desktop_text_scale(ctx, factor),
+            Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.desktop_session.text_scale_probe = Some(receiver);
+            }
+        }
+    }
+
+    fn apply_desktop_text_scale(&mut self, ctx: &egui::Context, factor: f32) {
+        if self.desktop_session.text_scale.to_bits() == factor.to_bits() {
+            return;
+        }
+        self.desktop_session.text_scale = factor;
+        ctx.set_zoom_factor(factor);
+    }
+
+    fn start_text_scale_probe(&mut self, ctx: &egui::Context) {
+        if self.desktop_session.text_scale_probe.is_some() {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let context = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("noter-text-scale".to_owned())
+            .spawn(move || {
+                let value = desktop_session::read_desktop_text_scale();
+                let _ = sender.send(value);
+                context.request_repaint();
+            });
+        if spawned.is_ok() {
+            self.desktop_session.text_scale_probe = Some(receiver);
+        }
+    }
+
+    fn refresh_session_palette(&mut self, ctx: &egui::Context, force: bool) {
+        let Some(path) = desktop_session::default_omarchy_colors_path() else {
+            if force || self.desktop_session.palette_applied {
+                AppTheme::System.apply(ctx);
+            }
+            self.desktop_session.palette_applied = false;
+            self.desktop_session.palette_stamp = None;
+            return;
+        };
+        let stamp = desktop_session::palette_stamp(&path);
+        if !force && self.desktop_session.palette_stamp == Some(stamp) {
+            return;
+        }
+        self.desktop_session.palette_stamp = Some(stamp);
+        if let Some(colors) = desktop_session::read_session_palette(&path) {
+            theme::apply_session_palette(ctx, &colors);
+            self.desktop_session.palette_applied = true;
+            return;
+        }
+        if force || self.desktop_session.palette_applied {
+            AppTheme::System.apply(ctx);
+        }
+        self.desktop_session.palette_applied = false;
     }
 
     fn show_help_menu(&mut self, ui: &mut egui::Ui) {
@@ -2683,7 +2955,11 @@ impl NoterApp {
         }
     }
 
-    fn show_unsaved_changes_confirmation(&mut self, ctx: &egui::Context) {
+    fn show_unsaved_changes_confirmation(
+        &mut self,
+        ctx: &egui::Context,
+        parent: Option<&eframe::Frame>,
+    ) {
         let Some(action) = self.lifecycle.pending_intent() else {
             return;
         };
@@ -2742,15 +3018,15 @@ impl NoterApp {
         if let Some(index) = reconcile {
             self.pending_recovery_reconciliation = Some(index);
         } else if save {
-            self.save_pending_abandon(ctx);
+            self.save_pending_abandon_with(ctx, parent);
         } else if discard {
-            self.discard_pending_abandon(ctx);
+            self.discard_pending_abandon_with(ctx, parent);
         } else if cancel || response.should_close() {
             self.cancel_pending_abandon();
         }
     }
 
-    fn show_hard_link_confirmation(&mut self, ctx: &egui::Context) {
+    fn show_hard_link_confirmation(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
         let Some(pending) = self.pending_hard_link_save.as_ref() else {
             return;
         };
@@ -2780,10 +3056,10 @@ impl NoterApp {
 
         if confirm {
             self.confirm_pending_hard_link_save();
-            self.continue_pending_abandon_if_clean(ctx);
+            self.continue_pending_abandon_if_clean(ctx, parent);
         } else if cancel || response.should_close() {
             self.pending_hard_link_save = None;
-            self.continue_pending_abandon_if_clean(ctx);
+            self.continue_pending_abandon_if_clean(ctx, parent);
         }
     }
 
@@ -3693,8 +3969,13 @@ impl NoterApp {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[cfg(test)]
     fn render_frame(&mut self, ui: &mut egui::Ui) {
+        self.render_frame_with_parent(ui, None);
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn render_frame_with_parent(&mut self, ui: &mut egui::Ui, parent: Option<&eframe::Frame>) {
         if let Some(fonts) = &mut self.font_fallback {
             ui.input(|input| fonts.observe_input(&input.events));
         }
@@ -3750,7 +4031,7 @@ impl NoterApp {
         let recovery_offer_open = self.crash_recovery.active_offer().is_some();
         let commands_enabled = !blocking_modal_at_start;
         let input_edit_executed =
-            self.execute_input_shortcut(input_shortcut, commands_enabled, ui.ctx());
+            self.execute_input_shortcut(input_shortcut, commands_enabled, ui.ctx(), parent);
         if !blocking_modal_at_start && self.blocking_modal_open() {
             self.discard_deferred_input();
         }
@@ -3794,7 +4075,7 @@ impl NoterApp {
             && !menu_edit_executed
             && let Some(command) = input_file_command.or(file_command)
         {
-            self.execute_file_command(command, ui.ctx());
+            self.execute_file_command(command, ui.ctx(), parent);
         }
         if !recovery_offer_open {
             self.crash_recovery.on_tick(&self.document, self.selection);
@@ -3818,7 +4099,12 @@ impl NoterApp {
         if !blocking_modal_at_start && self.blocking_modal_open() {
             self.discard_deferred_input();
         }
-        self.show_blocking_modal(ui.ctx(), recovery_offer_open, blocking_modal_at_start);
+        self.show_blocking_modal(
+            ui.ctx(),
+            recovery_offer_open,
+            blocking_modal_at_start,
+            parent,
+        );
     }
 
     fn show_blocking_modal(
@@ -3826,17 +4112,18 @@ impl NoterApp {
         ctx: &egui::Context,
         recovery_offer_open: bool,
         blocking_modal_at_start: bool,
+        parent: Option<&eframe::Frame>,
     ) {
         if recovery_offer_open {
             self.show_startup_recovery_offer(ctx);
         } else if self.pending_recovery_reconciliation.is_some() {
             self.show_save_recovery_reconciliation(ctx);
         } else if self.pending_hard_link_save.is_some() {
-            self.show_hard_link_confirmation(ctx);
+            self.show_hard_link_confirmation(ctx, parent);
         } else if self.lifecycle.pending_intent().is_some() {
-            self.show_unsaved_changes_confirmation(ctx);
+            self.show_unsaved_changes_confirmation(ctx, parent);
         } else if self.conflict.is_prompting() {
-            self.show_external_change_confirmation(ctx);
+            self.show_external_change_confirmation(ctx, parent);
         }
         if blocking_modal_at_start && !self.blocking_modal_open() {
             self.finish_blocking_modal_close(ctx);
@@ -4469,9 +4756,10 @@ const fn dialog_remains_open(window_open: bool, close_clicked: bool) -> bool {
 }
 
 impl eframe::App for NoterApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.refresh_linux_desktop_session(ui.ctx());
         if !self.idle_screen.show(ui.ctx(), self.theme.idle_effect()) {
-            self.render_frame(ui);
+            self.render_frame_with_parent(ui, Some(frame));
         }
         theme::paint_crt_overlay(ui.ctx(), self.theme);
         #[cfg(feature = "screenshot-qa")]
@@ -5321,7 +5609,7 @@ mod tests {
         let context = egui::Context::default();
         context.enable_accesskit();
         theme::configure_styles(&context);
-        app.request_destructive_action(PendingAbandonAction::New, &context);
+        app.request_destructive_action(PendingAbandonAction::New, &context, None);
         let modal = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
             app.render_frame(ui);
         });
@@ -6359,7 +6647,7 @@ mod tests {
             let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
                 app.render_frame(ui);
             });
-            app.request_destructive_action(PendingAbandonAction::New, &context);
+            app.request_destructive_action(PendingAbandonAction::New, &context, None);
             let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.05), |ui| {
                 app.render_frame(ui);
             });
@@ -10523,7 +10811,7 @@ mod tests {
         let context = egui::Context::default();
 
         let output = context.run_ui(egui::RawInput::default(), |ui| {
-            app.continue_pending_abandon_if_clean(ui.ctx());
+            app.continue_pending_abandon_if_clean(ui.ctx(), None);
         });
         let commands = &output
             .viewport_output
@@ -11154,7 +11442,7 @@ mod tests {
         let context = egui::Context::default();
 
         let output = context.run_ui(egui::RawInput::default(), |ui| {
-            app.continue_pending_abandon_if_clean(ui.ctx());
+            app.continue_pending_abandon_if_clean(ui.ctx(), None);
         });
         let commands = &output
             .viewport_output
@@ -11242,7 +11530,7 @@ mod tests {
 
         let context = egui::Context::default();
         let output = context.run_ui(egui::RawInput::default(), |ui| {
-            app.continue_pending_abandon_if_clean(ui.ctx());
+            app.continue_pending_abandon_if_clean(ui.ctx(), None);
         });
         assert!(
             output
@@ -11506,7 +11794,7 @@ mod tests {
 
         let context = egui::Context::default();
         let output = context.run_ui(egui::RawInput::default(), |ui| {
-            app.show_hard_link_confirmation(ui.ctx());
+            app.show_hard_link_confirmation(ui.ctx(), None);
         });
         assert!(!output.shapes.is_empty());
 

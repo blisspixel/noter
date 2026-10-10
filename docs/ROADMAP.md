@@ -399,9 +399,13 @@ assumed from toolkit defaults. Amber Screen and Green Screen palettes now
 explicitly define their text cursor stroke color to match the theme phosphor
 foreground rather than inheriting the stock dark-mode blue-white line.
 Platform desktop integration gaps (Win32 title bar dark mode synchronization,
-Per-Monitor v2 DPI application manifest, Linux `app_id` metadata, and standard
+Per-Monitor v2 DPI application manifest, and standard
 macOS shortcuts including Cmd+Q, Cmd+W, and Cmd+,) are tracked for full desktop
-parity. The early source-backed Markdown slice is visible for product evaluation
+parity. Linux `app_id` metadata (`noter`), desktop launcher packaging
+(`packaging/linux/noter.desktop.in` and icon installed by `install.sh`),
+freedesktop session text-scale tracking, Omarchy palette integration under the
+System theme, and non-blocking portal file-dialog classification are implemented
+in tree. The early source-backed Markdown slice is visible for product evaluation
 but remains governed by M6. A disposable Windows PowerShell source install is
 recorded in [M2_INSTALLED_EVIDENCE.md](M2_INSTALLED_EVIDENCE.md). M2 still needs
 installed GUI semantic automation, cross-platform visual and persistence
