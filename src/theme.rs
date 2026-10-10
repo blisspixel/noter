@@ -418,6 +418,7 @@ struct TerminalPalette {
     hyperlink: egui::Color32,
     selection: egui::Color32,
     selected_text: egui::Color32,
+    strong_text: egui::Color32,
     warning: egui::Color32,
     error: egui::Color32,
 }
@@ -435,6 +436,7 @@ const fn green_screen_palette() -> TerminalPalette {
         hyperlink: egui::Color32::from_rgb(111, 235, 158),
         selection: egui::Color32::from_rgb(30, 88, 40),
         selected_text: egui::Color32::from_rgb(226, 255, 229),
+        strong_text: egui::Color32::from_rgb(255, 255, 255),
         warning: egui::Color32::from_rgb(242, 218, 109),
         error: egui::Color32::from_rgb(255, 135, 123),
     }
@@ -453,6 +455,7 @@ const fn amber_screen_palette() -> TerminalPalette {
         hyperlink: egui::Color32::from_rgb(255, 225, 132),
         selection: egui::Color32::from_rgb(105, 65, 10),
         selected_text: egui::Color32::from_rgb(255, 242, 199),
+        strong_text: egui::Color32::from_rgb(255, 255, 255),
         warning: egui::Color32::from_rgb(255, 231, 135),
         error: egui::Color32::from_rgb(255, 137, 119),
     }
@@ -472,12 +475,14 @@ impl TerminalPalette {
             self.hyperlink,
             self.selection,
             self.selected_text,
+            self.strong_text,
             self.warning,
             self.error,
         ];
         colors.iter().all(egui::Color32::is_opaque)
             && contrast_ratio(self.text, self.editor) >= ENHANCED_TEXT_CONTRAST
             && contrast_ratio(self.weak_text, self.editor) >= TEXT_CONTRAST
+            && contrast_ratio(self.strong_text, self.editor) >= ENHANCED_TEXT_CONTRAST
             && contrast_ratio(self.hyperlink, self.editor) >= TEXT_CONTRAST
             && contrast_ratio(self.warning, self.editor) >= TEXT_CONTRAST
             && contrast_ratio(self.error, self.editor) >= TEXT_CONTRAST
@@ -485,6 +490,7 @@ impl TerminalPalette {
             && contrast_ratio(self.outline, self.panel) >= CONTROL_CONTRAST
             && contrast_ratio(self.text, self.raised) >= TEXT_CONTRAST
             && contrast_ratio(self.selected_text, self.active) >= TEXT_CONTRAST
+            && contrast_ratio(self.strong_text, self.active) >= TEXT_CONTRAST
     }
 }
 
@@ -537,7 +543,7 @@ fn apply_terminal_palette(visuals: &mut egui::Visuals, palette: TerminalPalette)
         palette.active,
         palette.active,
         palette.selected_text,
-        palette.selected_text,
+        palette.strong_text,
     );
     configure_widget(
         &mut visuals.widgets.open,
@@ -672,6 +678,11 @@ mod tests {
 
             assert!(contrast_ratio(text, visuals.text_edit_bg_color()) >= 7.0);
             assert!(contrast_ratio(weak_text, visuals.text_edit_bg_color()) >= 4.5);
+            assert!(
+                contrast_ratio(visuals.strong_text_color(), visuals.text_edit_bg_color()) >= 7.0
+            );
+            assert_ne!(visuals.strong_text_color(), text);
+            assert_eq!(visuals.strong_text_color(), egui::Color32::WHITE);
             assert!(
                 contrast_ratio(visuals.selection.stroke.color, visuals.selection.bg_fill) >= 4.5
             );

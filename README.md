@@ -124,6 +124,12 @@ cd noter
 sh scripts/install.sh
 ```
 
+A source install builds from the local checkout and installs to Cargo's bin
+directory (`~/.cargo/bin` on macOS and Linux, `%USERPROFILE%\.cargo\bin` on
+Windows, or `$CARGO_INSTALL_ROOT/bin`). On Linux, it also installs the desktop
+entry and icon so Noter appears in system application launchers and "Open With"
+menus.
+
 Start Noter with `noter [FILE]`, or launch the terminal interface with
 `noter --tui [FILE]`. Check version with `noter --version`. Full command-line
 and update contracts are documented in [docs/INSTALLATION.md](docs/INSTALLATION.md).

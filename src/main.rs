@@ -124,16 +124,34 @@ fn main() -> eframe::Result {
     if screenshot_qa {
         viewport = viewport.with_resizable(false);
     }
-    let options = eframe::NativeOptions {
-        viewport,
-        ..Default::default()
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let is_wayland = {
+        let named = |name: &str| display_variable_names_server(std::env::var_os(name).as_deref());
+        named("WAYLAND_DISPLAY") || named("WAYLAND_SOCKET")
     };
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    let is_wayland = false;
+    let options = native_options(viewport, is_wayland);
 
     eframe::run_native(
         "Noter",
         options,
         Box::new(move |cc| Ok(Box::new(NoterApp::new(cc, &launch)))),
     )
+}
+
+fn native_options(
+    viewport: eframe::egui::ViewportBuilder,
+    is_wayland: bool,
+) -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        viewport,
+        glow_options: eframe::egui_glow::GlowConfiguration {
+            vsync: !is_wayland,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 /// Writes one command-line message where the launching shell can see it.
@@ -494,6 +512,15 @@ mod tests {
         assert!(!display_variable_names_server(Some(OsStr::new(""))));
         assert!(display_variable_names_server(Some(OsStr::new(":0"))));
         assert!(display_variable_names_server(Some(OsStr::new("wayland-0"))));
+    }
+
+    #[test]
+    fn native_options_disables_vsync_under_wayland_to_prevent_hidden_surface_deadlocks() {
+        let wayland_options = native_options(eframe::egui::ViewportBuilder::default(), true);
+        assert!(!wayland_options.glow_options.vsync);
+
+        let default_options = native_options(eframe::egui::ViewportBuilder::default(), false);
+        assert!(default_options.glow_options.vsync);
     }
 
     #[test]

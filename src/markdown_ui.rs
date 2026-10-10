@@ -1414,7 +1414,9 @@ impl MarkdownEditor {
                             .is_some_and(|active| active.command_is_active(command));
                         let mut button = egui::Button::selectable(selected, command.menu_label());
                         if let Some(shortcut) = command.shortcut() {
-                            button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+                            button = button
+                                .shortcut_text(ui.ctx().format_shortcut(&shortcut))
+                                .gap(crate::app::MENU_SHORTCUT_GAP);
                         }
                         if ui
                             .add(button)
@@ -7495,6 +7497,42 @@ mod tests {
 
         assert!(has_weight(&weights, "Heading", HEADING_WEIGHT));
         assert!(has_weight(&weights, "bold", STRONG_WEIGHT));
+    }
+
+    #[test]
+    fn rendered_markdown_strong_emphasis_uses_distinct_color_in_green_screen_theme() {
+        let context = egui::Context::default();
+        crate::theme::AppTheme::GreenScreen.apply(&context);
+        let style = context.style_of(egui::Theme::Dark);
+
+        let job = markdown_render_layout("plain **bold** text", &style);
+        let plain_idx = job.text.find("plain").expect("contains plain text");
+        let bold_idx = job.text.find("bold").expect("contains bold text");
+        let plain_format = job.format_at_byte(egui::text::ByteIndex(plain_idx));
+        let bold_format = job.format_at_byte(egui::text::ByteIndex(bold_idx));
+
+        assert_eq!(plain_format.color, style.visuals.text_color());
+        assert_eq!(bold_format.color, style.visuals.strong_text_color());
+        assert_ne!(bold_format.color, plain_format.color);
+        assert_eq!(bold_format.color, egui::Color32::WHITE);
+    }
+
+    #[test]
+    fn rendered_markdown_strong_emphasis_uses_distinct_color_in_amber_screen_theme() {
+        let context = egui::Context::default();
+        crate::theme::AppTheme::AmberScreen.apply(&context);
+        let style = context.style_of(egui::Theme::Dark);
+
+        let job = markdown_render_layout("plain **bold** text", &style);
+        let plain_idx = job.text.find("plain").expect("contains plain text");
+        let bold_idx = job.text.find("bold").expect("contains bold text");
+        let plain_format = job.format_at_byte(egui::text::ByteIndex(plain_idx));
+        let bold_format = job.format_at_byte(egui::text::ByteIndex(bold_idx));
+
+        assert_eq!(plain_format.color, style.visuals.text_color());
+        assert_eq!(bold_format.color, style.visuals.strong_text_color());
+        assert_ne!(bold_format.color, plain_format.color);
+        assert_eq!(bold_format.color, egui::Color32::WHITE);
     }
 
     #[test]

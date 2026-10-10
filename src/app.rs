@@ -78,6 +78,7 @@ const MENU_BAR_HEIGHT: f32 = 30.0;
 const MENU_ITEM_SPACING: f32 = 8.0;
 /// Horizontal gap between the Mode and Theme controls in the top bar.
 const TOP_CONTROL_SPACING: f32 = 4.0;
+pub const MENU_SHORTCUT_GAP: f32 = 14.0;
 const EDITOR_TOOLBAR_HEIGHT: f32 = 40.0;
 const STATUS_BAR_HEIGHT: f32 = 26.0;
 const EXPANDED_TOP_CONTROLS_MIN_WIDTH: f32 = 600.0;
@@ -1461,6 +1462,7 @@ impl NoterApp {
         }
 
         let (now, focus_regained, window_focused) = ctx.input(|input| {
+            let window_visible = input.viewport().visible().unwrap_or(true);
             (
                 input.time,
                 input
@@ -1469,7 +1471,8 @@ impl NoterApp {
                     .any(|event| matches!(event, egui::Event::WindowFocused(true))),
                 // Unknown focus is treated as unfocused so background or
                 // minimized sessions do not schedule periodic disk inspection.
-                input.viewport().focused.unwrap_or(false),
+                // Hidden or occluded sessions also suppress periodic repaints.
+                window_visible && input.viewport().focused.unwrap_or(false),
             )
         });
         let interval_elapsed = self
@@ -2420,7 +2423,9 @@ impl NoterApp {
             }
             let mut button = egui::Button::new(candidate.label());
             if let Some(shortcut) = candidate.shortcut() {
-                button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+                button = button
+                    .shortcut_text(ui.ctx().format_shortcut(&shortcut))
+                    .gap(MENU_SHORTCUT_GAP);
             }
             let enabled = self.file_command_enabled(candidate);
             let response = ui.add_enabled(enabled, button);
@@ -2484,7 +2489,8 @@ impl NoterApp {
             let enabled = self.edit_command_enabled(candidate);
             let shortcut = candidate.shortcut(ui.ctx().os());
             let button = egui::Button::new(candidate.label())
-                .shortcut_text(ui.ctx().format_shortcut(&shortcut));
+                .shortcut_text(ui.ctx().format_shortcut(&shortcut))
+                .gap(MENU_SHORTCUT_GAP);
             let response = ui.add_enabled(enabled, button);
             if !enabled && candidate == EditCommand::GoToLine {
                 response
@@ -2642,10 +2648,12 @@ impl NoterApp {
             self.text_wrap.is_wrapped(),
             ViewCommand::ToggleWordWrap.label(),
         );
-        wrap_button = wrap_button.shortcut_text(
-            ui.ctx()
-                .format_shortcut(&ViewCommand::ToggleWordWrap.shortcut()),
-        );
+        wrap_button = wrap_button
+            .shortcut_text(
+                ui.ctx()
+                    .format_shortcut(&ViewCommand::ToggleWordWrap.shortcut()),
+            )
+            .gap(MENU_SHORTCUT_GAP);
         let wrap = ui.add_enabled(self.view == DocumentView::Text, wrap_button);
         if self.view != DocumentView::Text {
             wrap.clone()
@@ -2660,10 +2668,12 @@ impl NoterApp {
         let is_fullscreen = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
         let mut fs_button =
             egui::Button::selectable(is_fullscreen, ViewCommand::ToggleFullscreen.label());
-        fs_button = fs_button.shortcut_text(
-            ui.ctx()
-                .format_shortcut(&ViewCommand::ToggleFullscreen.shortcut()),
-        );
+        fs_button = fs_button
+            .shortcut_text(
+                ui.ctx()
+                    .format_shortcut(&ViewCommand::ToggleFullscreen.shortcut()),
+            )
+            .gap(MENU_SHORTCUT_GAP);
         if ui.add(fs_button).clicked() {
             command.get_or_insert(ViewCommandRequest::restore_document(
                 ViewCommand::ToggleFullscreen,
@@ -2677,7 +2687,9 @@ impl NoterApp {
                 ViewCommand::ResetZoom,
             ] {
                 let mut button = egui::Button::new(candidate.label());
-                button = button.shortcut_text(ui.ctx().format_shortcut(&candidate.shortcut()));
+                button = button
+                    .shortcut_text(ui.ctx().format_shortcut(&candidate.shortcut()))
+                    .gap(MENU_SHORTCUT_GAP);
                 let enabled = self.view_command_enabled(candidate);
                 let response = ui.add_enabled(enabled, button);
                 if !enabled {
@@ -2788,13 +2800,14 @@ impl NoterApp {
         }
         self.finish_text_scale_probe(ctx);
         let (now, focus_regained, focused) = ctx.input(|input| {
+            let visible = input.viewport().visible().unwrap_or(true);
             (
                 input.time,
                 input
                     .events
                     .iter()
                     .any(|event| matches!(event, egui::Event::WindowFocused(true))),
-                input.viewport().focused.unwrap_or(false),
+                visible && input.viewport().focused.unwrap_or(false),
             )
         });
         if !focused {
@@ -4834,6 +4847,21 @@ mod tests {
         }
     }
 
+    fn collect_text_shapes_with_rect(shape: &egui::Shape, text: &mut Vec<(String, egui::Rect)>) {
+        match shape {
+            egui::Shape::Text(text_shape) => {
+                let rect = egui::Rect::from_min_size(text_shape.pos, text_shape.galley.size());
+                text.push((text_shape.galley.job.text.clone(), rect));
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_text_shapes_with_rect(shape, text);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn rendered_text(output: &egui::FullOutput) -> Vec<(String, egui::Pos2)> {
         let mut text = Vec::new();
         for shape in &output.shapes {
@@ -6219,6 +6247,37 @@ mod tests {
             }
             assert!(command.is_none());
         }
+    }
+
+    #[test]
+    fn menu_items_maintain_minimum_gap_between_label_and_shortcut() {
+        let context = egui::Context::default();
+        context.set_os(egui::os::OperatingSystem::Nix);
+        let mut command = None;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            NoterApp::default().show_file_menu(ui, &mut command);
+        });
+
+        let mut rects = Vec::new();
+        for shape in &output.shapes {
+            collect_text_shapes_with_rect(&shape.shape, &mut rects);
+        }
+
+        let save_as = rects
+            .iter()
+            .find(|(text, _)| text == FileCommand::SaveAs.label())
+            .expect("menu contains Save As...");
+        let save_as_shortcut = rects
+            .iter()
+            .find(|(text, _)| text == "Ctrl+Shift+S")
+            .expect("menu contains Ctrl+Shift+S");
+
+        assert!(
+            save_as_shortcut.1.min.x - save_as.1.max.x >= MENU_SHORTCUT_GAP * 2.0,
+            "gap between label and shortcut should be at least {} pt, got {}",
+            MENU_SHORTCUT_GAP * 2.0,
+            save_as_shortcut.1.min.x - save_as.1.max.x
+        );
     }
 
     #[test]
@@ -10798,6 +10857,43 @@ mod tests {
                     .is_some_and(|message| message.contains("displaced recovery artifact"))
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn hidden_window_does_not_schedule_periodic_external_inspection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let path = directory.path().join("hidden.txt");
+        fs::write(&path, b"initial")?;
+        let mut app = NoterApp {
+            document: Document::from_path(&path)?,
+            ..NoterApp::default()
+        };
+        app.last_external_inspect_at = Some(0.0);
+        let context = egui::Context::default();
+        let _ = context.run_ui(egui::RawInput::default(), |_| {});
+        let mut input = egui::RawInput {
+            time: Some(20.0),
+            ..Default::default()
+        };
+        let info = egui::ViewportInfo {
+            focused: Some(true),
+            occluded: Some(true),
+            ..Default::default()
+        };
+        input.viewports.insert(egui::ViewportId::ROOT, info);
+
+        let output = context.run_ui(input, |ui| {
+            app.maybe_inspect_external_change(ui.ctx());
+        });
+
+        let delay = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map_or(std::time::Duration::MAX, |v| v.repaint_delay);
+        assert_eq!(delay, std::time::Duration::MAX);
+        assert_eq!(app.last_external_inspect_at, Some(0.0));
         Ok(())
     }
 

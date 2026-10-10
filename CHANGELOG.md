@@ -131,6 +131,18 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Disable vertical sync under Wayland display sessions and suppress periodic
+  background file inspection when the window is hidden or occluded, avoiding
+  compositor response deadlocks while Noter is on an inactive workspace.
+- Enforce a minimum separation gap between menu item labels and their shortcut
+  text across application menus and the Markdown formatting popup, preventing
+  long labels from running directly into right-aligned shortcuts.
+- Render strong emphasis using high-intensity contrast in the Green Screen and
+  Amber Screen CRT themes, ensuring bold text remains distinctly visible in
+  monospace themes that lack heavy typographic weights.
+- Clarify source install destinations in README and installation guides,
+  identifying Cargo's binary directory as the default target and documenting
+  Linux desktop launcher and icon placement.
 - Preflight Linux file dialog requests to avoid freezing the window when a
   portal backend is missing or hung (such as in Hyprland without
   `xdg-desktop-portal-gtk` or `zenity`). Noter checks the portal bus first and
