@@ -18,7 +18,8 @@ Options:
   --binary           Download a release even when run from a checkout
   --from-source      Build from the checkout that contains this script
   --source PATH      Build from the checkout at PATH
-  --uninstall        Remove the installed binary
+  --uninstall        Remove the installed binary. On Linux, also remove the
+                     desktop entry and icon when they belong to that binary
   --check            Validate the plan without installing
   -h, --help         Show this help
 EOF
@@ -132,6 +133,257 @@ prepare_trusted_bin_dir() {
     trusted_install_directory "$bin_dir"
 }
 
+# Reviewable copies live in packaging/linux. These heredocs are the bytes a
+# piped --binary install can write, and a test requires the two to match.
+desktop_template() {
+    cat <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Noter
+GenericName=Text Editor
+Comment=Edit plain text and Markdown files
+Exec=@EXEC@
+Icon=noter
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/markdown;text/x-markdown;text/plain;
+StartupWMClass=noter
+Keywords=text;markdown;editor;
+X-Noter-Installer=true
+EOF
+}
+
+icon_svg() {
+    cat <<'EOF'
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- noter-installer -->
+  <rect width="128" height="128" rx="28" fill="#1f2124"/>
+  <path fill="#e6e8ec" d="M34 96V32h18.5l23 38.2V32H94v64H75.5L52.5 57.8V96H34z"/>
+</svg>
+EOF
+}
+
+# Absolute XDG_DATA_HOME, or $HOME/.local/share. A relative value is refused
+# before any desktop file is created. Sets data_home. Not called in $(...).
+resolve_linux_data_home() {
+    if [ -n "${XDG_DATA_HOME:-}" ]; then
+        case "$XDG_DATA_HOME" in
+            /*) data_home=$XDG_DATA_HOME ;;
+            *) fail "XDG_DATA_HOME must be an absolute path." ;;
+        esac
+    elif [ -n "${HOME:-}" ]; then
+        data_home=$HOME/.local/share
+    else
+        fail "a data directory could not be determined; set HOME or XDG_DATA_HOME."
+    fi
+}
+
+prepare_trusted_data_dir() {
+    requested=$1
+    existing_dir=$requested
+    while [ ! -e "$existing_dir" ]; do
+        [ ! -L "$existing_dir" ] || fail "desktop install path contains a broken symbolic link."
+        existing_dir=$(dirname -- "$existing_dir")
+    done
+    [ -d "$existing_dir" ] || fail "desktop install path contains a non-directory entry."
+    trusted_install_directory "$existing_dir"
+    mkdir -p -- "$requested"
+    resolved_data_dir=$(CDPATH='' cd -- "$requested" 2>/dev/null && pwd -P) ||
+        fail "cannot resolve the desktop install directory."
+    trusted_install_directory "$resolved_data_dir"
+}
+
+# Always quote Exec so a path containing spaces cannot be split.
+desktop_quote() {
+    case "$1" in
+        *'
+'*) return 1 ;;
+    esac
+    escaped=$(printf '%s' "$1" | sed 's/[\\"`$]/\\&/g')
+    printf '"%s"' "$escaped"
+}
+
+canonical_installed_binary() {
+    bin_dir=$install_root/bin
+    if [ -d "$bin_dir" ] && [ ! -L "$bin_dir" ]; then
+        resolved=$(CDPATH='' cd -- "$bin_dir" 2>/dev/null && pwd -P) || resolved=
+        if [ -n "$resolved" ]; then
+            printf '%s\n' "$resolved/noter"
+            return 0
+        fi
+    fi
+    printf '%s\n' "$install_root/bin/noter"
+}
+
+assert_regular_destination() {
+    path=$1
+    label=$2
+    if [ -L "$path" ] || { [ -e "$path" ] && [ ! -f "$path" ]; }; then
+        fail "the $label destination is not a regular file."
+    fi
+}
+
+write_desktop_entry() {
+    stage=$1
+    quoted=$2
+    template=$(mktemp "${TMPDIR:-/tmp}/noter-desktop.XXXXXXXX") || return 1
+    desktop_template >"$template" || {
+        rm -f "$template"
+        return 1
+    }
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            'Exec=@EXEC@') printf 'Exec=%s\n' "$quoted" || {
+                rm -f "$template"
+                return 1
+            } ;;
+            *) printf '%s\n' "$line" || {
+                rm -f "$template"
+                return 1
+            } ;;
+        esac
+    done <"$template" >"$stage"
+    status=$?
+    rm -f "$template"
+    return "$status"
+}
+
+parse_desktop_exec() {
+    awk '
+        BEGIN { found = 0 }
+        /^Exec=/ {
+            value = substr($0, 6)
+            if (substr(value, 1, 1) == "\"") {
+                out = ""
+                i = 2
+                n = length(value)
+                while (i <= n) {
+                    c = substr(value, i, 1)
+                    if (c == "\\") {
+                        i++
+                        if (i <= n) {
+                            out = out substr(value, i, 1)
+                        }
+                    } else if (c == "\"") {
+                        break
+                    } else {
+                        out = out c
+                    }
+                    i++
+                }
+                print out
+            } else {
+                split(value, fields, /[[:space:]]+/)
+                print fields[1]
+            }
+            found = 1
+            exit
+        }
+        END { if (found == 0) exit 1 }
+    ' "$1"
+}
+
+refresh_desktop_database() {
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$1" >/dev/null 2>&1 || true
+    fi
+}
+
+# Installs the Linux desktop entry and icon for one absolute binary path.
+# No-op on other operating systems. --check prints the paths and creates nothing.
+install_linux_desktop() {
+    binary=$1
+    [ "$(uname -s)" = Linux ] || return 0
+    resolve_linux_data_home
+    apps_dir=$data_home/applications
+    icon_dir=$data_home/icons/hicolor/scalable/apps
+    desktop_path=$apps_dir/noter.desktop
+    icon_path=$icon_dir/noter.svg
+    if [ "$check_only" = true ]; then
+        printf "Would install desktop entry '%s'.\n" "$desktop_path"
+        printf "Would install icon '%s'.\n" "$icon_path"
+        return 0
+    fi
+
+    prepare_trusted_data_dir "$apps_dir"
+    apps_dir=$resolved_data_dir
+    prepare_trusted_data_dir "$icon_dir"
+    icon_dir=$resolved_data_dir
+    desktop_path=$apps_dir/noter.desktop
+    icon_path=$icon_dir/noter.svg
+    assert_regular_destination "$desktop_path" "desktop entry"
+    assert_regular_destination "$icon_path" "icon"
+
+    quoted=$(desktop_quote "$binary") || fail "cannot quote the installed executable path."
+    stage=$(mktemp "$apps_dir/.noter.desktop.XXXXXXXX") ||
+        fail "cannot reserve a desktop entry stage."
+    if ! write_desktop_entry "$stage" "$quoted"; then
+        rm -f "$stage"
+        fail "cannot write the desktop entry."
+    fi
+    if ! grep -q '^X-Noter-Installer=true$' "$stage"; then
+        rm -f "$stage"
+        fail "desktop entry is incomplete."
+    fi
+    if grep -q '@EXEC@' "$stage"; then
+        rm -f "$stage"
+        fail "desktop entry is incomplete."
+    fi
+    chmod 644 "$stage" || {
+        rm -f "$stage"
+        fail "cannot set desktop entry permissions."
+    }
+    mv -f "$stage" "$desktop_path" || fail "cannot install the desktop entry."
+
+    icon_stage=$(mktemp "$icon_dir/.noter.icon.XXXXXXXX") ||
+        fail "cannot reserve an icon stage."
+    if ! icon_svg >"$icon_stage"; then
+        rm -f "$icon_stage"
+        fail "cannot write the icon."
+    fi
+    grep -q 'noter-installer' "$icon_stage" || {
+        rm -f "$icon_stage"
+        fail "icon is incomplete."
+    }
+    chmod 644 "$icon_stage" || {
+        rm -f "$icon_stage"
+        fail "cannot set icon permissions."
+    }
+    mv -f "$icon_stage" "$icon_path" || fail "cannot install the icon."
+    refresh_desktop_database "$apps_dir"
+    printf "Installed desktop entry '%s'.\n" "$desktop_path"
+}
+
+# Removes the desktop entry only when it is a regular file, carries the
+# installer marker, and its Exec path is this install. The icon goes only when
+# it is a regular file carrying the installer comment. Symlinks are left alone.
+remove_linux_desktop() {
+    [ "$(uname -s)" = Linux ] || return 0
+    resolve_linux_data_home
+    desktop_path=$data_home/applications/noter.desktop
+    icon_path=$data_home/icons/hicolor/scalable/apps/noter.svg
+    expected=$(canonical_installed_binary)
+    if [ "$check_only" = true ]; then
+        printf "Would remove desktop entry '%s' when it belongs to '%s'.\n" "$desktop_path" "$expected"
+        printf "Would remove icon '%s' when it belongs to this install.\n" "$icon_path"
+        return 0
+    fi
+    if [ ! -L "$desktop_path" ] && [ -f "$desktop_path" ] &&
+        grep -q '^X-Noter-Installer=true$' "$desktop_path"; then
+        parsed=$(parse_desktop_exec "$desktop_path" || true)
+        if [ -n "$parsed" ] && [ "$parsed" = "$expected" ]; then
+            rm -f -- "$desktop_path"
+            printf "Removed desktop entry '%s'.\n" "$desktop_path"
+            refresh_desktop_database "$(dirname -- "$desktop_path")"
+        fi
+    fi
+    if [ ! -L "$icon_path" ] && [ -f "$icon_path" ] &&
+        grep -q 'noter-installer' "$icon_path"; then
+        rm -f -- "$icon_path"
+        printf "Removed icon '%s'.\n" "$icon_path"
+    fi
+}
+
 install_from_source() {
     manifest=$source_dir/Cargo.toml
     [ -f "$manifest" ] || fail "Noter source manifest not found at '$manifest'."
@@ -148,6 +400,7 @@ install_from_source() {
 
     if [ "$check_only" = true ]; then
         printf "Validated Noter %s at '%s'.\n" "$expected_version" "$source_dir"
+        install_linux_desktop "$install_root/bin/noter"
         return
     fi
 
@@ -185,6 +438,7 @@ install_from_source() {
     installed_binary=$bin_dir/noter
     printf "Installed Noter %s at '%s'.\n" "$expected_version" "$installed_binary"
     path_hint "$bin_dir"
+    install_linux_desktop "$installed_binary"
 }
 
 install_from_release() {
@@ -221,6 +475,7 @@ install_from_release() {
 
     if [ "$check_only" = true ]; then
         printf "Validated release %s for %s from %s.\n" "$tag" "$target" "$archive_url"
+        install_linux_desktop "$install_root/bin/noter"
         return
     fi
 
@@ -266,6 +521,7 @@ install_from_release() {
     mv -f "$staged" "$bin_dir/noter"
     printf "Installed %s at '%s'.\n" "$staged_version" "$bin_dir/noter"
     path_hint "$bin_dir"
+    install_linux_desktop "$bin_dir/noter"
 }
 
 main() {
@@ -352,6 +608,7 @@ main() {
         else
             printf "No Noter binary at '%s'.\n" "$target_binary"
         fi
+        remove_linux_desktop
         return
     fi
 

@@ -8,6 +8,7 @@
 mod app;
 mod bounded_text_input;
 mod crash_recovery;
+mod desktop_session;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod display_runtime;
 mod editor_settings;
@@ -113,6 +114,13 @@ fn main() -> eframe::Result {
         })
         .with_min_inner_size([420.0, 300.0])
         .with_transparent(false);
+    // Linux persistence already lowercases the window title, so `noter` keeps
+    // the existing `~/.local/share/noter` directory. macOS and Windows store
+    // `Noter` and `noter` separately, so the id stays Linux-only.
+    #[cfg(target_os = "linux")]
+    {
+        viewport = viewport.with_app_id("noter");
+    }
     if screenshot_qa {
         viewport = viewport.with_resizable(false);
     }

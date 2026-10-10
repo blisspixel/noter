@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Noter
+GenericName=Text Editor
+Comment=Edit plain text and Markdown files
+Exec=@EXEC@
+Icon=noter
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/markdown;text/x-markdown;text/plain;
+StartupWMClass=noter
+Keywords=text;markdown;editor;
+X-Noter-Installer=true

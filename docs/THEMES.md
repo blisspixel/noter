@@ -12,6 +12,10 @@ Every theme uses the same native text shaping, bundled document font, editing
 model, accessibility tree, and local-only data path.
 
 Noter currently provides System, Light, Dark, Green Screen, and Amber Screen.
+Under the System theme on Linux, Noter adapts to the desktop session: when an
+Omarchy session palette (`colors.toml`) is present, Noter applies its colors
+within 4.5:1 contrast bounds without executing external programs or network
+access. Selecting any explicit theme replaces that overlay.
 
 ## Adding a built-in theme
 
