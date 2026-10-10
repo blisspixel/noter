@@ -34,24 +34,24 @@ SCREENSHOT_SOURCE_GLOBS = (
     "src/**/*.rs",
 )
 EXPECTED_SCREENSHOT_SOURCE_SHA256 = (
-    "8b7f844fae6ca3d0b56478024d07cae479006a179777253e3d7cfb06fe20ca59"
+    "60d591f6c5a2019bf4a175ef69b89b631845d32bfe6f36b7634cadd807a6f373"
 )
 EXPECTED_SHA256 = {
     Path(
         "docs/assets/noter-light-text.png"
-    ): "33c0c1f580be2f0bc1bba8bebdf8dbb8a4422f176849366aa0ac25d5e58fc6b0",
+    ): "0701b24b30cf716fc151b304ab135d216d79ada172198f2318e53ac5f7bf856b",
     Path(
         "docs/assets/noter-light.png"
-    ): "1aa04aa51330b743040616cfe433807a1ed4aa5f7e2fdb350f25d60e98410ce6",
+    ): "f880d3fb397dbdd6efe9f4985fe7bdd160e59f0f35043963530fb4ac511df73f",
     Path(
         "docs/assets/noter-dark.png"
-    ): "6717c46aee4679dc13fdbdd55e5040e060de31226f2a1b1a25f572a86a79763f",
+    ): "d158431becf9166d2eb49d9bd9171e21e317d3a9fd5ab2205d9545228d756af5",
     Path(
         "docs/assets/noter-green-screen.png"
-    ): "f76526d2346a6687c846fde6202eddc0d7968c5a6f8c41420a993c137e824757",
+    ): "15121d7f24e64b962f75a66d3796a12abb8261abc1ed9a7eee9ecc697fe22e15",
     Path(
         "docs/assets/noter-amber-screen.png"
-    ): "ee662acb474a8e728c012477007ae6b190c83cdcdc50e5fbfb75fbbd1e696abc",
+    ): "76d9eada35cf471263e65708019aea3fd472ac8a5ce9c4ca4cb20c339671085d",
 }
 
 

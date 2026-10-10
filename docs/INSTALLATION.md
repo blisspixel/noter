@@ -129,7 +129,11 @@ The source installer:
 3. verifies the staged executable's version and command-line error contract;
    and
 4. replaces an older Noter executable at the selected install root only after
-   verification passes.
+   verification passes. By default, source installs target Cargo's bin
+   directory (`~/.cargo/bin` on macOS and Linux, `%USERPROFILE%\.cargo\bin` on
+   Windows, or `$CARGO_INSTALL_ROOT/bin`). On Linux, it also installs the
+   desktop entry and icon to `~/.local/share/applications` and
+   `~/.local/share/icons`.
 
 Run from a checkout, the installer builds that source; pass `--binary`
 (`-Binary`) to download a release instead. It does not fetch Noter source,
