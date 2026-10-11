@@ -11,6 +11,9 @@ that candidate is frozen for publication.
 Candidate frozen for verification; publication is pending the focused checkpoint
 in [the release readiness record](docs/RELEASE_READINESS.md).
 
+The native Omarchy retest is deferred. The hidden-workspace change remains an
+unverified mitigation, with issue #44 open for follow-up evidence.
+
 ### Security
 
 - Bind Windows recovery directory traversal and private child creation to the

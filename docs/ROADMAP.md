@@ -99,8 +99,9 @@ does not expand unsafe UI surface.
     it merged to protected `main` as `7e4edb3` on 2026-09-26.
 8b. **In progress: release the hardening already implemented.** The explicit
     2026-10-11 checkpoint decision in [REQUIREMENTS.md](REQUIREMENTS.md)
-    separates beta.2 from the larger editor project. Resolve issues #44 through
-    #47, correct public claims and release notes, record current-head CI and
+    separates beta.2 from the larger editor project. Address issues #44 through
+    #47, keeping #44 open for the postponed native Hyprland retest; correct
+    public claims and release notes, record current-head CI and
     coverage, pass a hosted artifact dry run, and exercise the focused native
     matrix in [RELEASE_READINESS.md](RELEASE_READINESS.md). Missing environment
     evidence remains visible; no critical or high safety defect is deferrable.

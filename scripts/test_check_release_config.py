@@ -607,6 +607,25 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
         self.assertIn("missing remote SHA-256 digest verification", errors)
 
+    def test_rejects_release_artifact_version_drift(self) -> None:
+        changed = self.manifest.replace(
+            'version = "0.1.0-beta.2"', 'version = "0.1.0-beta.3"', 1
+        )
+        self.assertIn(
+            "release artifact version differs from Cargo package version",
+            validate_release_artifact_validator(
+                self.release_artifact_validator, changed
+            ),
+        )
+
+    def test_rejects_missing_release_package_version(self) -> None:
+        self.assertIn(
+            "release package version must be valid Cargo metadata",
+            validate_release_artifact_validator(
+                self.release_artifact_validator, "[package]"
+            ),
+        )
+
     def test_rejects_cargo_dist_publication_before_attestation(self) -> None:
         changed = self.workflow.replace(
             "--steps=create --steps=upload --output-format=json",
