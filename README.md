@@ -80,9 +80,9 @@ on Linux, Noter also adapts to session text scale and Omarchy palettes.
 
 ### Install a release
 
-Check [GitHub Releases](https://github.com/blisspixel/noter/releases) for Windows,
-Linux, and macOS (Intel and Apple Silicon) binaries. These commands select beta.2;
-use them once its tag and artifacts are available, or build from source below.
+[Download beta.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2)
+for Windows, Linux, and macOS (Intel and Apple Silicon). These commands select
+that release; you can also build from source below.
 The installer verifies the archive's SHA-256 checksum and installs `noter` for
 your user. Download it, read it, then run it:
 
@@ -140,11 +140,12 @@ and update contracts are documented in [docs/INSTALLATION.md](docs/INSTALLATION.
 
 **Source version:** `0.1.0-beta.2`
 
-This version is a focused hardening prerelease. It fixes beta.1's terminal
-save-failure, recovery, and terminal-control defects. Check
-[GitHub Releases](https://github.com/blisspixel/noter/releases) for available
-builds and their publication evidence; a source version does not prove that its
-binaries have been published. Keep backups during prerelease use.
+[Beta.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2) was
+published on 2026-10-11 as a focused hardening prerelease. It fixes beta.1's
+terminal save-failure, recovery, and terminal-control defects. The
+[publication record](docs/evidence/beta2-publication-2026-10-11.md) identifies
+the exact source, passing CI, verified packages, and build provenance.
+Keep backups during prerelease use.
 
 Both interfaces share save safety, crash recovery, and bounded Undo. Beta.2 also
 adds Linux desktop integration and mitigates hidden-window
@@ -152,7 +153,7 @@ Wayland stalls. Native Hyprland retesting remains pending. The virtualized
 large-file editor (M5), continuous Markdown editing (M6), and platform signing
 and complete distribution evidence (M7) remain open. The
 [release readiness record](docs/RELEASE_READINESS.md) separates implementation,
-automated evidence, native checks, and publication blockers.
+automated evidence, native checks, and deferred checkpoint gates.
 
 The privacy stance above is product law for every release, including alpha. What
 is still unfinished is reliability, completeness, and packaging, not a planned

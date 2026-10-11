@@ -4,11 +4,12 @@
 
 **Guide version:** `0.1.0-beta.2`
 
-This guide describes beta.2 source and its intended prerelease artifacts.
-Check [GitHub Releases](https://github.com/blisspixel/noter/releases) for
-availability and publication evidence. Source presence does not prove publication.
-Once published, its artifacts include platform archives, a Windows MSI,
-checksums, SBOMs, and GitHub build provenance. Keep backups during evaluation.
+This guide describes beta.2 source and its
+[published prerelease](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2).
+Its artifacts include platform archives, a Windows MSI, checksums, SBOMs, and
+GitHub build provenance. The [publication record](evidence/beta2-publication-2026-10-11.md)
+binds the downloaded inventory and verification to the release source.
+Keep backups during evaluation.
 Windows and macOS artifacts are not yet platform-signed, and no self-updating
 release channel exists. Source installation remains supported. See the
 [release process](RELEASING.md).
@@ -20,7 +21,7 @@ separates source observations from publication and native verification.
 
 ## Prerelease artifacts
 
-Once this checkpoint is published, its artifacts are on the
+The artifacts are on the
 [beta.2 release page](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2).
 Download an asset before executing it and verify its GitHub attestation.
 Published SHA-256 sidecars and
@@ -35,9 +36,8 @@ not a supported stable installer.
 
 ## Standalone binary install
 
-Use the examples below only after the matching beta.2 tag and artifacts are
-available on [GitHub Releases](https://github.com/blisspixel/noter/releases).
-Otherwise build the source checkout. The version-matched installer scripts
+The examples below select the published beta.2 tag and artifacts. You can also
+build the source checkout. The version-matched installer scripts
 install a binary without build tools. Download the script, read it, then run it;
 do not pipe a remote script into a shell.
 

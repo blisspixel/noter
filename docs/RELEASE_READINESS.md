@@ -2,11 +2,13 @@
 
 **Updated:** 2026-10-11
 
-**Preparation snapshot:** focused beta.2 prerelease approved on 2026-10-11.
-This source record precedes publication and is not a publication receipt.
-Check [GitHub Releases](https://github.com/blisspixel/noter/releases) for actual
-availability and later verification receipts. First-release requirements remain in [REQUIREMENTS.md](REQUIREMENTS.md)
-and sequence remains in [ROADMAP.md](ROADMAP.md).
+**Published checkpoint:** focused beta.2 prerelease, approved and published on
+2026-10-11 from `9cdaa3b8cef9a85259236302654cbf40c34e7339`.
+The [publication record](evidence/beta2-publication-2026-10-11.md) binds the
+[release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2), passing
+CI, public assets, provenance, and installed version to that source. This record
+retains preparation history and deferred checks. First-release requirements
+remain in [REQUIREMENTS.md](REQUIREMENTS.md) and sequence in [ROADMAP.md](ROADMAP.md).
 
 ## Scope and issue audit
 
@@ -42,7 +44,7 @@ rejects recurrence of the stale checkpoint text.
 ## Automated evidence
 
 Historical implementation references below are evidence for their exact commits,
-not automatic verification of the new candidate.
+not automatic verification of later revisions.
 
 | Revision | Evidence | Result |
 | --- | --- | --- |
@@ -51,15 +53,20 @@ not automatic verification of the new candidate.
 | `9879408` | [PR CI 38069044066](https://github.com/blisspixel/noter/actions/runs/38069044066) | UI/compositor changes passed all jobs; trust-kernel line coverage 93.05 percent |
 | `9cfd712` | [PR CI 38133597002](https://github.com/blisspixel/noter/actions/runs/38133597002) | Cancelled after documentation correction; ordinary suites, coverage, Linux/macOS mutation, and Windows shard 9 passed; remaining Windows shards were interrupted |
 | `9cfd712` | [Hosted Release dry run 38133594593](https://github.com/blisspixel/noter/actions/runs/38133594593) | Four target builds and global assembly passed; downloaded 20-file payload passed host-stage validation and archive inspection; hosting was skipped |
-| `a73dc38` | [PR CI 38137457512](https://github.com/blisspixel/noter/actions/runs/38137457512) | At evidence capture, ordinary native suites, lint, docs, coverage, and macOS mutation passed; this source predates the consumer-document correction and does not verify a later commit |
+| `a73dc38` | [PR CI 38137457512](https://github.com/blisspixel/noter/actions/runs/38137457512) | Cancelled after the consumer-document correction; ordinary native suites, lint, docs, coverage, and macOS mutation passed before cancellation; this is historical evidence only |
 | `a73dc38` | [Hosted dry run 38137465542](https://github.com/blisspixel/noter/actions/runs/38137465542) and [inspection receipt](https://github.com/blisspixel/noter/pull/49#issuecomment-6108874848) | Four target builds, global assembly, 20-file host-stage validation, archives, bundled docs/notices, Windows version/MSI properties, and SBOM identities passed; hosting was skipped |
-| Release candidate | Exact-head PR CI, main-push CI, and hosted dry run | Required after documentation corrections; historical receipts above do not verify a later commit |
+| `05cbb69` | [PR CI 38139971077](https://github.com/blisspixel/noter/actions/runs/38139971077) | Every job passed, including all 14 mutation workers and aggregate gate |
+| `05cbb69` | [Hosted dry run 38139972098](https://github.com/blisspixel/noter/actions/runs/38139972098) and [inspection receipt](https://github.com/blisspixel/noter/pull/49#issuecomment-6109188997) | Four builds, global assembly, exact 20-file payload, archives, source, MSI, SBOMs, bundled documents/notices, and Windows version passed; host skipped |
+| `9cdaa3b` | [Main-push CI 38144668329](https://github.com/blisspixel/noter/actions/runs/38144668329) | Every required job passed before publication; protected rebase preserved the reviewed candidate's complete tree |
+| `9cdaa3b` | [Release 38149804354](https://github.com/blisspixel/noter/actions/runs/38149804354) and [public verification](evidence/beta2-publication-2026-10-11.md) | Published beta.2; exact 21-file public inventory, server digests, checksums, manifest, source/archive/MSI/SBOM inspection, all attestations, and isolated Windows install/reinstall passed |
 
-The `a73dc38` hosted Linux LCOV receipt contains 41,542/44,372 covered workspace
-lines (93.62 percent), and 19,799/21,284 trust-kernel lines (93.02 percent) using
-the exact CI exclusion expression. Both exceed their unchanged gates. The full
-mutation matrix and exact main-push CI must independently pass; this receipt does
-not replace those requirements.
+The release source `9cdaa3b` hosted Linux LCOV receipt contains 41,537/44,372
+covered workspace lines (93.61 percent), and 19,794/21,284 trust-kernel lines
+(93.00 percent) using the exact CI exclusion expression. Both exceed their
+unchanged gates. Downloaded PR and main mutation reports contain zero missed,
+timed-out, or surviving mutants, all baselines pass, and the infrastructure
+checker reports no recognized failures. Per-shard counts and artifact hashes
+are in the [JSON receipt](evidence/beta2-publication-2026-10-11.json).
 
 Local Windows validation of the `9cfd712` source passed formatting,
 strict Clippy, rustdoc, advisory audit, dependency policy, 1,057 Rust tests,
@@ -67,15 +74,15 @@ strict Clippy, rustdoc, advisory audit, dependency policy, 1,057 Rust tests,
 release configuration. The same working tree passes 26 Linux WSL Ubuntu 20.04 installer tests
 (two macOS-specific skips), including a real GLib DesktopAppInfo launch through
 the generated entry. These are native Linux process observations,
-not an interactive Omarchy desktop result. Final candidate results replace this
-provisional local record after review and version preparation.
+not an interactive Omarchy desktop result. This historical local record is
+supplemented by the final exact-commit hosted and public verification above.
 
 The consumer-guide correction adds version-matched installer recipes and a
 configuration regression that rejects source/guide version drift, old-version
 recipes, and unversioned installer downloads. Its local script gate passed
 237 Python tests (28 platform-specific skips), Ruff, links, screenshots, and
 release configuration. Rust implementation and publication safeguards are
-unchanged; complete exact-head CI remains required.
+unchanged. Its exact-head PR CI and the rebased main-push CI both passed.
 
 The first hosted dry run, [38132418647](https://github.com/blisspixel/noter/actions/runs/38132418647),
 built all four targets but correctly refused global assembly because the artifact
@@ -83,8 +90,9 @@ validator still expected beta.1. Updating its identity to beta.2 makes the same
 downloaded local artifacts pass `prepare --stage global`. A new Cargo-version
 consistency regression prevents that drift. Independent review approved the
 validator's new digest without changing its payload or publication safeguards.
-The successful replacement dry run above confirms the corrected identity through
-global assembly. It does not establish public upload or attestation verification.
+The successful replacement dry runs above confirmed the corrected identity
+through global assembly. Actual public upload and attestation verification were
+subsequently established by the named publication record.
 
 ## Focused native matrix
 
@@ -96,7 +104,8 @@ limitations as evidence. Workflow/WiX digest ratification followed that review.
 All five candidate screenshots were regenerated and visually inspected; image
 bytes match the prior reviewed captures, and the input digest binds beta.2's
 updated manifests and lockfile. This records source review and visual inspection,
-not completion of the pending native desktop or publication rows.
+not completion of the deferred native desktop, display-scale, or clean-machine
+installation rows. Public artifact verification is recorded separately above.
 
 Use [PLAYTEST.md](PLAYTEST.md) for exact actions and record the full commit,
 artifact checksum, platform, desktop, and display scale beside each result.
@@ -107,7 +116,7 @@ artifact checksum, platform, desktop, and display scale beside each result.
 | Hidden workspace, clean and dirty, recovery scheduling | Not applicable | Postponed; required for #44 verification, not claimed for beta.2 | Native compositor matrix deferred to beta.3 |
 | Menus and CRT emphasis at 100 and 150 percent scale | Native menu and both CRT themes passed at observed host scale; five deterministic 100 percent captures reviewed; full scale matrix deferred to RC | Interactive retest deferred to beta.3 | Interactive theme matrix deferred to RC |
 | Source/binary launcher, Open With, uninstall ownership | Not applicable | Native desktop retest deferred to beta.3; Linux process regressions pass locally | Linux X11 desktop retest deferred to beta.3 |
-| Downloaded archive version, checksum and attestation | Pending | Pending | Four-target artifact inspection required; clean-machine matrix deferred to RC |
+| Downloaded archive version, checksum and attestation | Public archive CLI prints beta.2; checksum/provenance and isolated install/reinstall passed | Linux archive checksum/provenance passed; native Omarchy launch still deferred | Both macOS archives passed checksum/provenance, bundled-document, and SBOM checks; native interactive launch and clean-machine matrix deferred to RC |
 | Install, reinstall, upgrade, rollback, uninstall | Automated installer fixtures passed; clean-machine packaged matrix deferred to RC | Linux source/binary installer process fixtures passed; interactive desktop matrix deferred to beta.3 | Native macOS installer fixtures passed in CI; complete packaged clean-machine matrix deferred to RC |
 
 The 2026-10-11 follow-up postponed the user's Omarchy retest and directed continued

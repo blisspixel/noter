@@ -6,11 +6,17 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Record beta.2 publication, downloaded artifact verification, and the remaining
+  beta.3/RC evidence gates in the documentation.
+
 ## 0.1.0-beta.2 - 2026-10-11
 
-Focused hardening checkpoint. The source-preparation snapshot is recorded in
-[release readiness](docs/RELEASE_READINESS.md); availability and publication
-receipts are on [GitHub Releases](https://github.com/blisspixel/noter/releases).
+Published [focused hardening prerelease](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2)
+from commit `9cdaa3b8cef9a85259236302654cbf40c34e7339`.
+The [publication record](docs/evidence/beta2-publication-2026-10-11.md) records
+passing PR/main CI, packages, checksums, SBOMs, provenance, and isolated Windows
+installation. [Release readiness](docs/RELEASE_READINESS.md) retains the scoped
+native limits and later checkpoint gates.
 
 The native Omarchy retest is deferred. The hidden-workspace change remains an
 unverified mitigation, with issue #44 open for follow-up evidence.

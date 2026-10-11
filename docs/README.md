@@ -47,7 +47,10 @@ each topic.
 
 - [Roadmap](ROADMAP.md) owns milestone order, status, and exit criteria.
 - [Release readiness](RELEASE_READINESS.md) records the current issue audit,
-  automated evidence, native retest plan, and publication blockers.
+  automated evidence, native retest plan, and deferred checkpoint gates.
+- [Beta.2 publication verification](evidence/beta2-publication-2026-10-11.md)
+  records the immutable release source, passing CI, public package inventory,
+  checksums, provenance, installed version, and remaining native limits.
 - [Playtest brief](PLAYTEST.md) records what changed for the current round, what
   is deliberately still open, and which surfaces remain unexercised.
 - [Research](RESEARCH.md) records dated primary-source findings behind product

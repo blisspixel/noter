@@ -2,10 +2,10 @@
 
 **Updated:** 2026-10-11
 
-**Source snapshot:** checkpoint preparation and evidence at this revision.
-Source version numbers do not establish publication; check
-[GitHub Releases](https://github.com/blisspixel/noter/releases) for available
-tags and later publication receipts.
+**Current checkpoint:** beta.2 published on 2026-10-11 from
+`9cdaa3b8cef9a85259236302654cbf40c34e7339`.
+The [publication record](evidence/beta2-publication-2026-10-11.md) binds the
+release, passing CI, and verified artifacts to that immutable source.
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -30,7 +30,7 @@ criteria and evidence land on one immutable green commit.
 | `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1 through M4 and M6 partial | Prior crate checkpoint |
 | `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups on supported local state roots | Recovery, clipboard, overwrite confirm, first-contact honesty, and alpha evidence | **Published 2026-08-29** |
 | `0.1.0-beta.1` | Terminal interface preview, installer scripts, caret and Markdown Enter refinements | Planned M4-H1, M5 gate, and M6 continuous editing did not land | **Published 2026-09-25** |
-| `0.1.0-beta.2` | **Focused beta hardening:** make existing surfaces safer | Terminal save, input, drawing, recovery, installer, and Linux desktop fixes; scoped evidence | Candidate preparation; scope approved 2026-10-11 |
+| `0.1.0-beta.2` | **Focused beta hardening:** make existing surfaces safer | Terminal save, input, drawing, recovery, installer, and Linux desktop fixes; scoped evidence | **Published 2026-10-11**; [verification](evidence/beta2-publication-2026-10-11.md) |
 | `0.1.0-beta.3` | Production editor foundation and continuous Markdown | Complete M4-H1 matrix, M5 gate, and M6 continuous editing | After beta.2 |
 | `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.3 |
 | `0.1.0` | First public-quality release | Every v0.1 requirement in REQUIREMENTS has evidence | After successful RC dogfood |
@@ -103,14 +103,16 @@ does not expand unsafe UI surface.
     fonts; and a keystroke's document-core cost is proportional to the edit.
     Exact-head CI passed on `e3247c1`, including every mutation shard, and
     it merged to protected `main` as `7e4edb3` on 2026-09-26.
-8b. **In progress: release the hardening already implemented.** The explicit
+8b. **Done: scoped beta.2 published on 2026-10-11.** The explicit
     2026-10-11 checkpoint decision in [REQUIREMENTS.md](REQUIREMENTS.md)
-    separates beta.2 from the larger editor project. Address issues #44 through
-    #47, keeping #44 open for the postponed native Hyprland retest; correct
-    public claims and release notes, record current-head CI and
-    coverage, pass a hosted artifact dry run, and exercise the focused native
-    matrix in [RELEASE_READINESS.md](RELEASE_READINESS.md). Missing environment
-    evidence remains visible; no critical or high safety defect is deferrable.
+    separates beta.2 from the larger editor project. Issues #45 through #47
+    are closed; #44 stays open for the postponed native Hyprland retest.
+    Exact-head PR and main-push CI, coverage, all native mutation workers,
+    artifact dry run, and public package/provenance verification passed.
+    [Publication evidence](evidence/beta2-publication-2026-10-11.md) and
+    [release readiness](RELEASE_READINESS.md) retain the focused native results
+    and deferred environment matrix. No broader platform, large-file, or
+    continuous Markdown exit criterion is marked Verified by this release.
 
 ### Toward `0.1.0-beta.3`
 
@@ -265,18 +267,25 @@ progress arithmetic. Each defect has a focused regression. The historical
 741-candidate supported-platform union is recorded in
 [M1_MUTATION_EVIDENCE.md](M1_MUTATION_EVIDENCE.md).
 
-The latest verified implementation checkpoint is commit `08fd8a5`.
+The historical implementation checkpoint at commit `08fd8a5` is retained below.
 Exact-commit workflow-dispatch run
 [30702655806](https://github.com/blisspixel/noter/actions/runs/30702655806)
 passes all nine Windows, macOS, Linux, documentation, dependency, coverage, and
 mutation contexts for exact commit
 `08fd8a5e074da6a88e12e5fcc9c7908d148b088c`. Hosted Linux line coverage is
 93.02 percent for the workspace and 94.36 percent for the trust kernel. The
-current platform mutation scopes report 970 Linux candidates, 939 Windows
+then-current platform mutation scopes report 970 Linux candidates, 939 Windows
 candidates across two required shards, and 47 macOS candidates, with no miss or
 timeout. The infrastructure validator reports no recognized tool, compiler,
 linker, process, or storage failure hidden as unviable. These scopes overlap and
 are not claimed as a newly deduplicated cross-platform union.
+
+The published beta.2 source `9cdaa3b` passed all required native CI jobs,
+93.61 percent workspace and 93.00 percent trust-kernel line coverage, and all
+14 mutation workers. The platform scopes contain 2,050 Linux, 2,248 Windows,
+and 99 macOS candidates with zero missed or timed-out mutants. They overlap
+and are not a unique cross-platform count. Exact runs and per-shard outcomes
+are recorded in the [publication evidence](evidence/beta2-publication-2026-10-11.md).
 
 The alpha.2 recovery expansion enumerated 1,650 Linux-filtered, 1,606
 Windows-filtered, and 47 macOS-specific candidates. Failed exact-head run
@@ -1022,12 +1031,13 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 ## Immediate backlog (maps to version train)
 
 The [2026-10-11 review and release readiness record](RELEASE_READINESS.md)
-records the open issue audit, current CI evidence, research, and remaining
-publication decisions. Existing implementation is retained; missing evidence
+records the open issue audit, release CI evidence, research, and deferred
+checkpoint decisions. Existing implementation is retained; missing evidence
 is not counted as milestone completion.
 
 The alpha.2 correctness work is complete and published. Beta.1 shipped as a
-preview, and the approved focused beta.2 hardening checkpoint is in progress.
+preview, and the approved focused beta.2 hardening checkpoint was published on
+2026-10-11 with [verified artifacts](evidence/beta2-publication-2026-10-11.md).
 The complete M4-H1 matrix remains the next safety prerequisite for expanding
 supported environments; the M5 editor feasibility gate follows it in beta.3.
 
@@ -1054,9 +1064,9 @@ supported environments; the M5 editor feasibility gate follows it in beta.3.
    in the platform matrix before this milestone is verified.
 7. **Then, `0.1.0-beta.3`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
-   production editor contract is stable. Beta.2 first ships the separately
-   approved hardening checkpoint from a clean protected-main commit with its
-   required CI, mutation, focused native matrix, and artifact evidence. The
+   production editor contract is stable. Beta.2 shipped the separately approved
+   hardening checkpoint from a clean protected-main commit with its required
+   CI, mutation, focused native matrix, and artifact evidence. The
    complete M4-H1 and M5 gates remain beta.3 blockers.
 8. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
    dogfood, public release.
