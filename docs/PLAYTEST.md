@@ -2,16 +2,18 @@
 
 **Updated:** 2026-10-11
 
-**Build under test:** the candidate source prints `noter 0.1.0-beta.2`.
-Record the full commit and
-binary checksum for every report. The published beta.1 terminal preview has
-known safety defects, so use a current source candidate for this round. The
-[readiness record](RELEASE_READINESS.md) tracks the candidate and remaining gates.
+**Build under test:** beta.2, printing `noter 0.1.0-beta.2`, from an identified
+source checkout or an available matching release artifact. Record the full commit
+and binary checksum for every report. Beta.1's terminal preview has known safety
+defects; do not use it for this round. The [readiness record](RELEASE_READINESS.md)
+records source observations and remaining gates; check
+[GitHub Releases](https://github.com/blisspixel/noter/releases) for available artifacts.
 
 ## Current round: Linux integration and beta hardening
 
 Use a disposable Markdown fixture and keep real documents out of the report.
-Build the exact reviewed candidate using the source installer. Record desktop,
+Build the exact reviewed checkout using the source installer, or verify a matching
+published artifact. Record desktop,
 compositor, toolkit session, display scale, and installed executable path.
 
 - Open the fixture through the launcher and Open With. Confirm the selected
@@ -75,25 +77,28 @@ The full command-line contract, including every exit status, is in
 - **Idle cost is measured on Windows only.** The previous round ran on Linux
   X11. A repeat measurement there is genuinely useful and is recorded as open M2
   evidence in the [roadmap](ROADMAP.md).
-- **Prerelease artifacts are unsigned.** The published beta.1 release provides
-  archives, checksums, SBOMs, provenance, and a Windows MSI, but Windows and
-  macOS platform signing remains M7 work. Keep backups and verify downloaded
-  files before use.
+- **Prerelease artifacts are unsigned.** Platform archives, checksums, SBOMs,
+  provenance, and a Windows MSI are planned release outputs. Check the actual
+  release inventory; Windows and macOS platform signing remains M7 work.
+  Keep backups and verify downloaded files before use.
 - **Files above 8 MiB are refused** before the editor mirrors them. This is
   deliberate containment, not the final limit; the measured large-file path is
   M5 work.
 
-## Where the untested surface is
+## Remaining interactive coverage
 
 The 2026-08-22 Windows recovery exercise drove the live editor, force-killed the
 process after a private record appeared, restored the exact observed editor
 value after restart, and exited through explicit discard with no record or lease
-left. The remaining interactive unknowns are here:
+left. The later [2026-10-11 Windows observations](evidence/beta2-windows-2026-10-11.md)
+cover edit/save, Undo/Redo, failed-save and conflict retention, crash recovery,
+menus, and CRT themes at the observed host scale on `ed67c26`. Neither record
+establishes the complete current platform matrix. Remaining coverage includes:
 
-- the Mode control, and whether switching views leaves bytes byte-identical;
-- typing, Undo and Redo, and whether long editing sessions stay bounded;
-- Save, Save As, and the external-change prompts (Reload, Keep Editing, Save As,
-  and overwrite second confirmation);
+- complete mode-switch, selection, and clipboard byte fidelity across platforms;
+- long editing sessions and bounded history across platforms;
+- the full Save, Save As, and external-change prompt matrix, including overwrite
+  second confirmation;
 - Find, Replace, Replace All scope, and Go To Line;
 - crash recovery on interactive macOS, Linux X11, and Linux Wayland sessions;
 - the five themes as painted pixels, at display scales other than 100 percent;
@@ -107,6 +112,8 @@ These match the previous round's format, which worked well.
 - Prefer observations over inferences, and say which is which.
 - Report successful flows as well as failures; the previous round's list of what
   worked was directly useful.
-- Keep real documents out of the report. Use fixtures.
+- Keep real documents out of the report. Use ordinary English visible fixtures.
+  Use multibyte, wide, combining, and control characters in the targeted cases
+  that verify those boundaries; retain their automated safety coverage.
 - Reading application source is not required. If a claim depends on source, say
   so.

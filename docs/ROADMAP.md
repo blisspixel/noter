@@ -2,6 +2,11 @@
 
 **Updated:** 2026-10-11
 
+**Source snapshot:** checkpoint preparation and evidence at this revision.
+Source version numbers do not establish publication; check
+[GitHub Releases](https://github.com/blisspixel/noter/releases) for available
+tags and later publication receipts.
+
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
 quality tools, private local operation, and straightforward installation and
@@ -77,8 +82,9 @@ does not expand unsafe UI surface.
    GUI pass covering exact empty dirty recovery persistence, force-kill,
    restart offer, exact restored editor text, successor transfer, explicit
    discard, and clean dual-lease removal.
-   Interactive non-Windows GUI smoke is explicitly deferred to beta.1 because
-   this release host has no interactive non-Windows desktop. Alpha.2 remains a
+   Interactive non-Windows GUI smoke was deferred to beta.1 because
+   that release host had no interactive non-Windows desktop. The remaining
+   observations are now beta.3/RC gates. Alpha.2 remains a
    prerelease. Exact-head hosted Windows, Linux, and macOS CI passed on
    `dbb419f`, and `v0.1.0-alpha.2` was published from that exact protected-main
    tip on 2026-08-29 with archives, a Windows MSI, checksums, four
@@ -120,7 +126,7 @@ does not expand unsafe UI surface.
 
 ### Toward `0.1.0-rc.1` and `0.1.0`
 
-12. **Complete M6 quality engine**: conformance, diagnostics, Format Document
+12. **[Complete M6 quality engine](https://github.com/blisspixel/noter/issues/54)**: conformance, diagnostics, Format Document
     with diff and semantic equivalence, async revision-tagged parse.
 13. **[Complete M7 distribution](https://github.com/blisspixel/noter/issues/53)**: signed/attested artifacts where credentials
     exist, clean-machine install/upgrade/uninstall, updater policy.
@@ -198,8 +204,9 @@ automatic Enter and inline
 reopening are preflighted against the active source budget so an oversized
 operation cannot remove an existing suffix. The alpha.2 correctness record in
 [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) includes the live
-Windows force-kill and restore result. Interactive non-Windows GUI smoke is
-deferred to beta.1 with the limitation stated in the release evidence. Optional
+Windows force-kill and restore result. Interactive non-Windows GUI smoke was
+deferred to beta.1 in that historical evidence; remaining observations are
+beta.3/RC gates. Optional
 additional M1 and M2 environments remain valuable but do not block this
 careful prerelease dogfood checkpoint.
 
@@ -617,7 +624,8 @@ rejects final links, reparse points, directories, FIFOs, and special files
 without a potentially blocking following open. A live Windows GUI test
 proved idle persistence, force-kill, startup Restore, exact recovered editor
 text, and explicit-discard cleanup. Interactive non-Windows GUI recovery and
-navigation remain a beta.1 gate and are not claimed by the alpha.2 prerelease.
+navigation were deferred from alpha.2; remaining beta.3/RC gates are assigned in
+the focused readiness record.
 
 ### M4-H1: Recovery namespace binding
 
