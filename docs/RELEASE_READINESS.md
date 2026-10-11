@@ -12,9 +12,9 @@ and sequence remains in [ROADMAP.md](ROADMAP.md).
 | Issue | Implementation | Verification evidence |
 | --- | --- | --- |
 | [#44](https://github.com/blisspixel/noter/issues/44), hidden Wayland window stalls | Disable glow VSync in Wayland sessions; suppress hidden-window periodic inspection | Configuration and visibility regressions pass; native Hyprland retest postponed, issue remains open |
-| [#45](https://github.com/blisspixel/noter/issues/45), menu shortcut spacing | Shared minimum gap across File, Edit, View, and Markdown menus | Rendered geometry regression; visual review at 100 and 150 percent scale |
+| [#45](https://github.com/blisspixel/noter/issues/45), menu shortcut spacing | Shared minimum gap across File, Edit, View, and Markdown menus | Rendered geometry regression; native visual review at observed host scale; full display-scale matrix deferred to RC |
 | [#46](https://github.com/blisspixel/noter/issues/46), CRT strong emphasis | Distinct high-intensity strong text in both CRT themes | Layout/color/contrast tests; regenerated native captures; native theme retest |
-| [#47](https://github.com/blisspixel/noter/issues/47), Linux launcher and Open With | Desktop entry, icon, source-root documentation; selected-file argument and exact Exec escaping; install-root ownership on uninstall | Source/binary installer regressions; real GIO selected-file launch; native launcher retest |
+| [#47](https://github.com/blisspixel/noter/issues/47), Linux launcher and Open With | Desktop entry, icon, source-root documentation; selected-file argument and exact Exec escaping; install-root ownership on uninstall | Source/binary installer regressions; real GIO selected-file launch; interactive launcher retest deferred to beta.3 |
 
 The review also corrected unsupported README sticky-formatting claims, roadmap
 claims about signed archives and selectable GUI/TUI dependencies, stale alpha
@@ -48,17 +48,19 @@ not automatic verification of the new candidate.
 | `cc32abe` | [main CI 36460432091](https://github.com/blisspixel/noter/actions/runs/36460432091) | Native suites, coverage, and mutation matrix passed after recovery and installer consolidation |
 | `0d8e6de` | [main CI 38038248915](https://github.com/blisspixel/noter/actions/runs/38038248915) | Linux desktop/session integration passed |
 | `9879408` | [PR CI 38069044066](https://github.com/blisspixel/noter/actions/runs/38069044066) | UI/compositor changes passed all jobs; trust-kernel line coverage 93.05 percent |
-| Beta.2 candidate | Exact-head PR and main-push CI | Pending; both 80 percent workspace and 90 percent trust-kernel gates remain mandatory |
-| Beta.2 candidate | Hosted Release dry run | Pending; four target archives, MSI, notices, checksums, SBOMs and manifest must agree |
+| `9cfd712` | [PR CI 38133597002](https://github.com/blisspixel/noter/actions/runs/38133597002) | Ordinary native suites, documentation, lint, coverage, and macOS mutation passed; Linux and Windows mutation pending; exact main-push CI remains required |
+| `9cfd712` | [Hosted Release dry run 38133594593](https://github.com/blisspixel/noter/actions/runs/38133594593) | Four target builds and global assembly passed; downloaded 20-file payload passed host-stage validation and archive inspection; publication and attestations remain pending |
+| Current candidate | Exact-head PR CI, main-push CI, and hosted dry run | Required after documentation corrections; historical receipts above do not verify a later commit |
 
-The `ed67c26` hosted Linux LCOV receipt contains 41,529/44,372 covered workspace
-lines (93.59 percent), and 19,786/21,284 trust-kernel lines (92.96 percent) using
-the exact CI exclusion expression. Both exceed their unchanged gates. Final-head
-CI must independently pass; this receipt does not replace that requirement.
+The `9cfd712` hosted Linux LCOV receipt contains 41,542/44,372 covered workspace
+lines (93.62 percent), and 19,799/21,284 trust-kernel lines (93.02 percent) using
+the exact CI exclusion expression. Both exceed their unchanged gates. The full
+mutation matrix and exact main-push CI must independently pass; this receipt does
+not replace those requirements.
 
-Local Windows validation of the beta.2 candidate source passed formatting,
+Local Windows validation of the `9cfd712` source passed formatting,
 strict Clippy, rustdoc, advisory audit, dependency policy, 1,057 Rust tests,
-226 Python tests (28 platform-specific skips), Ruff, links, screenshots, and
+228 Python tests (28 platform-specific skips), Ruff, links, screenshots, and
 release configuration. The same working tree passes 26 Linux WSL Ubuntu 20.04 installer tests
 (two macOS-specific skips), including a real GLib DesktopAppInfo launch through
 the generated entry. These are native Linux process observations,
@@ -71,7 +73,8 @@ validator still expected beta.1. Updating its identity to beta.2 makes the same
 downloaded local artifacts pass `prepare --stage global`. A new Cargo-version
 consistency regression prevents that drift. Independent review approved the
 validator's new digest without changing its payload or publication safeguards.
-A complete hosted dry run is still required.
+The successful replacement dry run above confirms the corrected identity through
+global assembly. It does not establish public upload or attestation verification.
 
 ## Focused native matrix
 
@@ -95,7 +98,7 @@ artifact checksum, platform, desktop, and display scale beside each result.
 | Menus and CRT emphasis at 100 and 150 percent scale | Native menu and both CRT themes passed at observed host scale; five deterministic 100 percent captures reviewed; full scale matrix deferred to RC | Interactive retest deferred to beta.3 | Interactive theme matrix deferred to RC |
 | Source/binary launcher, Open With, uninstall ownership | Not applicable | Native desktop retest deferred to beta.3; Linux process regressions pass locally | Linux X11 desktop retest deferred to beta.3 |
 | Downloaded archive version, checksum and attestation | Pending | Pending | Four-target artifact inspection required; clean-machine matrix deferred to RC |
-| Install, reinstall, upgrade, rollback, uninstall | Pending source fixture | Automated installer fixtures required | Complete packaged clean-machine matrix deferred to RC |
+| Install, reinstall, upgrade, rollback, uninstall | Automated installer fixtures passed; clean-machine packaged matrix deferred to RC | Linux source/binary installer process fixtures passed; interactive desktop matrix deferred to beta.3 | Native macOS installer fixtures passed in CI; complete packaged clean-machine matrix deferred to RC |
 
 The 2026-10-11 follow-up postponed the user's Omarchy retest and directed continued
 repository work. This scoped beta carries the implementation with the limitations
@@ -130,6 +133,6 @@ automated safety and release requirements remain mandatory.
 3. [Build continuous source-backed Markdown](https://github.com/blisspixel/noter/issues/52), sticky formatting, and caret-aware
    delimiter reveal on the accepted editor foundation. Preserve exact bytes,
    shared transactions, Undo, conflict, and recovery behavior.
-4. Complete M6 diagnostics/formatting and M7 native signing, clean-machine
+4. Complete M6 diagnostics/formatting and [M7 native release evidence](https://github.com/blisspixel/noter/issues/53): signing, clean-machine
    packaging, platform matrix, and RC dogfood. Keep optional spell checking and
    automation rewrites behind these user-visible correctness priorities.
