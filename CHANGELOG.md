@@ -6,6 +6,11 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+## 0.1.0-beta.2 - 2026-10-11
+
+Candidate frozen for verification; publication is pending the focused checkpoint
+in [the release readiness record](docs/RELEASE_READINESS.md).
+
 ### Security
 
 - Bind Windows recovery directory traversal and private child creation to the
@@ -131,9 +136,17 @@ that candidate is frozen for publication.
 
 ### Fixed
 
+- Pass the selected file through Linux Open With, apply both desktop-entry
+  escaping layers to executable paths, and preserve another install root's
+  launcher and icon during uninstall. Native GIO launch regressions cover
+  multibyte names, spaces, percent signs, backslashes, quotes, and shell symbols.
+- Correct prerelease notes that called beta builds alpha and deferred native
+  checks to an already published checkpoint. Report current release limitations
+  and link the version-matched readiness record.
 - Disable vertical sync under Wayland display sessions and suppress periodic
-  background file inspection when the window is hidden or occluded, avoiding
-  compositor response deadlocks while Noter is on an inactive workspace.
+  background file inspection when the window is hidden or occluded to mitigate
+  compositor stalls on inactive workspaces. Native Hyprland verification remains
+  pending.
 - Enforce a minimum separation gap between menu item labels and their shortcut
   text across application menus and the Markdown formatting popup, preventing
   long labels from running directly into right-aligned shortcuts.

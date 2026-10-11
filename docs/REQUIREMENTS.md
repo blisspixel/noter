@@ -1,8 +1,8 @@
 # Noter Product Requirements
 
-**Version:** 0.5
+**Version:** 0.6
 
-**Reviewed:** 2026-08-23
+**Reviewed:** 2026-10-11
 
 **Status:** Ratified contract for the first public-quality release
 
@@ -55,6 +55,22 @@ undo where content changes, and a testable specification.
 - **Deferred:** intentionally outside the named release.
 
 Feature presence alone is not verification.
+
+### 1.3 Beta.2 checkpoint decision (2026-10-11)
+
+The next prerelease is a focused hardening checkpoint for beta.1's existing
+surfaces: safe terminal save and recovery, inert terminal text, bounded input
+and history, defensive source and binary installers, recovery namespace
+hardening, and Linux desktop integration. This scope was explicitly approved
+on 2026-10-11. It does not claim the complete first-release contract.
+
+M4-H1 remains in progress until its full native storage matrix is complete.
+Unproved environments remain outside the supported recovery boundary; no known
+critical or high security or data-safety defect may be deferred. M5's measured
+editor gate and M6 continuous Markdown editing move to beta.3. The beta.2
+[readiness record](RELEASE_READINESS.md) must distinguish exact-head automated
+results, native observations, deferred environments, and publication state.
+Coverage, mutation, lint, audit, and protected-main requirements are unchanged.
 
 ## 2. Core functional requirements
 

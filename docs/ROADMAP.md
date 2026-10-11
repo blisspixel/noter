@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-09-26
+**Updated:** 2026-10-11
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -25,8 +25,9 @@ criteria and evidence land on one immutable green commit.
 | `0.1.0-alpha.1` | Engineering alpha: durable save, edit core, early Markdown, themes | M0 complete; M1 through M4 and M6 partial | Prior crate checkpoint |
 | `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups on supported local state roots | Recovery, clipboard, overwrite confirm, first-contact honesty, and alpha evidence | **Published 2026-08-29** |
 | `0.1.0-beta.1` | Terminal interface preview, installer scripts, caret and Markdown Enter refinements | Planned M4-H1, M5 gate, and M6 continuous editing did not land | **Published 2026-09-25** |
-| `0.1.0-beta.2` | **Beta hardening:** the beta.1 surfaces made safe, then the production editor path | Terminal save, input, drawing, and recovery safety; Linux library check; working installers; then M4-H1, M5 gate, M6 continuous editing | In progress |
-| `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.2 |
+| `0.1.0-beta.2` | **Focused beta hardening:** make existing surfaces safer | Terminal save, input, drawing, recovery, installer, and Linux desktop fixes; scoped evidence | Candidate preparation; scope approved 2026-10-11 |
+| `0.1.0-beta.3` | Production editor foundation and continuous Markdown | Complete M4-H1 matrix, M5 gate, and M6 continuous editing | After beta.2 |
+| `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.3 |
 | `0.1.0` | First public-quality release | Every v0.1 requirement in REQUIREMENTS has evidence | After successful RC dogfood |
 | `0.2.x` and later | Post-release work only after explicit ratification | Deferred non-goals from REQUIREMENTS become in-scope only by decision | Not planned yet |
 
@@ -96,6 +97,16 @@ does not expand unsafe UI surface.
     fonts; and a keystroke's document-core cost is proportional to the edit.
     Exact-head CI passed on `e3247c1`, including every mutation shard, and
     it merged to protected `main` as `7e4edb3` on 2026-09-26.
+8b. **In progress: release the hardening already implemented.** The explicit
+    2026-10-11 checkpoint decision in [REQUIREMENTS.md](REQUIREMENTS.md)
+    separates beta.2 from the larger editor project. Resolve issues #44 through
+    #47, correct public claims and release notes, record current-head CI and
+    coverage, pass a hosted artifact dry run, and exercise the focused native
+    matrix in [RELEASE_READINESS.md](RELEASE_READINESS.md). Missing environment
+    evidence remains visible; no critical or high safety defect is deferrable.
+
+### Toward `0.1.0-beta.3`
+
 9. **Complete M4-H1 recovery namespace binding:** verify and retain the state and
    recovery directory identities and access policy, route operations through
    held directory handles, reject unsupported roots before writing recovery
@@ -129,23 +140,26 @@ does not expand unsafe UI surface.
 | M2 | Usable prototype shell, themes, and update entry points | In progress |
 | M3 | Editing transactions, undo, search, and text commands | In progress |
 | M4 | Lifecycle, recovery, and external-change handling | In progress |
-| M5 | Production editor, accessibility, and performance | Gate specified; next after alpha.2 |
+| M5 | Production editor, accessibility, and performance | Gate specified for beta.3 after M4-H1 matrix |
 | M6 | Native Markdown editor and quality engine | In progress |
 | M7 | Cross-platform distribution and first public-quality release | Planned |
 
-## Current checkpoint: `0.1.0-beta.1`
+## Published checkpoint: `0.1.0-beta.1`
 
 `0.1.0-beta.1` was published on 2026-09-25 with a terminal interface preview
 and installer scripts, but without the M4-H1, M5, and M6 work this roadmap had
 placed before it. A later review found that the preview could lose text on a
 failed save, had no crash recovery, and wrote untrusted text to the terminal,
 and that the documented installer commands failed. Item 8a records the
-merged hardening; the version table records the correction. Beta.2 also waits
-for M4-H1, the M5 gate, and continuous Markdown editing.
+merged hardening; the version table records the correction. The approved
+2026-10-11 decision scopes beta.2 to that hardening and moves full M4-H1
+verification, the M5 gate, and continuous Markdown editing to beta.3. Unsupported
+recovery environments stay unsupported, and known safety defects remain
+publication blockers.
 
 ## Previous checkpoint: `0.1.0-alpha.2` correctness alpha
 
-The current product checkpoint is a dogfoodable correctness alpha, not a claim
+That product checkpoint was a dogfoodable correctness alpha, not a claim
 of public-release completeness. Kill-process recovery, clipboard parity,
 conflict overwrite confirmation, and the alpha trust evidence are included when
 the state root meets the supported local, owner-controlled boundary above. M4-H1
@@ -606,7 +620,9 @@ navigation remain a beta.1 gate and are not claimed by the alpha.2 prerelease.
 
 ### M4-H1: Recovery namespace binding
 
-**Status:** In progress and required before beta.2.
+**Status:** Implemented in part; complete native evidence required before beta.3.
+Beta.2 carries the implemented hardening within the existing supported local
+storage boundary and does not claim M4-H1 verification.
 
 Open or create the platform state root, recovery root, records directory, and
 quarantine directory without following links. Verify stable directory identity,
@@ -669,7 +685,7 @@ closes, so a rebound stage cannot redefine the snapshot to commit.
 Existing-record replacement has local native primitive and injected barrier
 tests. Classification of other redirected or synchronized roots, the remaining
 fault and race matrix, and exact-head hosted CI keep M4-H1 in progress.
-The local branch moves new Windows recovery writes to the LocalAppData known
+Protected main moves new Windows recovery writes to the LocalAppData known
 folder while eframe preferences remain under RoamingAppData. It opens an
 existing legacy recovery root through the verified namespace, reviews both
 roots, restores legacy offers by durably persisting a successor locally before
@@ -680,9 +696,11 @@ generation-gap Roaming records remain separate offers and are presented for
 ordinary Restore / Later / Discard review after the restored local document
 is saved without a durability warning; they are never classified as obsolete
 from an ID link alone. GUI and terminal Save and Exit now pause for that review.
-Focused dual-root tests, local Windows workspace tests, and both whole-workspace
-coverage thresholds pass; broader mutation and hosted exact-head evidence for
-this migration remain pending. See
+Focused dual-root tests, native Windows workspace tests, both coverage gates,
+and the complete hosted mutation matrix passed on protected main at `cc32abe`
+  in [run 36460432091](https://github.com/blisspixel/noter/actions/runs/36460432091).
+This establishes automated evidence for the migration; the remaining native
+environment and final-window fixture matrix still blocks M4-H1 verification. See
 [ADR-0006](adr/0006-windows-local-recovery-root.md).
 
 The Unix cleanup ADR was required either to provide a genuinely object-bound
@@ -941,11 +959,9 @@ first-class Terminal User Interface (TUI).
   verified GitHub Release assets with zero build dependencies;
 - `noter update` and Help > Check for Updates backed by one manifest policy,
   supporting direct in-place updates with Windows detached-helper process swapping;
-- native Terminal User Interface (TUI) mode (`noter --tui`) built on `crossterm`
-  and `ratatui` with dual modern/Nano shortcuts, mouse support, terminal themes,
-  and headless auto-detection;
-- modular feature flags (`default = ["gui", "tui"]` and minimal headless server
-  build `--no-default-features --features tui` producing a ~2.5 MB binary);
+- native Terminal User Interface (TUI) mode (`noter --tui`) with shared core
+  policy, dual modern/Nano shortcuts, mouse support, terminal themes, and
+  headless auto-detection;
 - per-user installation without elevation by default;
 - package-manager ownership and update behavior;
 - checksums, SBOM, build provenance, and signing where credentials exist;
@@ -963,11 +979,12 @@ contract.
 
 The source installers already build the locked checkout and verify the installed
 CLI contract on Windows, macOS, and Linux. Standalone binary installer scripts
-(`install.sh` and `install.ps1`) fetching signed GitHub release archives and
+(`install.sh` and `install.ps1`) fetching GitHub release archives and
 verifying SHA-256 digests provide a fast, build-tool-free installation path.
-The TUI mode architecture is designed around `crossterm` and `ratatui` with
-modular `gui` and `tui` feature flags, allowing a minimal headless binary under
-3 MB. A pinned cargo-dist plan produces four target archives, PowerShell and
+The TUI uses Noter's platform terminal adapter and shares the document trust
+kernel with the GUI. Both interfaces ship in the same binary. Cargo has no
+separate `gui` or `tui` feature and no measured minimal-binary size claim.
+A pinned cargo-dist plan produces four target archives, PowerShell and
 POSIX installers, Homebrew and MSI packaging, checksums, four target-specific
 CycloneDX 1.5 SBOMs, and GitHub attestations. The SBOMs are declared cargo-dist
 artifacts, so the generated release manifest names the same four files that the
@@ -995,9 +1012,15 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 
 ## Immediate backlog (maps to version train)
 
+The [2026-10-11 review and release readiness record](RELEASE_READINESS.md)
+records the open issue audit, current CI evidence, research, and remaining
+publication decisions. Existing implementation is retained; missing evidence
+is not counted as milestone completion.
+
 The alpha.2 correctness work is complete and published. Beta.1 shipped as a
-preview, and beta.2 hardening is in progress. M4-H1 recovery namespace binding
-is the next safety prerequisite; the M5 editor feasibility gate follows it.
+preview, and the approved focused beta.2 hardening checkpoint is in progress.
+The complete M4-H1 matrix remains the next safety prerequisite for expanding
+supported environments; the M5 editor feasibility gate follows it in beta.3.
 
 1. **Done:** Markdown keyboard navigation parity with Text Mode; pure word /
    Home-End / document policy and long-session history fixture.
@@ -1014,17 +1037,18 @@ is the next safety prerequisite; the M5 editor feasibility gate follows it.
    [ALPHA2_CORRECTNESS_MATRIX.md](ALPHA2_CORRECTNESS_MATRIX.md) stays paired
    with the immutable implementation commit, and `v0.1.0-alpha.2` was tagged at
    the protected-main head `dbb419f` after that exact commit passed CI.
-6. **In progress, before `0.1.0-beta.2`:** M4-H1 recovery namespace binding.
+6. **In progress, before `0.1.0-beta.3`:** complete M4-H1 verification.
    The Windows, Linux, and macOS namespace adapters and Unix cleanup contract
    are in tree. Exact-head CI and mutation results, redirected and synchronized
    root classification, and the remaining native final-window swap, fault, and
    weak or remote filesystem fixtures on all three platforms must be recorded
    in the platform matrix before this milestone is verified.
-7. **Then, `0.1.0-beta.2`:** M5 editor feasibility gate (typography, IME,
+7. **Then, `0.1.0-beta.3`:** M5 editor feasibility gate (typography, IME,
    accessibility, display scale, 50 MiB path). Keep Markdown bounded until the
-   production editor contract is stable. A beta.2 release follows a clean
-   protected-main commit with the required CI, mutation, manual platform, and
-   release evidence; M4-H1 and M5 remain release blockers.
+   production editor contract is stable. Beta.2 first ships the separately
+   approved hardening checkpoint from a clean protected-main commit with its
+   required CI, mutation, focused native matrix, and artifact evidence. The
+   complete M4-H1 and M5 gates remain beta.3 blockers.
 8. **Then `0.1.0-rc.1` / `0.1.0`:** M6 quality engine, M7 distribution, RC
    dogfood, public release.
 

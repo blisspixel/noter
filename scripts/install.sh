@@ -142,7 +142,7 @@ Type=Application
 Name=Noter
 GenericName=Text Editor
 Comment=Edit plain text and Markdown files
-Exec=@EXEC@
+Exec=@EXEC@ %f
 Icon=noter
 Terminal=false
 Categories=Utility;TextEditor;
@@ -193,14 +193,18 @@ prepare_trusted_data_dir() {
     trusted_install_directory "$resolved_data_dir"
 }
 
-# Always quote Exec so a path containing spaces cannot be split.
+# Apply Desktop Entry string escaping after Exec argument escaping. env keeps
+# launchers from resolving an executable's literal %% before field expansion.
 desktop_quote() {
     case "$1" in
         *'
-'*) return 1 ;;
+'* | *=*) return 1 ;;
     esac
-    escaped=$(printf '%s' "$1" | sed 's/[\\"`$]/\\&/g')
-    printf '"%s"' "$escaped"
+    if printf '%s' "$1" | LC_ALL=C grep '[[:cntrl:]]' >/dev/null; then
+        return 1
+    fi
+    escaped=$(printf '%s' "$1" | sed 's/[\\"`$]/\\&/g; s/\\/\\\\/g; s/%/%%/g')
+    printf '/usr/bin/env -- "%s"' "$escaped"
 }
 
 canonical_installed_binary() {
@@ -233,7 +237,7 @@ write_desktop_entry() {
     }
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
-            'Exec=@EXEC@') printf 'Exec=%s\n' "$quoted" || {
+            'Exec=@EXEC@ %f') printf 'Exec=%s %%f\n' "$quoted" || {
                 rm -f "$template"
                 return 1
             } ;;
@@ -246,41 +250,6 @@ write_desktop_entry() {
     status=$?
     rm -f "$template"
     return "$status"
-}
-
-parse_desktop_exec() {
-    awk '
-        BEGIN { found = 0 }
-        /^Exec=/ {
-            value = substr($0, 6)
-            if (substr(value, 1, 1) == "\"") {
-                out = ""
-                i = 2
-                n = length(value)
-                while (i <= n) {
-                    c = substr(value, i, 1)
-                    if (c == "\\") {
-                        i++
-                        if (i <= n) {
-                            out = out substr(value, i, 1)
-                        }
-                    } else if (c == "\"") {
-                        break
-                    } else {
-                        out = out c
-                    }
-                    i++
-                }
-                print out
-            } else {
-                split(value, fields, /[[:space:]]+/)
-                print fields[1]
-            }
-            found = 1
-            exit
-        }
-        END { if (found == 0) exit 1 }
-    ' "$1"
 }
 
 refresh_desktop_database() {
@@ -314,7 +283,7 @@ install_linux_desktop() {
     assert_regular_destination "$desktop_path" "desktop entry"
     assert_regular_destination "$icon_path" "icon"
 
-    quoted=$(desktop_quote "$binary") || fail "cannot quote the installed executable path."
+    quoted=$(desktop_quote "$binary") || fail "Linux launcher executable paths cannot contain control characters or '='. Choose another install root."
     stage=$(mktemp "$apps_dir/.noter.desktop.XXXXXXXX") ||
         fail "cannot reserve a desktop entry stage."
     if ! write_desktop_entry "$stage" "$quoted"; then
@@ -355,8 +324,8 @@ install_linux_desktop() {
 }
 
 # Removes the desktop entry only when it is a regular file, carries the
-# installer marker, and its Exec path is this install. The icon goes only when
-# it is a regular file carrying the installer comment. Symlinks are left alone.
+# installer marker, and its Exec path is this install. Remove the marked icon
+# only with that launcher, preserving another install root's shared icon.
 remove_linux_desktop() {
     [ "$(uname -s)" = Linux ] || return 0
     resolve_linux_data_home
@@ -368,16 +337,21 @@ remove_linux_desktop() {
         printf "Would remove icon '%s' when it belongs to this install.\n" "$icon_path"
         return 0
     fi
+    owned_launcher=false
+    quoted=$(desktop_quote "$expected") || return 0
     if [ ! -L "$desktop_path" ] && [ -f "$desktop_path" ] &&
         grep -q '^X-Noter-Installer=true$' "$desktop_path"; then
-        parsed=$(parse_desktop_exec "$desktop_path" || true)
-        if [ -n "$parsed" ] && [ "$parsed" = "$expected" ]; then
+        legacy_quoted=${quoted#'/usr/bin/env -- '}
+        # Accept ordinary launchers from the previous installer too.
+        if grep -Fxq -- "Exec=$quoted %f" "$desktop_path" ||
+            grep -Fxq -- "Exec=$legacy_quoted" "$desktop_path"; then
             rm -f -- "$desktop_path"
+            owned_launcher=true
             printf "Removed desktop entry '%s'.\n" "$desktop_path"
             refresh_desktop_database "$(dirname -- "$desktop_path")"
         fi
     fi
-    if [ ! -L "$icon_path" ] && [ -f "$icon_path" ] &&
+    if [ "$owned_launcher" = true ] && [ ! -L "$icon_path" ] && [ -f "$icon_path" ] &&
         grep -q 'noter-installer' "$icon_path"; then
         rm -f -- "$icon_path"
         printf "Removed icon '%s'.\n" "$icon_path"

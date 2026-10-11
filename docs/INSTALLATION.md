@@ -1,6 +1,6 @@
 # Installation and Updates
 
-**Reviewed:** 2026-09-26
+**Reviewed:** 2026-10-11
 
 **Current availability:** The published `0.1.0-beta.1` release is
 available for careful evaluation with backups. Its artifacts include platform
@@ -8,6 +8,11 @@ archives, a Windows MSI, checksums, SBOMs, and GitHub build provenance.
 Windows and macOS artifacts are not yet platform-signed, and no self-updating
 release channel exists. Source installation remains supported. See the
 [release process](RELEASING.md).
+
+Beta.1's terminal preview has known save-failure, recovery, and terminal-control
+defects. Current source contains the subsequent hardening; the beta.2 candidate
+is not yet published. Prefer a current source build with backups until the
+[readiness record](RELEASE_READINESS.md) records a replacement publication.
 
 ## Prerelease artifacts
 
@@ -17,7 +22,7 @@ Download an asset before executing it and verify its GitHub attestation.
 Published SHA-256 sidecars and
 the unified checksum list cover the source archive, platform archives, and
 Windows MSI, but not installer scripts, the Homebrew formula, SBOMs, or the
-distribution manifest. For the strongest alpha path, manually download an
+distribution manifest. Manually download an
 archive and verify both its checksum and attestation before extraction. Inspect
 any installer script before use and never pipe a remote installer into a shell.
 The Windows MSI is an unsigned per-machine evaluation package. It requires

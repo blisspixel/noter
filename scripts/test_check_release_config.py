@@ -857,6 +857,30 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
         self.assertIn("missing attestation-first release guidance", errors)
 
+    def test_rejects_stale_checkpoint_release_notes(self) -> None:
+        for stale in (
+            "do not use this alpha",
+            "deferred to beta.1",
+            "For the strongest alpha path",
+        ):
+            with self.subTest(stale=stale):
+                changed = self.workflow + f"\n# {stale}\n"
+                errors = validate_workflow(changed)
+                self.assertTrue(
+                    any(
+                        "stale alpha-only" in error or "expired beta.1" in error
+                        for error in errors
+                    )
+                )
+
+    def test_release_notes_require_candidate_evidence(self) -> None:
+        changed = self.workflow.replace(
+            "docs/RELEASE_READINESS.md", "docs/ALPHA2_CORRECTNESS_MATRIX.md"
+        )
+        self.assertIn(
+            "missing candidate release-readiness evidence", validate_workflow(changed)
+        )
+
     def test_rejects_a_configurable_system_path_install(self) -> None:
         changed = self.wix.replace(
             b"            AllowAdvertise='no'",
@@ -931,7 +955,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
 
     def test_rejects_an_msi_without_a_monotonic_package_sequence(self) -> None:
-        changed = self.wix.replace(b"Version='0.0.3'", b"Version='$(var.Version)'", 1)
+        changed = self.wix.replace(b"Version='0.0.4'", b"Version='$(var.Version)'", 1)
         self.assertIn(
             "MSI package version differs from its monotonic release sequence",
             validate_wix(changed),

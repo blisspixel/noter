@@ -46,6 +46,8 @@ each topic.
 ## Planning and evidence
 
 - [Roadmap](ROADMAP.md) owns milestone order, status, and exit criteria.
+- [Release readiness](RELEASE_READINESS.md) records the current issue audit,
+  automated evidence, native retest plan, and publication blockers.
 - [Playtest brief](PLAYTEST.md) records what changed for the current round, what
   is deliberately still open, and which surfaces remain unexercised.
 - [Research](RESEARCH.md) records dated primary-source findings behind product
