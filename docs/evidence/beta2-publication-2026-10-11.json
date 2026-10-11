@@ -1,0 +1,352 @@
+{
+  "candidate": "9cdaa3b8cef9a85259236302654cbf40c34e7339",
+  "tag": "v0.1.0-beta.2",
+  "url": "https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2",
+  "published_at": "2026-10-11T15:13:23Z",
+  "draft": false,
+  "prerelease": true,
+  "assets": [
+    {
+      "name": "dist-manifest.json",
+      "bytes": 60464,
+      "sha256": "91243f129335cf1420bc30a7282732279eede859210e14110f245faf276c4151"
+    },
+    {
+      "name": "noter-aarch64-apple-darwin.tar.xz",
+      "bytes": 3192468,
+      "sha256": "871c3ddfe23a7ec27327662e4be33b64caeb450205c9c48a3c5e00b021cecd27"
+    },
+    {
+      "name": "noter-aarch64-apple-darwin.tar.xz.sha256",
+      "bytes": 101,
+      "sha256": "dfa2c91ae4aa5966eb668ec736e4bc6e3e63d28917c567dbc292d7a640c41cd3"
+    },
+    {
+      "name": "noter-installer.ps1",
+      "bytes": 22238,
+      "sha256": "ca87f567d472b9a5493cab4a2a39702a65a534a4783c25e783467a06379a74b4"
+    },
+    {
+      "name": "noter-installer.sh",
+      "bytes": 52981,
+      "sha256": "122bb1766b0f6fb5b021195150d95c696d1a96cfd1b17a12e0a587d759ff773d"
+    },
+    {
+      "name": "noter-x86_64-apple-darwin.tar.xz",
+      "bytes": 3691164,
+      "sha256": "c192dd0c2b72140d9a857b60dda90e0f7aef7bd181ea52d1b4856375fb31b653"
+    },
+    {
+      "name": "noter-x86_64-apple-darwin.tar.xz.sha256",
+      "bytes": 100,
+      "sha256": "510ccf81ce4cdc6b3c1afdddee565a0d55e77f9aef500342143e23404df9e3a4"
+    },
+    {
+      "name": "noter-x86_64-pc-windows-msvc.msi",
+      "bytes": 5136384,
+      "sha256": "f3f6b1aa340dbad927bede7be781860ec6f8a6ce0ca83c9460fd6af86c8428fd"
+    },
+    {
+      "name": "noter-x86_64-pc-windows-msvc.msi.sha256",
+      "bytes": 100,
+      "sha256": "66e5dbbd0abb8c48400bce1a7312954eb88b977942bc6c07eca104b117342e66"
+    },
+    {
+      "name": "noter-x86_64-pc-windows-msvc.zip",
+      "bytes": 5037885,
+      "sha256": "653a20a34bd222d33a2254d2533d373139c970f428ce2518028a56d9e2576f51"
+    },
+    {
+      "name": "noter-x86_64-pc-windows-msvc.zip.sha256",
+      "bytes": 100,
+      "sha256": "a50f044e63314fca8151b8dae9ebe281567ca74a5f53198a9d352ff9619ec7da"
+    },
+    {
+      "name": "noter-x86_64-unknown-linux-gnu.tar.xz",
+      "bytes": 4793744,
+      "sha256": "16ddde64b8937c55dcbc1c8166f327fc272f80f6db87cc6018f0112d85c50a68"
+    },
+    {
+      "name": "noter-x86_64-unknown-linux-gnu.tar.xz.sha256",
+      "bytes": 105,
+      "sha256": "a03f0187065dfdca84f048b91cb67f5eb8084626b215de770da983c6e9fab454"
+    },
+    {
+      "name": "noter.rb",
+      "bytes": 2093,
+      "sha256": "ea5e0d44a430b74616f7d1549aad8253c85996d6308cf5e619c63c85d3dfaa03"
+    },
+    {
+      "name": "noter_aarch64-apple-darwin.cdx.xml",
+      "bytes": 251752,
+      "sha256": "430bb3cecef0e858e89a2fc0a00db758f6887e51b6a8d3492cfea73ed03525b0"
+    },
+    {
+      "name": "noter_x86_64-apple-darwin.cdx.xml",
+      "bytes": 252956,
+      "sha256": "3e8a259b90fd76c2fcd51572dec765c97981d071d46061669f298893b01d1299"
+    },
+    {
+      "name": "noter_x86_64-pc-windows-msvc.cdx.xml",
+      "bytes": 236665,
+      "sha256": "c7fd39841ccbe3ff97cfa4b9b9e967ed62d835015aa4eb61c453b1cf7f004aa3"
+    },
+    {
+      "name": "noter_x86_64-unknown-linux-gnu.cdx.xml",
+      "bytes": 347244,
+      "sha256": "b24d8a908ac66a67add6ccb80e5f4ce341d1d1a97c4aec0c1b3833f38962e876"
+    },
+    {
+      "name": "sha256.sum",
+      "bytes": 582,
+      "sha256": "a5ab0ae882942902e4db3720cb7fce7f163f052ebc6382eff8423ff17d2b5ee1"
+    },
+    {
+      "name": "source.tar.gz",
+      "bytes": 2575955,
+      "sha256": "fb745936a5b9c36a0cb86329706860d4f0b61471bcb8418008f67be07fe50567"
+    },
+    {
+      "name": "source.tar.gz.sha256",
+      "bytes": 81,
+      "sha256": "831d0c4fed6f15a7d6f49d94173d02f625e922d7ccab17bad0f99873de153a6f"
+    }
+  ],
+  "checksums": "six sidecars and exact unified list verified",
+  "provenance": {
+    "verified_assets": 21,
+    "workflow": "blisspixel/noter/.github/workflows/release.yml",
+    "source_ref": "refs/heads/main",
+    "source_digest": "9cdaa3b8cef9a85259236302654cbf40c34e7339",
+    "hosted_runners_only": true
+  },
+  "pr": "https://github.com/blisspixel/noter/pull/49",
+  "pr_ci": {
+    "candidate": "05cbb69b217cef7b171dbe94ef3038b735c9d53e",
+    "url": "https://github.com/blisspixel/noter/actions/runs/38139971077",
+    "result": "success"
+  },
+  "main_ci": {
+    "url": "https://github.com/blisspixel/noter/actions/runs/38144668329",
+    "event": "push",
+    "result": "success"
+  },
+  "publication": {
+    "url": "https://github.com/blisspixel/noter/actions/runs/38149804354",
+    "result": "success"
+  },
+  "dry_run": {
+    "candidate": "05cbb69b217cef7b171dbe94ef3038b735c9d53e",
+    "url": "https://github.com/blisspixel/noter/actions/runs/38139972098",
+    "result": "success"
+  },
+  "coverage": {
+    "candidate": "9cdaa3b8cef9a85259236302654cbf40c34e7339",
+    "run": "38144668329",
+    "groups": {
+      "workspace": {
+        "covered": 41537,
+        "lines": 44372,
+        "percent": 93.61
+      },
+      "trust_kernel": {
+        "covered": 19794,
+        "lines": 21284,
+        "percent": 93.0
+      }
+    }
+  },
+  "mutation": {
+    "candidate": "9cdaa3b8cef9a85259236302654cbf40c34e7339",
+    "run": "38144668329",
+    "shards": [
+      {
+        "shard": "mutation-results-linux-0-of-3",
+        "total": 684,
+        "CaughtMutant": 520,
+        "Unviable": 164
+      },
+      {
+        "shard": "mutation-results-linux-1-of-3",
+        "total": 684,
+        "CaughtMutant": 569,
+        "Unviable": 115
+      },
+      {
+        "shard": "mutation-results-linux-2-of-3",
+        "total": 682,
+        "CaughtMutant": 540,
+        "Unviable": 142
+      },
+      {
+        "shard": "mutation-results-macos",
+        "total": 99,
+        "Unviable": 38,
+        "CaughtMutant": 61
+      },
+      {
+        "shard": "mutation-results-windows-0-of-10",
+        "total": 225,
+        "CaughtMutant": 164,
+        "Unviable": 61
+      },
+      {
+        "shard": "mutation-results-windows-1-of-10",
+        "total": 225,
+        "CaughtMutant": 170,
+        "Unviable": 55
+      },
+      {
+        "shard": "mutation-results-windows-2-of-10",
+        "total": 225,
+        "Unviable": 29,
+        "CaughtMutant": 196
+      },
+      {
+        "shard": "mutation-results-windows-3-of-10",
+        "total": 225,
+        "CaughtMutant": 199,
+        "Unviable": 26
+      },
+      {
+        "shard": "mutation-results-windows-4-of-10",
+        "total": 225,
+        "CaughtMutant": 168,
+        "Unviable": 57
+      },
+      {
+        "shard": "mutation-results-windows-5-of-10",
+        "total": 225,
+        "CaughtMutant": 182,
+        "Unviable": 43
+      },
+      {
+        "shard": "mutation-results-windows-6-of-10",
+        "total": 225,
+        "CaughtMutant": 190,
+        "Unviable": 35
+      },
+      {
+        "shard": "mutation-results-windows-7-of-10",
+        "total": 225,
+        "CaughtMutant": 184,
+        "Unviable": 41
+      },
+      {
+        "shard": "mutation-results-windows-8-of-10",
+        "total": 225,
+        "CaughtMutant": 180,
+        "Unviable": 45
+      },
+      {
+        "shard": "mutation-results-windows-9-of-10",
+        "total": 223,
+        "Unviable": 51,
+        "CaughtMutant": 172
+      }
+    ]
+  },
+  "archives": [
+    {
+      "artifact": "noter-x86_64-pc-windows-msvc.zip",
+      "size": 5037885,
+      "sha256": "653a20a34bd222d33a2254d2533d373139c970f428ce2518028a56d9e2576f51",
+      "notices_and_versioned_docs": "pass"
+    },
+    {
+      "artifact": "noter-aarch64-apple-darwin.tar.xz",
+      "size": 3192468,
+      "sha256": "871c3ddfe23a7ec27327662e4be33b64caeb450205c9c48a3c5e00b021cecd27",
+      "notices_and_versioned_docs": "pass"
+    },
+    {
+      "artifact": "noter-x86_64-apple-darwin.tar.xz",
+      "size": 3691164,
+      "sha256": "c192dd0c2b72140d9a857b60dda90e0f7aef7bd181ea52d1b4856375fb31b653",
+      "notices_and_versioned_docs": "pass"
+    },
+    {
+      "artifact": "noter-x86_64-unknown-linux-gnu.tar.xz",
+      "size": 4793744,
+      "sha256": "16ddde64b8937c55dcbc1c8166f327fc272f80f6db87cc6018f0112d85c50a68",
+      "notices_and_versioned_docs": "pass"
+    }
+  ],
+  "source_archive": {
+    "candidate": "9cdaa3b8cef9a85259236302654cbf40c34e7339",
+    "archive": "source.tar.gz",
+    "sha256": "fb745936a5b9c36a0cb86329706860d4f0b61471bcb8418008f67be07fe50567",
+    "tracked_files_verified": 147,
+    "result": "every source member matches its immutable Git blob"
+  },
+  "msi": {
+    "properties": {
+      "ProductVersion": "0.0.4",
+      "ProductName": "Noter",
+      "ARPDisplayVersion": "0.1.0-beta.2",
+      "UpgradeCode": "{04EFB570-9D04-49E1-B908-F5CEBD979E1B}"
+    },
+    "candidate": "9cdaa3b8cef9a85259236302654cbf40c34e7339",
+    "sha256": "f3f6b1aa340dbad927bede7be781860ec6f8a6ce0ca83c9460fd6af86c8428fd"
+  },
+  "sboms": [
+    {
+      "artifact": "noter_aarch64-apple-darwin.cdx.xml",
+      "sha256": "430bb3cecef0e858e89a2fc0a00db758f6887e51b6a8d3492cfea73ed03525b0",
+      "name": "noter",
+      "version": "0.1.0-beta.2",
+      "components": 200
+    },
+    {
+      "artifact": "noter_x86_64-apple-darwin.cdx.xml",
+      "sha256": "3e8a259b90fd76c2fcd51572dec765c97981d071d46061669f298893b01d1299",
+      "name": "noter",
+      "version": "0.1.0-beta.2",
+      "components": 201
+    },
+    {
+      "artifact": "noter_x86_64-pc-windows-msvc.cdx.xml",
+      "sha256": "c7fd39841ccbe3ff97cfa4b9b9e967ed62d835015aa4eb61c453b1cf7f004aa3",
+      "name": "noter",
+      "version": "0.1.0-beta.2",
+      "components": 192
+    },
+    {
+      "artifact": "noter_x86_64-unknown-linux-gnu.cdx.xml",
+      "sha256": "b24d8a908ac66a67add6ccb80e5f4ce341d1d1a97c4aec0c1b3833f38962e876",
+      "name": "noter",
+      "version": "0.1.0-beta.2",
+      "components": 270
+    }
+  ],
+  "windows_installation": {
+    "installed_binary_sha256": "c3d3cbf1158763517ead0afe78539717658b22fbfe628f6642e13d8751c2bd0d",
+    "installer_sha256": "ca87f567d472b9a5493cab4a2a39702a65a534a4783c25e783467a06379a74b4",
+    "candidate": "9cdaa3b8cef9a85259236302654cbf40c34e7339",
+    "fresh_isolated_install": "pass",
+    "isolated_reinstall": "pass",
+    "observed_versions": [
+      "noter 0.1.0-beta.2",
+      "noter 0.1.0-beta.2"
+    ],
+    "installer": "noter-installer.ps1",
+    "user_path_unchanged": true,
+    "scope": "Current Windows host, unmanaged scratch root; not the clean-machine MSI matrix."
+  },
+  "review": {
+    "independent_passes": 2,
+    "fresh_context": true,
+    "minimum_score": 4,
+    "all_category_scores": 4,
+    "rubric_maximum": 5,
+    "receipt": "https://github.com/blisspixel/noter/pull/49#issuecomment-6109699570"
+  },
+  "limitations": [
+    "Omarchy/Hyprland resolution unverified; issue 44 remains open",
+    "Full native recovery/compositor matrix deferred to beta.3",
+    "Continuous Markdown and measured large-file editor deferred to beta.3",
+    "Full display-scale, clean-machine packaging, signing, and dogfood matrix deferred to RC",
+    "Windows and macOS artifacts are not platform-signed",
+    "Isolated Windows installation does not establish clean-machine MSI behavior"
+  ]
+}

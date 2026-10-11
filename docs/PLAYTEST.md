@@ -2,12 +2,13 @@
 
 **Updated:** 2026-10-11
 
-**Build under test:** beta.2, printing `noter 0.1.0-beta.2`, from an identified
-source checkout or an available matching release artifact. Record the full commit
-and binary checksum for every report. Beta.1's terminal preview has known safety
-defects; do not use it for this round. The [readiness record](RELEASE_READINESS.md)
-records source observations and remaining gates; check
-[GitHub Releases](https://github.com/blisspixel/noter/releases) for available artifacts.
+**Build under test:** [beta.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2),
+tag `v0.1.0-beta.2`, commit `9cdaa3b8cef9a85259236302654cbf40c34e7339`,
+printing `noter 0.1.0-beta.2`. Use that source checkout or a matching verified
+release artifact. Record the binary checksum for every report. Beta.1's terminal
+preview has known safety defects; do not use it for this round. The
+[publication record](evidence/beta2-publication-2026-10-11.md) identifies verified
+artifacts; the [readiness record](RELEASE_READINESS.md) retains remaining gates.
 
 ## Current round: Linux integration and beta hardening
 
@@ -17,7 +18,7 @@ published artifact. Record desktop,
 compositor, toolkit session, display scale, and installed executable path.
 
 - Open the fixture through the launcher and Open With. Confirm the selected
-  file opens, including a path containing spaces and multibyte characters.
+  file opens, including an English path containing spaces such as `draft notes.md`.
 - On Hyprland, leave the window on an inactive workspace for at least two
   minutes, return, and type and save. Repeat with a dirty document and confirm
   crash recovery still persists while the workspace is hidden.
@@ -77,9 +78,9 @@ The full command-line contract, including every exit status, is in
 - **Idle cost is measured on Windows only.** The previous round ran on Linux
   X11. A repeat measurement there is genuinely useful and is recorded as open M2
   evidence in the [roadmap](ROADMAP.md).
-- **Prerelease artifacts are unsigned.** Platform archives, checksums, SBOMs,
-  provenance, and a Windows MSI are planned release outputs. Check the actual
-  release inventory; Windows and macOS platform signing remains M7 work.
+- **Prerelease artifacts are unsigned.** Published beta.2 includes platform
+  archives, checksums, SBOMs, provenance, and a Windows MSI. Windows and macOS
+  platform signing remains M7 work.
   Keep backups and verify downloaded files before use.
 - **Files above 8 MiB are refused** before the editor mirrors them. This is
   deliberate containment, not the final limit; the measured large-file path is
