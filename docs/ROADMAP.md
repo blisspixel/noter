@@ -122,9 +122,9 @@ does not expand unsafe UI surface.
 
 12. **Complete M6 quality engine**: conformance, diagnostics, Format Document
     with diff and semantic equivalence, async revision-tagged parse.
-13. **Complete M7 distribution**: signed/attested artifacts where credentials
+13. **[Complete M7 distribution](https://github.com/blisspixel/noter/issues/53)**: signed/attested artifacts where credentials
     exist, clean-machine install/upgrade/uninstall, updater policy.
-14. **RC dogfood**: minimum 14-day multi-person, multi-platform use without
+14. **[RC dogfood](https://github.com/blisspixel/noter/issues/53)**: minimum 14-day multi-person, multi-platform use without
     data loss; then publish `0.1.0`.
 
 ### After `0.1.0`

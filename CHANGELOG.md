@@ -139,6 +139,9 @@ unverified mitigation, with issue #44 open for follow-up evidence.
 
 ### Fixed
 
+- Keep release artifact validation aligned with the Cargo package version and
+  reject version drift in repository configuration checks.
+
 - Pass the selected file through Linux Open With, apply both desktop-entry
   escaping layers to executable paths, and preserve another install root's
   launcher and icon during uninstall. Native GIO launch regressions cover

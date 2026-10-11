@@ -199,6 +199,15 @@ The Linux installer (`scripts/install.sh`) also installs an XDG desktop entry
 (`noter.desktop`) and SVG icon (`noter.svg`) under `$XDG_DATA_HOME`
 (`~/.local/share`), with `StartupWMClass=noter` matching the window's
 Wayland/X11 `app_id`.
+Launcher and Open With requests pass the selected document to Noter, including
+paths with spaces and Unicode characters. The executable's install path cannot
+contain ASCII control characters or `=`; choose another install root if the
+installer reports that restriction. Uninstall removes a marked launcher and
+icon only when the launcher's command belongs to the selected install root,
+preserving desktop files belonging to a different root.
+Desktop setup runs after binary installation. A desktop-entry error can therefore
+leave a verified binary installed; correct the reported XDG or install-root
+configuration and rerun the installer to finish desktop integration.
 
 ## Command-line contract
 
