@@ -55,6 +55,10 @@ each topic.
   is deliberately still open, and which surfaces remain unexercised.
 - [Research](RESEARCH.md) records dated primary-source findings behind product
   and engineering decisions.
+- [M4 recovery evidence inventory](M4_RECOVERY_EVIDENCE.md) maps existing native
+  fixtures to the remaining environment and race evidence.
+- [M5 editor gate inputs](M5_EDITOR_EVIDENCE.md) defines frozen stress files,
+  reproducible generation, and the required measurement receipt.
 - [Engineering baseline](BASELINE.md) records measured checkpoints and known
   gaps.
 - [M1 reproducible baseline evidence](M1_BASELINE_EVIDENCE.md) records the

@@ -2,11 +2,53 @@
 
 **Initial research:** 2026-07-25
 
-**Updated:** 2026-07-30
+**Updated:** 2026-10-11
 
 This document records the evidence behind the roadmap. It is intentionally
 separate from the product requirements so that claims can be revised when the
 toolchain, operating systems, or editor ecosystem changes.
+
+## 2026-10-11: Next quality checkpoint after beta.2
+
+The README was reread against main
+`f68997185b0476c5139306947900f3e5045f9682`, its passing native CI, the published
+beta.2 record, and open issues #44 and #50 through #54. The priority remains
+recovery evidence, measured editing quality, continuous Markdown, then RC
+distribution and dogfooding. The historical repository audit below describes
+its original commit, not today's implementation or test coverage.
+
+Three primary-source checks sharpen the next work:
+
+- The tagged [egui 0.35 TextBuffer contract](https://github.com/emilk/egui/blob/0.35.0/crates/egui/src/widgets/text_edit/text_buffer.rs)
+  requires a contiguous `&str` and character-index edits. A rope implementation
+  behind this trait alone cannot establish bounded whole-document layout or
+  eliminate the complete-text mirror. This is an architectural inference from
+  the interface; the application still needs end-to-end measurement.
+- [Microsoft's native text-provider contract](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-implementingtextandtextrange)
+  requires full-document ranges, text operations regardless of visibility, and
+  selection/change events. Measuring only visible accessible text would accept
+  a broken editor. The M5 runner must separately record semantic coverage,
+  retained node/update cost, and offscreen select/reveal on real native clients.
+- [Cloud Files handle classification](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfgetsyncrootinfobyhandle)
+  queries the registered cloud sync root containing an opened file. It does not
+  establish detection of every sync product or redirected directory. The M4
+  inventory therefore separates registered-root regression fixtures from the
+  remaining native environment matrix.
+
+[Parley's upstream description](https://github.com/linebender/parley) includes
+layout, shaping dependencies, bidi resolution, and selection/editing utilities.
+That makes it a candidate for the existing gate, not evidence of successful
+Noter integration. Pin the evaluated revision and record actual dependency,
+font, accessibility, long-line, and frame costs before adopting it. No runtime
+dependency or rendering backend is accepted by this research.
+
+The concrete preparation is the source-linked
+[M4 recovery fixture inventory](M4_RECOVERY_EVIDENCE.md) and
+[M5 frozen inputs and measurement protocol](M5_EDITOR_EVIDENCE.md). The latter
+adds reproducible 1 MiB, 8 MiB, and 50 MiB stress files while preserving the
+production 8 MiB limit. Ordinary visual checks use English; targeted Unicode
+and bidi inputs retain their explicit correctness role. Neither preparation
+record completes its milestone.
 
 ## Executive conclusion
 

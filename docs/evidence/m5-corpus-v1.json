@@ -1,0 +1,433 @@
+{
+  "generator_version": 1,
+  "scale": "full",
+  "scope": "Reproducible editor-gate inputs only. No latency, memory, accessibility, IME, renderer acceptance, or supported file-size claim.",
+  "search_markers": {
+    "early": "NOTER-SEARCH-EARLY-7CDA1B9F",
+    "middle": "NOTER-SEARCH-MIDDLE-932E8A04",
+    "late": "NOTER-SEARCH-LATE-45F016BC"
+  },
+  "files": [
+    {
+      "name": "prose-1024kib.txt",
+      "profile": "prose",
+      "bytes": 1048576,
+      "sha256": "40ebe922131aabce8a32c1c3ce4fadceb73eba7cb47b405b00ed340a28149c09",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 524800
+        },
+        {
+          "location": "late",
+          "byte_offset": 1048064
+        }
+      ]
+    },
+    {
+      "name": "prose-8192kib.txt",
+      "profile": "prose",
+      "bytes": 8388608,
+      "sha256": "5be514f337d028efaade131c4cc120821be7887b3f265f6dcb4ad7069a564754",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 4194816
+        },
+        {
+          "location": "late",
+          "byte_offset": 8388096
+        }
+      ]
+    },
+    {
+      "name": "prose-51200kib.txt",
+      "profile": "prose",
+      "bytes": 52428800,
+      "sha256": "34e72c44e1b7950316145ed13f7a0e80f2d2539e2d45d4811692775595c79ddf",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 26214912
+        },
+        {
+          "location": "late",
+          "byte_offset": 52428288
+        }
+      ]
+    },
+    {
+      "name": "short-lines-1024kib.txt",
+      "profile": "short-lines",
+      "bytes": 1048576,
+      "sha256": "b3e0893aebcbf7b41cca9b0fd50e3e112e1c5ca5b115f4103beafe86cf9db925",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 524800
+        },
+        {
+          "location": "late",
+          "byte_offset": 1048064
+        }
+      ]
+    },
+    {
+      "name": "short-lines-8192kib.txt",
+      "profile": "short-lines",
+      "bytes": 8388608,
+      "sha256": "6528e39432b01029265fd2dbd854b71e9996fc61cebd86fba6b57cc9e4d0a59b",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 4194816
+        },
+        {
+          "location": "late",
+          "byte_offset": 8388096
+        }
+      ]
+    },
+    {
+      "name": "short-lines-51200kib.txt",
+      "profile": "short-lines",
+      "bytes": 52428800,
+      "sha256": "f6e4b2b36727ca61f20c99948f563f222fa758339657466c50c52fb741fae28a",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 26214912
+        },
+        {
+          "location": "late",
+          "byte_offset": 52428288
+        }
+      ]
+    },
+    {
+      "name": "long-line-1024kib.txt",
+      "profile": "long-line",
+      "bytes": 1048576,
+      "sha256": "5aee68d70e99e2f8bfde2b0a411715575fc82d6dd21d775bd4ac6f2144b837b2",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 524800
+        },
+        {
+          "location": "late",
+          "byte_offset": 1048064
+        }
+      ]
+    },
+    {
+      "name": "long-line-8192kib.txt",
+      "profile": "long-line",
+      "bytes": 8388608,
+      "sha256": "49730e4c8db5bf17e37ca0a5c0f54baee1f9a532394ccc4e3cac5d21dd849893",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 4194816
+        },
+        {
+          "location": "late",
+          "byte_offset": 8388096
+        }
+      ]
+    },
+    {
+      "name": "long-line-51200kib.txt",
+      "profile": "long-line",
+      "bytes": 52428800,
+      "sha256": "264c1c3aef151fc7a7f40406b0d121717cf0a1d2b9477c1e0caf408afe64d722",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 26214912
+        },
+        {
+          "location": "late",
+          "byte_offset": 52428288
+        }
+      ]
+    },
+    {
+      "name": "mixed-eol-1024kib.txt",
+      "profile": "mixed-eol",
+      "bytes": 1048576,
+      "sha256": "43c5625364f8d8458c1e34d69b3eabf129adbbf62b68ee936cec6bc17990a2ca",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 524800
+        },
+        {
+          "location": "late",
+          "byte_offset": 1048064
+        }
+      ]
+    },
+    {
+      "name": "mixed-eol-8192kib.txt",
+      "profile": "mixed-eol",
+      "bytes": 8388608,
+      "sha256": "7cd6ca88bdd4d2fc74dc1933b5f381647c76ca79c789ad585dfbf3882c8fe0e8",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 4194816
+        },
+        {
+          "location": "late",
+          "byte_offset": 8388096
+        }
+      ]
+    },
+    {
+      "name": "mixed-eol-51200kib.txt",
+      "profile": "mixed-eol",
+      "bytes": 52428800,
+      "sha256": "9eab8a77c1a93829dd57bf6c0a7b3791e8bfde4dbce26823acaf54bedbd44bf7",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 26214912
+        },
+        {
+          "location": "late",
+          "byte_offset": 52428288
+        }
+      ]
+    },
+    {
+      "name": "unicode-edge-1024kib.txt",
+      "profile": "unicode-edge",
+      "bytes": 1048576,
+      "sha256": "fa1d84933718def7777ddad5956f0f6a93777011e138c8998bf8cdc59c577853",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 524800
+        },
+        {
+          "location": "late",
+          "byte_offset": 1048064
+        }
+      ]
+    },
+    {
+      "name": "unicode-edge-8192kib.txt",
+      "profile": "unicode-edge",
+      "bytes": 8388608,
+      "sha256": "548941254a32ae6ebc9e9704480e9aaf5f229abc309765fdd7e54c7cfac5de2d",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 4194816
+        },
+        {
+          "location": "late",
+          "byte_offset": 8388096
+        }
+      ]
+    },
+    {
+      "name": "unicode-edge-51200kib.txt",
+      "profile": "unicode-edge",
+      "bytes": 52428800,
+      "sha256": "086135bfa3166f3f91707eaff58e7d7f6d872ec77a7c595266fd21459a7a2198",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 26214912
+        },
+        {
+          "location": "late",
+          "byte_offset": 52428288
+        }
+      ]
+    },
+    {
+      "name": "bidi-edge-1024kib.txt",
+      "profile": "bidi-edge",
+      "bytes": 1048576,
+      "sha256": "0b15142749eab123987e2714c37172137c6ad5811f15bcece9644f9ac682c1db",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 524800
+        },
+        {
+          "location": "late",
+          "byte_offset": 1048064
+        }
+      ]
+    },
+    {
+      "name": "bidi-edge-8192kib.txt",
+      "profile": "bidi-edge",
+      "bytes": 8388608,
+      "sha256": "900e677b3684c814ca49418693f495734b0cd0a946b99dd3804cf78f2897f547",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 4194816
+        },
+        {
+          "location": "late",
+          "byte_offset": 8388096
+        }
+      ]
+    },
+    {
+      "name": "bidi-edge-51200kib.txt",
+      "profile": "bidi-edge",
+      "bytes": 52428800,
+      "sha256": "945706bfbf591e235ff66927586bf5598293d6df79bd2984e8512a86c165c87d",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 26214912
+        },
+        {
+          "location": "late",
+          "byte_offset": 52428288
+        }
+      ]
+    },
+    {
+      "name": "markdown-1024kib.txt",
+      "profile": "markdown",
+      "bytes": 1048576,
+      "sha256": "a066d3923c3d244d5d6e81b2f455020d0c1888185b39b7c643e17c165228e203",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 524800
+        },
+        {
+          "location": "late",
+          "byte_offset": 1048064
+        }
+      ]
+    },
+    {
+      "name": "markdown-8192kib.txt",
+      "profile": "markdown",
+      "bytes": 8388608,
+      "sha256": "c9b730757c2b3d4efcaa57a6b9a90a60d1975d422fb1561815aed35a4902d6a8",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 4194816
+        },
+        {
+          "location": "late",
+          "byte_offset": 8388096
+        }
+      ]
+    },
+    {
+      "name": "markdown-51200kib.txt",
+      "profile": "markdown",
+      "bytes": 52428800,
+      "sha256": "9f219fc409e3d3ce492d91a78788784e86e0e195e4266a7fc816885198216689",
+      "search_anchors": [
+        {
+          "location": "early",
+          "byte_offset": 512
+        },
+        {
+          "location": "middle",
+          "byte_offset": 26214912
+        },
+        {
+          "location": "late",
+          "byte_offset": 52428288
+        }
+      ]
+    }
+  ],
+  "corpus_sha256": "5ec139c17e08b577995cb83ed9968aa64d5ad8ad1cec9f51c123d97823b47ab9"
+}
