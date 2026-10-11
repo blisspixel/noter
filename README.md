@@ -29,10 +29,11 @@ dossier.
   WebView, no browser engine, no background network access, and zero telemetry.
   An idle window sleeps instead of draining battery on continuous repaints.
 - **One File, Three Exact Views:**
-  - **Text Mode:** Raw byte fidelity, explicit line endings, and exact source
+  - **Text Mode:** UTF-8 byte fidelity, explicit line endings, and exact source
     inspection.
-  - **Markdown Mode:** Directly editable live structure with sticky formatting
-    and caret-aware delimiter unfurl.
+  - **Markdown Mode:** Editable source-backed blocks, formatting commands, and
+    document-wide selection. Continuous editing, sticky formatting, and
+    caret-aware delimiter reveal remain roadmap work.
   - **Terminal TUI Mode:** A fast, lightweight terminal interface ("Like Nano...
     but better") with dual modern and Nano shortcuts, mouse support, and CRT
     themes (`noter --tui`).
@@ -136,13 +137,18 @@ and update contracts are documented in [docs/INSTALLATION.md](docs/INSTALLATION.
 
 ## Project status
 
-The current published version is `0.1.0-beta.1`, a prerelease for careful use
-with backups. Durable save, crash recovery, clipboard parity, conflict
-detection, caret navigation, and themes are verified for the window, and the
-terminal interface now shares the same save safety, crash recovery, and
-bounded Undo. The virtualized large-file editor (M5), continuous Markdown
-editing (M6), and signed, packaged distribution (M7) are not built yet; the
-roadmap orders that work.
+The current published version is `0.1.0-beta.1`. Its terminal preview has known
+save-failure, recovery, and terminal-control defects fixed since publication.
+Use a current source build for those fixes and keep backups; the published
+binary does not contain the later hardening.
+
+Current source gives both interfaces the same save safety, crash recovery, and
+bounded Undo. It also adds Linux desktop integration and mitigates hidden-window
+Wayland stalls. Native Hyprland retesting remains pending. The virtualized
+large-file editor (M5), continuous Markdown editing (M6), and platform signing
+and complete distribution evidence (M7) remain open. The
+[release readiness record](docs/RELEASE_READINESS.md) separates implementation,
+automated evidence, native checks, and publication blockers.
 
 The privacy stance above is product law for every release, including alpha. What
 is still unfinished is reliability, completeness, and packaging, not a planned

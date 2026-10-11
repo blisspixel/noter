@@ -1,6 +1,6 @@
 # Release Process
 
-**Reviewed:** 2026-08-23
+**Reviewed:** 2026-10-11
 
 **Current status:** Noter publishes explicitly scoped prerelease builds for
 careful dogfood. No supported stable binary release has been published. Running
@@ -28,7 +28,7 @@ archive, platform archives, and Windows MSI. They do not cover the installer
 scripts, Homebrew formula, SBOMs, or distribution manifest. The generated
 PowerShell installer does not verify its downloaded archive, and the POSIX
 installer can skip archive verification when `sha256sum` is unavailable. The
-strongest alpha installation path is therefore a manually downloaded archive
+strongest prerelease installation path is therefore a manually downloaded archive
 whose checksum and GitHub attestation were both verified before extraction.
 
 Attestation establishes GitHub-hosted build provenance. It is not Windows or
@@ -38,11 +38,18 @@ not describe unsigned artifacts as signed.
 ## Required release gate
 
 The complete gate below applies to a release candidate or stable release. An
-earlier alpha prerelease may publish only when the roadmap defines a narrower
+earlier explicitly scoped prerelease may publish only when the roadmap defines a narrower
 checkpoint, a dedicated correctness matrix records every pass and limitation,
 deferred rows are assigned to a later blocking milestone, and the release notes
 state the backup, signing, and platform-evidence limits. No checkpoint may
 defer a critical or high security or data-safety defect.
+
+The 2026-10-11 beta.2 decision is such a scoped prerelease. Its required and
+deferred native rows are listed in [RELEASE_READINESS.md](RELEASE_READINESS.md).
+This exception changes feature sequencing and supported-environment claims;
+it does not waive automated gates, artifact verification, independent review,
+or a known security or data-safety defect. Deferred first-release matrix rows
+remain blockers for beta.3 or RC as assigned there.
 
 1. The version, lockfile, changelog, and release notes agree.
 2. The candidate is the exact clean tip of the protected `main` branch.

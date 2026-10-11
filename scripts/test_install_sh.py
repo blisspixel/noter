@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -262,6 +265,15 @@ class SourceInstallerTests(unittest.TestCase):
         self.assertFalse(Path(self.cargo_root_log.read_text()).exists())
         self.assertFalse(list(self.bin_dir.glob(".noter.install.????????")))
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux desktop integration")
+    def test_source_install_includes_the_selected_file_argument(self) -> None:
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        desktop = self.data_home / "applications" / "noter.desktop"
+        self.assertIn(
+            f'Exec=/usr/bin/env -- "{self.installed}" %f\n', desktop.read_text()
+        )
+
 
 def embedded_heredoc(script: str, function_name: str) -> str:
     signature = f"{function_name}() {{"
@@ -315,7 +327,7 @@ class LinuxDesktopInstallerTests(ReleaseInstallerTests):
         binary = spaced / "bin" / "noter"
         self.assertTrue(binary.is_file())
         desktop = self.desktop_path().read_text(encoding="utf-8")
-        self.assertIn(f'Exec="{binary}"\n', desktop)
+        self.assertIn(f'Exec=/usr/bin/env -- "{binary}" %f\n', desktop)
         self.assertIn("X-Noter-Installer=true\n", desktop)
         self.assertNotIn("@EXEC@", desktop)
         self.assertIn("noter-installer", self.icon_path().read_text(encoding="utf-8"))
@@ -323,6 +335,106 @@ class LinuxDesktopInstallerTests(ReleaseInstallerTests):
         removed = self.uninstall(spaced)
         self.assertEqual(removed.returncode, 0, removed.stderr)
         self.assertFalse(binary.exists())
+        self.assertFalse(self.desktop_path().exists())
+        self.assertFalse(self.icon_path().exists())
+
+    def test_uninstall_preserves_another_install_roots_launcher_and_icon(self) -> None:
+        first = self.root / "first"
+        second = self.root / "second"
+        self.assertEqual(self.install(root=first).returncode, 0)
+        self.assertEqual(self.install(root=second).returncode, 0)
+        desktop = self.desktop_path().read_bytes()
+        icon = self.icon_path().read_bytes()
+
+        removed = self.uninstall(first)
+
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+        self.assertFalse((first / "bin" / "noter").exists())
+        self.assertTrue((second / "bin" / "noter").is_file())
+        self.assertEqual(self.desktop_path().read_bytes(), desktop)
+        self.assertEqual(self.icon_path().read_bytes(), icon)
+        self.assertEqual(self.uninstall(second).returncode, 0)
+        self.assertFalse(self.desktop_path().exists())
+        self.assertFalse(self.icon_path().exists())
+
+    def test_exec_uses_both_escape_layers_and_literal_percent(self) -> None:
+        special = self.root / 'notes 雪 % \\ $ " `'
+        result = self.install(root=special)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        escaped = str(self.root) + r'/notes 雪 %% \\\\ \\$ \\" \\`/bin/noter'
+        self.assertIn(
+            f'Exec=/usr/bin/env -- "{escaped}" %f\n', self.desktop_path().read_text()
+        )
+        self.assertEqual(self.uninstall(special).returncode, 0)
+        self.assertFalse(self.desktop_path().exists())
+        self.assertFalse(self.icon_path().exists())
+
+    @unittest.skipUnless(shutil.which("gio"), "GIO desktop launch integration")
+    def test_open_with_delivers_the_exact_selected_path(self) -> None:
+        special = self.root / 'notes 雪 % \\ $ " `'
+        result = self.install(root=special)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        binary = special / "bin" / "noter"
+        binary.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, pathlib, sys\n"
+            "pathlib.Path(os.environ['TEST_LAUNCH_ARGUMENTS']).write_text(json.dumps(sys.argv[1:]))\n"
+        )
+        selected = self.root / 'selected 雪 = % \\ $ " `.md'
+        selected.write_text("private fixture")
+        arguments = self.root / "launch-arguments.json"
+        environment = dict(self.environment, TEST_LAUNCH_ARGUMENTS=str(arguments))
+        command = ["gio", "launch", str(self.desktop_path()), str(selected)]
+        help_result = subprocess.run(
+            ["gio", "help", "launch"], capture_output=True, check=False
+        )
+        if help_result.returncode != 0:
+            # Older GLib provides DesktopAppInfo without the gio launch command.
+            command = [
+                sys.executable,
+                "-c",
+                "from gi.repository import Gio; import sys; "
+                "app = Gio.DesktopAppInfo.new_from_filename(sys.argv[1]); "
+                "assert app is not None; "
+                "assert app.launch([Gio.File.new_for_path(sys.argv[2])], None)",
+                str(self.desktop_path()),
+                str(selected),
+            ]
+        launched = subprocess.run(
+            command,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(launched.returncode, 0, launched.stderr)
+        # GIO returns after spawning, before the child has necessarily written.
+        deadline = time.monotonic() + 10
+        while not arguments.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(json.loads(arguments.read_text()), [str(selected)])
+
+    def test_unsupported_exec_paths_are_refused_before_launcher_writes(
+        self,
+    ) -> None:
+        for control in ("\n", "\r", "\t", "="):
+            with self.subTest(control=repr(control)):
+                result = self.install(root=self.root / f"invalid{control}root")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("cannot contain control characters or '='", result.stderr)
+                self.assertFalse(self.desktop_path().exists())
+                self.assertFalse(self.icon_path().exists())
+
+    def test_uninstall_removes_a_legacy_owned_launcher_and_icon(self) -> None:
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        binary = self.bin_dir / "noter"
+        self.desktop_path().write_text(
+            f'Exec="{binary}"\nX-Noter-Installer=true\n', encoding="utf-8"
+        )
+        removed = self.uninstall(self.bin_dir.parent)
+        self.assertEqual(removed.returncode, 0, removed.stderr)
         self.assertFalse(self.desktop_path().exists())
         self.assertFalse(self.icon_path().exists())
 

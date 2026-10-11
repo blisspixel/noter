@@ -1,11 +1,34 @@
 # Playtest Brief
 
-**Updated:** 2026-08-30
+**Updated:** 2026-10-11
 
-**Build under test:** the published correctness alpha prints
-`noter 0.1.0-alpha.2`. Its immutable release tag is `v0.1.0-alpha.2` at commit
-`dbb419f`. **Identify any later unpublished build by commit, not only by version
-string.**
+**Build under test:** the candidate source prints `noter 0.1.0-beta.2`.
+Record the full commit and
+binary checksum for every report. The published beta.1 terminal preview has
+known safety defects, so use a current source candidate for this round. The
+[readiness record](RELEASE_READINESS.md) tracks the candidate and remaining gates.
+
+## Current round: Linux integration and beta hardening
+
+Use a disposable Markdown fixture and keep real documents out of the report.
+Build the exact reviewed candidate using the source installer. Record desktop,
+compositor, toolkit session, display scale, and installed executable path.
+
+- Open the fixture through the launcher and Open With. Confirm the selected
+  file opens, including a path containing spaces and multibyte characters.
+- On Hyprland, leave the window on an inactive workspace for at least two
+  minutes, return, and type and save. Repeat with a dirty document and confirm
+  crash recovery still persists while the workspace is hidden.
+- Inspect File, Edit, View, and Markdown formatting menus at 100 and 150 percent
+  scale. Long labels must remain separated from shortcuts.
+- Inspect `plain **bold** and *italic*` in Green Screen and Amber Screen.
+  Strong emphasis must be visibly distinct.
+- Exercise failed Save, Undo, restart recovery, and terminal restoration using
+  disposable files. Record observed results separately from unit-test coverage.
+
+The earlier rounds below are historical evidence, not verification of the
+current candidate. Interactive Linux, macOS, accessibility, and packaged
+installation results remain pending unless recorded for the candidate.
 
 This brief exists so a round is spent on unknowns instead of re-deriving what is
 already known. It records what changed since the last round, what is deliberately
@@ -52,7 +75,7 @@ The full command-line contract, including every exit status, is in
 - **Idle cost is measured on Windows only.** The previous round ran on Linux
   X11. A repeat measurement there is genuinely useful and is recorded as open M2
   evidence in the [roadmap](ROADMAP.md).
-- **Prerelease artifacts are unsigned.** The published alpha.2 release provides
+- **Prerelease artifacts are unsigned.** The published beta.1 release provides
   archives, checksums, SBOMs, provenance, and a Windows MSI, but Windows and
   macOS platform signing remains M7 work. Keep backups and verify downloaded
   files before use.

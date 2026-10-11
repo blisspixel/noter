@@ -36,9 +36,9 @@ PINNED_RELEASE_TOOL_DIGESTS = {
 }
 PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 REVIEWED_RELEASE_WORKFLOW_SHA256 = (
-    "d13c6aca54ae69148259df91f681c3b497fcd2aad96dc4b0807d89e3b5b680f1"
+    "47d59e2b0ed6bc38dd91596e90072d43762db04667aa3c2fcc3b7498a279a8b5"
 )
-REVIEWED_WIX_SHA256 = "613e8980817c96241e27956eea5dc235630e3c215b705d8097f75fe1b382d391"
+REVIEWED_WIX_SHA256 = "25e4fa5302bd157675d3e6fb5f808ac17299d3c39860e4a2158e764b8e1dcc68"
 REVIEWED_CI_WORKFLOW_SHA256 = (
     "1b3bb4c5528bfc35a77a9e0c8e9581dc2732c6ce2b1b7736db6de3569f7e22d6"
 )
@@ -158,7 +158,7 @@ def validate_manifest(text: str) -> list[str]:
     errors: list[str] = []
     requirements = {
         'cargo-dist-version = "0.32.0"': "pinned cargo-dist version",
-        'version = "0.1.0-beta.1"': "prerelease package version",
+        'version = "0.1.0-beta.2"': "prerelease package version",
         'installers = ["shell", "powershell", "homebrew", "msi"]': (
             "cross-platform installer set"
         ),
@@ -437,6 +437,8 @@ def validate_workflow(text: str) -> list[str]:
         "gh attestation verify PATH_TO_DOWNLOADED_ASSET": (
             "attestation-first release guidance"
         ),
+        "do not use this prerelease as the only copy": "prerelease backup guidance",
+        "docs/RELEASE_READINESS.md": "candidate release-readiness evidence",
         "--prerelease": "fail-closed prerelease publication",
     }.items():
         require_text(
@@ -452,6 +454,9 @@ def validate_workflow(text: str) -> list[str]:
         "matrix.install_cargo_auditable": "unverified matrix cargo-auditable installer",
         "releases/latest/download": "floating release-tool download",
         "announcement_github_body": "unreviewed generated release notes",
+        "do not use this alpha": "stale alpha-only release guidance",
+        "deferred to beta.1": "expired beta.1 evidence deferral",
+        "For the strongest alpha path": "stale alpha-only installation guidance",
         "brew install noter": "unverified Homebrew installation guidance",
         '--target "$RELEASE_COMMIT"': "target-commit hint for a possibly existing tag",
         "cargo auditable --version": "ambiguous Cargo self-version probe",
@@ -838,9 +843,9 @@ def validate_wix(contents: bytes) -> list[str]:
         errors.append(
             "MSI product and package identities must rotate per release build"
         )
-    if product.get("Version") != "0.0.3":
+    if product.get("Version") != "0.0.4":
         errors.append("MSI package version differs from its monotonic release sequence")
-    if display_version.get("Value") != "0.1.0-beta.1":
+    if display_version.get("Value") != "0.1.0-beta.2":
         errors.append("MSI display version differs from the Noter package version")
     if major_upgrade.get("AllowSameVersionUpgrades") is not None:
         errors.append("MSI must not permit ambiguous same-version upgrades")
@@ -913,15 +918,15 @@ def validate_license_inventory(
                 "CI test job differs from its reviewed cross-platform program"
             )
     for text, expected, description in [
-        (manifest, 'version = "0.1.0-beta.1"', "root prerelease version"),
+        (manifest, 'version = "0.1.0-beta.2"', "root prerelease version"),
         (
             manifest,
-            'noter-platform = { version = "=0.1.0-beta.1"',
+            'noter-platform = { version = "=0.1.0-beta.2"',
             "path dependency prerelease version",
         ),
         (
             platform_manifest,
-            'version = "0.1.0-beta.1"',
+            'version = "0.1.0-beta.2"',
             "platform crate prerelease version",
         ),
         (about_config, "ignore-dev-dependencies = true", "runtime-only inventory"),
