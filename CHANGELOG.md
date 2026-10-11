@@ -6,6 +6,8 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Add reproducible editor-gate stress inputs, frozen hashes, and regression
+  checks; document the next recovery and editor evidence work for beta.3.
 - Record beta.2 publication, downloaded artifact verification, and the remaining
   beta.3/RC evidence gates in the documentation.
 

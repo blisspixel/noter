@@ -126,6 +126,21 @@ does not expand unsafe UI surface.
 11. **Expand Markdown to continuous whole-document editing** on the production
     editor foundation (still source-backed; no proprietary model).
 
+The next execution slices are deliberately bounded:
+
+| Order | Deliverable | Completion evidence |
+| --- | --- | --- |
+| 1 | Reuse the [M4 fixture inventory](M4_RECOVERY_EVIDENCE.md), then implement only uncovered storage/race cases in [#50](https://github.com/blisspixel/noter/issues/50). | Exact-commit native assertions, adverse preconditions, recovery after restart, full CI/mutation gates, and two independent reviews. Distinct-user and real-root gaps remain open until exercised. |
+| 2 | Prepare [M5 frozen inputs](M5_EDITOR_EVIDENCE.md), then instrument the current adapter in [#51](https://github.com/blisspixel/noter/issues/51). | Frozen 1/8/50 MiB inputs; raw current-adapter samples within its 8 MiB limit; accessibility inactive/active cost; no unsupported launch or frame claims. |
+| 3 | Execute the existing one-week semantic/layout/native-input gate in #51. | Same-corpus comparison, differential correctness, native IME and accessibility, and all stated budgets before an architecture decision. |
+| 4 | Build continuous Markdown in [#52](https://github.com/blisspixel/noter/issues/52) on the accepted editor. | Whole-document interaction, exact-source transactions, Undo, and native input/accessibility evidence. |
+
+Input preparation and pure library experiments may proceed while native M4
+environments are pending. M4-H1 remains a prerequisite for expanded UI file
+limits. Issue #44 awaits the postponed Omarchy test; it is not closed by
+ordinary Windows CI. The RC quality, packaging, and dogfood work remains in
+#54 and #53 after these beta.3 gates.
+
 ### Toward `0.1.0-rc.1` and `0.1.0`
 
 12. **[Complete M6 quality engine](https://github.com/blisspixel/noter/issues/54)**: conformance, diagnostics, Format Document
@@ -592,8 +607,9 @@ The TUI now retains the same bounded records and pauses every Save and Save As
 after an uncertain outcome. `^R` opens each record's destination and retained
 diagnostic. The user can request an exact path copy through terminal clipboard
 support, then explicitly reconcile one record at a time without a write or
-retry. Native pseudo-terminal evidence and exact-head CI remain before this is
-verified for beta.2.
+retry. The focused beta.2 [publication evidence](evidence/beta2-publication-2026-10-11.md)
+records passing native pseudo-terminal and exact-head CI checks. That evidence
+does not complete the separate M4-H1 native storage matrix.
 
 Exhaustive transition tests and a fixed-seed 512-case command-sequence property
 compare the reducer with an independent model. A pure external-change
@@ -822,6 +838,10 @@ retained accessibility, and the published performance budgets in the actual
 application.
 
 ### One-week feasibility gate
+
+The [frozen corpus and measurement protocol](M5_EDITOR_EVIDENCE.md) prepare the
+gate's inputs. This is preparation only; renderer acceptance, measured budgets,
+and native input/accessibility outcomes remain open.
 
 1. **Day 1, baseline and corpora:** freeze 1 MiB and 50 MiB representative,
    many-short-line, pathological-long-line, mixed-EOL, Unicode, bidi, and
