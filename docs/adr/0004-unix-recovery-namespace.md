@@ -102,9 +102,13 @@ are outside the threat model, as they are for every other per-user store.
 - An ancestor ACL with an allow entry is refused on macOS, even when it grants
   only the current user access. Deny-only ACLs remain accepted so default home
   folders can retain recovery.
-- The Windows namespace keeps pathname operations inside its held,
-  delete-protected directories and now refuses any path outside them. Moving
-  those operations onto handle-relative Windows calls remains M4-H1 work.
+- At this decision's introduction, Windows still used pathname operations
+  inside held, delete-protected directories. Subsequent work moved recovery
+  traversal and entry operations onto held-directory and file handles;
+  [ADR-0005](0005-windows-recovery-replacement.md) records the replacement
+  protocol. The [M4 inventory](../M4_RECOVERY_EVIDENCE.md) separates existing
+  fixtures from the remaining native evidence. This historical comparison does
+  not describe the current Windows implementation as pathname-only.
 
 ## Evidence
 
