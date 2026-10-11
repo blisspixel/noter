@@ -1530,7 +1530,7 @@ clearly accepted residual risk before release.
   an explicit deterministic mixed-EOL insertion policy.
 - **ADR-003:** durable replacement uses an injected adapter, platform commit
   semantics, identity revalidation, and explicit durability outcomes.
-- **ADR-004, pending:** the M5 production editor uses a rope-authoritative
+- **M5 editor decision, pending:** the proposed production editor uses a rope-authoritative
   semantic model, bounded visible layout, and retained full-document
   accessibility only if the one-week gate meets every correctness, IME,
   accessibility, memory, and latency requirement. The gate records Parley,

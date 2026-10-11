@@ -864,8 +864,9 @@ and native input/accessibility outcomes remain open.
    offscreen range selection that visibly reveals the same text.
 5. **Day 5, adversarial measurement and decision:** run at least 30 release-build
    samples where a percentile is claimed, record complete corpus and hardware
-   details, and accept, conditionally accept, or reject ADR-004 with a bounded
-   next implementation.
+   details, and record an accepted, conditional, or rejected editor decision in
+   a new ADR with a bounded next implementation. ADR-0004 already records the
+   separate Unix recovery namespace decision.
 
 ### Gate decision
 
