@@ -1129,6 +1129,77 @@ def render_license_rtf(license_text: str) -> bytes:
     return f"{header}\r\n{escaped}}}\r\n".encode("ascii")
 
 
+def validate_release_guides(manifest: str, readme: str, installation: str) -> list[str]:
+    """Bind consumer installation recipes to the source package version."""
+
+    try:
+        version = tomllib.loads(manifest)["package"]["version"]
+    except (KeyError, TypeError, tomllib.TOMLDecodeError):
+        return ["release guides require valid Cargo package metadata"]
+    if not isinstance(version, str) or not version:
+        return ["release guides require a Cargo package version"]
+
+    errors: list[str] = []
+    for name, text, marker in (
+        ("README", readme, "Source version"),
+        ("installation guide", installation, "Guide version"),
+    ):
+        text = text.replace("\r\n", "\n")
+        declared_versions = re.findall(
+            rf"^\*\*{re.escape(marker)}:\*\* `([^`\n]+)`$", text, re.M
+        )
+        if declared_versions != [version]:
+            errors.append(f"{name} version differs from Cargo package version")
+        expected_urls = {
+            (
+                "https://raw.githubusercontent.com/blisspixel/noter/"
+                f"v{version}/scripts/install.{extension}"
+            )
+            for extension in ("ps1", "sh")
+        }
+        installer_urls = set(
+            re.findall(
+                r"https://raw\.githubusercontent\.com/blisspixel/noter/"
+                r"[^\s<>`\"']+/scripts/install\.(?:ps1|sh)",
+                text,
+            )
+        )
+        if installer_urls != expected_urls:
+            errors.append(f"{name} must download the version-matched installer")
+        recipes = re.findall(r"^```(?:powershell|sh)\n(.*?)^```", text, re.M | re.S)
+        invalid_recipe = False
+        for recipe in recipes:
+            for line in recipe.splitlines():
+                invocation = re.fullmatch(
+                    r"(?:powershell(?:\.exe)?\s+.*?-File\s+|sh\s+)?"
+                    r"(?P<script>(?:\.[/\\])?(?:scripts[/\\])?"
+                    r"install(?:-noter)?\.(?:ps1|sh))(?P<arguments>(?:\s+.*)?)",
+                    line.strip(),
+                )
+                if invocation is None:
+                    continue
+                arguments = invocation.group("arguments")
+                pinned_versions = re.findall(
+                    r"(?:-Version|--version)\s+(\S+)", arguments
+                )
+                binary_recipe = "install-noter." in invocation.group(
+                    "script"
+                ) or re.search(r"(?:^|\s)(?:-Binary|--binary)(?:\s|$)", arguments)
+                if (binary_recipe and pinned_versions != [version]) or any(
+                    pinned != version for pinned in pinned_versions
+                ):
+                    invalid_recipe = True
+        binary_commands = (
+            f"-File .\\install-noter.ps1 -Version {version}",
+            f"sh install-noter.sh --version {version}",
+        )
+        if invalid_recipe or any(command not in text for command in binary_commands):
+            errors.append(
+                f"{name} binary recipes must select the Cargo package version"
+            )
+    return errors
+
+
 def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
     """Return every release-configuration contract violation."""
 
@@ -1162,6 +1233,8 @@ def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
         release_artifact_validator = read_regular_file(
             root / "scripts/check_release_artifacts.py"
         )
+        readme = read_regular_file(root / "README.md").decode("utf-8")
+        installation = read_regular_file(root / "docs/INSTALLATION.md").decode("utf-8")
         read_regular_file(root / "assets/fonts/Inter-OFL.txt")
     except (OSError, UnicodeError, ValueError) as error:
         return [str(error)]
@@ -1177,6 +1250,7 @@ def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
     errors.extend(
         validate_release_artifact_validator(release_artifact_validator, manifest)
     )
+    errors.extend(validate_release_guides(manifest, readme, installation))
     errors.extend(validate_wix(wix))
     errors.extend(
         validate_license_inventory(

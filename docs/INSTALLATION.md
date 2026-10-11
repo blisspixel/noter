@@ -2,22 +2,26 @@
 
 **Reviewed:** 2026-10-11
 
-**Current availability:** The published `0.1.0-beta.1` release is
-available for careful evaluation with backups. Its artifacts include platform
-archives, a Windows MSI, checksums, SBOMs, and GitHub build provenance.
+**Guide version:** `0.1.0-beta.2`
+
+This guide describes beta.2 source and its intended prerelease artifacts.
+Check [GitHub Releases](https://github.com/blisspixel/noter/releases) for
+availability and publication evidence. Source presence does not prove publication.
+Once published, its artifacts include platform archives, a Windows MSI,
+checksums, SBOMs, and GitHub build provenance. Keep backups during evaluation.
 Windows and macOS artifacts are not yet platform-signed, and no self-updating
 release channel exists. Source installation remains supported. See the
 [release process](RELEASING.md).
 
 Beta.1's terminal preview has known save-failure, recovery, and terminal-control
-defects. Current source contains the subsequent hardening; the beta.2 candidate
-is not yet published. Prefer a current source build with backups until the
-[readiness record](RELEASE_READINESS.md) records a replacement publication.
+defects fixed in beta.2. Use beta.2 from an identified source checkout or a
+matching verified release artifact. The [readiness record](RELEASE_READINESS.md)
+separates source observations from publication and native verification.
 
 ## Prerelease artifacts
 
-The publication location is the
-[GitHub release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.1).
+Once this checkpoint is published, its artifacts are on the
+[beta.2 release page](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2).
 Download an asset before executing it and verify its GitHub attestation.
 Published SHA-256 sidecars and
 the unified checksum list cover the source archive, platform archives, and
@@ -31,23 +35,24 @@ not a supported stable installer.
 
 ## Standalone binary install
 
-Precompiled binaries are published for each supported platform on the
-[GitHub Releases page](https://github.com/blisspixel/noter/releases). The
-installer scripts install one without build tools. Download the script, read
-it, then run it; do not pipe a remote script into a shell.
+Use the examples below only after the matching beta.2 tag and artifacts are
+available on [GitHub Releases](https://github.com/blisspixel/noter/releases).
+Otherwise build the source checkout. The version-matched installer scripts
+install a binary without build tools. Download the script, read it, then run it;
+do not pipe a remote script into a shell.
 
 Windows (PowerShell):
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/blisspixel/noter/main/scripts/install.ps1 -OutFile install-noter.ps1
-powershell -ExecutionPolicy Bypass -File .\install-noter.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2/scripts/install.ps1 -OutFile install-noter.ps1
+powershell -ExecutionPolicy Bypass -File .\install-noter.ps1 -Version 0.1.0-beta.2
 ```
 
 macOS or Linux:
 
 ```sh
-curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/main/scripts/install.sh
-sh install-noter.sh
+curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2/scripts/install.sh
+sh install-noter.sh --version 0.1.0-beta.2
 ```
 
 The binary installer:
@@ -294,12 +299,12 @@ Examples:
 
 ```powershell
 .\scripts\install.ps1 -Check
-.\scripts\install.ps1 -Binary -Version 0.1.0-beta.1
+.\scripts\install.ps1 -Binary -Version 0.1.0-beta.2
 ```
 
 ```sh
 sh scripts/install.sh --check
-sh scripts/install.sh --binary --version 0.1.0-beta.1
+sh scripts/install.sh --binary --version 0.1.0-beta.2
 ```
 
 An explicit install root takes precedence, then `CARGO_INSTALL_ROOT` when set.
@@ -342,21 +347,21 @@ Inspect that directory before deleting it.
 
 Owner-restricted crash-recovery files use `recovery/records` for active instance
 records and `recovery/quarantine` for damaged files. On macOS and Linux these
-are under the state root above. The current unreleased Windows build writes new
+are under the state root above. Beta.2 on Windows writes new
 recovery copies under `%LOCALAPPDATA%\Noter\recovery`, while preferences
 remain under `%APPDATA%\Noter\data`. Startup also reviews an existing legacy
 `%APPDATA%\Noter\data\recovery` root. Do not remove that old root until its
 records have been explicitly restored or discarded.
 
-Alpha.2 recovery is supported only when the selected state path resolves to a
-normally permissioned, local, owner-controlled per-user directory. The
-prerelease does not yet verify or bind the enclosing state and recovery
-directories. If `%APPDATA%`, `XDG_DATA_HOME`, or the platform application-support
+Alpha.2 did not verify or bind the enclosing state and recovery directories.
+Beta.2 implements the namespace checks described below, but recovery support
+remains limited to a normally permissioned, local, owner-controlled per-user
+directory. If the selected recovery root, `XDG_DATA_HOME`, or application-support
 path is group-writable, ACL-shared, redirected, synchronized, network-hosted,
 removable, or on a weak filesystem, recovery is unverified. Keep important work
 saved and backed up, and do not rely on recovery from that state root.
 
-The current unreleased Windows build validates the fixed NTFS directory chain,
+Beta.2 on Windows validates the fixed NTFS directory chain,
 rejects registered Cloud Files sync roots at the state or recovery directories,
 reparse and cross-volume components,
 retains its directory handles, rejects state ACLs with unprivileged mutation
@@ -375,7 +380,7 @@ LocalAppData before deleting the old record. If the old recovery root exists
 but cannot be verified, recovery is unavailable and its records remain in
 place for later review.
 
-The current unreleased Linux and macOS builds bind the recovery namespace. If a
+Beta.2 on Linux and macOS binds the recovery namespace. If a
 directory on the path to the state directory can be changed by another user,
 the state directory is not yours, a recovery directory is a link, or the state
 directory is on a known network file system, recovery is unavailable for the

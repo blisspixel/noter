@@ -58,7 +58,7 @@ Feature presence alone is not verification.
 
 ### 1.3 Beta.2 checkpoint decision (2026-10-11)
 
-The next prerelease is a focused hardening checkpoint for beta.1's existing
+The beta.2 checkpoint is focused hardening for beta.1's existing
 surfaces: safe terminal save and recovery, inert terminal text, bounded input
 and history, defensive source and binary installers, recovery namespace
 hardening, and Linux desktop integration. This scope was explicitly approved

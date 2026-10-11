@@ -80,23 +80,24 @@ on Linux, Noter also adapts to session text scale and Omarchy palettes.
 
 ### Install a release
 
-Prebuilt binaries for Windows, Linux, and macOS (Intel and Apple Silicon) are
-published on the [GitHub Releases page](https://github.com/blisspixel/noter/releases).
-The installer script downloads the newest release, verifies its SHA-256
-checksum, and installs `noter` for your user. Download it, read it, then run it:
+Check [GitHub Releases](https://github.com/blisspixel/noter/releases) for Windows,
+Linux, and macOS (Intel and Apple Silicon) binaries. These commands select beta.2;
+use them once its tag and artifacts are available, or build from source below.
+The installer verifies the archive's SHA-256 checksum and installs `noter` for
+your user. Download it, read it, then run it:
 
 Windows (PowerShell):
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/blisspixel/noter/main/scripts/install.ps1 -OutFile install-noter.ps1
-powershell -ExecutionPolicy Bypass -File .\install-noter.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2/scripts/install.ps1 -OutFile install-noter.ps1
+powershell -ExecutionPolicy Bypass -File .\install-noter.ps1 -Version 0.1.0-beta.2
 ```
 
 macOS or Linux:
 
 ```sh
-curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/main/scripts/install.sh
-sh install-noter.sh
+curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2/scripts/install.sh
+sh install-noter.sh --version 0.1.0-beta.2
 ```
 
 It installs to `%LOCALAPPDATA%\Programs\Noter\bin` (added to your user
@@ -137,13 +138,16 @@ and update contracts are documented in [docs/INSTALLATION.md](docs/INSTALLATION.
 
 ## Project status
 
-The current published version is `0.1.0-beta.1`. Its terminal preview has known
-save-failure, recovery, and terminal-control defects fixed since publication.
-Use a current source build for those fixes and keep backups; the published
-binary does not contain the later hardening.
+**Source version:** `0.1.0-beta.2`
 
-Current source gives both interfaces the same save safety, crash recovery, and
-bounded Undo. It also adds Linux desktop integration and mitigates hidden-window
+This version is a focused hardening prerelease. It fixes beta.1's terminal
+save-failure, recovery, and terminal-control defects. Check
+[GitHub Releases](https://github.com/blisspixel/noter/releases) for available
+builds and their publication evidence; a source version does not prove that its
+binaries have been published. Keep backups during prerelease use.
+
+Both interfaces share save safety, crash recovery, and bounded Undo. Beta.2 also
+adds Linux desktop integration and mitigates hidden-window
 Wayland stalls. Native Hyprland retesting remains pending. The virtualized
 large-file editor (M5), continuous Markdown editing (M6), and platform signing
 and complete distribution evidence (M7) remain open. The

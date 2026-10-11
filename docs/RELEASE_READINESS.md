@@ -2,9 +2,10 @@
 
 **Updated:** 2026-10-11
 
-**Decision:** focused beta.2 prerelease approved on 2026-10-11. Publication is
-pending. The published release remains beta.1 until a verified replacement is
-available. First-release requirements remain in [REQUIREMENTS.md](REQUIREMENTS.md)
+**Preparation snapshot:** focused beta.2 prerelease approved on 2026-10-11.
+This source record precedes publication and is not a publication receipt.
+Check [GitHub Releases](https://github.com/blisspixel/noter/releases) for actual
+availability and later verification receipts. First-release requirements remain in [REQUIREMENTS.md](REQUIREMENTS.md)
 and sequence remains in [ROADMAP.md](ROADMAP.md).
 
 ## Scope and issue audit
@@ -48,11 +49,13 @@ not automatic verification of the new candidate.
 | `cc32abe` | [main CI 36460432091](https://github.com/blisspixel/noter/actions/runs/36460432091) | Native suites, coverage, and mutation matrix passed after recovery and installer consolidation |
 | `0d8e6de` | [main CI 38038248915](https://github.com/blisspixel/noter/actions/runs/38038248915) | Linux desktop/session integration passed |
 | `9879408` | [PR CI 38069044066](https://github.com/blisspixel/noter/actions/runs/38069044066) | UI/compositor changes passed all jobs; trust-kernel line coverage 93.05 percent |
-| `9cfd712` | [PR CI 38133597002](https://github.com/blisspixel/noter/actions/runs/38133597002) | Ordinary native suites, documentation, lint, coverage, and macOS mutation passed; Linux and Windows mutation pending; exact main-push CI remains required |
-| `9cfd712` | [Hosted Release dry run 38133594593](https://github.com/blisspixel/noter/actions/runs/38133594593) | Four target builds and global assembly passed; downloaded 20-file payload passed host-stage validation and archive inspection; publication and attestations remain pending |
-| Current candidate | Exact-head PR CI, main-push CI, and hosted dry run | Required after documentation corrections; historical receipts above do not verify a later commit |
+| `9cfd712` | [PR CI 38133597002](https://github.com/blisspixel/noter/actions/runs/38133597002) | Cancelled after documentation correction; ordinary suites, coverage, Linux/macOS mutation, and Windows shard 9 passed; remaining Windows shards were interrupted |
+| `9cfd712` | [Hosted Release dry run 38133594593](https://github.com/blisspixel/noter/actions/runs/38133594593) | Four target builds and global assembly passed; downloaded 20-file payload passed host-stage validation and archive inspection; hosting was skipped |
+| `a73dc38` | [PR CI 38137457512](https://github.com/blisspixel/noter/actions/runs/38137457512) | At evidence capture, ordinary native suites, lint, docs, coverage, and macOS mutation passed; this source predates the consumer-document correction and does not verify a later commit |
+| `a73dc38` | [Hosted dry run 38137465542](https://github.com/blisspixel/noter/actions/runs/38137465542) and [inspection receipt](https://github.com/blisspixel/noter/pull/49#issuecomment-6108874848) | Four target builds, global assembly, 20-file host-stage validation, archives, bundled docs/notices, Windows version/MSI properties, and SBOM identities passed; hosting was skipped |
+| Release candidate | Exact-head PR CI, main-push CI, and hosted dry run | Required after documentation corrections; historical receipts above do not verify a later commit |
 
-The `9cfd712` hosted Linux LCOV receipt contains 41,542/44,372 covered workspace
+The `a73dc38` hosted Linux LCOV receipt contains 41,542/44,372 covered workspace
 lines (93.62 percent), and 19,799/21,284 trust-kernel lines (93.02 percent) using
 the exact CI exclusion expression. Both exceed their unchanged gates. The full
 mutation matrix and exact main-push CI must independently pass; this receipt does
@@ -66,6 +69,13 @@ release configuration. The same working tree passes 26 Linux WSL Ubuntu 20.04 in
 the generated entry. These are native Linux process observations,
 not an interactive Omarchy desktop result. Final candidate results replace this
 provisional local record after review and version preparation.
+
+The consumer-guide correction adds version-matched installer recipes and a
+configuration regression that rejects source/guide version drift, old-version
+recipes, and unversioned installer downloads. Its local script gate passed
+237 Python tests (28 platform-specific skips), Ruff, links, screenshots, and
+release configuration. Rust implementation and publication safeguards are
+unchanged; complete exact-head CI remains required.
 
 The first hosted dry run, [38132418647](https://github.com/blisspixel/noter/actions/runs/38132418647),
 built all four targets but correctly refused global assembly because the artifact
@@ -133,6 +143,6 @@ automated safety and release requirements remain mandatory.
 3. [Build continuous source-backed Markdown](https://github.com/blisspixel/noter/issues/52), sticky formatting, and caret-aware
    delimiter reveal on the accepted editor foundation. Preserve exact bytes,
    shared transactions, Undo, conflict, and recovery behavior.
-4. Complete M6 diagnostics/formatting and [M7 native release evidence](https://github.com/blisspixel/noter/issues/53): signing, clean-machine
+4. Complete [M6 diagnostics/formatting](https://github.com/blisspixel/noter/issues/54) and [M7 native release evidence](https://github.com/blisspixel/noter/issues/53): signing, clean-machine
    packaging, platform matrix, and RC dogfood. Keep optional spell checking and
    automation rewrites behind these user-visible correctness priorities.

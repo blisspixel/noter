@@ -12,6 +12,7 @@ from check_release_config import (
     validate_license_inventory,
     validate_manifest,
     validate_release_artifact_validator,
+    validate_release_guides,
     validate_repository,
     validate_sbom_generator,
     validate_wix,
@@ -63,9 +64,129 @@ class ReleaseConfigurationTests(unittest.TestCase):
         cls.release_artifact_validator = read_regular_file(
             REPOSITORY_ROOT / "scripts/check_release_artifacts.py"
         )
+        cls.readme = read_regular_file(REPOSITORY_ROOT / "README.md").decode("utf-8")
+        cls.installation = read_regular_file(
+            REPOSITORY_ROOT / "docs/INSTALLATION.md"
+        ).decode("utf-8")
 
     def test_repository_configuration_is_consistent(self) -> None:
         self.assertEqual(validate_repository(), [])
+
+    def test_rejects_stale_consumer_guide_version(self) -> None:
+        for field, marker in (
+            ("readme", "Source version"),
+            ("installation", "Guide version"),
+        ):
+            with self.subTest(field=field):
+                documents = {"readme": self.readme, "installation": self.installation}
+                documents[field] = documents[field].replace(
+                    f"**{marker}:** `0.1.0-beta.2`",
+                    f"**{marker}:** `0.1.0-beta.1`",
+                )
+                self.assertTrue(validate_release_guides(self.manifest, **documents))
+
+    def test_rejects_old_release_in_installation_recipe(self) -> None:
+        for field in ("readme", "installation"):
+            for flag in ("-Version", "--version"):
+                with self.subTest(field=field, flag=flag):
+                    documents = {
+                        "readme": self.readme,
+                        "installation": self.installation,
+                    }
+                    documents[field] = documents[field].replace(
+                        f"{flag} 0.1.0-beta.2", f"{flag} 0.1.0-beta.1", 1
+                    )
+                    self.assertTrue(validate_release_guides(self.manifest, **documents))
+
+    def test_rejects_unversioned_consumer_installer_download(self) -> None:
+        changed = self.installation.replace(
+            "v0.1.0-beta.2/scripts/install.ps1", "main/scripts/install.ps1"
+        )
+        self.assertIn(
+            "installation guide must download the version-matched installer",
+            validate_release_guides(self.manifest, self.readme, changed),
+        )
+
+    def test_rejects_missing_consumer_binary_version_selection(self) -> None:
+        for field in ("readme", "installation"):
+            for flag in ("-Version", "--version"):
+                with self.subTest(field=field, flag=flag):
+                    documents = {
+                        "readme": self.readme,
+                        "installation": self.installation,
+                    }
+                    documents[field] = documents[field].replace(
+                        f" {flag} 0.1.0-beta.2", "", 1
+                    )
+                    self.assertTrue(validate_release_guides(self.manifest, **documents))
+
+    def test_release_guides_reject_invalid_package_metadata(self) -> None:
+        for manifest in (
+            "[package]",
+            "[package]\nversion = 3",
+            '[package]\nversion = ""',
+            "[package",
+        ):
+            with self.subTest(manifest=manifest):
+                self.assertTrue(
+                    validate_release_guides(manifest, self.readme, self.installation)
+                )
+
+    def test_release_guides_accept_windows_and_mixed_line_endings(self) -> None:
+        readme_lf = self.readme.replace("\r\n", "\n")
+        installation_lf = self.installation.replace("\r\n", "\n")
+        for readme, installation in (
+            (readme_lf.replace("\n", "\r\n"), installation_lf),
+            (readme_lf, installation_lf.replace("\n", "\r\n")),
+            (
+                readme_lf.replace("\n", "\r\n"),
+                installation_lf.replace("\n", "\r\n"),
+            ),
+            (readme_lf.replace("\n", "\r\n", 1), installation_lf),
+        ):
+            with self.subTest(readme=readme[:40], installation=installation[:40]):
+                self.assertEqual(
+                    validate_release_guides(self.manifest, readme, installation), []
+                )
+
+    def test_rejects_additional_stale_installer_downloads(self) -> None:
+        for field in ("readme", "installation"):
+            for revision in ("main", "v0.1.0-beta.1"):
+                for extension in ("ps1", "sh"):
+                    with self.subTest(
+                        field=field, revision=revision, extension=extension
+                    ):
+                        documents = {
+                            "readme": self.readme,
+                            "installation": self.installation,
+                        }
+                        documents[field] += (
+                            "\nhttps://raw.githubusercontent.com/blisspixel/noter/"
+                            f"{revision}/scripts/install.{extension}\n"
+                        )
+                        self.assertTrue(
+                            validate_release_guides(self.manifest, **documents)
+                        )
+
+    def test_rejects_unpinned_secondary_binary_recipes(self) -> None:
+        for flag in ("-Version", "--version"):
+            for replacement in ("", f" {flag} 0.1.0-beta.1"):
+                with self.subTest(flag=flag, replacement=replacement):
+                    original = f" {flag} 0.1.0-beta.2"
+                    before, separator, after = self.installation.rpartition(original)
+                    self.assertEqual(separator, original)
+                    changed = before + replacement + after
+                    self.assertTrue(
+                        validate_release_guides(self.manifest, self.readme, changed)
+                    )
+
+    def test_rejects_stale_recipes_with_windows_line_endings(self) -> None:
+        changed = (
+            self.installation.replace("--binary --version 0.1.0-beta.2", "--binary")
+            .replace("\r\n", "\n")
+            .replace("\n", "\r\n")
+        )
+        self.assertTrue(validate_release_guides(self.manifest, self.readme, changed))
 
     def test_rejects_collapsed_overview_only_license_texts(self) -> None:
         generator = self.license_generator.replace("notice_sources", "legal_sources")

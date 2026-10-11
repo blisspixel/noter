@@ -8,8 +8,9 @@ that candidate is frozen for publication.
 
 ## 0.1.0-beta.2 - 2026-10-11
 
-Candidate frozen for verification; publication is pending the focused checkpoint
-in [the release readiness record](docs/RELEASE_READINESS.md).
+Focused hardening checkpoint. The source-preparation snapshot is recorded in
+[release readiness](docs/RELEASE_READINESS.md); availability and publication
+receipts are on [GitHub Releases](https://github.com/blisspixel/noter/releases).
 
 The native Omarchy retest is deferred. The hidden-workspace change remains an
 unverified mitigation, with issue #44 open for follow-up evidence.
@@ -139,8 +140,8 @@ unverified mitigation, with issue #44 open for follow-up evidence.
 
 ### Fixed
 
-- Keep release artifact validation aligned with the Cargo package version and
-  reject version drift in repository configuration checks.
+- Keep release artifact validation and versioned installation instructions
+  aligned with the Cargo package version; reject drift in configuration checks.
 
 - Pass the selected file through Linux Open With, apply both desktop-entry
   escaping layers to executable paths, and preserve another install root's
@@ -270,12 +271,16 @@ unverified mitigation, with issue #44 open for follow-up evidence.
   through OSC 52, C1 controls, and bidirectional overrides, now appear as a
   visible replacement character instead of reaching the terminal.
 
-## 0.1.0-beta.1 - 2026-09-24
+## 0.1.0-beta.1 - 2026-09-25
+
+This terminal preview lacked crash recovery and had save-failure and
+terminal-control defects corrected by beta.2. Its documented installer commands
+also required later fixes.
 
 ### Added
 
-- Add native Terminal User Interface (TUI) mode (`noter --tui [file]`) sharing
-  all core document, revision, crash recovery, and atomic save logic, featuring
+- Add native Terminal User Interface (TUI) mode (`noter --tui [file]`) using
+  core document and revision operations, featuring
   dual Nano and modern keyboard shortcuts, mouse navigation, full 5-theme
   palettes, formatted Markdown preview, and automated headless fallback.
 - Add safe terminal raw mode and geometry primitives to `crates/noter-platform`
