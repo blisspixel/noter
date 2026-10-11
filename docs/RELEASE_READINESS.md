@@ -9,9 +9,9 @@ and sequence remains in [ROADMAP.md](ROADMAP.md).
 
 ## Scope and issue audit
 
-| Issue | Implementation | Required evidence |
+| Issue | Implementation | Verification evidence |
 | --- | --- | --- |
-| [#44](https://github.com/blisspixel/noter/issues/44), hidden Wayland window stalls | Disable glow VSync in Wayland sessions; suppress hidden-window periodic inspection | Configuration and visibility regressions; native Hyprland workspace retest |
+| [#44](https://github.com/blisspixel/noter/issues/44), hidden Wayland window stalls | Disable glow VSync in Wayland sessions; suppress hidden-window periodic inspection | Configuration and visibility regressions pass; native Hyprland retest postponed, issue remains open |
 | [#45](https://github.com/blisspixel/noter/issues/45), menu shortcut spacing | Shared minimum gap across File, Edit, View, and Markdown menus | Rendered geometry regression; visual review at 100 and 150 percent scale |
 | [#46](https://github.com/blisspixel/noter/issues/46), CRT strong emphasis | Distinct high-intensity strong text in both CRT themes | Layout/color/contrast tests; regenerated native captures; native theme retest |
 | [#47](https://github.com/blisspixel/noter/issues/47), Linux launcher and Open With | Desktop entry, icon, source-root documentation; selected-file argument and exact Exec escaping; install-root ownership on uninstall | Source/binary installer regressions; real GIO selected-file launch; native launcher retest |
@@ -51,6 +51,11 @@ not automatic verification of the new candidate.
 | Beta.2 candidate | Exact-head PR and main-push CI | Pending; both 80 percent workspace and 90 percent trust-kernel gates remain mandatory |
 | Beta.2 candidate | Hosted Release dry run | Pending; four target archives, MSI, notices, checksums, SBOMs and manifest must agree |
 
+The `ed67c26` hosted Linux LCOV receipt contains 41,529/44,372 covered workspace
+lines (93.59 percent), and 19,786/21,284 trust-kernel lines (92.96 percent) using
+the exact CI exclusion expression. Both exceed their unchanged gates. Final-head
+CI must independently pass; this receipt does not replace that requirement.
+
 Local Windows validation of the beta.2 candidate source passed formatting,
 strict Clippy, rustdoc, advisory audit, dependency policy, 1,057 Rust tests,
 226 Python tests (28 platform-specific skips), Ruff, links, screenshots, and
@@ -59,6 +64,14 @@ release configuration. The same working tree passes 26 Linux WSL Ubuntu 20.04 in
 the generated entry. These are native Linux process observations,
 not an interactive Omarchy desktop result. Final candidate results replace this
 provisional local record after review and version preparation.
+
+The first hosted dry run, [38132418647](https://github.com/blisspixel/noter/actions/runs/38132418647),
+built all four targets but correctly refused global assembly because the artifact
+validator still expected beta.1. Updating its identity to beta.2 makes the same
+downloaded local artifacts pass `prepare --stage global`. A new Cargo-version
+consistency regression prevents that drift. Independent review approved the
+validator's new digest without changing its payload or publication safeguards.
+A complete hosted dry run is still required.
 
 ## Focused native matrix
 
@@ -77,12 +90,18 @@ artifact checksum, platform, desktop, and display scale beside each result.
 
 | Check | Windows | Omarchy/Hyprland | macOS/X11 |
 | --- | --- | --- | --- |
-| Candidate launch, edit, save, failed-save retention, recovery | Pending | Pending | Automated tests required; interactive matrix deferred to RC |
-| Hidden workspace, clean and dirty, recovery scheduling | Not applicable | Pending, required for #44 verification | Native compositor matrix deferred to beta.3 |
-| Menus and CRT emphasis at 100 and 150 percent scale | Pending captures/review | Pending | Interactive theme matrix deferred to RC |
-| Source/binary launcher, Open With, uninstall ownership | Not applicable | Pending native desktop; Linux process regressions pass locally | Linux X11 desktop retest deferred to beta.3 |
+| Candidate launch, edit, save, failed-save retention, recovery | Passed on `ed67c26`; [native record](evidence/beta2-windows-2026-10-11.md) | Interactive retest deferred to beta.3 | Automated tests required; interactive matrix deferred to RC |
+| Hidden workspace, clean and dirty, recovery scheduling | Not applicable | Postponed; required for #44 verification, not claimed for beta.2 | Native compositor matrix deferred to beta.3 |
+| Menus and CRT emphasis at 100 and 150 percent scale | Native menu and both CRT themes passed at observed host scale; five deterministic 100 percent captures reviewed; full scale matrix deferred to RC | Interactive retest deferred to beta.3 | Interactive theme matrix deferred to RC |
+| Source/binary launcher, Open With, uninstall ownership | Not applicable | Native desktop retest deferred to beta.3; Linux process regressions pass locally | Linux X11 desktop retest deferred to beta.3 |
 | Downloaded archive version, checksum and attestation | Pending | Pending | Four-target artifact inspection required; clean-machine matrix deferred to RC |
 | Install, reinstall, upgrade, rollback, uninstall | Pending source fixture | Automated installer fixtures required | Complete packaged clean-machine matrix deferred to RC |
+
+The 2026-10-11 follow-up postponed the user's Omarchy retest and directed continued
+repository work. This scoped beta carries the implementation with the limitations
+above, without claiming Hyprland resolution or a complete interactive platform
+matrix. These deferred observations remain later checkpoint gates. Existing
+automated safety and release requirements remain mandatory.
 
 ## Publication checklist
 
@@ -102,13 +121,13 @@ artifact checksum, platform, desktop, and display scale beside each result.
 
 ## Work after beta.2
 
-1. Complete M4-H1's adversarial native storage matrix before broadening recovery
+1. [Complete M4-H1's adversarial native storage matrix](https://github.com/blisspixel/noter/issues/50) before broadening recovery
    support: redirected and synchronized roots, weak/remote storage, final-window
    swaps, barrier faults, and second-identity access on each applicable platform.
-2. Run M5's bounded feasibility gate on one immutable corpus and commit. Prove
+2. [Run M5's bounded feasibility gate](https://github.com/blisspixel/noter/issues/51) on one immutable corpus and commit. Prove
    typography, bidi, IME, accessible editable text, hit testing, and the 50 MiB
    path before changing the current 8 MiB UI limit or renderer.
-3. Build continuous source-backed Markdown, sticky formatting, and caret-aware
+3. [Build continuous source-backed Markdown](https://github.com/blisspixel/noter/issues/52), sticky formatting, and caret-aware
    delimiter reveal on the accepted editor foundation. Preserve exact bytes,
    shared transactions, Undo, conflict, and recovery behavior.
 4. Complete M6 diagnostics/formatting and M7 native signing, clean-machine

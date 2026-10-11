@@ -71,6 +71,10 @@ editor gate and M6 continuous Markdown editing move to beta.3. The beta.2
 [readiness record](RELEASE_READINESS.md) must distinguish exact-head automated
 results, native observations, deferred environments, and publication state.
 Coverage, mutation, lint, audit, and protected-main requirements are unchanged.
+The native Omarchy retest was postponed on 2026-10-11. Beta.2 may carry the
+Wayland mitigation with an explicit unverified status; issue #44 remains open
+and its native exit evidence is required before claiming Hyprland resolution.
+The complete desktop-scale and compositor matrix remains a beta.3/RC gate.
 
 ## 2. Core functional requirements
 

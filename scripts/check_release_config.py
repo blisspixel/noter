@@ -49,7 +49,7 @@ REVIEWED_WINDOWS_CLOUD_FILTER_SCRIPT_SHA256 = (
     "11fe78e1c8347a546c7632338249d5bd89e907c169f5224736160886721a0e80"
 )
 REVIEWED_RELEASE_ARTIFACT_VALIDATOR_SHA256 = (
-    "fdc8376c35381ec24505b46cf112e6b4c65023d11213b80730cabef25ffaf578"
+    "5c66108534ea4eac7c1df4ac046ad33e6879a8fe9b2415ee6bf17010140c86a6"
 )
 WIX_NAMESPACE = {"wix": "http://schemas.microsoft.com/wix/2006/wi"}
 WIX_XML_COMMENT = re.compile(rb"<!--.*?-->", flags=re.DOTALL)
@@ -723,7 +723,9 @@ def validate_sbom_generator(text: str) -> list[str]:
     return errors
 
 
-def validate_release_artifact_validator(contents: bytes) -> list[str]:
+def validate_release_artifact_validator(
+    contents: bytes, manifest: str | None = None
+) -> list[str]:
     """Bind the helper that enforces the release payload and remote digest boundary."""
 
     errors: list[str] = []
@@ -733,6 +735,18 @@ def validate_release_artifact_validator(contents: bytes) -> list[str]:
         text = contents.decode("utf-8")
     except UnicodeDecodeError:
         return ["release artifact validator must be UTF-8"]
+    if manifest is not None:
+        try:
+            version = tomllib.loads(manifest)["package"]["version"]
+        except (tomllib.TOMLDecodeError, KeyError, TypeError):
+            errors.append("release package version must be valid Cargo metadata")
+        else:
+            if not isinstance(version, str) or not re.search(
+                rf'^APP_VERSION = "{re.escape(version)}"$', text, re.MULTILINE
+            ):
+                errors.append(
+                    "release artifact version differs from Cargo package version"
+                )
     for expected, description in {
         "RELEASE_ARTIFACT_KINDS": "independent required release inventory",
         "LOCAL_RELEASE_ARTIFACTS": "required local build inventory",
@@ -1160,7 +1174,9 @@ def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
         errors.append("Windows Cloud Files CI helper differs from its reviewed source")
     errors.extend(validate_workflow(workflow))
     errors.extend(validate_sbom_generator(sbom_generator))
-    errors.extend(validate_release_artifact_validator(release_artifact_validator))
+    errors.extend(
+        validate_release_artifact_validator(release_artifact_validator, manifest)
+    )
     errors.extend(validate_wix(wix))
     errors.extend(
         validate_license_inventory(
