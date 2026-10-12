@@ -77,6 +77,13 @@ the ACL and verifies its absence. If validation or restriction fails, Noter
 reports the retained artifact and does not claim that owner-only access was
 established.
 
+Current Unix document saves can accumulate retained siblings until manual
+inspection and removal. The window names them in its warning; current source
+also exposes the terminal's latest committed-save warnings through Ctrl+R.
+A safe confirmed cleanup action and a tested per-document retention bound
+remain open in [#59](https://github.com/blisspixel/noter/issues/59).
+Do not treat a filename pattern as proof that an artifact is safe to delete.
+
 ## 5. Diagnostics
 
 Default diagnostics do not contain:

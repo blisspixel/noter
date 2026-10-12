@@ -152,6 +152,11 @@ that headless reproduction from native accessibility and keeps #60 open for a
 repair. [#59](https://github.com/blisspixel/noter/issues/59) tracks actionable
 retained-save warnings and safe explicit cleanup. Cleanup must preserve raced
 external revisions and cannot delete files by a guessed name or glob.
+The terminal now retains the latest committed save's complete warning messages
+in a scrollable Ctrl+R view; exact native Linux sibling names are regression
+tested. #59 remains open for identity-bound confirmed cleanup and a tested
+retention policy. Neither dismissing that view nor a later clean save deletes
+an earlier artifact.
 
 ### Toward `0.1.0-rc.1` and `0.1.0`
 

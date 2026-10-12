@@ -6,6 +6,8 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Expose the latest terminal save's exact cleanup and durability warnings in a
+  scrollable Ctrl+R view, including retained sibling names and inspection advice.
 - Add a reproducible CPU baseline of the real bounded Text Mode adapter, with
   raw edit and idle samples, accessibility updates, and exact-source checks.
 - Add active accessible-text source-equality checks with bundled fonts; retain
