@@ -708,6 +708,23 @@ impl TuiSession {
         self.reconcile_scroll = 0;
     }
 
+    fn scroll_save_details(&mut self, direction: MoveDirection, cols: u16, rows: u16) {
+        let columns = usize::from(cols);
+        let lines = match self.prompt {
+            PromptMode::SaveWarnings => save_warnings::lines(self, columns),
+            PromptMode::ReconcileSave(index) => save_reconciliation_lines(self, index, columns),
+            _ => return,
+        };
+        let maximum = lines
+            .len()
+            .saturating_sub(usize::from(rows).saturating_sub(2));
+        let current = self.reconcile_scroll.min(maximum);
+        self.reconcile_scroll = match direction {
+            MoveDirection::Forward => current.saturating_add(1).min(maximum),
+            MoveDirection::Backward => current.saturating_sub(1),
+        };
+    }
+
     fn reconcile_save(&mut self, index: usize) {
         if index >= self.save_recoveries.len() {
             self.prompt = PromptMode::None;
@@ -1520,9 +1537,9 @@ fn render_save_reconciliation(
     let height = usize::from(rows);
     let mut out = String::with_capacity(columns * height * 4);
     out.push_str("\x1b[?25l\x1b[H");
-    let Some(recovery) = session.save_recoveries.get(index) else {
+    if index >= session.save_recoveries.len() {
         return out;
-    };
+    }
     let header = format!(
         " Uncertain save {}/{} | All saves paused ",
         index + 1,
@@ -1538,18 +1555,7 @@ fn render_save_reconciliation(
     );
     out.push_str("\r\n");
 
-    let mut lines = vec![
-        format!(" Destination: {}", recovery.destination_label),
-        " Inspect that destination and the retained siblings named below.".to_owned(),
-        " Preserve the version you need; decide whether the earlier save committed.".to_owned(),
-        " Confirming removes only this in-memory safety record. It does not write.".to_owned(),
-        String::new(),
-        " Diagnostic:".to_owned(),
-    ];
-    save_warnings::append_diagnostic(&mut lines, &recovery.message, columns);
-    if recovery.destination.to_str().is_none() {
-        lines.push(" Copy uses reversible operating-system path encoding.".to_owned());
-    }
+    let lines = save_reconciliation_lines(session, index, columns);
     let viewport = height.saturating_sub(2);
     let start = session
         .reconcile_scroll
@@ -1584,6 +1590,25 @@ fn render_save_reconciliation(
         true,
     );
     out
+}
+
+fn save_reconciliation_lines(session: &TuiSession, index: usize, columns: usize) -> Vec<String> {
+    let Some(recovery) = session.save_recoveries.get(index) else {
+        return Vec::new();
+    };
+    let mut lines = vec![
+        format!(" Destination: {}", recovery.destination_label),
+        " Inspect that destination and the retained siblings named below.".to_owned(),
+        " Preserve the version you need; decide whether the earlier save committed.".to_owned(),
+        " Confirming removes only this in-memory safety record. It does not write.".to_owned(),
+        String::new(),
+        " Diagnostic:".to_owned(),
+    ];
+    save_warnings::append_diagnostic(&mut lines, &recovery.message, columns);
+    if recovery.destination.to_str().is_none() {
+        lines.push(" Copy uses reversible operating-system path encoding.".to_owned());
+    }
+    lines
 }
 
 const LEGEND_TOP: &str =
@@ -1814,7 +1839,7 @@ fn osc52_copy(text: &str) -> String {
 }
 
 #[allow(clippy::too_many_lines)]
-fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16) {
+fn handle_event(session: &mut TuiSession, event: TuiEvent, cols: u16, rows: u16) {
     if session.show_help {
         if let TuiEvent::Key(TuiKey::Escape | TuiKey::Ctrl('g') | TuiKey::Enter) = event {
             session.show_help = false;
@@ -1827,10 +1852,10 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
             if let TuiEvent::Key(key) = event {
                 match key {
                     TuiKey::Down => {
-                        session.reconcile_scroll = session.reconcile_scroll.saturating_add(1);
+                        session.scroll_save_details(MoveDirection::Forward, cols, rows);
                     }
                     TuiKey::Up => {
-                        session.reconcile_scroll = session.reconcile_scroll.saturating_sub(1);
+                        session.scroll_save_details(MoveDirection::Backward, cols, rows);
                     }
                     TuiKey::Escape | TuiKey::Enter | TuiKey::Ctrl('r') => {
                         session.prompt = PromptMode::None;
@@ -1868,10 +1893,10 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
                         session.reconcile_scroll = 0;
                     }
                     TuiKey::Down => {
-                        session.reconcile_scroll = session.reconcile_scroll.saturating_add(1);
+                        session.scroll_save_details(MoveDirection::Forward, cols, rows);
                     }
                     TuiKey::Up => {
-                        session.reconcile_scroll = session.reconcile_scroll.saturating_sub(1);
+                        session.scroll_save_details(MoveDirection::Backward, cols, rows);
                     }
                     TuiKey::Escape => session.prompt = PromptMode::None,
                     _ => {}
@@ -2666,7 +2691,7 @@ mod tests {
     #[test]
     fn warning_review_scrolls_and_keeps_untrusted_text_inert() {
         let mut session = untitled();
-        let prefix = "padding ".repeat(20);
+        let prefix = "padding ".repeat(80);
         session.last_save_warnings = Some(SaveWarnings::new(
             vec![storage_error(&format!("{prefix}.noter-save-exact.tmp"))],
             vec![storage_error(
@@ -2680,10 +2705,10 @@ mod tests {
         handle_paste(&mut session, "must not edit");
         key(&mut session, TuiKey::Char('x'));
         assert_eq!(session.document.revision(), revision);
-        key(&mut session, TuiKey::Up);
+        handle_event(&mut session, TuiEvent::Key(TuiKey::Up), 80, 6);
         assert_eq!(session.reconcile_scroll, 0);
         for _ in 0..20 {
-            key(&mut session, TuiKey::Down);
+            handle_event(&mut session, TuiEvent::Key(TuiKey::Down), 80, 6);
         }
         let last = render_frame(&session, 80, 6);
         assert!(last.contains(".noter-save-exact.tmp"));
@@ -2696,6 +2721,61 @@ mod tests {
         assert!(render_frame(&session, 8, 3).contains("Enlarge"));
         key(&mut session, TuiKey::Ctrl('r'));
         assert_eq!(session.prompt, PromptMode::None);
+    }
+
+    #[test]
+    fn wrapped_diagnostics_preserve_all_sanitized_cells_including_tabs() {
+        let message = format!(
+            "{}\u{6771}\u{301}\u{1f642}\u{1b}\u{85}\u{2067} final-name.tmp",
+            "prefix\t\t".repeat(20)
+        );
+        let mut lines = Vec::new();
+        save_warnings::append_diagnostic(&mut lines, &message, 18);
+        let joined: String = lines
+            .iter()
+            .map(|line| line.strip_prefix(' ').unwrap())
+            .collect();
+        assert_eq!(joined, noter::core::terminal_text::sanitize_line(&message));
+        for line in lines {
+            assert!(display_width(&line) <= 18);
+            assert!(fit_line(&line, 18).starts_with(&line));
+        }
+        assert!(joined.ends_with("final-name.tmp"));
+    }
+
+    #[test]
+    fn both_save_detail_views_reverse_immediately_after_scrolling_past_bottom() {
+        let mut session = untitled();
+        let message = "diagnostic ".repeat(80);
+        session.last_save_warnings =
+            Some(SaveWarnings::new(vec![storage_error(&message)], Vec::new()));
+        let reservation = session
+            .reserve_save_recovery(PathBuf::from("note.txt"))
+            .unwrap();
+        session.report_save(
+            reservation,
+            Ok(SaveOutcome::CommitStateUnknown {
+                revision: Revision::INITIAL,
+                error: storage_error(&message),
+                recovery_artifact: storage_error("retained .noter-save-exact.tmp"),
+            }),
+        );
+        for prompt in [PromptMode::SaveWarnings, PromptMode::ReconcileSave(0)] {
+            session.prompt = prompt;
+            session.reconcile_scroll = 0;
+            for _ in 0..200 {
+                handle_event(&mut session, TuiEvent::Key(TuiKey::Down), 40, 6);
+            }
+            let bottom = session.reconcile_scroll;
+            assert!(bottom > 0);
+            handle_event(&mut session, TuiEvent::Key(TuiKey::Down), 40, 6);
+            assert_eq!(session.reconcile_scroll, bottom);
+            handle_event(&mut session, TuiEvent::Key(TuiKey::Up), 40, 6);
+            assert_eq!(session.reconcile_scroll, bottom - 1);
+            // Resizing also clamps an earlier smaller viewport's offset.
+            handle_event(&mut session, TuiEvent::Key(TuiKey::Down), 240, 100);
+            assert_eq!(session.reconcile_scroll, 0);
+        }
     }
 
     #[test]

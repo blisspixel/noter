@@ -1,16 +1,33 @@
 //! Latest-save diagnostics, using the core's exact retained-artifact messages.
 
 use super::{TuiPalette, TuiSession, push_bar};
+use noter::core::terminal_text::{cell_width, sanitize_line};
 
 pub(super) fn append_diagnostic(lines: &mut Vec<String>, message: &str, columns: usize) {
-    // At most two terminal cells per scalar. push_bar applies the shared
-    // control-character sanitizer after wrapping.
-    let characters: Vec<char> = message.chars().collect();
-    for chunk in characters.chunks(columns.saturating_sub(2).max(2) / 2) {
-        let mut line = String::from(" ");
-        line.extend(chunk);
-        lines.push(line);
+    let mut line = String::from(" ");
+    let mut column = 1;
+    for character in sanitize_line(message).chars() {
+        let width = cell_width(character, column);
+        if column + width > columns.max(3) {
+            lines.push(line);
+            line = String::from(" ");
+            column = 1;
+        }
+        line.push(character);
+        column += width;
     }
+    lines.push(line);
+}
+
+pub(super) fn lines(session: &TuiSession, columns: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(warnings) = &session.last_save_warnings {
+        for warning in warnings.cleanup().iter().chain(warnings.durability()) {
+            append_diagnostic(&mut lines, warning.message(), columns);
+            lines.push(String::new());
+        }
+    }
+    lines
 }
 
 pub(super) fn render(session: &TuiSession, cols: u16, rows: u16, palette: &TuiPalette) -> String {
@@ -27,13 +44,7 @@ pub(super) fn render(session: &TuiSession, cols: u16, rows: u16, palette: &TuiPa
         true,
     );
     out.push_str("\r\n");
-    let mut lines = Vec::new();
-    if let Some(warnings) = &session.last_save_warnings {
-        for warning in warnings.cleanup().iter().chain(warnings.durability()) {
-            append_diagnostic(&mut lines, warning.message(), columns);
-            lines.push(String::new());
-        }
-    }
+    let lines = lines(session, columns);
     let viewport = height.saturating_sub(2);
     let start = session
         .reconcile_scroll
