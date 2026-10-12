@@ -293,3 +293,8 @@ Remove-Item Env:NOTER_M5_RTL_FONT
 Issue #60 remains open for accessible source equality and native caret,
 selection, and editing acceptance. The guard is later source work and is not
 included in the published beta.2 artifacts.
+
+The [before/after receipt](evidence/m5-rtl-word-delete-2026-10-12.json) records
+the exact test-only addition to the unguarded candidate, its overflow failure,
+the clean guarded source and binary, twelve passing event cases, and the
+unchanged 52-versus-59 accessibility failure in that same guarded binary.
