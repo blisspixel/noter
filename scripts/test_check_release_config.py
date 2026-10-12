@@ -364,7 +364,11 @@ class ReleaseConfigurationTests(unittest.TestCase):
                 "missing always-evaluated mutation gate",
             ),
             "missing artifact failure": (
-                self.ci_workflow.replace("          if-no-files-found: error\n", "", 1),
+                self.ci_workflow.replace(
+                    "          path: mutants.out\n          if-no-files-found: error\n",
+                    "          path: mutants.out\n",
+                    1,
+                ),
                 "missing required mutation artifacts",
             ),
         }
@@ -372,6 +376,38 @@ class ReleaseConfigurationTests(unittest.TestCase):
             with self.subTest(description):
                 self.assertNotEqual(changed, self.ci_workflow)
                 self.assertIn(expected_error, validate_ci_mutation_topology(changed))
+
+    def test_recovery_identity_ci_cannot_be_bypassed(self) -> None:
+        for original, replacement in (
+            (
+                "sudo python3 scripts/check_recovery_identity.py --disposable",
+                "true # skipped",
+            ),
+            (
+                '--cargo-artifacts "$RUNNER_TEMP/recovery-identity-build.json"',
+                "--cargo-artifacts missing.json",
+            ),
+            (
+                "          name: recovery-identity-linux\n",
+                "          name: missing-receipt\n",
+            ),
+        ):
+            with self.subTest(original=original):
+                changed = self.ci_workflow.replace(original, replacement, 1)
+                self.assertNotEqual(changed, self.ci_workflow)
+                errors = validate_license_inventory(
+                    self.manifest,
+                    self.platform_manifest,
+                    self.about_config,
+                    self.license_generator,
+                    self.inventory,
+                    changed,
+                )
+                self.assertIn("CI workflow differs from its reviewed source", errors)
+                self.assertIn(
+                    "CI test job differs from its reviewed cross-platform program",
+                    errors,
+                )
 
     def test_rejects_a_floating_release_tool(self) -> None:
         changed = self.workflow.replace(

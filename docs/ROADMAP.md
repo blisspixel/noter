@@ -725,6 +725,12 @@ not power-loss durability or the complete matrix; the
 [M4 evidence inventory](M4_RECOVERY_EVIDENCE.md) records their scope.
 Classification of other redirected or synchronized roots, the remaining
 fault and race matrix, and exact-head hosted CI keep M4-H1 in progress.
+Linux native CI additionally exercises two real unprivileged numeric identities
+against newly private and previously shared recovery hierarchies while staged
+bytes and a live lease are held. The fixture proves actual access denial and
+exact restart candidates, and retains identity, permission, and filesystem
+receipts. Windows/macOS identity, ACL, real-root, and remaining race observations
+still block the complete matrix; see the [fixture inventory](M4_RECOVERY_EVIDENCE.md).
 Protected main moves new Windows recovery writes to the LocalAppData known
 folder while eframe preferences remain under RoamingAppData. It opens an
 existing legacy recovery root through the verified namespace, reviews both

@@ -8,6 +8,21 @@ This document records the evidence behind the roadmap. It is intentionally
 separate from the product requirements so that claims can be revised when the
 toolchain, operating systems, or editor ecosystem changes.
 
+## 2026-10-12: Native Linux recovery identity fixture
+
+The Linux identity fixture uses the operating system's numeric UID/GID model
+without creating machine accounts. The upstream util-linux
+[setpriv contract](https://man7.org/linux/man-pages/man1/setpriv.1.html) documents
+clearing supplementary groups, changing both real/effective IDs, dropping
+capability sets, and `no_new_privs` across exec. The fixture records the actual
+child credentials and every capability set from `/proc/self/status`, rather than
+assuming launch options succeeded. Numeric `cap_N` removal covers the running
+kernel's advertised capability range even when an older libcap-ng cannot expand
+`-all`. A real accessible control and initially shared-directory access attempts
+distinguish privacy enforcement from missing targets or failed child startup.
+These are test-only isolated Linux observations, not a new recovery root or
+Windows/macOS permission claim.
+
 ## 2026-10-11: Next quality checkpoint after beta.2
 
 The next implementation slice targets actual Windows process interruption at

@@ -6,6 +6,9 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Add native Linux recovery privacy fixtures with distinct unprivileged
+  identities, independently verified shared-directory preconditions, live-stage
+  access denial, exact restart recovery, and retained CI evidence.
 - Add eight native Windows process-interruption recovery fixtures covering
   replacement and first-record directory barriers, exact restart candidates,
   predecessor retention, lease release, and unrelated-file preservation.

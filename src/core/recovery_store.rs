@@ -3183,6 +3183,85 @@ mod tests {
         snapshot_with_document(9, instance, revision, updated_at, content)
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn identity_probe_owner() -> io::Result<()> {
+        let Some(root) = std::env::var_os("NOTER_TEST_RECOVERY_IDENTITY_ROOT") else {
+            return Ok(());
+        };
+        let root = PathBuf::from(root);
+        let state = root.join("state");
+        let store = RecoveryStore::open_in_state(&state)?;
+        let predecessor = snapshot_at(80, 1, 1, b"previous private recovery");
+        let replacement = snapshot_at(80, 2, 2, b"latest private recovery");
+        let unrelated = snapshot_at(81, 7, 7, b"unrelated private recovery");
+        store.persist(&predecessor)?;
+        store.persist(&unrelated)?;
+        let lease = store.try_hold_live_lease(replacement.instance_id())?;
+        let result = write_atomic_private_unix_with(
+            &store,
+            &store.record_path(replacement.instance_id()),
+            replacement.instance_id(),
+            &replacement.encode(),
+            |_| {
+                fs::write(root.join("ready"), b"private stage and live lease held")?;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_mins(1);
+                while !root.join("release").exists() {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "identity probe timeout",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                // Retain the exact staged successor for normal startup review.
+                Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "identity probe completed",
+                ))
+            },
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        drop(lease);
+        drop(store);
+        let store = RecoveryStore::open_in_state(&state)?;
+        let scan = store.scan_startup()?;
+        assert!(!scan.has_omissions());
+        assert_eq!(scan.entries().len(), 2);
+        let recovered = scan
+            .entries()
+            .iter()
+            .map(offer)
+            .find(|entry| entry.metadata().instance_id() == replacement.instance_id())
+            .expect("staged successor must be offered");
+        assert_eq!(recovered.metadata().revision(), replacement.revision());
+        assert_eq!(recovered.superseded().len(), 1);
+        assert_eq!(
+            store.load_record(recovered.primary())?.content(),
+            replacement.content()
+        );
+        assert_eq!(
+            store.load_record(&recovered.superseded()[0])?.content(),
+            predecessor.content()
+        );
+        let other = scan
+            .entries()
+            .iter()
+            .map(offer)
+            .find(|entry| entry.metadata().instance_id() == unrelated.instance_id())
+            .expect("unrelated recovery must remain available");
+        assert_eq!(
+            store.load_record(other.primary())?.content(),
+            unrelated.content()
+        );
+        fs::write(
+            root.join("complete"),
+            b"exact private restart candidates retained",
+        )?;
+        Ok(())
+    }
+
     #[cfg(windows)]
     mod process_interruption {
         use super::*;
