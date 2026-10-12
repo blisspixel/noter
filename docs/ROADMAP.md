@@ -145,8 +145,11 @@ The [recorded CPU baseline](M5_EDITOR_EVIDENCE.md#recorded-windows-baseline)
 identifies whole-document AccessKit updates as a current-adapter bottleneck;
 it does not pass the native M5 gate. [#60](https://github.com/blisspixel/noter/issues/60)
 also tracks native RTL accessible-text duplication. Bundled-font headless
-source-equality checks pass, so a reproducing system-font/native fixture remains
-required. [#59](https://github.com/blisspixel/noter/issues/59) tracks actionable
+source-equality checks pass; the additional identified local-font fixture
+reproduces 52-versus-59 TextRun characters. The
+[negative evidence](M5_EDITOR_EVIDENCE.md#accessible-text-fidelity) distinguishes
+that headless reproduction from native accessibility and keeps #60 open for a
+repair. [#59](https://github.com/blisspixel/noter/issues/59) tracks actionable
 retained-save warnings and safe explicit cleanup. Cleanup must preserve raced
 external revisions and cannot delete files by a guessed name or glob.
 

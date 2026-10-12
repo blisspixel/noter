@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "observed_at_utc": "2026-10-12T11:20:11Z",
+  "source": {
+    "commit": "2b7ad787ff6b51332ca797c9e9afc1bd10601a42",
+    "tree": "c5c402ec2f245929853403a107e3ee0d5187567b",
+    "clean": true
+  },
+  "binary_sha256": "6d759b1e9b44142bc2a8d5590bc3b75dd56a1b2636b871a59bb0b23c3cd6942b",
+  "cargo_lock_sha256": "b6ef388a511392b1ea6cf10f489d3a77d8e745743b07feb54f7a86436e8b93f0",
+  "environment": {
+    "os": "Windows 11 10.0.26200 AMD64",
+    "rust": "1.97.1",
+    "ui": "headless egui 0.35, actual Noter Text Mode editor and AccessKit child TextRuns",
+    "font_insertion": "Monospace fallback, lowest priority, matching the production fallback family policy"
+  },
+  "font": {
+    "name": "local Windows Arial regular, face index 0",
+    "bytes": 1045720,
+    "sha256": "b3658eadae55e682b5f69eb64c439c1ecc8f196c0bb8d4756d145d13bc86476a",
+    "blake3": "9493bfec4926242b6602f562e5e69bbc3a7ca1f139b9cf13bd6bb92d0125577d",
+    "all_tested_rtl_characters_covered": true,
+    "redistributed": false
+  },
+  "command": [
+    "cargo", "test", "--locked", "--bin", "noter",
+    "app::measurement::local_font_rtl_accessible_text_runs_match_source_projection",
+    "--all-features", "--", "--exact", "--ignored", "--nocapture"
+  ],
+  "font_environment_variable": "NOTER_M5_RTL_FONT",
+  "result": {
+    "exit_code": 101,
+    "test_status": "failed",
+    "expected_projection_characters": 52,
+    "actual_text_run_characters": 59,
+    "assertion": "accessible TextRun text differs from the source projection: expected 52 characters, received 59"
+  },
+  "retained_local_log_sha256": "5d0b81f3c5e3fe6604d4f2cd8e8db9939bdfd48bc495e6c1a5c156c10323bb5f",
+  "limitations": [
+    "Known negative evidence, not a fixed defect or passing accessibility gate.",
+    "The ordinary bundled-font RTL equality test passes and remains active.",
+    "No native AT-SPI, UIA, VoiceOver, presented paint, or native range-editing observation.",
+    "The fixture is an explicitly invoked local-font test; CI does not redistribute the font."
+  ]
+}

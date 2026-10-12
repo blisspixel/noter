@@ -212,13 +212,36 @@ Active headless tests reconstruct the named editor's ordered child `TextRun`
 values and compare them with the canonical LF source display projection. They
 cover wrapped English, mixed line endings, combining/wide/non-BMP characters,
 and the frozen bidi-edge line, while asserting unchanged document bytes.
-These bundled-font tests pass; no expected-failure exception is applied.
+These bundled-font tests pass and remain active in ordinary CI.
 
 [Issue #60](https://github.com/blisspixel/noter/issues/60) separately reports
 native AT-SPI RTL duplication (74 source characters versus 83 exposed). This
-has not been reproduced by the bundled-font fixture and is not fixed by it.
-Native system fallback fonts and shaping must be identified and frozen for a
-reproducing test before accepting a repair. Track the upstream
+is not fixed by the bundled-font checks. A separate local-font fixture now
+reproduces duplication in the actual editor's AccessKit TextRuns: 52 expected
+characters become 59 with the identified Arial fallback. The
+[negative receipt](evidence/m5-rtl-font-2026-10-12.json) records exact source,
+binary, font hashes, environment, command, and the retained equality failure.
+This headless observation supports a font/shaping cause; it is not a native
+AT-SPI interoperability observation or a repair.
+
+The local-font test is explicitly ignored by ordinary CI because its identified
+system font is not redistributed. It requires `NOTER_M5_RTL_FONT`, reads through
+the existing bounded font loader, validates coverage of every tested RTL
+character, and keeps source equality as the repair criterion. This narrow
+environment-dependent exception applies only to the additional reproduction;
+the bundled-font RTL test stays active. Run it explicitly on Windows:
+
+```powershell
+$env:NOTER_M5_RTL_FONT = 'C:/Windows/Fonts/arial.ttf'
+cargo test --locked --bin noter app::measurement::local_font_rtl_accessible_text_runs_match_source_projection --all-features -- --exact --ignored --nocapture
+Remove-Item Env:NOTER_M5_RTL_FONT
+```
+
+With the receipt's font, exit 101 and the 52-versus-59 mismatch are retained
+negative evidence. A pass with another font does not establish a repair.
+Any proposed repair must pass this same identified fixture and native text,
+caret, selection, and editing checks before the exception is removed.
+Track the upstream
 [RTL shaping defect](https://github.com/emilk/egui/issues/8576) and proposed
 [cluster correction](https://github.com/emilk/egui/pull/8698); these remain open
 as of 2026-10-12, and no dependency switch or patch is accepted here.
