@@ -6,6 +6,9 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Add eight native Windows process-interruption recovery fixtures covering
+  replacement and first-record directory barriers, exact restart candidates,
+  predecessor retention, lease release, and unrelated-file preservation.
 - Add reproducible editor-gate stress inputs, frozen hashes, and regression
   checks; document the next recovery and editor evidence work for beta.3.
 - Record beta.2 publication, downloaded artifact verification, and the remaining

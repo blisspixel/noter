@@ -3183,6 +3183,225 @@ mod tests {
         snapshot_with_document(9, instance, revision, updated_at, content)
     }
 
+    #[cfg(windows)]
+    mod process_interruption {
+        use super::*;
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const ROOT_ENV: &str = "NOTER_TEST_RECOVERY_INTERRUPTION_ROOT";
+        const CASE_ENV: &str = "NOTER_TEST_RECOVERY_INTERRUPTION_CASE";
+        const CHILD_TEST: &str =
+            "core::recovery_store::tests::process_interruption::interruption_child";
+        const READY: &[u8] = b"recovery boundary reached";
+        const CASES: &[(&str, WindowsRecoveryBarrier, bool, bool)] = &[
+            ("backup-before", WindowsRecoveryBarrier::Backup, false, true),
+            ("backup-after", WindowsRecoveryBarrier::Backup, true, true),
+            ("stage-before", WindowsRecoveryBarrier::Stage, false, true),
+            ("stage-after", WindowsRecoveryBarrier::Stage, true, true),
+            (
+                "cleanup-before",
+                WindowsRecoveryBarrier::Cleanup,
+                false,
+                true,
+            ),
+            ("cleanup-after", WindowsRecoveryBarrier::Cleanup, true, true),
+            ("first-before", WindowsRecoveryBarrier::Stage, false, false),
+            ("first-after", WindowsRecoveryBarrier::Stage, true, false),
+        ];
+
+        struct KillOnDrop(Child);
+
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        // The child invokes the real replacement protocol with its directories,
+        // artifact handles, and live lease held. Only its existing barrier seam
+        // pauses execution; no production environment switch is introduced.
+        #[test]
+        fn interruption_child() -> io::Result<()> {
+            let Some(root) = std::env::var_os(ROOT_ENV) else {
+                return Ok(());
+            };
+            let case = std::env::var(CASE_ENV).expect("interruption case");
+            let &(_, boundary, after_sync, _) = CASES
+                .iter()
+                .find(|(name, ..)| *name == case)
+                .expect("known interruption case");
+            let root = PathBuf::from(root);
+            let store = RecoveryStore::open(root.join("state"))?;
+            let replacement = snapshot_at(80, 2, 2, b"latest recovery");
+            let _lease = store.try_hold_live_lease(replacement.instance_id())?;
+            write_atomic_private_windows_bound_with(
+                &store,
+                &store.record_path(replacement.instance_id()),
+                replacement.instance_id(),
+                &replacement.encode(),
+                |point, directory| {
+                    if point == boundary && !after_sync {
+                        pause_at_boundary(&root)?;
+                    }
+                    directory.sync()?;
+                    if point == boundary && after_sync {
+                        pause_at_boundary(&root)?;
+                    }
+                    Ok(())
+                },
+            )?;
+            panic!("interruption child completed without reaching its boundary");
+        }
+
+        fn pause_at_boundary(root: &Path) -> io::Result<()> {
+            fs::write(root.join("ready"), READY)?;
+            // A lost parent cannot leave an indefinitely parked child behind.
+            let deadline = Instant::now() + Duration::from_mins(1);
+            while Instant::now() < deadline {
+                std::thread::park_timeout(Duration::from_secs(1));
+            }
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "interruption parent did not terminate the child",
+            ))
+        }
+
+        fn interrupt_at_boundary(root: &Path, case: &str) -> io::Result<()> {
+            let mut child = KillOnDrop(
+                Command::new(std::env::current_exe()?)
+                    .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
+                    .env(ROOT_ENV, root)
+                    .env(CASE_ENV, case)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::inherit())
+                    .spawn()?,
+            );
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if let Some(status) = child.0.try_wait()? {
+                    return Err(io::Error::other(format!(
+                        "interruption child exited before {case}: {status}"
+                    )));
+                }
+                match fs::read(root.join("ready")) {
+                    Ok(bytes) if bytes == READY => break,
+                    Ok(_) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("interruption child did not reach {case}"),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            child.0.kill()?;
+            assert!(!child.0.wait()?.success(), "child must be forcibly stopped");
+            Ok(())
+        }
+
+        #[test]
+        fn terminated_windows_writer_retains_exact_restart_candidates() -> io::Result<()> {
+            for &(case, boundary, _, has_predecessor) in CASES {
+                let dir = tempdir()?;
+                let state_root = dir.path().join("state");
+                fs::create_dir(&state_root)?;
+                let store = RecoveryStore::open(&state_root)?;
+                let predecessor = snapshot_at(80, 1, 1, b"previous recovery");
+                let replacement = snapshot_at(80, 2, 2, b"latest recovery");
+                let unrelated = snapshot_at(81, 7, 7, b"unrelated recovery");
+                store.persist(&unrelated)?;
+                if has_predecessor {
+                    store.persist(&predecessor)?;
+                }
+                let canonical = store.record_path(replacement.instance_id());
+                let unrelated_path = store.record_path(unrelated.instance_id());
+                let stage = exclusive_stage_path(
+                    &store.records_dir(),
+                    replacement.instance_id(),
+                    TemporaryArtifactKind::Stage,
+                )?;
+                let backup = exclusive_stage_path(
+                    &store.records_dir(),
+                    replacement.instance_id(),
+                    TemporaryArtifactKind::Backup,
+                )?;
+                let outside = dir.path().join("outside.txt");
+                fs::write(&outside, b"unrelated original file")?;
+                drop(store);
+
+                interrupt_at_boundary(dir.path(), case)?;
+
+                let store = RecoveryStore::open(&state_root)?;
+                let retains_predecessor =
+                    has_predecessor && boundary != WindowsRecoveryBarrier::Cleanup;
+                let installed = boundary != WindowsRecoveryBarrier::Backup;
+                assert_eq!(canonical.exists(), installed, "{case}");
+                assert_eq!(stage.exists(), !installed, "{case}");
+                assert_eq!(backup.exists(), retains_predecessor, "{case}");
+                let latest_path = if installed { &canonical } else { &stage };
+                assert_eq!(fs::read(latest_path)?, replacement.encode(), "{case}");
+                if retains_predecessor {
+                    assert_eq!(fs::read(&backup)?, predecessor.encode(), "{case}");
+                }
+                // Two stale lease proofs plus the exact expected snapshots.
+                assert_eq!(
+                    fs::read_dir(store.records_dir())?
+                        .collect::<io::Result<Vec<_>>>()?
+                        .len(),
+                    4 + usize::from(retains_predecessor),
+                    "{case}"
+                );
+                let scan = store.scan_startup()?;
+                assert!(!scan.has_omissions(), "{case}");
+                assert_eq!(scan.entries().len(), 2, "{case}");
+                let recovered = scan
+                    .entries()
+                    .iter()
+                    .map(offer)
+                    .find(|offer| offer.metadata().instance_id() == replacement.instance_id())
+                    .expect("latest recovery must be offered after process termination");
+                assert_eq!(
+                    recovered.metadata().revision(),
+                    replacement.revision(),
+                    "{case}"
+                );
+                assert_eq!(
+                    recovered.superseded().len(),
+                    usize::from(retains_predecessor),
+                    "{case}"
+                );
+                assert_eq!(
+                    store.load_record(recovered.primary())?.content(),
+                    replacement.content(),
+                    "{case}"
+                );
+                if retains_predecessor {
+                    assert_eq!(
+                        store.load_record(&recovered.superseded()[0])?.content(),
+                        predecessor.content(),
+                        "{case}"
+                    );
+                }
+                assert_eq!(fs::read(latest_path)?, replacement.encode(), "{case}");
+                if retains_predecessor {
+                    assert_eq!(fs::read(&backup)?, predecessor.encode(), "{case}");
+                }
+                assert_eq!(fs::read(unrelated_path)?, unrelated.encode(), "{case}");
+                assert_eq!(fs::read(&outside)?, b"unrelated original file", "{case}");
+                eprintln!(
+                    "Windows recovery interruption {case}: exact restart candidates and unrelated bytes preserved"
+                );
+            }
+            Ok(())
+        }
+    }
+
     fn snapshot_with_document(
         document: u8,
         instance: u8,
