@@ -446,7 +446,7 @@ impl<D: FnOnce() -> Vec<PathBuf>> Resolver<D> {
 
 /// Reads a regular file of at most `MAX_FONT_FILE_BYTES`, even if it grows
 /// or is replaced after its size was checked.
-fn read_bounded(path: &Path) -> Option<Vec<u8>> {
+pub(super) fn read_bounded(path: &Path) -> Option<Vec<u8>> {
     let file = std::fs::File::open(path).ok()?;
     if !file.metadata().ok()?.is_file() {
         return None;

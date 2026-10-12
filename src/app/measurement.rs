@@ -5,6 +5,7 @@ use std::time::Instant;
 use super::*;
 
 const MARKER: &str = "NOTER-SEARCH-MIDDLE-932E8A04";
+const RTL_SOURCE: &str = "Direction boundaries: left \u{2067}\u{5e9}\u{5dc}\u{5d5}\u{5dd} 123\u{2069} right | \u{645}\u{631}\u{62d}\u{628}\u{627}\n";
 
 struct CpuSamples {
     first_frame_ns: u128,
@@ -222,7 +223,7 @@ fn cpu_probe() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn assert_accessible_source(source: &str) {
+fn assert_accessible_source(source: &str, fallback: Option<Vec<u8>>) {
     fn collect(
         id: egui::accesskit::NodeId,
         nodes: &std::collections::HashMap<egui::accesskit::NodeId, &egui::accesskit::Node>,
@@ -239,6 +240,16 @@ fn assert_accessible_source(source: &str) {
 
     let context = egui::Context::default();
     theme::configure_styles(&context);
+    if let Some(bytes) = fallback {
+        context.add_font(egui::epaint::text::FontInsert::new(
+            "m5-local-rtl-fixture",
+            egui::FontData::from_owned(bytes),
+            vec![egui::epaint::text::InsertFontFamily {
+                family: egui::FontFamily::Monospace,
+                priority: egui::epaint::text::FontPriority::Lowest,
+            }],
+        ));
+    }
     context.enable_accesskit();
     let mut app = NoterApp {
         document: Document::from_bytes(source.as_bytes()).expect("the source loads"),
@@ -278,7 +289,7 @@ fn accessible_text_runs_match_source_projection() {
         "An ordinary English draft with a long wrapped line. ".repeat(20),
         "First\r\nSecond\rThird\nCafe\u{301} \u{6771}\u{4eac} \u{1f642}\n".to_owned(),
     ] {
-        assert_accessible_source(&source);
+        assert_accessible_source(&source, None);
     }
 }
 
@@ -286,7 +297,35 @@ fn accessible_text_runs_match_source_projection() {
 fn rtl_accessible_text_runs_match_source_projection() {
     // Bundled-font coverage does not establish the native system-fallback-font
     // shaping or AT-SPI behavior reported in #60.
-    assert_accessible_source(
-        "Direction boundaries: left \u{2067}\u{5e9}\u{5dc}\u{5d5}\u{5dd} 123\u{2069} right | \u{645}\u{631}\u{62d}\u{628}\u{627}\n",
+    assert_accessible_source(RTL_SOURCE, None);
+}
+
+#[test]
+#[ignore = "Local RTL font fixture for known #60; requires NOTER_M5_RTL_FONT"]
+fn local_font_rtl_accessible_text_runs_match_source_projection() {
+    use skrifa::MetadataProvider as _;
+
+    // This local fixture retains source equality as the repair criterion. It
+    // currently fails with the identified Arial fallback, which is not bundled
+    // or redistributed. The bundled-font RTL regression above remains active.
+    let path = std::env::var_os("NOTER_M5_RTL_FONT").expect("supply a local RTL font");
+    let bytes = crate::font_fallback::read_bounded(std::path::Path::new(&path))
+        .expect("the fixture must be an ordinary bounded font file");
+    let font = skrifa::FontRef::from_index(&bytes, 0).expect("the fixture must parse");
+    let charmap = font.charmap();
+    for character in RTL_SOURCE
+        .chars()
+        .filter(|ch| ('\u{590}'..='\u{6ff}').contains(ch))
+    {
+        assert!(
+            charmap.map(character).is_some(),
+            "the fixture must cover every RTL character"
+        );
+    }
+    println!(
+        "NOTER_M5_RTL_FONT_BYTES={}; BLAKE3={}",
+        bytes.len(),
+        blake3::hash(&bytes)
     );
+    assert_accessible_source(RTL_SOURCE, Some(bytes));
 }
