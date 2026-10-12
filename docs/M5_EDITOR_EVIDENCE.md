@@ -2,8 +2,8 @@
 
 **Prepared:** 2026-10-11
 
-**Status:** Reproducible input preparation; no editor performance or native
-accessibility gate has passed through this record.
+**Status:** Reproducible inputs and a current-adapter CPU measurement harness;
+no complete editor performance or native accessibility gate has passed.
 
 [Issue #51](https://github.com/blisspixel/noter/issues/51) tracks execution.
 [ROADMAP.md](ROADMAP.md#one-week-feasibility-gate) owns the sequence, budgets,
@@ -98,3 +98,64 @@ separate names and claims.
 The next deliverable is a measured current-adapter baseline and a bounded
 semantic/layout prototype with raw receipts. A renderer or dependency switch
 is a later evidence-backed decision; this input suite does not accept one.
+
+## Current-adapter CPU runner
+
+From a clean checkout, generate the frozen full corpus as above, then run:
+
+```sh
+python scripts/run_m5_cpu_baseline.py --corpus .agent/m5-corpus-run --output .agent/m5-cpu.json
+```
+
+The default matrix is ordinary English prose at 1 MiB and 8 MiB, wrapped and
+unwrapped, with AccessKit inactive and active: eight fresh test processes. Each
+process records one first editor-frame CPU duration, five discarded warmup
+frames per idle/edit phase, and 30 ordered raw samples per phase. Select other
+frozen profiles with `--profiles`, sizes in bytes with `--sizes`, and bounded
+sample, warmup, and per-case timeout counts with their corresponding options.
+The runner accepts no 50 MiB case and never raises the production editor limit.
+
+The harness exists only under `cfg(test)` in `src/app/measurement.rs`. Cargo
+builds the actual binary tests with `--locked --release`; the runner selects
+exactly one optimized binary-test artifact, records its SHA-256, and requires
+clean, unchanged source and matching frozen input bytes. Ordinary tests exercise
+the same harness on small English and mixed-EOL/Unicode/control fixtures.
+
+Each measured frame calls the actual `NoterApp::show_editor` path through egui,
+including source/display projection, TextEdit layout and event handling,
+source-to-core transaction creation, history recording, font observation of the
+inserted ASCII character, and recovery scheduling in an isolated private test
+store. Idle frames reuse current state. Edit frames replace the first ASCII byte
+of the middle search marker, alternating `x` and `y` without growing the file.
+Selection restoration occurs in a separate untimed frame before each input.
+Outside the timer, the harness requires one new revision, the exact caret,
+unchanged length, rope agreement, and available shared Undo. At phase end it
+checks every non-target source byte and exact Undo to the preceding revision's
+content and directional selection. AccessKit node counts describe each emitted update, not retained
+tree size or real screen-reader cost.
+
+The timer records monotonic wall elapsed around CPU-side `Context::run_ui`
+work, not process or thread CPU time, ending before output inspection and
+destruction. File load, application/context/store construction, selection setup,
+assertions, tessellation, GPU work, output destruction, recovery persistence,
+native event delivery, compositor presentation, system fallback-font discovery,
+and the rest of the application frame are excluded. First editor-frame CPU time
+is a single observation, not a launch percentile. The fixed headless viewport
+is 1200 by 760 logical points at scale 1 with bundled fonts. Clock-only raw
+samples expose timer overhead; zero can mean clock quantization. Instrumentation
+is not subtracted from durations, and no outliers are removed.
+Each case uses a fresh worker with warmed in-process phases. OS caches are
+uncontrolled; this runner makes no cold-cache observation.
+
+Receipts retain source/tree, locked dependency hash, binary hash, build command,
+host CPU/RAM/OS/toolchain context, each corpus hash, raw timings, revision
+sequences, update counts, and the existing M1 nearest-rank summaries. A failed
+or timed-out worker is retained as a failed attempt and stops sampling; it cannot
+become a zero-duration success. Output is exclusive and never overwrites an
+earlier receipt. Runner regressions cover artifact/input validation, wrong or
+missing timings, inconsistent revisions and accessibility, timeout propagation,
+environment restoration, and retained failures.
+
+This establishes a repeatable CPU diagnostic subset for issue #51. Native
+presentation, active screen-reader and IME matrices, memory/allocation evidence,
+scroll/search measurements, the 50 MiB slice, and the final gate decision remain.

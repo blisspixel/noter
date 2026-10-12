@@ -57,8 +57,8 @@ each topic.
   and engineering decisions.
 - [M4 recovery evidence inventory](M4_RECOVERY_EVIDENCE.md) maps existing native
   fixtures to the remaining environment and race evidence.
-- [M5 editor gate inputs](M5_EDITOR_EVIDENCE.md) defines frozen stress files,
-  reproducible generation, and the required measurement receipt.
+- [M5 editor gate evidence](M5_EDITOR_EVIDENCE.md) defines frozen stress files,
+  reproducible generation, the current-adapter CPU runner, and remaining receipts.
 - [Engineering baseline](BASELINE.md) records measured checkpoints and known
   gaps.
 - [M1 reproducible baseline evidence](M1_BASELINE_EVIDENCE.md) records the

@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-10-11
+**Updated:** 2026-10-12
 
 **Current checkpoint:** beta.2 published on 2026-10-11 from
 `9cdaa3b8cef9a85259236302654cbf40c34e7339`.
@@ -803,12 +803,14 @@ mirror with the rope chunk by chunk in fast block comparisons, applies the one
 changed range, updates the line-ending profile from the changed bytes (a
 document whose two most common conventions tie still rescans to break the tie),
 and hashes content for the dirty flag only when its length matches the saved
-length. `cargo bench --bench edit_latency` measured the trust kernel's median
-cost per keystroke at 0.09 ms for 1 MiB, 1.0 ms for 8 MiB, and 6.9 ms for
+length. `cargo bench --bench edit_latency` measured the median rope-diff and
+transaction-application cost at 0.09 ms for 1 MiB, 1.0 ms for 8 MiB, and 6.9 ms for
 50 MiB on the Linux development container, where the previous path, which
 copied the rope, compared character by character, rescanned line endings, and
-rehashed the document, measured about 30 ms at 8 MiB. egui's own layout of
-the mirror is not included and remains the dominant cost. A local Windows measurement found a 665.3 MiB process peak when
+rehashed the document, measured about 30 ms at 8 MiB. Those historical core
+measurements exclude mirror mutation, history, projection, layout, and native
+presentation. The current-adapter runner below measures a separate CPU-side
+subset. A local Windows measurement found a 665.3 MiB process peak when
 a 64 MiB file reached that widget path. The current interface therefore refuses
 files above 8 MiB before creating the mirror, preserves the open document, and
 explains the limit. The same 64 MiB run then peaked at 196 MiB without entering
@@ -854,6 +856,13 @@ application.
 The [frozen corpus and measurement protocol](M5_EDITOR_EVIDENCE.md) prepare the
 gate's inputs. This is preparation only; renderer acceptance, measured budgets,
 and native input/accessibility outcomes remain open.
+
+The test-only current-adapter CPU runner now exercises the actual bounded Text
+Mode widget, projection, transaction, history, and recovery scheduling. It
+records raw idle/edit samples and AccessKit update sizes on the frozen 1/8 MiB
+inputs with wrap and accessibility independently enabled or disabled. This
+headless subset does not establish native input-to-paint, memory, IME, or
+screen-reader results; the complete feasibility gate remains open.
 
 1. **Day 1, baseline and corpora:** freeze 1 MiB and 50 MiB representative,
    many-short-line, pathological-long-line, mixed-EOL, Unicode, bidi, and
