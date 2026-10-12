@@ -44,11 +44,15 @@ RTL shaping-cluster offsets. The latter is open at revision
 `27ded9ed3ccc6bdab5b1caef2fcec10fbf8c8985`; the broader bidi work in
 [pull request 8577](https://github.com/emilk/egui/pull/8577) is draft at
 `c93e8863e958507056415e2a6dace56e23ba5f3a`.
-These are candidate repairs, not accepted dependencies or evidence of a fix.
-First evaluate the small cluster change against the identified-font failure,
-mixed-direction boundaries, caret and directional selection, source fidelity,
-and active full-document accessibility tests. Native AT-SPI, UIA, and macOS
-observations remain separate requirements before closing issue #60.
+An [isolated experiment](M5_EDITOR_EVIDENCE.md#accessible-text-fidelity) applied
+the small epaint cluster change to 0.35.0 with the same identified font. Counts
+became equal at 52, but eight scalar positions still differed because tested
+RTL runs were reversed. This rejects count equality as a repair criterion and
+does not accept either dependency candidate. The next candidate must preserve
+logical source order and validate mixed-direction boundaries, caret and
+directional selection, source fidelity, and active full-document accessibility.
+Native AT-SPI, UIA, and macOS observations remain separate requirements before
+closing issue #60.
 
 ## 2026-10-11: Next quality checkpoint after beta.2
 

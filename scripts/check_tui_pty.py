@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import select
 import subprocess
 import sys
@@ -97,6 +98,31 @@ def settings_difference(before: list, after: list) -> list[str]:
     return changed
 
 
+def check_save_warning_review(master: int, document: Path, prior: bytes) -> bytes:
+    """Review Linux's actual retained sibling without editing or removing bytes."""
+
+    siblings = list(document.parent.glob(".noter-save-*.tmp"))
+    expect(len(siblings) == 1, "the save did not retain exactly one prior sibling")
+    sibling = siblings[0]
+    current = document.read_bytes()
+    os.write(master, b"\x12")
+    screen = read_until(master, b"Closing does not remove files")
+    expect(b"Latest save warnings" in screen, "Ctrl+R did not open save warnings")
+    expect(
+        b"Closing does not remove files" in screen,
+        "the complete warning pane was not drawn",
+    )
+    # Diagnostic wrapping and ANSI styling may split the synthetic basename.
+    plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", screen)
+    compact = b"".join(plain.split())
+    expect(sibling.name.encode() in compact, "the actual retained basename is absent")
+    os.write(master, b"X\r")
+    screen += next_frame(master)
+    expect(sibling.read_bytes() == prior, "warning review changed the retained bytes")
+    expect(document.read_bytes() == current, "warning review changed saved bytes")
+    return screen
+
+
 def check_editing_session(binary: str, state_directory: str) -> None:
     """Type split UTF-8 and a paste, save, exit, and check the terminal."""
 
@@ -125,6 +151,8 @@ def check_editing_session(binary: str, state_directory: str) -> None:
     screen += read_until(master, b"line")
     os.write(master, b"\x13")
     screen += read_until(master, b"Wrote")
+    if sys.platform == "linux":
+        screen += check_save_warning_review(master, document, "héllo\n".encode())
     os.write(master, b"\x18")
     screen += read_until(master, b"\x1b[?1049l")
     status = process.wait(timeout=10)
@@ -145,7 +173,7 @@ def check_editing_session(binary: str, state_directory: str) -> None:
 def check_hangup_recovery(binary: str, state_directory: str) -> None:
     """Close the terminal on unsaved text, then restore it on the next launch."""
 
-    unsaved = "never saved: 世界"
+    unsaved = "never saved: ordinary English draft"
     master, slave = pty.openpty()
     process = subprocess.Popen(
         [binary, "--tui"],
@@ -159,7 +187,7 @@ def check_hangup_recovery(binary: str, state_directory: str) -> None:
     os.close(slave)
     next_frame(master)
     os.write(master, unsaved.encode())
-    read_until(master, unsaved[-2:].encode())
+    read_until(master, unsaved.encode())
     os.close(master)
     process.wait(timeout=10)
 

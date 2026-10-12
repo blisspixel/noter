@@ -245,3 +245,15 @@ Track the upstream
 [RTL shaping defect](https://github.com/emilk/egui/issues/8576) and proposed
 [cluster correction](https://github.com/emilk/egui/pull/8698); these remain open
 as of 2026-10-12, and no dependency switch or patch is accepted here.
+
+An isolated local experiment applied only the proposed continuation-cluster
+change from upstream revision `27ded9ed3ccc6bdab5b1caef2fcec10fbf8c8985` to
+registry epaint 0.35.0. With the same identified font, it reduced the accessible
+count to 52, but source equality still failed: eight scalar positions differ,
+with the tested Hebrew and Arabic runs reversed. The
+[exploratory receipt](evidence/m5-rtl-cluster-experiment-2026-10-12.json)
+retains the dirty-checkout status, exact product and dependency diffs, binary
+and font hashes, numeric scalar differences, and failing result. Equal lengths
+alone would accept incorrect accessible text. This partial upstream change is
+not a repair for Noter's source-equality contract; no vendor code, manifest
+override, or dependency change is included in the product.
