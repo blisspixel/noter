@@ -37,6 +37,47 @@ not simulate a real power interruption.
 | Exact retirement | Windows-only `reconciled_windows_cleanup_deletes_only_the_verified_backup_handle` and `reconciled_windows_cleanup_blocks_destination_path_rebind`; cross-platform `quarantine_parent_sync_failure_retains_the_bound_source` in the recovery store | Complete sharing, cleanup, and final-window matrix per operating system; assert both intended bytes retained and unrelated bytes unchanged. |
 | Weak and remote roots | Linux-only `network_and_user_space_file_systems_are_classified_as_shared` and macOS-only `only_mounts_marked_local_are_local` in the Unix namespace; Windows-only `device_policy_rejects_nonlocal_or_weak_volume_flags` in the Windows namespace | Real remote/removable/weak filesystems and redirected roots must refuse before recovery payload writes or receive explicit adversarial evidence. Policy-unit inputs alone are insufficient. |
 
+## Windows process-interruption fixture
+
+`terminated_windows_writer_retains_exact_restart_candidates` in
+[recovery store](../src/core/recovery_store.rs) runs eight disposable native
+Windows child processes through the real handle-bound replacement protocol.
+The existing barrier callback pauses immediately before or after the selected
+directory sync. The parent terminates and waits for the child while it holds
+the actual artifact handles, directory handles, and live lease, then opens a
+fresh store and scans through the normal startup seam.
+
+| Boundary | Cases | Expected latest artifact | Retained predecessor |
+| --- | --- | --- | --- |
+| Predecessor backup directory sync | Before and after | Reserved stage | Reserved backup |
+| Replacement installation directory sync | Before and after | Canonical record | Reserved backup |
+| Predecessor cleanup directory sync | Before and after | Canonical record | None |
+| First-record installation directory sync | Before and after | Canonical record | None |
+
+Each case checks exact encoded bytes, expected artifact presence and count,
+complete startup scanning, the latest offered revision, superseded handles,
+successful claimed loading after the child's live lease is released by process
+termination, and unchanged unrelated recovery and outside original-file bytes.
+The restart scan does not authorize automatic deletion of a predecessor. A
+30-second readiness deadline, a child cleanup guard, and a 60-second child
+self-timeout bound ordinary fixture failures. The test uses synthetic English
+payloads in an isolated temporary state root, not the user's recovery store.
+
+Run on native Windows with the pinned toolchain:
+
+```powershell
+cargo test --locked --lib process_interruption -- --nocapture
+```
+
+The ordinary workspace test gate and every native Windows mutation shard also
+execute the fixture. It adds no runtime switch, dependency, or production
+protocol change. This is process-interruption evidence at the named boundaries,
+not power-loss, arbitrary instruction-level interruption, a complete desktop
+restart, distinct-user, remote-volume, or cross-platform evidence. The remaining
+environment and race rows above remain open in issue #50. Exact-commit test,
+CI, and review receipts belong with the implementing pull request before any
+matrix row is promoted to Verified.
+
 ## Next fixture protocol
 
 For each missing environment case, retain a bounded, reproducible fixture in

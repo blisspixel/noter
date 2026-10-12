@@ -10,6 +10,23 @@ toolchain, operating systems, or editor ecosystem changes.
 
 ## 2026-10-11: Next quality checkpoint after beta.2
 
+The next implementation slice targets actual Windows process interruption at
+the recovery protocol's existing directory barriers. Microsoft's
+[TerminateProcess contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)
+states that external termination is asynchronous and pending I/O must complete
+or cancel before the process exits. The fixture therefore waits for termination
+before reopening the store. Rust's
+[Child contract](https://doc.rust-lang.org/std/process/struct.Child.html)
+does not terminate or reap a process when its handle is dropped, so the fixture
+owns explicit kill-and-wait cleanup on every parent exit path.
+
+Windows [buffered-I/O documentation](https://learn.microsoft.com/en-us/windows/win32/fileio/flushing-system-buffered-i-o-data-to-disk)
+separates closing a file from forcing buffered data to disk. Process termination
+with the operating system still running therefore cannot establish power-loss
+durability. The eight new cases cover named process boundaries, exact candidate
+bytes, startup selection, and released live leases; they do not close the
+remaining [M4 native environment matrix](M4_RECOVERY_EVIDENCE.md).
+
 The README was reread against main
 `f68997185b0476c5139306947900f3e5045f9682`, its passing native CI, the published
 beta.2 record, and open issues #44 and #50 through #54. The priority remains

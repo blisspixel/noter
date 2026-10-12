@@ -717,7 +717,13 @@ after a failed barrier while retaining the original for review. Existing-record
 reconciliation binds the intended stage identity and bytes before its handle
 closes, so a rebound stage cannot redefine the snapshot to commit.
 Existing-record replacement has local native primitive and injected barrier
-tests. Classification of other redirected or synchronized roots, the remaining
+tests. Eight native Windows child-process fixtures additionally stop before and
+after predecessor-backup, replacement-installation, cleanup, and first-record
+installation directory barriers, then assert exact restart candidates and
+unrelated-byte preservation. These establish named process-interruption cases,
+not power-loss durability or the complete matrix; the
+[M4 evidence inventory](M4_RECOVERY_EVIDENCE.md) records their scope.
+Classification of other redirected or synchronized roots, the remaining
 fault and race matrix, and exact-head hosted CI keep M4-H1 in progress.
 Protected main moves new Windows recovery writes to the LocalAppData known
 folder while eframe preferences remain under RoamingAppData. It opens an
