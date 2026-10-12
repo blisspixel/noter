@@ -844,6 +844,16 @@ output is monochrome and is not accepted as final cross-platform appearance
 evidence. The status bar now renders after the editor and has a same-frame
 caret-coordinate test. No spell-check provider is implemented.
 
+The [2026-10-12 CPU baseline](M5_EDITOR_EVIDENCE.md#recorded-windows-baseline)
+records eight current-adapter cases with all raw samples. At 8 MiB, active
+AccessKit emits 139,273 nodes per edit, with 674-798 ms p95 CPU-side elapsed
+work on the identified Windows host. This is not input-to-presented-paint
+latency or native accessibility acceptance. Current source also reproduces
+RTL TextRun duplication with identified local Arial: 52 source-projection
+characters become 59 accessible characters. [#60](https://github.com/blisspixel/noter/issues/60)
+remains open; the active bundled-font checks, explicitly invoked local-font
+negative fixture, and native AT-SPI report are distinct evidence.
+
 Research completed on 2026-08-23 makes the next decision narrower. The current
 egui `TextEdit` remains the correctness adapter, but stock egui 0.35 with
 AccessKit 0.24 is a provisional no-go for the 50 MiB production path. It shapes
@@ -870,9 +880,10 @@ application.
 
 ### One-week feasibility gate
 
-The [frozen corpus and measurement protocol](M5_EDITOR_EVIDENCE.md) prepare the
-gate's inputs. This is preparation only; renderer acceptance, measured budgets,
-and native input/accessibility outcomes remain open.
+The [frozen corpus and measurement protocol](M5_EDITOR_EVIDENCE.md) provide the
+gate's inputs and an initial current-adapter CPU diagnostic subset. Renderer
+acceptance, complete measured budgets, and native input/accessibility outcomes
+remain open.
 
 The test-only current-adapter CPU runner now exercises the actual bounded Text
 Mode widget, projection, transaction, history, and recovery scheduling. It

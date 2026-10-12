@@ -2,7 +2,7 @@
 
 **Initial research:** 2026-07-25
 
-**Updated:** 2026-10-11
+**Updated:** 2026-10-12
 
 This document records the evidence behind the roadmap. It is intentionally
 separate from the product requirements so that claims can be revised when the
@@ -22,6 +22,33 @@ kernel's advertised capability range even when an older libcap-ng cannot expand
 distinguish privacy enforcement from missing targets or failed child startup.
 These are test-only isolated Linux observations, not a new recovery root or
 Windows/macOS permission claim.
+
+## 2026-10-12: Measured editor bottlenecks and RTL failure
+
+The [current-adapter CPU receipt](M5_EDITOR_EVIDENCE.md#recorded-windows-baseline)
+now measures the real editor path on frozen 1 MiB and 8 MiB prose. With
+AccessKit active, the 8 MiB edit updates emit 139,273 nodes and take about
+674 to 798 ms at p95 on the recorded Windows machine. This is CPU-side elapsed
+time, not presented-paint latency or native screen-reader cost. The next
+performance experiment must account for full-document semantics while reducing
+repeated layout and update work; disabling accessibility is not an acceptance
+criterion.
+
+The [identified-font RTL fixture](M5_EDITOR_EVIDENCE.md#accessible-text-fidelity)
+also reconstructs 59 accessible scalars from a 52-scalar source. The active
+bundled-font regression passes, so font identity and actual glyph coverage are
+necessary reproduction inputs. Upstream
+[egui issue 8576](https://github.com/emilk/egui/issues/8576) and
+[pull request 8698](https://github.com/emilk/egui/pull/8698) discuss decreasing
+RTL shaping-cluster offsets. The latter is open at revision
+`27ded9ed3ccc6bdab5b1caef2fcec10fbf8c8985`; the broader bidi work in
+[pull request 8577](https://github.com/emilk/egui/pull/8577) is draft at
+`c93e8863e958507056415e2a6dace56e23ba5f3a`.
+These are candidate repairs, not accepted dependencies or evidence of a fix.
+First evaluate the small cluster change against the identified-font failure,
+mixed-direction boundaries, caret and directional selection, source fidelity,
+and active full-document accessibility tests. Native AT-SPI, UIA, and macOS
+observations remain separate requirements before closing issue #60.
 
 ## 2026-10-11: Next quality checkpoint after beta.2
 

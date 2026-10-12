@@ -48,7 +48,10 @@ dossier.
   computer, loaded only when text needs them. Reordering lines that mix
   left-to-right and right-to-left text is roadmap work. The terminal
   interface measures wide and combining characters and relies on the
-  terminal's own layout.
+  terminal's own layout. Current source has a known
+  [RTL accessible-text duplication defect](https://github.com/blisspixel/noter/issues/60)
+  under some fallback fonts; assistive-technology caret and selection positions
+  can be incorrect for those runs.
 - **One Document, Full Focus:** Single-document ergonomics instead of a
   workspace that wants to become a platform.
 
