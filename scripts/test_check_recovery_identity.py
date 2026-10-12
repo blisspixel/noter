@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import json
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,68 @@ import check_recovery_identity as fixture
 
 
 class RecoveryIdentityTests(unittest.TestCase):
+    def test_named_acl_grants_only_owner_and_the_specified_unprivileged_user(self):
+        encoded = fixture.named_user_acl(200002)
+        self.assertEqual(struct.unpack_from("<I", encoded)[0], 2)
+        entries = dict(
+            (tag, (permissions, qualifier))
+            for tag, permissions, qualifier in struct.iter_unpack("<HHI", encoded[4:])
+        )
+        self.assertEqual(entries[2], (7, 200002))
+        self.assertEqual(entries[1][0], 7)
+        self.assertEqual(entries[16][0], 7)
+        self.assertEqual(entries[4][0], 0)
+        self.assertEqual(entries[32][0], 0)
+        self.assertEqual(len(entries), 5)
+        for user in (-1, 0, 0xFFFFFFFF, 0x100000000):
+            with self.subTest(user=user), self.assertRaises(ValueError):
+                fixture.named_user_acl(user)
+
+    def test_acl_read_failure_is_not_misreported_as_an_absent_acl(self):
+        with (
+            mock.patch.object(fixture.errno, "ENODATA", 61, create=True),
+            mock.patch.object(fixture.os, "getxattr", create=True) as get_acl,
+        ):
+            get_acl.return_value = b"native ACL bytes"
+            self.assertEqual(
+                fixture.read_acl(Path("state"), "access"), b"native ACL bytes"
+            )
+            get_acl.side_effect = OSError(61, "no ACL")
+            self.assertIsNone(fixture.read_acl(Path("state"), "default"))
+            error = OSError(errno.EIO, "ACL query failed")
+            get_acl.side_effect = error
+            with self.assertRaises(OSError) as caught:
+                fixture.read_acl(Path("state"), "access")
+            self.assertIs(caught.exception, error)
+
+    def test_precondition_policy_change_fails_before_access_attempts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "precondition.json").write_text(
+                json.dumps({"state": {"mode": "0o770"}})
+            )
+            with (
+                mock.patch.object(fixture, "require_identity", return_value={}),
+                mock.patch.object(
+                    fixture, "access_policy", return_value={"mode": "0o700"}
+                ),
+                mock.patch.object(Path, "iterdir") as list_directory,
+            ):
+                with self.assertRaises(AssertionError):
+                    fixture.probe(root, 200002, 200002, shared=True)
+                list_directory.assert_not_called()
+
+    def test_required_native_matrix_includes_explicit_and_inherited_named_acls(self):
+        self.assertEqual(
+            fixture.CASES,
+            (
+                "new-private",
+                "existing-shared",
+                "existing-named-acl",
+                "inherited-named-acl",
+            ),
+        )
+
     def test_only_access_denial_counts_as_private(self):
         fixture.expect_denied(
             mock.Mock(side_effect=PermissionError(errno.EACCES, "denied"))

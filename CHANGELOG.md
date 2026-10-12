@@ -6,6 +6,8 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Extend native Linux recovery access-denial fixtures to explicit and inherited
+  named-user ACL grants, with independently successful adverse preconditions.
 - Expose the latest terminal save's exact cleanup and durability warnings in a
   scrollable Ctrl+R view, including retained sibling names and inspection advice.
 - Preserve tab-expanded diagnostic text and make scrolling reverse immediately

@@ -23,6 +23,18 @@ distinguish privacy enforcement from missing targets or failed child startup.
 These are test-only isolated Linux observations, not a new recovery root or
 Windows/macOS permission claim.
 
+The next fixture extends this same broker to explicit and inherited named-user
+POSIX ACL grants. Linux's [ACL contract](https://man7.org/linux/man-pages/man5/acl.5.html)
+maps group permission bits to the ACL mask and combines inherited default ACLs
+with creation permissions. A recorded named-user entry alone therefore does
+not establish effective access. The outsider must successfully access all four
+initial directories, then receive exact denials against live private artifacts.
+The fixture uses the [Linux ACL xattr ABI](https://github.com/torvalds/linux/blob/v6.17/include/uapi/linux/posix_acl_xattr.h)
+already exercised by the platform's ancestor-refusal regression, with no new
+library or system-account dependency. Receipts preserve both access and default
+ACL bytes before and after Noter's existing mode tightening; they do not claim
+that every stored ACL entry was removed or cover every ACL combination.
+
 ## 2026-10-12: Measured editor bottlenecks and RTL failure
 
 The [current-adapter CPU receipt](M5_EDITOR_EVIDENCE.md#recorded-windows-baseline)
