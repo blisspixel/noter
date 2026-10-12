@@ -35,7 +35,7 @@ not simulate a real power interruption.
 | Access policy | `owner_controlled_existing_recovery_directories_are_tightened` in the Windows namespace; `private_file_is_exclusive_writable_and_dacl_protected` and macOS `recovery_state_directory_loses_an_inherited_acl` in [platform primitives](../crates/noter-platform/src/lib.rs) | Distinct-user access attempts, including inherited policy and existing directories. Descriptor inspection alone does not replace access attempts. |
 | Windows replacement and barriers | Windows-only `failed_predecessor_barrier_retains_both_recovery_snapshots`, `failed_new_record_barrier_retains_durable_predecessor_backup`, `failed_cleanup_barrier_keeps_the_committed_new_record`, and `failed_first_record_barrier_retains_the_installed_snapshot` in [recovery store](../src/core/recovery_store.rs) | Interrupt a disposable process at each real protocol boundary, restart, and compare all available candidates. Do not infer power-loss durability from process termination. |
 | Exact retirement | Windows-only `reconciled_windows_cleanup_deletes_only_the_verified_backup_handle` and `reconciled_windows_cleanup_blocks_destination_path_rebind`; cross-platform `quarantine_parent_sync_failure_retains_the_bound_source` in the recovery store | Complete sharing, cleanup, and final-window matrix per operating system; assert both intended bytes retained and unrelated bytes unchanged. |
-| Weak and remote roots | Linux-only `network_and_user_space_file_systems_are_classified_as_shared` and macOS-only `only_mounts_marked_local_are_local` in the Unix namespace; Windows-only `device_policy_rejects_nonlocal_or_weak_volume_flags` in the Windows namespace | Real remote/removable/weak filesystems and redirected roots must refuse before recovery payload writes or receive explicit adversarial evidence. Policy-unit inputs alone are insufficient. |
+| Weak and remote roots | Linux-only `network_user_space_and_volatile_file_systems_are_refused`, native `tmpfs_roots_are_refused_before_recovery_entries_are_created`, and macOS-only `only_mounts_marked_local_are_local` in the Unix namespace; Windows-only `device_policy_rejects_nonlocal_or_weak_volume_flags` in the Windows namespace | Complete the remaining real remote/removable/weak filesystems and redirected-root cases. Policy-unit inputs alone are insufficient. |
 
 ## Windows process-interruption fixture
 
@@ -136,6 +136,34 @@ filesystem recorded by each receipt. It does not establish Windows token/DACL
 behavior, macOS identities or ACLs, every POSIX ACL combination, hostile
 same-user writes, remote roots, power-loss durability, or the full M4-H1 matrix.
 Exact-commit native output, CI, and reviews belong with the implementing PR.
+
+## Linux volatile-root refusal
+
+FR-062's 2026-10-12 clarification excludes known volatile recovery roots.
+The Linux classifier now refuses tmpfs, ramfs and hugetlbfs before binding
+recovery children. Private permissions do not make memory-backed storage
+persistent. Existing records are preserved; this does not change ordinary
+document editing or saving.
+
+The active native test
+`unix_recovery_namespace::tests::tmpfs_roots_are_refused_before_recovery_entries_are_created`
+uses an isolated directory on the existing `/dev/shm` mount. It independently
+requires tmpfs through `fstatfs`, then proves accessible control read/write.
+New-state refusal leaves the created state directory empty. Existing-state
+refusal preserves the exact predecessor sentinel identity, length and bytes,
+its directory inventory, and unrelated control bytes without creating
+quarantine or other recovery entries. The test fails on the previous policy,
+which explicitly classified tmpfs as acceptable local storage.
+
+```sh
+cargo test --locked -p noter-platform --lib unix_recovery_namespace::tests::tmpfs_roots_are_refused_before_recovery_entries_are_created -- --exact --nocapture
+```
+
+This establishes real tmpfs refusal and classifier-unit coverage for ramfs and
+hugetlbfs. It does not establish native ramfs/hugetlbfs observations, detect
+volatile devices that present another filesystem type, prove power-loss
+durability, or complete M4-H1. The ordinary filesystem fixtures require a
+persistent temporary root; see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Next fixture protocol
 

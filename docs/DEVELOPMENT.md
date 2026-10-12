@@ -50,6 +50,13 @@ Installer behavior and custom roots are documented in
 
 Run the focused local gates before proposing a change:
 
+Filesystem fixtures require a persistent, owner-controlled temporary root.
+On Linux hosts whose default temporary directory is tmpfs, set `TMPDIR` to a
+private directory on a persistent local filesystem before running Cargo tests.
+The dedicated volatile-root regression separately requires the existing
+`/dev/shm` mount to be tmpfs and verifies that precondition; it creates no mount
+and does not skip an unavailable or incorrect fixture environment.
+
 The examples use `python`. Use `python3` when that is the local Python 3 command.
 
 ```sh

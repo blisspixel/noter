@@ -8,6 +8,21 @@ This document records the evidence behind the roadmap. It is intentionally
 separate from the product requirements so that claims can be revised when the
 toolchain, operating systems, or editor ecosystem changes.
 
+## 2026-10-12: Volatile Linux recovery roots
+
+The same storage audit found that the Linux classifier explicitly accepted
+tmpfs as local. A native tmpfs probe successfully persisted and recovered
+synthetic records. The kernel's [tmpfs documentation](https://docs.kernel.org/filesystems/tmpfs.html)
+states that its contents are lost on unmount and distinguishes memory-backed
+ramfs. The pinned [Linux filesystem identifiers](https://github.com/torvalds/linux/blob/v6.17/include/uapi/linux/magic.h)
+identify tmpfs, ramfs and hugetlbfs. FR-062 and ADR-0004 now exclude these known
+volatile roots, with a real tmpfs precondition/refusal/preservation regression
+and separate classifier-unit assertions. This is a known-type refusal, not
+detection of every volatile device or a power-loss durability claim.
+The [hugetlbfs contract](https://docs.kernel.org/admin-guide/mm/hugetlbpage.html#using-huge-pages)
+also describes memory-backed files and the absence of ordinary write support;
+it is unsuitable for the recovery protocol independently of its local mount.
+
 ## 2026-10-12: Native Linux recovery identity fixture
 
 The Linux identity fixture uses the operating system's numeric UID/GID model

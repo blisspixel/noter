@@ -390,6 +390,15 @@ named directory's owner or permissions and restart Noter. On Linux you can
 instead point `XDG_DATA_HOME` at a local directory you own; macOS always uses
 `~/Library/Application Support/Noter`.
 
+Unreleased Linux hardening also refuses tmpfs, ramfs and hugetlbfs recovery
+roots because they do not provide persistent storage. If a configured
+`XDG_DATA_HOME` is memory-backed, choose a private directory on a persistent
+local filesystem and restart. Existing records on the old root are preserved
+but unavailable for startup review there; this change performs no migration
+or deletion. Keep the original records until any deliberate transfer and
+recovery have been verified. Ordinary document editing and explicit saves
+remain available. Published beta.2 does not include this refusal.
+
 Uninstall and cleanup distinguish:
 
 | Kind | Location | Safe to delete when |

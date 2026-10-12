@@ -9,7 +9,7 @@
 //! recovery subtree is private to this user and on the state directory's
 //! device, the state and recovery directories have no extended ACL on macOS,
 //! ancestors have no granting ACL, and the file system is not a known network
-//! or shared one.
+//! or shared one, or a known volatile Linux file system.
 //!
 //! Every entry operation is relative to a held descriptor, so renaming or
 //! replacing any ancestor after binding cannot redirect recovery content.
@@ -59,7 +59,7 @@ impl UnixRecoveryNamespace {
     /// Returns [`io::ErrorKind::InvalidInput`] for a relative root or an
     /// invalid directory name, [`io::ErrorKind::PermissionDenied`] when a
     /// directory is owned by another user or can be changed by one,
-    /// [`io::ErrorKind::Unsupported`] for a network or shared file system or a
+    /// [`io::ErrorKind::Unsupported`] for a network, shared or known volatile file system or a
     /// recovery directory on another device, and the operating-system error
     /// when a component is a link, is not a directory, or cannot be opened.
     pub fn open_or_create(state_root: &Path, recovery_name: &OsStr) -> io::Result<Self> {
@@ -69,7 +69,7 @@ impl UnixRecoveryNamespace {
         validate_entry_name(recovery_name)?;
         let user = User::current();
         let state = bind_state_directory(state_root, user)?;
-        require_local_file_system(&state.directory, &state.path)?;
+        require_recovery_file_system(&state.directory, &state.path)?;
         let state_status = fstat(&state.directory)?;
         let recovery = state.bind_private_child(recovery_name, user, &state_status)?;
         let records =
@@ -470,36 +470,42 @@ fn validate_entry_name(name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
-fn require_local_file_system(directory: &File, path: &Path) -> io::Result<()> {
-    if file_system_is_local(directory)? {
+fn require_recovery_file_system(directory: &File, path: &Path) -> io::Result<()> {
+    if file_system_supports_recovery(directory)? {
         Ok(())
     } else {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            format!("{} is on a network or shared file system", path.display()),
+            format!(
+                "{} is on an unsupported file system for recovery",
+                path.display()
+            ),
         ))
     }
 }
 
 #[cfg(target_os = "linux")]
-fn linux_file_system_is_local(directory: &File) -> io::Result<bool> {
+fn linux_file_system_supports_recovery(directory: &File) -> io::Result<bool> {
     // The magic numbers are 32-bit; a value that does not fit is unknown and
     // therefore not trusted.
     let kind = u32::try_from(rustix::fs::fstatfs(directory)?.f_type);
-    Ok(kind.is_ok_and(|kind| !linux_file_system_is_shared(kind)))
+    Ok(kind.is_ok_and(|kind| !linux_file_system_is_unsupported(kind)))
 }
 
 #[cfg(target_os = "linux")]
-use linux_file_system_is_local as file_system_is_local;
+use linux_file_system_supports_recovery as file_system_supports_recovery;
 
-/// Network, cluster, shared-folder, and user-space file systems whose
-/// locking, rename, and durability cannot be verified from here, as named in
-/// Linux's `magic.h` and coreutils' file-system table.
+/// Network, cluster, shared-folder, user-space and volatile file systems whose
+/// locking, rename or persistence cannot meet the recovery contract here,
+/// as named in Linux's `magic.h` and coreutils' file-system table.
 #[cfg(target_os = "linux")]
-const fn linux_file_system_is_shared(kind: u32) -> bool {
+const fn linux_file_system_is_unsupported(kind: u32) -> bool {
     matches!(
         kind,
-        0x6969 // NFS
+        0x0102_1994 // tmpfs
+            | 0x8584_58F6 // ramfs
+            | 0x9584_58F6 // hugetlbfs
+            | 0x6969 // NFS
             | 0x517B // SMB
             | 0xFF53_4D42 // CIFS
             | 0xFE53_4D42 // SMB2
@@ -541,17 +547,17 @@ const fn macos_mount_flags_are_local(flags: u32) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-use macos_file_system_is_local as file_system_is_local;
+use macos_file_system_is_local as file_system_supports_recovery;
 
 /// Other Unix systems have no verified classification, so recovery is
 /// refused there.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-const fn unsupported_file_system_is_local(_directory: &File) -> io::Result<bool> {
+const fn unsupported_file_system_supports_recovery(_directory: &File) -> io::Result<bool> {
     Ok(false)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-use unsupported_file_system_is_local as file_system_is_local;
+use unsupported_file_system_supports_recovery as file_system_supports_recovery;
 
 fn invalid_input(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
@@ -907,12 +913,86 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn network_and_user_space_file_systems_are_classified_as_shared() {
-        for kind in [0x6969, 0xFF53_4D42, 0x0102_1997, 0x6573_5546] {
-            assert!(linux_file_system_is_shared(kind), "{kind:#x}");
+    fn tmpfs_roots_are_refused_before_recovery_entries_are_created() {
+        for existing in [false, true] {
+            let temporary = tempfile::Builder::new()
+                .prefix("noter-volatile-recovery-")
+                .tempdir_in("/dev/shm")
+                .expect("the native Linux fixture requires /dev/shm on tmpfs");
+            let directory = File::open(temporary.path()).unwrap();
+            assert_eq!(
+                u32::try_from(rustix::fs::fstatfs(&directory).unwrap().f_type).unwrap(),
+                0x0102_1994,
+                "the adverse precondition must be a real tmpfs mount"
+            );
+            let control = temporary.path().join("control.txt");
+            std::fs::write(&control, b"accessible volatile control").unwrap();
+            assert_eq!(
+                std::fs::read(&control).unwrap(),
+                b"accessible volatile control"
+            );
+            let state = temporary.path().join("state");
+            let retained = state.join("recovery/records/previous.rec");
+            let previous = if existing {
+                std::fs::create_dir_all(retained.parent().unwrap()).unwrap();
+                std::fs::write(&retained, b"existing recovery sentinel").unwrap();
+                let facts = std::fs::metadata(&retained).unwrap();
+                Some((facts.dev(), facts.ino(), facts.len()))
+            } else {
+                None
+            };
+
+            let error = open(&state).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            assert!(
+                error
+                    .to_string()
+                    .contains("unsupported file system for recovery")
+            );
+            assert_eq!(
+                std::fs::read(&control).unwrap(),
+                b"accessible volatile control"
+            );
+            assert!(!state.join("recovery/quarantine").exists());
+            if let Some(expected) = previous {
+                let facts = std::fs::metadata(&retained).unwrap();
+                assert_eq!((facts.dev(), facts.ino(), facts.len()), expected);
+                assert_eq!(
+                    std::fs::read(&retained).unwrap(),
+                    b"existing recovery sentinel"
+                );
+                assert_eq!(
+                    std::fs::read_dir(retained.parent().unwrap())
+                        .unwrap()
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    std::fs::read_dir(state.join("recovery")).unwrap().count(),
+                    1
+                );
+            } else {
+                assert_eq!(std::fs::read_dir(&state).unwrap().count(), 0);
+            }
         }
-        for kind in [0xEF53, 0x5846_5342, 0x9123_683E, 0x0102_1994, 0x794C_7630] {
-            assert!(!linux_file_system_is_shared(kind), "{kind:#x}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn network_user_space_and_volatile_file_systems_are_refused() {
+        for kind in [
+            0x6969,
+            0xFF53_4D42,
+            0x0102_1997,
+            0x6573_5546,
+            0x0102_1994,
+            0x8584_58F6,
+            0x9584_58F6,
+        ] {
+            assert!(linux_file_system_is_unsupported(kind), "{kind:#x}");
+        }
+        for kind in [0xEF53, 0x5846_5342, 0x9123_683E, 0x794C_7630] {
+            assert!(!linux_file_system_is_unsupported(kind), "{kind:#x}");
         }
     }
 }

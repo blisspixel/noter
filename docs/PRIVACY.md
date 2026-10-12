@@ -62,6 +62,11 @@ therefore require restrictive creation permissions, bounded size and retention,
 checksums or identity validation where applicable, and explicit cleanup.
 Recovery never silently overwrites the original document.
 
+Current source refuses known volatile Linux tmpfs, ramfs and hugetlbfs state
+roots before creating recovery entries. Existing files there remain untouched;
+ordinary document editing and explicit saves remain available. This refusal
+does not establish detection of every volatile backing device.
+
 Unix staging files are created with mode 0600. macOS additionally suppresses ACL
 inheritance during creation and verifies the finalized ACL before writing.
 Windows explicitly assigns the process user's SID as owner and creates a

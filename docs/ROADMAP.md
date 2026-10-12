@@ -687,6 +687,13 @@ retain directory handles for the session and route creation, scan, sync, rename,
 quarantine, and cleanup through them. Reject an unsafe or unverifiable root
 before writing recovery content.
 
+The 2026-10-12 recovery-storage clarification in FR-062 also requires refusal
+of known volatile Linux tmpfs, ramfs and hugetlbfs roots before recovery payload
+writes. The classifier and active real tmpfs refusal fixture implement a
+bounded #50 safety slice; complete native matrix verification remains open.
+This does not claim power-loss durability or detection of
+every volatile backing device; the full native storage matrix remains open.
+
 The Unix namespace binding is in tree
 ([ADR-0004](adr/0004-unix-recovery-namespace.md)): a verified, held directory
 chain from `/`, owner and mode checks, local file system classification, ACL

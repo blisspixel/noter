@@ -6,6 +6,8 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Refuse Linux tmpfs, ramfs and hugetlbfs recovery roots before creating
+  recovery entries; retain existing records and report recovery unavailable.
 - Preserve every byte when an invalid shaped-text cursor reaches word deletion,
   preventing the upstream previous-word overflow in bounded editor buffers.
 - Extend native Linux recovery access-denial fixtures to explicit and inherited
