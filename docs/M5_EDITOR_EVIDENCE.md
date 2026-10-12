@@ -137,7 +137,7 @@ tree size or real screen-reader cost.
 The timer records monotonic wall elapsed around CPU-side `Context::run_ui`
 work, not process or thread CPU time, ending before output inspection and
 destruction. File load, application/context/store construction, selection setup,
-assertions, tessellation, GPU work, output destruction, recovery persistence,
+assertions, tessellation, GPU work, output destruction,
 native event delivery, compositor presentation, system fallback-font discovery,
 and the rest of the application frame are excluded. First editor-frame CPU time
 is a single observation, not a launch percentile. The fixed headless viewport
@@ -146,6 +146,12 @@ samples expose timer overhead; zero can mean clock quantization. Instrumentation
 is not subtracted from durations, and no outliers are removed.
 Each case uses a fresh worker with warmed in-process phases. OS caches are
 uncontrolled; this runner makes no cold-cache observation.
+
+Recovery work reached synchronously through `on_edited` remains inside the timer.
+When due, this can include outcome polling, snapshot serialization, worker
+dispatch, and inline persistence fallback. Background completion is not a
+measured endpoint and can overlap later samples. This is an adapter diagnostic,
+not an isolated layout microbenchmark.
 
 Receipts retain source/tree, locked dependency hash, binary hash, build command,
 host CPU/RAM/OS/toolchain context, each corpus hash, raw timings, revision
@@ -159,3 +165,60 @@ environment restoration, and retained failures.
 This establishes a repeatable CPU diagnostic subset for issue #51. Native
 presentation, active screen-reader and IME matrices, memory/allocation evidence,
 scroll/search measurements, the 50 MiB slice, and the final gate decision remain.
+
+## Recorded Windows baseline
+
+The [2026-10-12 receipt](evidence/m5-cpu-windows-2026-10-12.json) contains all
+eight completed cases and every raw sample. It measures clean commit
+`00edcdccc9b82e40d6bb9216bd87f6004ab44f50`, tree
+`9e61171ced33e1430b9fc1a223b3df518530cd6d`, with binary SHA-256
+`31b3db9219bfe8aad75110d20d5a041ba5af7a43c264d42f67c0884ae1901158`.
+The receipt SHA-256 is
+`461e862062ac6f3632a726547323039b6dc653cb664e1a936be18365b99d0a9d`.
+Its timestamp records sampling start, not completion. Later documentation and
+accessibility tests do not retroactively change the measured source identity.
+
+Command, from that clean checkout:
+
+```sh
+python scripts/run_m5_cpu_baseline.py --corpus C:/GitHub/noter/.agent/m5-corpus-v1 --output C:/GitHub/noter/.agent/m5-cpu-windows.json
+```
+
+Host: Windows 11 build 10.0.26200, AMD Ryzen 9 5950X, 32 logical processors,
+64 GiB RAM, local NTFS, Rust/Cargo 1.97.1, Python 3.14.7. The headless viewport,
+bundled fonts, fresh-worker/warmed-phase protocol, and timing exclusions above
+apply. GPU, monitor refresh, native accessibility, and power mode were not
+measured or controlled; these numbers establish no native paint budget.
+
+| MiB | Wrap | AccessKit | First frame ms | Idle p95 ms | Edit p95 ms | Edit p99 ms | Maximum edit update nodes |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | Off | Off | 9.489 | 2.411 | 15.076 | 17.152 | 0 |
+| 1 | Off | On | 45.532 | 39.404 | 67.669 | 68.506 | 17417 |
+| 1 | On | Off | 9.443 | 2.704 | 12.276 | 12.535 | 0 |
+| 1 | On | On | 42.295 | 39.490 | 98.020 | 100.216 | 17417 |
+| 8 | Off | Off | 46.509 | 19.200 | 148.691 | 148.774 | 0 |
+| 8 | Off | On | 356.565 | 476.362 | 797.570 | 1067.594 | 139273 |
+| 8 | On | Off | 53.359 | 21.232 | 199.595 | 202.670 | 0 |
+| 8 | On | On | 404.558 | 569.479 | 673.534 | 701.639 | 139273 |
+
+Whole-document accessibility updates are a measured bottleneck to investigate
+in the M5 semantic/layout prototype. Do not disable accessibility or infer a
+specific fix from timing correlation alone. Compare update count, exact text,
+selection, and native range operations on the same frozen inputs.
+
+## Accessible text fidelity
+
+Active headless tests reconstruct the named editor's ordered child `TextRun`
+values and compare them with the canonical LF source display projection. They
+cover wrapped English, mixed line endings, combining/wide/non-BMP characters,
+and the frozen bidi-edge line, while asserting unchanged document bytes.
+These bundled-font tests pass; no expected-failure exception is applied.
+
+[Issue #60](https://github.com/blisspixel/noter/issues/60) separately reports
+native AT-SPI RTL duplication (74 source characters versus 83 exposed). This
+has not been reproduced by the bundled-font fixture and is not fixed by it.
+Native system fallback fonts and shaping must be identified and frozen for a
+reproducing test before accepting a repair. Track the upstream
+[RTL shaping defect](https://github.com/emilk/egui/issues/8576) and proposed
+[cluster correction](https://github.com/emilk/egui/pull/8698); these remain open
+as of 2026-10-12, and no dependency switch or patch is accepted here.

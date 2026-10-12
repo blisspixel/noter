@@ -221,3 +221,72 @@ fn cpu_probe() -> Result<(), Box<dyn std::error::Error>> {
     );
     Ok(())
 }
+
+fn assert_accessible_source(source: &str) {
+    fn collect(
+        id: egui::accesskit::NodeId,
+        nodes: &std::collections::HashMap<egui::accesskit::NodeId, &egui::accesskit::Node>,
+        text: &mut String,
+    ) {
+        let node = nodes.get(&id).expect("every accessible child must exist");
+        if node.role() == egui::accesskit::Role::TextRun {
+            text.push_str(node.value().expect("text runs must contain text"));
+        }
+        for child in node.children() {
+            collect(*child, nodes, text);
+        }
+    }
+
+    let context = egui::Context::default();
+    theme::configure_styles(&context);
+    context.enable_accesskit();
+    let mut app = NoterApp {
+        document: Document::from_bytes(source.as_bytes()).expect("the source loads"),
+        text: source.to_owned(),
+        view: DocumentView::Text,
+        ..NoterApp::default()
+    };
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        ui.set_width(320.0);
+        app.show_editor(ui);
+    });
+    let update = output
+        .platform_output
+        .accesskit_update
+        .expect("the first tree exists");
+    let nodes = update.nodes.iter().map(|(id, node)| (*id, node)).collect();
+    let (editor, _) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some(TEXT_EDITOR_ACCESSIBLE_NAME))
+        .expect("the real document editor is named");
+    let mut accessible = String::new();
+    collect(*editor, &nodes, &mut accessible);
+    let expected = crate::bounded_text_input::SourceDisplayProjection::new(source);
+    assert!(
+        accessible == expected.display(),
+        "accessible TextRun text differs from the source projection: expected {} characters, received {}",
+        expected.display().chars().count(),
+        accessible.chars().count(),
+    );
+    assert!(app.text == source && app.document.rope().bytes().eq(source.bytes()));
+}
+
+#[test]
+fn accessible_text_runs_match_source_projection() {
+    for source in [
+        "An ordinary English draft with a long wrapped line. ".repeat(20),
+        "First\r\nSecond\rThird\nCafe\u{301} \u{6771}\u{4eac} \u{1f642}\n".to_owned(),
+    ] {
+        assert_accessible_source(&source);
+    }
+}
+
+#[test]
+fn rtl_accessible_text_runs_match_source_projection() {
+    // Bundled-font coverage does not establish the native system-fallback-font
+    // shaping or AT-SPI behavior reported in #60.
+    assert_accessible_source(
+        "Direction boundaries: left \u{2067}\u{5e9}\u{5dc}\u{5d5}\u{5dd} 123\u{2069} right | \u{645}\u{631}\u{62d}\u{628}\u{627}\n",
+    );
+}

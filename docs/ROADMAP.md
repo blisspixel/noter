@@ -141,6 +141,15 @@ limits. Issue #44 awaits the postponed Omarchy test; it is not closed by
 ordinary Windows CI. The RC quality, packaging, and dogfood work remains in
 #54 and #53 after these beta.3 gates.
 
+The [recorded CPU baseline](M5_EDITOR_EVIDENCE.md#recorded-windows-baseline)
+identifies whole-document AccessKit updates as a current-adapter bottleneck;
+it does not pass the native M5 gate. [#60](https://github.com/blisspixel/noter/issues/60)
+also tracks native RTL accessible-text duplication. Bundled-font headless
+source-equality checks pass, so a reproducing system-font/native fixture remains
+required. [#59](https://github.com/blisspixel/noter/issues/59) tracks actionable
+retained-save warnings and safe explicit cleanup. Cleanup must preserve raced
+external revisions and cannot delete files by a guessed name or glob.
+
 ### Toward `0.1.0-rc.1` and `0.1.0`
 
 12. **[Complete M6 quality engine](https://github.com/blisspixel/noter/issues/54)**: conformance, diagnostics, Format Document

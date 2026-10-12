@@ -8,6 +8,8 @@ that candidate is frozen for publication.
 
 - Add a reproducible CPU baseline of the real bounded Text Mode adapter, with
   raw edit and idle samples, accessibility updates, and exact-source checks.
+- Add active accessible-text source-equality checks with bundled fonts; retain
+  the separate native RTL duplication report and its reproduction gap.
 - Add native Linux recovery privacy fixtures with distinct unprivileged
   identities, independently verified shared-directory preconditions, live-stage
   access denial, exact restart recovery, and retained CI evidence.
