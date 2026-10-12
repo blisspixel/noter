@@ -78,6 +78,56 @@ environment and race rows above remain open in issue #50. Exact-commit test,
 CI, and review receipts belong with the implementing pull request before any
 matrix row is promoted to Verified.
 
+## Linux distinct-identity fixture
+
+`scripts/check_recovery_identity.py` drives the test-only
+`identity_probe_owner` through `RecoveryStore::open_in_state` and the real Unix
+staging callback. An elevated broker launches two different unused numeric
+UID/GID pairs with `setpriv`. Neither child has supplementary groups or any
+inheritable, permitted, effective, bounding, or ambient capabilities;
+`no_new_privs` prevents privilege gain across exec. No accounts are created or
+modified. Ordinary workspace tests do not change process identities.
+
+The two cases cover a new private hierarchy and preexisting owner-controlled
+directories initially shared with mode `0777`. For the shared case, the unrelated
+identity first lists, creates, and deletes in all four directories, independently
+establishing the adverse precondition. Noter then tightens the hierarchy before
+staging recovery bytes. While the owner holds the exact staged successor and
+live lease, the unrelated identity must successfully read, write, create,
+rename, and delete in an accessible control. It must receive `EACCES` for 28
+operations against the private hierarchy and its five live artifacts. Missing
+paths, failed process startup, incorrect identities, and other errors fail the
+fixture rather than counting as access denial.
+
+The broker records UID/GID, groups, capability sets, effective modes, POSIX
+access-ACL bytes when present, filesystem type, kernel, and test-executable hash.
+It checks artifact identity and bytes before and after the probe. The owner
+then releases its lease, reopens through startup scanning, and claims the exact
+latest staged successor, canonical predecessor, and unrelated snapshot. An
+outside sentinel remains unchanged. Readiness, probe, completion, and child
+lifetime are bounded; cleanup stays within an isolated synthetic temporary root.
+
+Run only in an explicitly isolated Linux environment with the pinned toolchain,
+Python, util-linux `setpriv`/`findmnt`, and permission to use a root broker:
+
+```sh
+cargo test --locked --lib --no-run --message-format=json > .agent/recovery-identity-build.json
+sudo python3 scripts/check_recovery_identity.py --disposable --cargo-artifacts .agent/recovery-identity-build.json
+```
+
+Linux native CI runs this fixture inside the required workspace-test job and
+uploads `recovery-identity-linux`. Seven portable script regressions protect
+identity validation, capability dropping, test-binary selection, exact access
+denial, positive controls, readiness failure, and explicit opt-in. Existing
+recovery and platform mutation scopes remain unchanged; this privileged
+orchestration is separate from ordinary per-mutant workspace tests.
+
+This establishes the named Linux identity and mode-tightening cases on the
+filesystem recorded by each receipt. It does not establish Windows token/DACL
+behavior, macOS identities or ACLs, named-user POSIX ACL scenarios, hostile
+same-user writes, remote roots, power-loss durability, or the full M4-H1 matrix.
+Exact-commit native output, CI, and reviews belong with the implementing PR.
+
 ## Next fixture protocol
 
 For each missing environment case, retain a bounded, reproducible fixture in

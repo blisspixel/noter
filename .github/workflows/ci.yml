@@ -86,6 +86,22 @@ jobs:
       - name: Run tests
         run: cargo test --locked --verbose --workspace --all-targets --all-features
 
+      - name: Verify recovery against a distinct unprivileged Linux identity
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cargo test --locked --lib --no-run --message-format=json > "$RUNNER_TEMP/recovery-identity-build.json"
+          sudo python3 scripts/check_recovery_identity.py --disposable --cargo-artifacts "$RUNNER_TEMP/recovery-identity-build.json" > "$RUNNER_TEMP/recovery-identity.json"
+          cat "$RUNNER_TEMP/recovery-identity.json"
+
+      - name: Upload native recovery identity evidence
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: recovery-identity-linux
+          path: ${{ runner.temp }}/recovery-identity.json
+          if-no-files-found: error
+
       - name: Drive the terminal interface through a pseudo-terminal
         # CI test processes have no controlling terminal, so raw mode,
         # bracketed paste, terminal restoration, and hangup recovery are
