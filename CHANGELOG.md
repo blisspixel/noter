@@ -6,6 +6,8 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Preserve every byte when an invalid shaped-text cursor reaches word deletion,
+  preventing the upstream previous-word overflow in bounded editor buffers.
 - Extend native Linux recovery access-denial fixtures to explicit and inherited
   named-user ACL grants, with independently successful adverse preconditions.
 - Expose the latest terminal save's exact cleanup and durability warnings in a

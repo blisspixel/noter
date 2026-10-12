@@ -158,6 +158,11 @@ tested. #59 remains open for identity-bound confirmed cleanup and a tested
 retention policy. Neither dismissing that view nor a later clean save deletes
 an earlier artifact.
 
+The bounded buffers also preserve all source bytes when RTL shaping exposes
+an invalid cursor to word deletion. Active buffer regressions and an explicitly
+invoked identified-font Text Mode mouse/key fixture cover the guard and shared
+Undo/Redo. This does not close #60's accessibility or native bidi acceptance.
+
 ### Toward `0.1.0-rc.1` and `0.1.0`
 
 12. **[Complete M6 quality engine](https://github.com/blisspixel/noter/issues/54)**: conformance, diagnostics, Format Document

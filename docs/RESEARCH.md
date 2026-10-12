@@ -66,6 +66,15 @@ directional selection, source fidelity, and active full-document accessibility.
 Native AT-SPI, UIA, and macOS observations remain separate requirements before
 closing issue #60.
 
+Additional input probing with that identified font reproduces a nine-scalar
+source with widget cursor index ten; previous-word deletion panics when overflow
+checks are enabled. The shared bounded-buffer guard validates the cursor before
+calling egui's helper and preserves all bytes when the position is invalid.
+It retains upstream word semantics for valid positions and accepts no dependency
+patch. This is a narrow input fix, not evidence of complete bidi editing or
+accessible-text correctness. The [input fixture](M5_EDITOR_EVIDENCE.md#invalid-shaped-text-cursor-and-word-deletion)
+separates active buffer tests from local-font and native-platform evidence.
+
 ## 2026-10-11: Next quality checkpoint after beta.2
 
 The next implementation slice targets actual Windows process interruption at

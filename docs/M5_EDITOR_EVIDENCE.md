@@ -257,3 +257,39 @@ and font hashes, numeric scalar differences, and failing result. Equal lengths
 alone would accept incorrect accessible text. This partial upstream change is
 not a repair for Noter's source-equality contract; no vendor code, manifest
 override, or dependency change is included in the product.
+
+### Invalid shaped-text cursor and word deletion
+
+The same identified Arial font also exposes an oversized widget cursor after
+clicking past a short RTL line: the nine-scalar source produces cursor index
+ten. Ctrl+Backspace then reaches egui 0.35's unchecked previous-word subtraction
+and panics with overflow checks enabled. This is an input-adapter failure,
+separate from accessible-text duplication. The earlier source-preservation
+assertions did not exercise this keyboard path.
+
+Both bounded buffer implementations now validate the cursor before calling the
+upstream previous-word helper. An invalid position repairs to the actual display
+end and deletes nothing. A subsequent command from a valid position follows the
+existing word-boundary behavior. This shared guard also covers active Markdown blocks and bounded Find fields. It does not
+repair shaping, general bidi navigation, or accessible-text order.
+
+Active portable regressions assert exact unchanged bytes for oversized cursors,
+including empty input, multibyte/wide/combining/control characters and mixed
+line endings. Golden valid deletions preserve the surrounding source and its
+line endings. The additional explicitly invoked local-font input fixture tests
+real Text Mode mouse/key events with Windows Ctrl+Backspace, Unix Ctrl+W and
+macOS Option+Backspace policies, separate and batched input, revision counts,
+and exact shared Undo/Redo. These are headless event-policy checks on the host,
+not native Linux/macOS keyboard interoperability evidence. The licensed font
+is not redistributed; this fixture is narrowly ignored in ordinary CI while
+the buffer regressions remain active.
+
+```powershell
+$env:NOTER_M5_RTL_FONT = 'C:\Windows\Fonts\arial.ttf'
+cargo test --locked --bin noter app::measurement::local_font_rtl_word_delete_preserves_source_and_undo --all-features -- --exact --ignored --nocapture
+Remove-Item Env:NOTER_M5_RTL_FONT
+```
+
+Issue #60 remains open for accessible source equality and native caret,
+selection, and editing acceptance. The guard is later source work and is not
+included in the published beta.2 artifacts.

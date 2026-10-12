@@ -303,6 +303,10 @@ fn rtl_accessible_text_runs_match_source_projection() {
 #[test]
 #[ignore = "Local RTL font fixture for known #60; requires NOTER_M5_RTL_FONT"]
 fn local_font_rtl_accessible_text_runs_match_source_projection() {
+    assert_accessible_source(RTL_SOURCE, Some(local_rtl_font()));
+}
+
+fn local_rtl_font() -> Vec<u8> {
     use skrifa::MetadataProvider as _;
 
     // This local fixture retains source equality as the repair criterion. It
@@ -327,5 +331,136 @@ fn local_font_rtl_accessible_text_runs_match_source_projection() {
         bytes.len(),
         blake3::hash(&bytes)
     );
-    assert_accessible_source(RTL_SOURCE, Some(bytes));
+    bytes
+}
+
+#[test]
+#[ignore = "Local RTL input fixture; requires NOTER_M5_RTL_FONT"]
+fn local_font_rtl_word_delete_preserves_source_and_undo() {
+    let font = local_rtl_font();
+    for (os, modifiers, key) in [
+        (
+            egui::os::OperatingSystem::Windows,
+            egui::Modifiers::CTRL,
+            egui::Key::Backspace,
+        ),
+        (
+            egui::os::OperatingSystem::Nix,
+            egui::Modifiers::CTRL,
+            egui::Key::W,
+        ),
+        (
+            egui::os::OperatingSystem::Mac,
+            egui::Modifiers::ALT,
+            egui::Key::Backspace,
+        ),
+    ] {
+        for batched in [false, true] {
+            for source in ["Aurora beta", "Aurora \u{628}\u{628}"] {
+                let (mut app, context) = local_font_input_app(source, &font, os);
+                let mut sequence = 0;
+                frame(&mut app, &context, &mut sequence, Vec::new());
+                let pos = egui::pos2(600.0, 12.0);
+                let mut click = vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ];
+                let delete = || egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                };
+                if batched {
+                    click.push(delete());
+                }
+                frame(&mut app, &context, &mut sequence, click);
+                if !batched {
+                    frame(&mut app, &context, &mut sequence, vec![delete()]);
+                }
+                if source.contains('\u{628}') {
+                    // Pointer handling can leave the oversized glyph cursor
+                    // after a same-frame key. Every command against that
+                    // invalid position must preserve the entire source.
+                    assert_eq!(app.text, source);
+                    assert_eq!(app.document.revision(), Revision::INITIAL);
+                    assert!(!app.history.can_undo());
+                    if batched {
+                        frame(&mut app, &context, &mut sequence, vec![delete()]);
+                        assert_eq!(app.text, source);
+                        assert_eq!(app.document.revision(), Revision::INITIAL);
+                        assert!(!app.history.can_undo());
+                    }
+                    let cursor = egui::TextEdit::load_state(&context, app.editor_id())
+                        .unwrap()
+                        .cursor
+                        .char_range()
+                        .unwrap();
+                    assert_eq!(usize::from(cursor.primary.index), source.chars().count());
+                    assert_eq!(cursor.primary, cursor.secondary);
+                    frame(&mut app, &context, &mut sequence, vec![delete()]);
+                }
+                assert_eq!(
+                    app.text,
+                    "Aurora ",
+                    "os={os:?} batched={batched} key={key:?} source_chars={}",
+                    source.chars().count()
+                );
+                assert_eq!(
+                    app.document.revision(),
+                    Revision::INITIAL.checked_next().unwrap()
+                );
+                assert!(app.document.rope().bytes().eq(app.text.bytes()));
+                app.execute_edit_command(EditCommand::Undo, &context);
+                assert_eq!(app.text, source);
+                assert!(app.document.rope().bytes().eq(source.bytes()));
+                app.execute_edit_command(EditCommand::Redo, &context);
+                assert_eq!(
+                    app.text,
+                    "Aurora ",
+                    "os={os:?} batched={batched} key={key:?} source_chars={}",
+                    source.chars().count()
+                );
+                assert!(app.document.rope().bytes().eq(app.text.bytes()));
+            }
+        }
+    }
+}
+
+fn local_font_input_app(
+    source: &str,
+    font: &[u8],
+    os: egui::os::OperatingSystem,
+) -> (NoterApp, egui::Context) {
+    let context = egui::Context::default();
+    context.set_os(os);
+    theme::configure_styles(&context);
+    context.add_font(egui::epaint::text::FontInsert::new(
+        "m5-local-rtl-input-fixture",
+        egui::FontData::from_owned(font.to_vec()),
+        vec![egui::epaint::text::InsertFontFamily {
+            family: egui::FontFamily::Monospace,
+            priority: egui::epaint::text::FontPriority::Lowest,
+        }],
+    ));
+    let app = NoterApp {
+        document: Document::from_bytes(source.as_bytes()).expect("the source loads"),
+        text: source.to_owned(),
+        view: DocumentView::Text,
+        ..NoterApp::default()
+    };
+    context.memory_mut(|memory| memory.request_focus(app.editor_id()));
+    (app, context)
 }
