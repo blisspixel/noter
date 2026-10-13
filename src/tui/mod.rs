@@ -24,6 +24,9 @@ use noter::core::document::{Document, PreparedSaveAs};
 use noter::core::edit::{
     EditOrigin, EditTimestamp, EditTransaction, Selection, TextEdit, TextRange,
 };
+use noter::core::fs_storage::{
+    remove_verified_retained_siblings, retained_sibling_removal_message,
+};
 use noter::core::limits::MAX_DOCUMENT_BYTES;
 use noter::core::line_endings::{logical_lines, normalize_inserted_text};
 use noter::core::navigation::{
@@ -207,6 +210,12 @@ impl TuiPalette {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RetainedSiblingRemoval {
+    Idle,
+    Armed,
+}
+
 /// State for the terminal editor session.
 pub struct TuiSession {
     pub document: Document,
@@ -241,6 +250,7 @@ pub struct TuiSession {
     pending_clipboard: Option<String>,
     reconcile_scroll: usize,
     last_save_warnings: Option<SaveWarnings>,
+    retained_sibling_removal: RetainedSiblingRemoval,
 }
 
 impl TuiSession {
@@ -290,6 +300,7 @@ impl TuiSession {
             pending_clipboard: None,
             reconcile_scroll: 0,
             last_save_warnings: None,
+            retained_sibling_removal: RetainedSiblingRemoval::Idle,
         };
         if options.initial_path.is_some() {
             session.recovery.defer_startup_offers();
@@ -699,6 +710,7 @@ impl TuiSession {
             if self.last_save_warnings.is_some() {
                 self.prompt = PromptMode::SaveWarnings;
                 self.reconcile_scroll = 0;
+                self.retained_sibling_removal = RetainedSiblingRemoval::Idle;
             } else {
                 self.set_status("No save warnings or uncertain outcomes to review");
             }
@@ -706,6 +718,24 @@ impl TuiSession {
         }
         self.prompt = PromptMode::ReconcileSave(0);
         self.reconcile_scroll = 0;
+    }
+
+    pub(super) const fn retained_removal_is_armed(&self) -> bool {
+        matches!(self.retained_sibling_removal, RetainedSiblingRemoval::Armed)
+    }
+
+    fn remove_confirmed_retained_siblings(&mut self) {
+        let Some(warnings) = self.last_save_warnings.clone() else {
+            self.set_status("No verified single-link retained sibling is available to remove");
+            return;
+        };
+        if warnings.retained().is_empty() {
+            self.set_status("No verified single-link retained sibling is available to remove");
+            return;
+        }
+        let (count, remaining) = remove_verified_retained_siblings(warnings.retained());
+        self.last_save_warnings = Some(warnings.with_retained(remaining));
+        self.set_status(retained_sibling_removal_message(count));
     }
 
     fn scroll_save_details(&mut self, direction: MoveDirection, cols: u16, rows: u16) {
@@ -1857,7 +1887,27 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, cols: u16, rows: u16)
                     TuiKey::Up => {
                         session.scroll_save_details(MoveDirection::Backward, cols, rows);
                     }
-                    TuiKey::Escape | TuiKey::Enter | TuiKey::Ctrl('r') => {
+                    TuiKey::Char('x') => {
+                        if session.retained_removal_is_armed() {
+                            session.remove_confirmed_retained_siblings();
+                            session.retained_sibling_removal = RetainedSiblingRemoval::Idle;
+                        } else {
+                            session.retained_sibling_removal = RetainedSiblingRemoval::Armed;
+                            session.set_status(
+                                "Press x again to remove the verified retained sibling, or Esc to cancel",
+                            );
+                        }
+                    }
+                    TuiKey::Escape => {
+                        if session.retained_removal_is_armed() {
+                            session.retained_sibling_removal = RetainedSiblingRemoval::Idle;
+                            session.set_status("Retained sibling removal canceled");
+                        } else {
+                            session.prompt = PromptMode::None;
+                        }
+                    }
+                    TuiKey::Enter | TuiKey::Ctrl('r') => {
+                        session.retained_sibling_removal = RetainedSiblingRemoval::Idle;
                         session.prompt = PromptMode::None;
                     }
                     _ => {}
@@ -2776,6 +2826,49 @@ mod tests {
             handle_event(&mut session, TuiEvent::Key(TuiKey::Down), 240, 100);
             assert_eq!(session.reconcile_scroll, 0);
         }
+    }
+
+    #[test]
+    fn confirmed_retained_sibling_removal_keeps_a_replaced_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory
+            .path()
+            .join(".noter-save-11111111111111111111111111111111.tmp");
+        std::fs::write(&path, b"artifact").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let facts = noter_platform::file_facts(&file).unwrap();
+        let identity = match facts.identity().quality() {
+            noter_platform::IdentityQuality::Preferred => noter::core::save::FileIdentity::new(
+                facts.identity().volume(),
+                facts.identity().file(),
+            ),
+            noter_platform::IdentityQuality::Reduced => noter::core::save::FileIdentity::reduced(
+                facts.identity().volume(),
+                facts.identity().file(),
+            ),
+        };
+        drop(file);
+        let mut session = untitled();
+        session.last_save_warnings = Some(
+            SaveWarnings::new(vec![storage_error("kept")], Vec::new()).with_retained(vec![
+                noter::core::save::RetainedSaveSibling::new(path.clone(), identity),
+            ]),
+        );
+        session.prompt = PromptMode::SaveWarnings;
+        handle_event(&mut session, TuiEvent::Key(TuiKey::Char('x')), 80, 24);
+        assert!(session.retained_removal_is_armed());
+        handle_event(&mut session, TuiEvent::Key(TuiKey::Escape), 80, 24);
+        assert!(!session.retained_removal_is_armed());
+        assert_eq!(std::fs::read(&path).unwrap(), b"artifact");
+
+        let held = directory.path().join("held-artifact");
+        std::fs::rename(&path, &held).unwrap();
+        std::fs::write(&path, b"replacement").unwrap();
+        handle_event(&mut session, TuiEvent::Key(TuiKey::Char('x')), 80, 24);
+        handle_event(&mut session, TuiEvent::Key(TuiKey::Char('x')), 80, 24);
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+        assert_eq!(std::fs::read(&held).unwrap(), b"artifact");
     }
 
     #[test]

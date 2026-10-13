@@ -485,10 +485,15 @@ and removal guidance. In the terminal, Ctrl+R opens a scrollable view of the
 latest committed save's warnings after its status message expires. Uncertain
 save records take priority over that view. A later committed save replaces the
 latest warning view; it is not a persistent artifact inventory. Closing the
-view removes no files. Confirmed cleanup and bounded retained copies remain
-[#59](https://github.com/blisspixel/noter/issues/59): a safe removal design must
-bind the artifact's identity, content, and parent without deleting a concurrently
-replaced entry. Warning text is diagnostic, not a deletion capability.
+view removes no files. A second `x` asks to remove the latest verified
+single-link sibling. Removal opens that path again, requires the same identity
+and a link count of one, and deletes only through the open handle. Unix returns
+unsupported and leaves the file. A replaced name is not deleted. The destination
+directory may hold at most eight exact `.noter-save-<hex>.tmp` names. The next
+save refuses before creating another sibling, leaves the in-memory document
+unreplaced, and does not delete any existing sibling by name. Save As to
+another directory remains available. [#59](https://github.com/blisspixel/noter/issues/59) stays open
+because portable Unix still cannot bind deletion to the verified object.
 Absent-file installation uses `RENAME_NOREPLACE` where
 available. Its no-overwrite hard-link fallback also retains the temporary name
 with the same actionable warning instead of unlinking by pathname. Windows

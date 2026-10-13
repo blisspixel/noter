@@ -8,12 +8,17 @@ use std::path::{Path, PathBuf};
 use super::file_observation::{inspect_target, is_final_link, open_verified_cleanup_candidate};
 use super::save::{
     ContentFingerprint, Durability, DurabilityOutcome, FileIdentity, FileObservation,
-    IdentityQuality, ReplaceOutcome, ReplaceReceipt, SaveStage, Storage, StorageError, TargetState,
-    TemporaryCreationFailure,
+    IdentityQuality, ReplaceOutcome, ReplaceReceipt, RetainedSaveSibling, SaveStage, Storage,
+    StorageError, TargetState, TemporaryCreationFailure,
 };
 
 const RANDOM_NAME_BYTES: usize = 16;
 const MAX_CREATE_ATTEMPTS: usize = 16;
+/// Maximum retained `.noter-save-<hex>.tmp` directory entries beside one destination.
+///
+/// The next save refuses before creating another sibling. Refusal does not
+/// delete an existing sibling, because a name is not authority for removal.
+pub(crate) const MAX_RETAINED_SAVE_SIBLINGS: usize = 8;
 const TEMPORARY_PREFIX: &str = ".noter-save-";
 const TEMPORARY_SUFFIX: &str = ".tmp";
 #[cfg(windows)]
@@ -142,6 +147,178 @@ fn normalized_parent(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
+}
+
+fn is_retained_save_sibling_name(name: &std::ffi::OsStr) -> bool {
+    let Some(text) = name.to_str() else {
+        return false;
+    };
+    let Some(hex) = text
+        .strip_prefix(TEMPORARY_PREFIX)
+        .and_then(|rest| rest.strip_suffix(TEMPORARY_SUFFIX))
+    else {
+        return false;
+    };
+    hex.len() == RANDOM_NAME_BYTES * 2
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn retained_sibling_limit_message(count: usize) -> String {
+    format!(
+        "the destination directory already holds {count} retained .noter-save siblings. The limit is {MAX_RETAINED_SAVE_SIBLINGS}. Noter did not replace the document and did not delete any sibling by name. Save As to another directory remains available. Inspect the siblings beside the destination and remove only a file you have checked, then save again."
+    )
+}
+
+fn count_retained_save_siblings(parent: &Path) -> io::Result<usize> {
+    let mut count = 0usize;
+    for entry in fs::read_dir(parent)? {
+        if is_retained_save_sibling_name(&entry?.file_name()) {
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(count)
+}
+
+fn retained_sibling_bound(destination: &Path) -> Result<(), StorageError> {
+    let count = count_retained_save_siblings(normalized_parent(destination)).map_err(|error| {
+        redacted_io_error(
+            SaveStage::CreateTemporary,
+            "count retained save siblings",
+            &error,
+        )
+    })?;
+    if count >= MAX_RETAINED_SAVE_SIBLINGS {
+        return Err(StorageError::new(
+            SaveStage::CreateTemporary,
+            retained_sibling_limit_message(count),
+        ));
+    }
+    Ok(())
+}
+
+const fn core_identity(identity: noter_platform::FileIdentity) -> FileIdentity {
+    match identity.quality() {
+        noter_platform::IdentityQuality::Preferred => {
+            FileIdentity::new(identity.volume(), identity.file())
+        }
+        noter_platform::IdentityQuality::Reduced => {
+            FileIdentity::reduced(identity.volume(), identity.file())
+        }
+    }
+}
+
+fn verified_single_link_sibling(path: &Path) -> Option<RetainedSaveSibling> {
+    if !path.file_name().is_some_and(is_retained_save_sibling_name) {
+        return None;
+    }
+    let file = noter_platform::open_for_cleanup(path).ok()?;
+    let facts = noter_platform::file_facts(&file).ok()?;
+    if facts.link_count() != 1 {
+        return None;
+    }
+    Some(RetainedSaveSibling::new(
+        path.to_path_buf(),
+        core_identity(facts.identity()),
+    ))
+}
+
+/// Removes one retained sibling only when its path still names the verified object.
+///
+/// The path must use Noter's exact sibling name. The open handle's identity must
+/// equal `sibling.identity()`, and that object must have one link. Windows then
+/// deletes that handle. Unix returns [`io::ErrorKind::Unsupported`] and leaves
+/// the directory entry in place.
+///
+/// # Errors
+///
+/// Returns an error when the name, identity, or link count does not match, or
+/// when the platform cannot delete the verified object by handle.
+pub fn remove_verified_retained_sibling(sibling: &RetainedSaveSibling) -> io::Result<()> {
+    let name = sibling.path().file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "retained sibling path has no file name",
+        )
+    })?;
+    if !is_retained_save_sibling_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "retained sibling name is not a Noter save sibling",
+        ));
+    }
+    let file = noter_platform::open_for_cleanup(sibling.path())?;
+    let facts = noter_platform::file_facts(&file)?;
+    if !platform_identity_matches(facts.identity(), sibling.identity()) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "retained sibling path no longer identifies the verified file",
+        ));
+    }
+    if facts.link_count() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "retained sibling has more than one name and was not removed",
+        ));
+    }
+    noter_platform::delete_open_file(&file)
+}
+
+/// Outcome of attempting identity-checked removal for one save's siblings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetainedSiblingRemovalCount {
+    /// Siblings deleted through their verified handles.
+    pub removed: usize,
+    /// Siblings left on disk.
+    pub kept: usize,
+    /// Kept siblings whose platform cannot delete an open file by handle.
+    pub unsupported: usize,
+}
+
+/// Removes each sibling independently and returns the ones that remain.
+pub fn remove_verified_retained_siblings(
+    siblings: &[RetainedSaveSibling],
+) -> (RetainedSiblingRemovalCount, Vec<RetainedSaveSibling>) {
+    let mut removed = 0usize;
+    let mut kept = 0usize;
+    let mut unsupported = 0usize;
+    let mut remaining = Vec::new();
+    for sibling in siblings {
+        match remove_verified_retained_sibling(sibling) {
+            Ok(()) => removed = removed.saturating_add(1),
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                kept = kept.saturating_add(1);
+                unsupported = unsupported.saturating_add(1);
+                remaining.push(sibling.clone());
+            }
+            Err(_) => {
+                kept = kept.saturating_add(1);
+                remaining.push(sibling.clone());
+            }
+        }
+    }
+    (
+        RetainedSiblingRemovalCount {
+            removed,
+            kept,
+            unsupported,
+        },
+        remaining,
+    )
+}
+
+/// Explains a removal attempt without claiming a file was deleted unless it was.
+#[must_use]
+pub fn retained_sibling_removal_message(count: RetainedSiblingRemovalCount) -> String {
+    if count.removed == 0 && count.unsupported > 0 {
+        return "Noter could not delete the verified retained sibling by handle on this system. The file was kept.".to_owned();
+    }
+    format!(
+        "Verified retained-sibling removal finished: {removed} removed and {kept} kept. A kept file was not deleted.",
+        removed = count.removed,
+        kept = count.kept
+    )
 }
 
 impl TemporaryFile {
@@ -507,6 +684,7 @@ impl Storage for FilesystemStorage {
         &mut self,
         destination: &Path,
     ) -> Result<Self::Temporary, TemporaryCreationFailure> {
+        retained_sibling_bound(destination)?;
         create_unique_sibling(destination).map_err(|error| temporary_creation_failure(&error))
     }
 
@@ -1220,6 +1398,7 @@ fn finalize_commit_with_cleanup(
     durability_warnings: Vec<StorageError>,
     parent_sync: FilesystemParentSync,
 ) -> FilesystemReplaceOutcome {
+    let mut retained_siblings = Vec::new();
     let observation = match inspect_target(destination, SaveStage::Reconcile) {
         Ok(TargetState::Regular(observation)) => {
             match temporary.committed_observation_matches(observation) {
@@ -1258,7 +1437,13 @@ fn finalize_commit_with_cleanup(
     match temporary_cleanup {
         TemporaryCleanup::Owned => {
             let artifact = artifact_label(&temporary);
+            let sibling_path = temporary.path().to_path_buf();
             if let Err(error) = temporary.discard() {
+                if error.kind() != io::ErrorKind::AlreadyExists
+                    && let Some(sibling) = verified_single_link_sibling(&sibling_path)
+                {
+                    retained_siblings.push(sibling);
+                }
                 let failure = redacted_io_error(
                     SaveStage::Cleanup,
                     "remove committed temporary name",
@@ -1274,6 +1459,9 @@ fn finalize_commit_with_cleanup(
             }
         }
         TemporaryCleanup::PreservedTemporaryName => {
+            if let Some(sibling) = verified_single_link_sibling(temporary.path()) {
+                retained_siblings.push(sibling);
+            }
             cleanup_warnings.push(preserved_artifact_warning(
                 &temporary,
                 "A hard-link sibling containing the committed bytes",
@@ -1284,6 +1472,9 @@ fn finalize_commit_with_cleanup(
             drop(temporary);
         }
         TemporaryCleanup::PreservedDisplacedDestination => {
+            if let Some(sibling) = verified_single_link_sibling(temporary.path()) {
+                retained_siblings.push(sibling);
+            }
             cleanup_warnings.push(preserved_artifact_warning(
                 &temporary,
                 "A displaced recovery artifact",
@@ -1300,12 +1491,15 @@ fn finalize_commit_with_cleanup(
         cleanup_warnings.push(error);
     }
 
-    ReplaceOutcome::Committed(ReplaceReceipt::with_parent_sync(
-        observation,
-        cleanup_warnings,
-        durability_warnings,
-        parent_sync,
-    ))
+    ReplaceOutcome::Committed(
+        ReplaceReceipt::with_parent_sync(
+            observation,
+            cleanup_warnings,
+            durability_warnings,
+            parent_sync,
+        )
+        .with_retained_siblings(retained_siblings),
+    )
 }
 
 fn preserved_artifact_warning(
@@ -2558,6 +2752,11 @@ mod tests {
         assert!(warning.contains("restore ordinary single-link saves"));
         assert_eq!(fs::read(&destination)?, b"committed bytes");
         assert_eq!(fs::read(&temporary_path)?, b"committed bytes");
+        let (_observation, _cleanup, _durability, retained, _parent_sync) = receipt.into_parts();
+        assert!(
+            retained.is_empty(),
+            "a second link must not be offered for handle deletion"
+        );
         Ok(())
     }
 
@@ -2604,6 +2803,9 @@ mod tests {
         );
         assert_eq!(fs::read(&destination)?, b"new bytes");
         assert_eq!(fs::read(&temporary_path)?, b"old bytes");
+        let (_observation, _cleanup, _durability, retained, _parent_sync) = receipt.into_parts();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].path(), temporary_path.as_path());
         fs::remove_file(temporary_path)?;
         Ok(())
     }
@@ -2657,6 +2859,9 @@ mod tests {
         );
         assert_eq!(fs::read(&destination)?, b"new bytes");
         assert_eq!(fs::read(&temporary_path)?, b"external bytes");
+        let (_observation, _cleanup, _durability, retained, _parent_sync) = receipt.into_parts();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].path(), temporary_path.as_path());
         fs::remove_file(temporary_path)?;
         Ok(())
     }
@@ -3153,7 +3358,7 @@ mod tests {
         let ReplaceOutcome::Committed(receipt) = outcome else {
             panic!("the absent destination should commit exclusively");
         };
-        let (_observation, _cleanup, _durability, parent_sync) = receipt.into_parts();
+        let (_observation, _cleanup, _durability, _retained, parent_sync) = receipt.into_parts();
         fs::rename(&active, &moved)?;
         fs::create_dir(&active)?;
         fs::write(active.join("note.txt"), b"rebound directory bytes")?;
@@ -3327,6 +3532,199 @@ mod tests {
             SaveStage::SyncFile
         );
         remove_private_artifacts(directory.path(), b"previous revision")?;
+        Ok(())
+    }
+
+    #[test]
+    fn owned_cleanup_does_not_record_a_replaced_sibling() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        fs::write(&destination, b"old bytes")?;
+        let mut temporary = prepared_temporary(&destination, b"new bytes")?;
+        temporary.close_handle();
+        let temporary_path = temporary.path().to_path_buf();
+        let swap_path = directory.path().join("swap.txt");
+        fs::rename(&destination, &swap_path)?;
+        fs::rename(&temporary_path, &destination)?;
+        fs::rename(&swap_path, &temporary_path)?;
+
+        let outcome = finalize_commit(
+            temporary,
+            &destination,
+            None,
+            Vec::new(),
+            FilesystemParentSync::reconciled_without_receipt(),
+        );
+        let ReplaceOutcome::Committed(receipt) = outcome else {
+            panic!(
+                "the exchanged destination remains committed when owned cleanup refuses the swapped name"
+            );
+        };
+        let (_observation, cleanup, _durability, retained, _parent_sync) = receipt.into_parts();
+        assert!(retained.is_empty());
+        assert!(
+            cleanup
+                .iter()
+                .any(|warning| warning.message().contains("may remain"))
+        );
+        assert_eq!(fs::read(&destination)?, b"new bytes");
+        assert_eq!(fs::read(&temporary_path)?, b"old bytes");
+        fs::remove_file(temporary_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn retained_sibling_bound_refuses_another_save_without_deleting_files() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        fs::write(&destination, b"original")?;
+        for index in 0..MAX_RETAINED_SAVE_SIBLINGS {
+            let mut name = [0_u8; RANDOM_NAME_BYTES];
+            name[0] = u8::try_from(index).expect("the bound fits in one byte");
+            fs::write(directory.path().join(candidate_name(&name)), b"kept")?;
+        }
+        fs::write(directory.path().join(".noter-save-ZZ.tmp"), b"unrelated")?;
+        let mut storage = FilesystemStorage;
+
+        let failure = storage
+            .create_unique_sibling(&destination)
+            .expect_err("the retention bound must refuse another sibling");
+
+        assert!(failure.cleanup_error().is_none());
+        assert_eq!(failure.error().stage(), SaveStage::CreateTemporary);
+        assert!(
+            failure
+                .error()
+                .message()
+                .contains("did not replace the document")
+        );
+        assert!(
+            failure
+                .error()
+                .message()
+                .contains("did not delete any sibling by name")
+        );
+        assert_eq!(fs::read(&destination)?, b"original");
+        for index in 0..MAX_RETAINED_SAVE_SIBLINGS {
+            let mut name = [0_u8; RANDOM_NAME_BYTES];
+            name[0] = u8::try_from(index).expect("the bound fits in one byte");
+            assert_eq!(
+                fs::read(directory.path().join(candidate_name(&name)))?,
+                b"kept"
+            );
+        }
+        assert_eq!(
+            fs::read(directory.path().join(".noter-save-ZZ.tmp"))?,
+            b"unrelated"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retained_sibling_bound_ignores_names_outside_the_exact_pattern() -> io::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("note.txt");
+        fs::write(&destination, b"original")?;
+        for index in 0..MAX_RETAINED_SAVE_SIBLINGS - 1 {
+            let mut name = [0_u8; RANDOM_NAME_BYTES];
+            name[0] = u8::try_from(index).expect("the bound fits in one byte");
+            fs::write(directory.path().join(candidate_name(&name)), b"kept")?;
+        }
+        fs::write(directory.path().join(".noter-save-ABCD.tmp"), b"short")?;
+        let mut storage = FilesystemStorage;
+
+        let temporary = storage
+            .create_unique_sibling(&destination)
+            .expect("a non-matching name must not consume the retention bound");
+        assert!(temporary.path().exists());
+        assert_eq!(fs::read(&destination)?, b"original");
+        Ok(())
+    }
+
+    #[test]
+    fn verified_retained_sibling_removal_rejects_a_replaced_name() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory
+            .path()
+            .join(candidate_name(&[0x11; RANDOM_NAME_BYTES]));
+        fs::write(&path, b"original artifact")?;
+        let sibling = verified_single_link_sibling(&path).expect("the artifact is one link");
+        let held = directory.path().join("held-original");
+        fs::rename(&path, &held)?;
+        fs::write(&path, b"replacement")?;
+
+        let error = remove_verified_retained_sibling(&sibling)
+            .expect_err("a replaced name must not be deleted");
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&path)?, b"replacement");
+        assert_eq!(fs::read(&held)?, b"original artifact");
+        Ok(())
+    }
+
+    #[test]
+    fn verified_retained_sibling_removal_rejects_an_ordinary_name() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        fs::write(&path, b"document")?;
+        let sibling = RetainedSaveSibling::new(path.clone(), FileIdentity::new(1, 2));
+
+        let error = remove_verified_retained_sibling(&sibling)
+            .expect_err("an ordinary document name must not be deleted");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(fs::read(&path)?, b"document");
+        Ok(())
+    }
+
+    #[test]
+    fn verified_retained_sibling_removal_rejects_a_second_link() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory
+            .path()
+            .join(candidate_name(&[0x22; RANDOM_NAME_BYTES]));
+        let other = directory.path().join("second-name");
+        fs::write(&path, b"shared")?;
+        fs::hard_link(&path, &other)?;
+        let opened = fs::File::open(&path)?;
+        let sibling = RetainedSaveSibling::new(
+            path.clone(),
+            core_identity(noter_platform::file_facts(&opened)?.identity()),
+        );
+        drop(opened);
+
+        let error = remove_verified_retained_sibling(&sibling)
+            .expect_err("a second name must keep both directory entries");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(fs::read(&path)?, b"shared");
+        assert_eq!(fs::read(&other)?, b"shared");
+        Ok(())
+    }
+
+    #[test]
+    fn verified_retained_sibling_removal_follows_the_platform_handle_rule() -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory
+            .path()
+            .join(candidate_name(&[0x33; RANDOM_NAME_BYTES]));
+        fs::write(&path, b"artifact")?;
+        let sibling = verified_single_link_sibling(&path).expect("the artifact is one link");
+
+        let (count, remaining) = remove_verified_retained_siblings(std::slice::from_ref(&sibling));
+
+        if cfg!(windows) {
+            assert_eq!(count.removed, 1);
+            assert_eq!(count.kept, 0);
+            assert!(remaining.is_empty());
+            assert!(!path.exists());
+        } else {
+            assert_eq!(count.removed, 0);
+            assert_eq!(count.unsupported, 1);
+            assert_eq!(remaining.len(), 1);
+            assert_eq!(fs::read(&path)?, b"artifact");
+            assert!(retained_sibling_removal_message(count).contains("file was kept"));
+        }
         Ok(())
     }
 }

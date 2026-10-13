@@ -82,11 +82,14 @@ the ACL and verifies its absence. If validation or restriction fails, Noter
 reports the retained artifact and does not claim that owner-only access was
 established.
 
-Current Unix document saves can accumulate retained siblings until manual
-inspection and removal. The window names them in its warning; current source
-also exposes the terminal's latest committed-save warnings through Ctrl+R.
-A safe confirmed cleanup action and a tested per-document retention bound
-remain open in [#59](https://github.com/blisspixel/noter/issues/59).
+A destination directory may hold at most eight exact `.noter-save-<hex>.tmp`
+names. Another save refuses before creating a sibling, leaves the in-memory
+document unreplaced, and does not delete by name. Save As to another directory
+remains available. The window and the terminal can ask to remove the latest verified
+single-link sibling. That action deletes the open handle only when the path
+still names the same object and the object has one link. Unix cannot do that
+deletion, so the file stays. [#59](https://github.com/blisspixel/noter/issues/59)
+remains open for a Unix removal that is bound to the verified object.
 Do not treat a filename pattern as proof that an artifact is safe to delete.
 
 ## 5. Diagnostics

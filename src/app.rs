@@ -11,6 +11,9 @@ use noter::core::edit::{
     AppliedTransaction, EditError, EditOrigin, EditTimestamp, EditTransaction, Selection, TextRange,
 };
 use noter::core::file_observation::inspect_target;
+use noter::core::fs_storage::{
+    remove_verified_retained_siblings, retained_sibling_removal_message,
+};
 use noter::core::lifecycle::{
     DestructiveIntent as PendingAbandonAction, DirtyDecision, LifecycleCommand, LifecycleEffect,
     LifecycleState, SaveContinuation,
@@ -18,7 +21,9 @@ use noter::core::lifecycle::{
 use noter::core::line_endings::LineEndingProfile;
 use noter::core::markdown::count_markdown_diagnostics;
 use noter::core::revision::Revision;
-use noter::core::save::{FileObservation, SaveOutcome, SaveStage, TargetState};
+use noter::core::save::{
+    FileObservation, RetainedSaveSibling, SaveOutcome, SaveStage, TargetState,
+};
 #[cfg(test)]
 use noter::core::save_recovery::MAX_SAVE_RECOVERY_LABEL_BYTES;
 use noter::core::save_recovery::{
@@ -620,6 +625,11 @@ impl Default for DesktopSessionState {
     }
 }
 
+enum RetainedSiblingPrompt {
+    Confirm,
+    Result(String),
+}
+
 pub struct NoterApp {
     text: String,
     text_ime_composition: Option<TextImeComposition>,
@@ -646,6 +656,8 @@ pub struct NoterApp {
     status_cache: Option<StatusCache>,
     error_msg: Option<String>,
     save_recoveries: Vec<SaveRecovery>,
+    retained_save_siblings: Vec<RetainedSaveSibling>,
+    confirm_retained_sibling_removal: Option<RetainedSiblingPrompt>,
     pending_recovery_reconciliation: Option<usize>,
     about_open: bool,
     updates: UpdateStatusState,
@@ -713,6 +725,8 @@ impl NoterApp {
             status_cache: None,
             error_msg: None,
             save_recoveries: Vec::new(),
+            retained_save_siblings: Vec::new(),
+            confirm_retained_sibling_removal: None,
             pending_recovery_reconciliation: None,
             about_open: false,
             updates: UpdateStatusState::Closed,
@@ -1103,6 +1117,8 @@ impl NoterApp {
         self.error_msg = match result {
             Ok(SaveOutcome::Committed { ref warnings, .. }) if warnings.is_empty() => {
                 self.reset_external_conflict_state();
+                self.retained_save_siblings.clear();
+                self.confirm_retained_sibling_removal = None;
                 self.save_durability = SaveDurabilityRisk::Clear;
                 self.crash_recovery
                     .on_committed_save(self.document.revision());
@@ -1110,6 +1126,8 @@ impl NoterApp {
             }
             Ok(SaveOutcome::Committed { warnings, .. }) => {
                 self.reset_external_conflict_state();
+                self.retained_save_siblings = warnings.retained().to_vec();
+                self.confirm_retained_sibling_removal = None;
                 self.save_durability = SaveDurabilityRisk::from_warnings(&warnings);
                 if self.save_durability.is_at_risk() {
                     self.crash_recovery
@@ -1751,6 +1769,7 @@ impl NoterApp {
 
     fn blocking_modal_open(&self) -> bool {
         self.crash_recovery.active_offer().is_some()
+            || self.confirm_retained_sibling_removal.is_some()
             || self.pending_recovery_reconciliation.is_some()
             || self.pending_hard_link_save.is_some()
             || self.lifecycle.pending_intent().is_some()
@@ -3042,6 +3061,48 @@ impl NoterApp {
         }
     }
 
+    fn show_retained_sibling_removal(&mut self, ctx: &egui::Context) {
+        let mut confirm = false;
+        let mut close = false;
+        let result = match &self.confirm_retained_sibling_removal {
+            Some(RetainedSiblingPrompt::Result(message)) => Some(message.clone()),
+            _ => None,
+        };
+        let response = egui::Modal::new(egui::Id::new("retained-sibling-removal")).show(ctx, |ui| {
+            ui.set_min_width(440.0);
+            ui.heading("Remove verified retained sibling");
+            if let Some(message) = &result {
+                ui.label(message);
+                close = ui.button("Close").clicked();
+            } else {
+                ui.label(
+                    "This removes a retained save sibling only when its path still names the same single-link file. A replaced name is left untouched.",
+                );
+                ui.label(
+                    "On systems that cannot delete an open file by handle, Noter keeps the file.",
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    close = ui.button("Cancel").clicked();
+                    confirm = ui.button("Remove Verified Sibling").clicked();
+                });
+            }
+        });
+        if confirm {
+            self.run_retained_sibling_removal();
+        } else if close || response.should_close() {
+            self.confirm_retained_sibling_removal = None;
+        }
+    }
+
+    fn run_retained_sibling_removal(&mut self) {
+        let (count, remaining) = remove_verified_retained_siblings(&self.retained_save_siblings);
+        self.retained_save_siblings = remaining;
+        self.confirm_retained_sibling_removal = Some(RetainedSiblingPrompt::Result(
+            retained_sibling_removal_message(count),
+        ));
+    }
+
     fn show_hard_link_confirmation(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
         let Some(pending) = self.pending_hard_link_save.as_ref() else {
             return;
@@ -3222,6 +3283,12 @@ impl NoterApp {
                     let document_response = ui.label(document_label);
                     if let Some(path) = self.document.path() {
                         document_response.on_hover_text(path.display().to_string());
+                    }
+                    if !self.retained_save_siblings.is_empty()
+                        && ui.button("Remove verified sibling").clicked()
+                    {
+                        self.confirm_retained_sibling_removal =
+                            Some(RetainedSiblingPrompt::Confirm);
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -4132,6 +4199,8 @@ impl NoterApp {
     ) {
         if recovery_offer_open {
             self.show_startup_recovery_offer(ctx);
+        } else if self.confirm_retained_sibling_removal.is_some() {
+            self.show_retained_sibling_removal(ctx);
         } else if self.pending_recovery_reconciliation.is_some() {
             self.show_save_recovery_reconciliation(ctx);
         } else if self.pending_hard_link_save.is_some() {
@@ -4800,6 +4869,44 @@ mod tests {
     use super::*;
     use noter::core::conflict::ExternalChangeKind;
     use tempfile::tempdir;
+
+    #[test]
+    fn confirmed_retained_sibling_removal_keeps_a_replaced_name() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory
+            .path()
+            .join(".noter-save-11111111111111111111111111111111.tmp");
+        fs::write(&path, b"artifact").expect("write sibling");
+        let file = fs::File::open(&path).expect("open sibling");
+        let facts = noter_platform::file_facts(&file).expect("sibling facts");
+        let identity = match facts.identity().quality() {
+            noter_platform::IdentityQuality::Preferred => noter::core::save::FileIdentity::new(
+                facts.identity().volume(),
+                facts.identity().file(),
+            ),
+            noter_platform::IdentityQuality::Reduced => noter::core::save::FileIdentity::reduced(
+                facts.identity().volume(),
+                facts.identity().file(),
+            ),
+        };
+        drop(file);
+        let held = directory.path().join("held-artifact");
+        fs::rename(&path, &held).expect("rename sibling");
+        fs::write(&path, b"replacement").expect("write replacement");
+        let mut app = NoterApp {
+            retained_save_siblings: vec![RetainedSaveSibling::new(path.clone(), identity)],
+            ..NoterApp::default()
+        };
+
+        app.run_retained_sibling_removal();
+
+        assert_eq!(
+            fs::read(&path).expect("replacement remains"),
+            b"replacement"
+        );
+        assert_eq!(fs::read(&held).expect("original remains"), b"artifact");
+        assert_eq!(app.retained_save_siblings.len(), 1);
+    }
 
     #[test]
     fn default_test_apps_use_independent_recovery_storage() {
