@@ -143,10 +143,12 @@ and update contracts are documented in [docs/INSTALLATION.md](docs/INSTALLATION.
 
 **Source version:** `0.1.0-beta.2.2`
 
-[Beta.2.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.2)
-is a scoped follow-up to the published
+[Beta.2.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.2),
+published on 2026-10-13, is a scoped follow-up to the published
 [beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1)
-prerelease. It bounds retained save siblings and removes one only after a
+prerelease. Its
+[publication record](docs/evidence/beta2.2-publication-2026-10-13.md) identifies
+that tag. It bounds retained save siblings and removes one only after a
 fresh identity and single-link check. Unix keeps that file. It does not finish
 the recovery matrix, the measured editor gate, or continuous Markdown editing.
 Issues

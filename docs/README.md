@@ -48,6 +48,9 @@ each topic.
 - [Roadmap](ROADMAP.md) owns milestone order, status, and exit criteria.
 - [Release readiness](RELEASE_READINESS.md) records the current issue audit,
   automated evidence, native retest plan, and deferred checkpoint gates.
+- [Beta.2.2 publication verification](evidence/beta2.2-publication-2026-10-13.md)
+  records the scoped follow-up tag, public package inventory, checksums,
+  provenance, Windows archive version, and the gates that remain open.
 - [Beta.2.1 publication verification](evidence/beta2.1-publication-2026-10-13.md)
   records the scoped follow-up tag, public package inventory, checksums,
   provenance, Windows archive version, and the gates that remain open.
