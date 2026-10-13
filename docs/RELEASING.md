@@ -81,7 +81,10 @@ sequence while `ARPDisplayVersion` shows the exact Noter SemVer. Increment the
 package sequence for every published MSI, never reuse it for a different build,
 and update the validator expectation in the same reviewed change. This keeps
 major upgrades and downgrade refusal deterministic without enabling ambiguous
-same-version upgrades.
+same-version upgrades. cargo-wix reads `package.metadata.wix.version` when that
+key is present and refuses a prerelease it cannot reduce to one integer. Keep
+that override equal to the MSI ProductVersion. The Cargo package version and
+ARPDisplayVersion remain the Noter SemVer.
 
 ## Local preflight
 
