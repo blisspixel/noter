@@ -6,6 +6,14 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Refuse another save when a destination directory already holds eight retained
+  `.noter-save-<hex>.tmp` siblings. The refusal leaves the open document
+  unreplaced, does not delete those files, and leaves Save As available.
+  A confirmed window or terminal action removes a sibling only after reopening
+  it and checking that it is still the same single-link object. Unix keeps the
+  file because it cannot delete that object by handle.
+  [#59](https://github.com/blisspixel/noter/issues/59) stays open.
+
 ## 0.1.0-beta.2.1 - 2026-10-12
 
 Scoped follow-up to beta.2. This is not the beta.3 editor foundation, the

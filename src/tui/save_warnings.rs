@@ -60,9 +60,14 @@ pub(super) fn render(session: &TuiSession, cols: u16, rows: u16, palette: &TuiPa
         );
         out.push_str("\r\n");
     }
+    let hint = if session.retained_removal_is_armed() {
+        " x again removes the verified sibling | Esc cancels "
+    } else {
+        " Closing does not remove files | x x removes verified sibling | Esc cancels "
+    };
     push_bar(
         &mut out,
-        " Up/Down scroll | Enter/Esc close | Closing does not remove files ",
+        hint,
         columns,
         palette.bar_bg,
         palette.bar_fg,

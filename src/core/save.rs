@@ -60,6 +60,34 @@ impl FileIdentity {
     }
 }
 
+/// One retained save sibling whose identity was verified through an open handle.
+///
+/// The path is the directory entry observed at verification time. Removal must
+/// open that path again and refuse unless the same single-link identity is
+/// still there. The value does not authorize deletion by name or pattern.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RetainedSaveSibling {
+    path: PathBuf,
+    identity: FileIdentity,
+}
+
+impl RetainedSaveSibling {
+    /// Records a sibling path and the identity read from its open handle.
+    pub const fn new(path: PathBuf, identity: FileIdentity) -> Self {
+        Self { path, identity }
+    }
+
+    /// Returns the directory entry that named the sibling when it was verified.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Returns the identity captured from the open sibling.
+    pub const fn identity(&self) -> FileIdentity {
+        self.identity
+    }
+}
+
 /// A BLAKE3-256 digest of serialized file content.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ContentFingerprint([u8; 32]);
@@ -370,6 +398,7 @@ pub struct ReplaceReceipt<P = ()> {
     observation: FileObservation,
     cleanup_warnings: Vec<StorageError>,
     durability_warnings: Vec<StorageError>,
+    retained_siblings: Vec<RetainedSaveSibling>,
     parent_sync: P,
 }
 
@@ -380,6 +409,7 @@ impl ReplaceReceipt<()> {
             observation,
             cleanup_warnings: Vec::new(),
             durability_warnings: Vec::new(),
+            retained_siblings: Vec::new(),
             parent_sync: (),
         }
     }
@@ -393,6 +423,7 @@ impl ReplaceReceipt<()> {
             observation,
             cleanup_warnings: vec![cleanup_warning],
             durability_warnings: Vec::new(),
+            retained_siblings: Vec::new(),
             parent_sync: (),
         }
     }
@@ -407,6 +438,7 @@ impl ReplaceReceipt<()> {
             observation,
             cleanup_warnings,
             durability_warnings,
+            retained_siblings: Vec::new(),
             parent_sync: (),
         }
     }
@@ -424,8 +456,15 @@ impl<P> ReplaceReceipt<P> {
             observation,
             cleanup_warnings,
             durability_warnings,
+            retained_siblings: Vec::new(),
             parent_sync,
         }
+    }
+
+    /// Attaches siblings verified after commit.
+    pub fn with_retained_siblings(mut self, retained_siblings: Vec<RetainedSaveSibling>) -> Self {
+        self.retained_siblings = retained_siblings;
+        self
     }
 
     /// Returns the committed destination observation.
@@ -443,11 +482,20 @@ impl<P> ReplaceReceipt<P> {
         &self.durability_warnings
     }
 
-    pub(crate) fn into_parts(self) -> (FileObservation, Vec<StorageError>, Vec<StorageError>, P) {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        FileObservation,
+        Vec<StorageError>,
+        Vec<StorageError>,
+        Vec<RetainedSaveSibling>,
+        P,
+    ) {
         (
             self.observation,
             self.cleanup_warnings,
             self.durability_warnings,
+            self.retained_siblings,
             self.parent_sync,
         )
     }
@@ -511,6 +559,7 @@ pub enum DurabilityOutcome {
 pub struct SaveWarnings {
     cleanup: Vec<StorageError>,
     durability: Vec<StorageError>,
+    retained: Vec<RetainedSaveSibling>,
 }
 
 impl SaveWarnings {
@@ -519,7 +568,20 @@ impl SaveWarnings {
         Self {
             cleanup,
             durability,
+            retained: Vec::new(),
         }
+    }
+
+    /// Records siblings whose open-handle identity was verified after commit.
+    #[must_use]
+    pub fn with_retained(mut self, retained: Vec<RetainedSaveSibling>) -> Self {
+        self.retained = retained;
+        self
+    }
+
+    /// Returns siblings eligible for a later identity-checked removal attempt.
+    pub fn retained(&self) -> &[RetainedSaveSibling] {
+        &self.retained
     }
 
     /// Returns a backup or temporary cleanup warning, if any.
@@ -534,7 +596,7 @@ impl SaveWarnings {
 
     /// Returns whether neither post-commit warning occurred.
     pub const fn is_empty(&self) -> bool {
-        self.cleanup.is_empty() && self.durability.is_empty()
+        self.cleanup.is_empty() && self.durability.is_empty() && self.retained.is_empty()
     }
 }
 
@@ -728,8 +790,13 @@ pub fn save_snapshot<S: Storage>(storage: &mut S, snapshot: &SaveSnapshot) -> Sa
 
     match storage.replace(temporary, snapshot.target(), revalidated) {
         ReplaceOutcome::Committed(receipt) => {
-            let (observation, cleanup_warnings, mut durability_warnings, parent_sync) =
-                receipt.into_parts();
+            let (
+                observation,
+                cleanup_warnings,
+                mut durability_warnings,
+                retained_siblings,
+                parent_sync,
+            ) = receipt.into_parts();
             let file_barrier_failed = !durability_warnings.is_empty();
             let durability = match storage.sync_parent(parent_sync) {
                 DurabilityOutcome::Achieved(durability) if !file_barrier_failed => durability,
@@ -747,7 +814,8 @@ pub fn save_snapshot<S: Storage>(storage: &mut S, snapshot: &SaveSnapshot) -> Sa
                 revision: snapshot.revision(),
                 durability,
                 observation,
-                warnings: SaveWarnings::new(cleanup_warnings, durability_warnings),
+                warnings: SaveWarnings::new(cleanup_warnings, durability_warnings)
+                    .with_retained(retained_siblings),
             }
         }
         ReplaceOutcome::Conflict { temporary, actual } => {
@@ -1251,6 +1319,19 @@ mod tests {
         assert!(!SaveWarnings::new(vec![cleanup.clone()], Vec::new()).is_empty());
         assert!(!SaveWarnings::new(Vec::new(), vec![durability.clone()]).is_empty());
         assert!(!SaveWarnings::new(vec![cleanup], vec![durability]).is_empty());
+        let sibling = RetainedSaveSibling::new(
+            std::path::PathBuf::from(".noter-save-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tmp"),
+            FileIdentity::new(1, 2),
+        );
+        let retained_only = SaveWarnings::new(Vec::new(), Vec::new()).with_retained(vec![sibling]);
+        assert!(!retained_only.is_empty());
+        let observed = retained_only.retained();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(
+            observed[0].path(),
+            std::path::Path::new(".noter-save-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tmp")
+        );
+        assert_eq!(observed[0].identity(), FileIdentity::new(1, 2));
     }
 
     #[test]

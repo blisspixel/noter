@@ -172,9 +172,11 @@ retained-save warnings and safe explicit cleanup. Cleanup must preserve raced
 external revisions and cannot delete files by a guessed name or glob.
 The terminal now retains the latest committed save's complete warning messages
 in a scrollable Ctrl+R view; exact native Linux sibling names are regression
-tested. #59 remains open for identity-bound confirmed cleanup and a tested
-retention policy. Neither dismissing that view nor a later clean save deletes
-an earlier artifact.
+tested. A destination directory refuses a new save at eight exact retained
+sibling names. That refusal leaves the open document unreplaced, does not
+delete by name, and leaves Save As available. A confirmed action deletes only
+a re-verified single-link sibling by handle. Unix still cannot delete that object, so #59 remains open.
+Neither dismissing that view nor a later clean save deletes an earlier artifact.
 
 The bounded buffers also preserve all source bytes when RTL shaping exposes
 an invalid cursor to word deletion. Active buffer regressions and an explicitly
