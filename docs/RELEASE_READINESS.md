@@ -7,8 +7,10 @@
 The [publication record](evidence/beta2-publication-2026-10-11.md) binds the
 [release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2), passing
 CI, public assets, provenance, and installed version to that source. This record
-retains preparation history and deferred checks. First-release requirements
-remain in [REQUIREMENTS.md](REQUIREMENTS.md) and sequence in [ROADMAP.md](ROADMAP.md).
+retains preparation history and deferred checks. The later scoped publication is
+[0.1.0-beta.2.1](evidence/beta2.1-publication-2026-10-13.md). First-release
+requirements remain in [REQUIREMENTS.md](REQUIREMENTS.md) and sequence in
+[ROADMAP.md](ROADMAP.md).
 
 ## Scope and issue audit
 

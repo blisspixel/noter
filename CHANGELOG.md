@@ -19,8 +19,10 @@ continuous Markdown workflow, or the release candidate. Issues
 [#59](https://github.com/blisspixel/noter/issues/59), and
 [#60](https://github.com/blisspixel/noter/issues/60) remain open.
 The release tag is
-[v0.1.0-beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1).
-Publication evidence is recorded after that tag is verified.
+[v0.1.0-beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1),
+published on 2026-10-13 from `4753953bd1748089752b7a173230e4909a5a723c`.
+[Publication evidence](docs/evidence/beta2.1-publication-2026-10-13.md) records
+the public asset check.
 
 - Point cargo-wix at MSI package sequence 0.0.5 so this prerelease, whose
   identifier is not a single integer, can build the Windows installer.

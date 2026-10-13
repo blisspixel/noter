@@ -143,10 +143,12 @@ and update contracts are documented in [docs/INSTALLATION.md](docs/INSTALLATION.
 
 **Source version:** `0.1.0-beta.2.1`
 
-[Beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1)
-is a scoped follow-up to the
+[Beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1),
+published on 2026-10-13, is a scoped follow-up to the
 [beta.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2)
-hardening prerelease. It names retained save siblings in the terminal, refuses
+hardening prerelease. Its
+[publication record](docs/evidence/beta2.1-publication-2026-10-13.md) identifies
+that tag. It names retained save siblings in the terminal, refuses
 known volatile Linux recovery roots, and keeps an invalid right-to-left cursor
 from deleting text. It does not finish the recovery matrix, the measured editor
 gate, or continuous Markdown editing. Keep backups during prerelease use.
