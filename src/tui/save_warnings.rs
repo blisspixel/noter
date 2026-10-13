@@ -63,7 +63,7 @@ pub(super) fn render(session: &TuiSession, cols: u16, rows: u16, palette: &TuiPa
     let hint = if session.retained_removal_is_armed() {
         " x again removes the verified sibling | Esc cancels "
     } else {
-        " Up/Down scroll | x then x removes a verified sibling | Enter/Esc close | Closing does not remove files "
+        " Closing does not remove files | x x removes verified sibling | Esc cancels "
     };
     push_bar(
         &mut out,

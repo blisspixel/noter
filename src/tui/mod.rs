@@ -2721,6 +2721,10 @@ mod tests {
         let frame = render_frame(&session, 240, 12);
         assert!(frame.contains(warning));
         assert!(frame.contains("Closing does not remove files"));
+        assert!(
+            render_frame(&session, 80, 12).contains("Closing does not remove files"),
+            "an 80-column warning pane must still draw the closing promise"
+        );
         key(&mut session, TuiKey::Enter);
         assert_eq!(session.prompt, PromptMode::None);
         key(&mut session, TuiKey::Ctrl('r'));
