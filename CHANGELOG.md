@@ -6,8 +6,26 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+## 0.1.0-beta.2.1 - 2026-10-12
+
+Scoped follow-up to beta.2. This is not the beta.3 editor foundation, the
+continuous Markdown workflow, or the release candidate. Issues
+[#44](https://github.com/blisspixel/noter/issues/44),
+[#50](https://github.com/blisspixel/noter/issues/50),
+[#51](https://github.com/blisspixel/noter/issues/51),
+[#52](https://github.com/blisspixel/noter/issues/52),
+[#53](https://github.com/blisspixel/noter/issues/53),
+[#54](https://github.com/blisspixel/noter/issues/54),
+[#59](https://github.com/blisspixel/noter/issues/59), and
+[#60](https://github.com/blisspixel/noter/issues/60) remain open.
+The release tag is
+[v0.1.0-beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1).
+Publication evidence is recorded after that tag is verified.
+
 - Refuse Linux tmpfs, ramfs and hugetlbfs recovery roots before creating
   recovery entries; retain existing records and report recovery unavailable.
+  A real tmpfs terminal session shows that refusal, still saves, and leaves
+  existing recovery bytes unchanged.
 - Preserve every byte when an invalid shaped-text cursor reaches word deletion,
   preventing the upstream previous-word overflow in bounded editor buffers.
 - Extend native Linux recovery access-denial fixtures to explicit and inherited

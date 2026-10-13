@@ -80,7 +80,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
             with self.subTest(field=field):
                 documents = {"readme": self.readme, "installation": self.installation}
                 documents[field] = documents[field].replace(
-                    f"**{marker}:** `0.1.0-beta.2`",
+                    f"**{marker}:** `0.1.0-beta.2.1`",
                     f"**{marker}:** `0.1.0-beta.1`",
                 )
                 self.assertTrue(validate_release_guides(self.manifest, **documents))
@@ -94,13 +94,13 @@ class ReleaseConfigurationTests(unittest.TestCase):
                         "installation": self.installation,
                     }
                     documents[field] = documents[field].replace(
-                        f"{flag} 0.1.0-beta.2", f"{flag} 0.1.0-beta.1", 1
+                        f"{flag} 0.1.0-beta.2.1", f"{flag} 0.1.0-beta.1", 1
                     )
                     self.assertTrue(validate_release_guides(self.manifest, **documents))
 
     def test_rejects_unversioned_consumer_installer_download(self) -> None:
         changed = self.installation.replace(
-            "v0.1.0-beta.2/scripts/install.ps1", "main/scripts/install.ps1"
+            "v0.1.0-beta.2.1/scripts/install.ps1", "main/scripts/install.ps1"
         )
         self.assertIn(
             "installation guide must download the version-matched installer",
@@ -116,7 +116,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
                         "installation": self.installation,
                     }
                     documents[field] = documents[field].replace(
-                        f" {flag} 0.1.0-beta.2", "", 1
+                        f" {flag} 0.1.0-beta.2.1", "", 1
                     )
                     self.assertTrue(validate_release_guides(self.manifest, **documents))
 
@@ -172,7 +172,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         for flag in ("-Version", "--version"):
             for replacement in ("", f" {flag} 0.1.0-beta.1"):
                 with self.subTest(flag=flag, replacement=replacement):
-                    original = f" {flag} 0.1.0-beta.2"
+                    original = f" {flag} 0.1.0-beta.2.1"
                     before, separator, after = self.installation.rpartition(original)
                     self.assertEqual(separator, original)
                     changed = before + replacement + after
@@ -182,7 +182,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
 
     def test_rejects_stale_recipes_with_windows_line_endings(self) -> None:
         changed = (
-            self.installation.replace("--binary --version 0.1.0-beta.2", "--binary")
+            self.installation.replace("--binary --version 0.1.0-beta.2.1", "--binary")
             .replace("\r\n", "\n")
             .replace("\n", "\r\n")
         )
@@ -766,7 +766,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
 
     def test_rejects_release_artifact_version_drift(self) -> None:
         changed = self.manifest.replace(
-            'version = "0.1.0-beta.2"', 'version = "0.1.0-beta.3"', 1
+            'version = "0.1.0-beta.2.1"', 'version = "0.1.0-beta.3"', 1
         )
         self.assertIn(
             "release artifact version differs from Cargo package version",
@@ -1131,7 +1131,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
 
     def test_rejects_an_msi_without_a_monotonic_package_sequence(self) -> None:
-        changed = self.wix.replace(b"Version='0.0.4'", b"Version='$(var.Version)'", 1)
+        changed = self.wix.replace(b"Version='0.0.5'", b"Version='$(var.Version)'", 1)
         self.assertIn(
             "MSI package version differs from its monotonic release sequence",
             validate_wix(changed),

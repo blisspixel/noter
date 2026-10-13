@@ -1,28 +1,32 @@
 # Installation and Updates
 
-**Reviewed:** 2026-10-11
+**Reviewed:** 2026-10-12
 
-**Guide version:** `0.1.0-beta.2`
+**Guide version:** `0.1.0-beta.2.1`
 
-This guide describes beta.2 source and its
-[published prerelease](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2).
-Its artifacts include platform archives, a Windows MSI, checksums, SBOMs, and
-GitHub build provenance. The [publication record](evidence/beta2-publication-2026-10-11.md)
-binds the downloaded inventory and verification to the release source.
+This guide describes beta.2.1 source and its
+[prerelease](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1).
+Beta.2.1 is a scoped follow-up to
+[beta.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2).
+It names retained save siblings, refuses known volatile Linux recovery roots,
+and guards an invalid right-to-left word deletion. It does not complete the
+recovery matrix, the measured editor gate, or continuous Markdown editing.
 Keep backups during evaluation.
 Windows and macOS artifacts are not yet platform-signed, and no self-updating
 release channel exists. Source installation remains supported. See the
 [release process](RELEASING.md).
 
 Beta.1's terminal preview has known save-failure, recovery, and terminal-control
-defects fixed in beta.2. Use beta.2 from an identified source checkout or a
-matching verified release artifact. The [readiness record](RELEASE_READINESS.md)
+defects fixed in beta.2. Use beta.2.1 from an identified source checkout or a
+matching verified release artifact. The beta.2
+[publication record](evidence/beta2-publication-2026-10-11.md) remains the
+verification for that earlier tag. The [readiness record](RELEASE_READINESS.md)
 separates source observations from publication and native verification.
 
 ## Prerelease artifacts
 
 The artifacts are on the
-[beta.2 release page](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2).
+[beta.2.1 release page](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1).
 Download an asset before executing it and verify its GitHub attestation.
 Published SHA-256 sidecars and
 the unified checksum list cover the source archive, platform archives, and
@@ -36,7 +40,7 @@ not a supported stable installer.
 
 ## Standalone binary install
 
-The examples below select the published beta.2 tag and artifacts. You can also
+The examples below select the beta.2.1 tag and artifacts. You can also
 build the source checkout. The version-matched installer scripts
 install a binary without build tools. Download the script, read it, then run it;
 do not pipe a remote script into a shell.
@@ -44,15 +48,15 @@ do not pipe a remote script into a shell.
 Windows (PowerShell):
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2/scripts/install.ps1 -OutFile install-noter.ps1
-powershell -ExecutionPolicy Bypass -File .\install-noter.ps1 -Version 0.1.0-beta.2
+Invoke-WebRequest https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2.1/scripts/install.ps1 -OutFile install-noter.ps1
+powershell -ExecutionPolicy Bypass -File .\install-noter.ps1 -Version 0.1.0-beta.2.1
 ```
 
 macOS or Linux:
 
 ```sh
-curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2/scripts/install.sh
-sh install-noter.sh --version 0.1.0-beta.2
+curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2.1/scripts/install.sh
+sh install-noter.sh --version 0.1.0-beta.2.1
 ```
 
 The binary installer:
@@ -299,12 +303,12 @@ Examples:
 
 ```powershell
 .\scripts\install.ps1 -Check
-.\scripts\install.ps1 -Binary -Version 0.1.0-beta.2
+.\scripts\install.ps1 -Binary -Version 0.1.0-beta.2.1
 ```
 
 ```sh
 sh scripts/install.sh --check
-sh scripts/install.sh --binary --version 0.1.0-beta.2
+sh scripts/install.sh --binary --version 0.1.0-beta.2.1
 ```
 
 An explicit install root takes precedence, then `CARGO_INSTALL_ROOT` when set.
@@ -390,14 +394,14 @@ named directory's owner or permissions and restart Noter. On Linux you can
 instead point `XDG_DATA_HOME` at a local directory you own; macOS always uses
 `~/Library/Application Support/Noter`.
 
-Unreleased Linux hardening also refuses tmpfs, ramfs and hugetlbfs recovery
+Beta.2.1 also refuses tmpfs, ramfs and hugetlbfs recovery
 roots because they do not provide persistent storage. If a configured
 `XDG_DATA_HOME` is memory-backed, choose a private directory on a persistent
 local filesystem and restart. Existing records on the old root are preserved
 but unavailable for startup review there; this change performs no migration
 or deletion. Keep the original records until any deliberate transfer and
 recovery have been verified. Ordinary document editing and explicit saves
-remain available. Published beta.2 does not include this refusal.
+remain available.
 
 Uninstall and cleanup distinguish:
 

@@ -2,10 +2,12 @@
 
 **Updated:** 2026-10-12
 
-**Current checkpoint:** beta.2 published on 2026-10-11 from
+**Current checkpoint:** `0.1.0-beta.2.1` release source, a scoped follow-up to
+beta.2. The last verified publication is beta.2 on 2026-10-11 from
 `9cdaa3b8cef9a85259236302654cbf40c34e7339`.
-The [publication record](evidence/beta2-publication-2026-10-11.md) binds the
-release, passing CI, and verified artifacts to that immutable source.
+The [publication record](evidence/beta2-publication-2026-10-11.md) binds that
+release. Beta.2.1 does not complete M4-H1, the M5 gate, or continuous Markdown.
+Its publication evidence is recorded after the tag is verified.
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -31,7 +33,8 @@ criteria and evidence land on one immutable green commit.
 | `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups on supported local state roots | Recovery, clipboard, overwrite confirm, first-contact honesty, and alpha evidence | **Published 2026-08-29** |
 | `0.1.0-beta.1` | Terminal interface preview, installer scripts, caret and Markdown Enter refinements | Planned M4-H1, M5 gate, and M6 continuous editing did not land | **Published 2026-09-25** |
 | `0.1.0-beta.2` | **Focused beta hardening:** make existing surfaces safer | Terminal save, input, drawing, recovery, installer, and Linux desktop fixes; scoped evidence | **Published 2026-10-11**; [verification](evidence/beta2-publication-2026-10-11.md) |
-| `0.1.0-beta.3` | Production editor foundation and continuous Markdown | Complete M4-H1 matrix, M5 gate, and M6 continuous editing | After beta.2 |
+| `0.1.0-beta.2.1` | **Scoped follow-up:** name retained save warnings, guard invalid word deletion, refuse known volatile Linux recovery roots, and record current-adapter and RTL evidence | No M4-H1, M5, or continuous-Markdown exit | Release source 2026-10-12 |
+| `0.1.0-beta.3` | Production editor foundation and continuous Markdown | Complete M4-H1 matrix, M5 gate, and M6 continuous editing | After beta.2.1 |
 | `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.3 |
 | `0.1.0` | First public-quality release | Every v0.1 requirement in REQUIREMENTS has evidence | After successful RC dogfood |
 | `0.2.x` and later | Post-release work only after explicit ratification | Deferred non-goals from REQUIREMENTS become in-scope only by decision | Not planned yet |
@@ -113,6 +116,17 @@ does not expand unsafe UI surface.
     [release readiness](RELEASE_READINESS.md) retain the focused native results
     and deferred environment matrix. No broader platform, large-file, or
     continuous Markdown exit criterion is marked Verified by this release.
+
+### Toward `0.1.0-beta.2.1`
+
+8c. **Release source prepared.** This checkpoint names retained save siblings
+    in the terminal, refuses tmpfs, ramfs, and hugetlbfs recovery roots before
+    recovery writes, and ignores an out-of-range shaped cursor during word
+    deletion. The current-adapter CPU samples and the RTL accessible-text
+    failure are evidence, not an M5 decision. Confirmed removal of retained
+    siblings is not included: portable Unix deletion is still name-based, and
+    a shared parent can race. Issues #44, #50, #51, #52, #53, #54, #59, and
+    #60 stay open. No beta.3 exit criterion is marked Verified.
 
 ### Toward `0.1.0-beta.3`
 
