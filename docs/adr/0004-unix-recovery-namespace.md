@@ -58,6 +58,12 @@ relative to held, verified directories:
    any mount without `MNT_LOCAL` on macOS. Linux cannot mark a file system as
    local, so an unlisted network file system is not detected. Other Unix
    systems cannot be verified and are refused.
+   The 2026-10-12 FR-062 clarification additionally refuses Linux tmpfs, ramfs
+   and hugetlbfs. These filesystems are local but volatile: the kernel's
+   [tmpfs contract](https://docs.kernel.org/filesystems/tmpfs.html) states that
+   unmounting loses their contents. The earlier classifier explicitly allowed
+   tmpfs as local; locality is insufficient for recovery storage. This does
+   not identify every volatile block device or change document-save policy.
 5. Hold the directory descriptors for the session. Create, open, list,
    classify, commit, remove, and sync every record, lease, and quarantine entry
    relative to them. On macOS too, private creation uses `openat` in the held

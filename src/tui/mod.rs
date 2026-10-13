@@ -29,7 +29,7 @@ use noter::core::line_endings::{logical_lines, normalize_inserted_text};
 use noter::core::navigation::{
     LineNavigationError, MoveDirection, MoveUnit, line_start_offset, move_caret,
 };
-use noter::core::save::SaveOutcome;
+use noter::core::save::{SaveOutcome, SaveWarnings};
 use noter::core::save_recovery::{
     MAX_SAVE_RECOVERY_DESTINATION_BYTES, MAX_SAVE_RECOVERY_MESSAGE_BYTES,
     MAX_SAVE_RECOVERY_RECORDS, bounded_destination_label, recovery_path_clipboard_text,
@@ -52,6 +52,7 @@ use crate::crash_recovery::{
 };
 
 mod input;
+mod save_warnings;
 
 use crate::theme::AppTheme;
 pub use input::{InputDecoder, TuiEvent, TuiKey, TuiMouseEvent};
@@ -72,6 +73,8 @@ pub enum PromptMode {
     RecoveryOffer,
     /// An uncertain save requires explicit inspection and confirmation.
     ReconcileSave(usize),
+    /// Scrollable cleanup and durability diagnostics from the latest save.
+    SaveWarnings,
 }
 
 /// The answer to a startup recovery offer.
@@ -237,6 +240,7 @@ pub struct TuiSession {
     /// Next terminal clipboard request, emitted only after an explicit copy.
     pending_clipboard: Option<String>,
     reconcile_scroll: usize,
+    last_save_warnings: Option<SaveWarnings>,
 }
 
 impl TuiSession {
@@ -285,6 +289,7 @@ impl TuiSession {
             save_recoveries: Vec::new(),
             pending_clipboard: None,
             reconcile_scroll: 0,
+            last_save_warnings: None,
         };
         if options.initial_path.is_some() {
             session.recovery.defer_startup_offers();
@@ -691,11 +696,33 @@ impl TuiSession {
 
     fn open_save_reconciliation(&mut self) {
         if self.save_recoveries.is_empty() {
-            self.set_status("No uncertain save outcomes to reconcile");
+            if self.last_save_warnings.is_some() {
+                self.prompt = PromptMode::SaveWarnings;
+                self.reconcile_scroll = 0;
+            } else {
+                self.set_status("No save warnings or uncertain outcomes to review");
+            }
             return;
         }
         self.prompt = PromptMode::ReconcileSave(0);
         self.reconcile_scroll = 0;
+    }
+
+    fn scroll_save_details(&mut self, direction: MoveDirection, cols: u16, rows: u16) {
+        let columns = usize::from(cols);
+        let lines = match self.prompt {
+            PromptMode::SaveWarnings => save_warnings::lines(self, columns),
+            PromptMode::ReconcileSave(index) => save_reconciliation_lines(self, index, columns),
+            _ => return,
+        };
+        let maximum = lines
+            .len()
+            .saturating_sub(usize::from(rows).saturating_sub(2));
+        let current = self.reconcile_scroll.min(maximum);
+        self.reconcile_scroll = match direction {
+            MoveDirection::Forward => current.saturating_add(1).min(maximum),
+            MoveDirection::Backward => current.saturating_sub(1),
+        };
     }
 
     fn reconcile_save(&mut self, index: usize) {
@@ -804,16 +831,17 @@ impl TuiSession {
                 }
                 if self.save_durability.is_at_risk() {
                     self.set_status(
-                        "Saved with uncertain durability. Keep this editor open and Save again.",
+                        "Saved with uncertain durability. Keep open and Save again. ^R details.",
                     );
                 } else if warning_count == 0 {
                     self.set_status(format!("Wrote {} bytes", observation.length()));
                 } else {
                     self.set_status(format!(
-                        "Wrote {} bytes with {warning_count} storage warning(s)",
+                        "Wrote {} bytes with {warning_count} storage warning(s). ^R details.",
                         observation.length()
                     ));
                 }
+                self.last_save_warnings = (!warnings.is_empty()).then_some(warnings);
                 SaveStep::Committed
             }
             Ok(SaveOutcome::Conflict { .. }) => {
@@ -1259,7 +1287,7 @@ fn prompt_parts(session: &TuiSession) -> Option<(String, &str, &'static str)> {
                 "",
             ));
         }
-        PromptMode::None => return None,
+        PromptMode::None | PromptMode::SaveWarnings => return None,
     };
     Some((label.to_owned(), input, hint))
 }
@@ -1409,6 +1437,9 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
     if let PromptMode::ReconcileSave(index) = &session.prompt {
         return render_save_reconciliation(session, *index, cols, rows, &palette);
     }
+    if session.prompt == PromptMode::SaveWarnings {
+        return save_warnings::render(session, cols, rows, &palette);
+    }
 
     let text = session.text();
     let frame = Frame::new(session, &text);
@@ -1506,9 +1537,9 @@ fn render_save_reconciliation(
     let height = usize::from(rows);
     let mut out = String::with_capacity(columns * height * 4);
     out.push_str("\x1b[?25l\x1b[H");
-    let Some(recovery) = session.save_recoveries.get(index) else {
+    if index >= session.save_recoveries.len() {
         return out;
-    };
+    }
     let header = format!(
         " Uncertain save {}/{} | All saves paused ",
         index + 1,
@@ -1524,25 +1555,7 @@ fn render_save_reconciliation(
     );
     out.push_str("\r\n");
 
-    let mut lines = vec![
-        format!(" Destination: {}", recovery.destination_label),
-        " Inspect that destination and every retained .noter-save-*.tmp sibling.".to_owned(),
-        " Preserve the version you need; decide whether the earlier save committed.".to_owned(),
-        " Confirming removes only this in-memory safety record. It does not write.".to_owned(),
-        String::new(),
-        " Diagnostic:".to_owned(),
-    ];
-    let chunk_chars = columns.saturating_sub(2).max(2) / 2;
-    let characters: Vec<char> = recovery.message.chars().collect();
-    for chunk in characters.chunks(chunk_chars) {
-        let mut line = String::with_capacity(chunk.len() * 4 + 1);
-        line.push(' ');
-        line.extend(chunk);
-        lines.push(line);
-    }
-    if recovery.destination.to_str().is_none() {
-        lines.push(" Copy uses reversible operating-system path encoding.".to_owned());
-    }
+    let lines = save_reconciliation_lines(session, index, columns);
     let viewport = height.saturating_sub(2);
     let start = session
         .reconcile_scroll
@@ -1579,6 +1592,25 @@ fn render_save_reconciliation(
     out
 }
 
+fn save_reconciliation_lines(session: &TuiSession, index: usize, columns: usize) -> Vec<String> {
+    let Some(recovery) = session.save_recoveries.get(index) else {
+        return Vec::new();
+    };
+    let mut lines = vec![
+        format!(" Destination: {}", recovery.destination_label),
+        " Inspect that destination and the retained siblings named below.".to_owned(),
+        " Preserve the version you need; decide whether the earlier save committed.".to_owned(),
+        " Confirming removes only this in-memory safety record. It does not write.".to_owned(),
+        String::new(),
+        " Diagnostic:".to_owned(),
+    ];
+    save_warnings::append_diagnostic(&mut lines, &recovery.message, columns);
+    if recovery.destination.to_str().is_none() {
+        lines.push(" Copy uses reversible operating-system path encoding.".to_owned());
+    }
+    lines
+}
+
 const LEGEND_TOP: &str =
     " ^G Help       ^O Save As    ^W Where Is   ^K Cut Line   ^U Paste      ^J Jump Line ";
 const LEGEND_BOTTOM: &str =
@@ -1602,6 +1634,7 @@ fn render_help_overlay(out: &mut String, cols: u16, rows: u16, palette: &TuiPale
         "║                                                              ║",
         "║  Editing & Actions:                                          ║",
         "║    ^S                   : Save file                          ║",
+        "║    ^R                   : Review save warnings / uncertainty  ║",
         "║    ^O                   : Save As (asks before replacing)    ║",
         "║    ^X or ^Q             : Exit editor (prompts if modified)  ║",
         "║    ^W or ^F             : Find text in document              ║",
@@ -1806,7 +1839,7 @@ fn osc52_copy(text: &str) -> String {
 }
 
 #[allow(clippy::too_many_lines)]
-fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16) {
+fn handle_event(session: &mut TuiSession, event: TuiEvent, cols: u16, rows: u16) {
     if session.show_help {
         if let TuiEvent::Key(TuiKey::Escape | TuiKey::Ctrl('g') | TuiKey::Enter) = event {
             session.show_help = false;
@@ -1815,6 +1848,23 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
     }
 
     match &session.prompt {
+        PromptMode::SaveWarnings => {
+            if let TuiEvent::Key(key) = event {
+                match key {
+                    TuiKey::Down => {
+                        session.scroll_save_details(MoveDirection::Forward, cols, rows);
+                    }
+                    TuiKey::Up => {
+                        session.scroll_save_details(MoveDirection::Backward, cols, rows);
+                    }
+                    TuiKey::Escape | TuiKey::Enter | TuiKey::Ctrl('r') => {
+                        session.prompt = PromptMode::None;
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
         PromptMode::RecoveryOffer => {
             if let TuiEvent::Key(key) = event {
                 let decision = match key {
@@ -1843,10 +1893,10 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, _cols: u16, rows: u16
                         session.reconcile_scroll = 0;
                     }
                     TuiKey::Down => {
-                        session.reconcile_scroll = session.reconcile_scroll.saturating_add(1);
+                        session.scroll_save_details(MoveDirection::Forward, cols, rows);
                     }
                     TuiKey::Up => {
-                        session.reconcile_scroll = session.reconcile_scroll.saturating_sub(1);
+                        session.scroll_save_details(MoveDirection::Backward, cols, rows);
                     }
                     TuiKey::Escape => session.prompt = PromptMode::None,
                     _ => {}
@@ -2151,7 +2201,8 @@ fn handle_paste(session: &mut TuiSession, pasted: &str) {
         | PromptMode::ConfirmHardLink(_)
         | PromptMode::ExitConfirm
         | PromptMode::RecoveryOffer
-        | PromptMode::ReconcileSave(_) => {}
+        | PromptMode::ReconcileSave(_)
+        | PromptMode::SaveWarnings => {}
     }
 }
 
@@ -2571,6 +2622,214 @@ mod tests {
 
     fn storage_error(message: &str) -> noter::core::save::StorageError {
         noter::core::save::StorageError::new(noter::core::save::SaveStage::Replace, message)
+    }
+
+    #[test]
+    fn committed_save_warnings_remain_reviewable_after_status_expiry() {
+        use noter::core::save::{
+            ContentFingerprint, Durability, FileChangeToken, FileIdentity, FileObservation,
+        };
+
+        let mut session = untitled();
+        let reservation = session
+            .reserve_save_recovery(PathBuf::from("note.txt"))
+            .unwrap();
+        let observation = FileObservation::new(
+            FileIdentity::new(1, 2),
+            ContentFingerprint::from_bytes(b""),
+            0,
+            1,
+            FileChangeToken::new(3, 4),
+        );
+        let warning = "A displaced recovery artifact .noter-save-a123.tmp was kept. Inspect its contents before removal.";
+        let outcome = |warnings| {
+            Ok(SaveOutcome::Committed {
+                revision: Revision::INITIAL,
+                observation,
+                durability: Durability::FileAndDirectorySynced,
+                warnings,
+            })
+        };
+        assert_eq!(
+            session.report_save(
+                reservation,
+                outcome(SaveWarnings::new(vec![storage_error(warning)], Vec::new(),))
+            ),
+            SaveStep::Committed
+        );
+        assert!(
+            session
+                .status_message
+                .as_ref()
+                .unwrap()
+                .0
+                .contains("^R details")
+        );
+        session.status_message = None;
+        key(&mut session, TuiKey::Ctrl('r'));
+        assert_eq!(session.prompt, PromptMode::SaveWarnings);
+        let frame = render_frame(&session, 240, 12);
+        assert!(frame.contains(warning));
+        assert!(frame.contains("Closing does not remove files"));
+        key(&mut session, TuiKey::Enter);
+        assert_eq!(session.prompt, PromptMode::None);
+        key(&mut session, TuiKey::Ctrl('r'));
+        assert_eq!(session.prompt, PromptMode::SaveWarnings);
+        key(&mut session, TuiKey::Escape);
+        let reservation = session
+            .reserve_save_recovery(PathBuf::from("note.txt"))
+            .unwrap();
+        session.report_save(
+            reservation,
+            outcome(SaveWarnings::new(Vec::new(), Vec::new())),
+        );
+        key(&mut session, TuiKey::Ctrl('r'));
+        assert_eq!(session.prompt, PromptMode::None);
+        assert!(session.last_save_warnings.is_none());
+    }
+
+    #[test]
+    fn warning_review_scrolls_and_keeps_untrusted_text_inert() {
+        let mut session = untitled();
+        let prefix = "padding ".repeat(80);
+        session.last_save_warnings = Some(SaveWarnings::new(
+            vec![storage_error(&format!("{prefix}.noter-save-exact.tmp"))],
+            vec![storage_error(
+                "barrier \u{1b}]52;c;attack\u{7} \u{85} \u{2028} \u{2067}\u{6771}\u{301}\u{1f642}",
+            )],
+        ));
+        key(&mut session, TuiKey::Ctrl('r'));
+        let first = render_frame(&session, 80, 6);
+        assert!(!first.contains(".noter-save-exact.tmp"));
+        let revision = session.document.revision();
+        handle_paste(&mut session, "must not edit");
+        key(&mut session, TuiKey::Char('x'));
+        assert_eq!(session.document.revision(), revision);
+        handle_event(&mut session, TuiEvent::Key(TuiKey::Up), 80, 6);
+        assert_eq!(session.reconcile_scroll, 0);
+        for _ in 0..20 {
+            handle_event(&mut session, TuiEvent::Key(TuiKey::Down), 80, 6);
+        }
+        let last = render_frame(&session, 80, 6);
+        assert!(last.contains(".noter-save-exact.tmp"));
+        assert!(last.contains("barrier"));
+        for control in ['\u{7}', '\u{85}', '\u{2028}', '\u{2067}'] {
+            assert!(!last.contains(control));
+        }
+        assert!(!last.contains("\u{1b}]52"));
+        assert!(last.contains('\u{fffd}'));
+        assert!(render_frame(&session, 8, 3).contains("Enlarge"));
+        key(&mut session, TuiKey::Ctrl('r'));
+        assert_eq!(session.prompt, PromptMode::None);
+    }
+
+    #[test]
+    fn wrapped_diagnostics_preserve_all_sanitized_cells_including_tabs() {
+        let message = format!(
+            "{}\u{6771}\u{301}\u{1f642}\u{1b}\u{85}\u{2067} final-name.tmp",
+            "prefix\t\t".repeat(20)
+        );
+        let mut lines = Vec::new();
+        save_warnings::append_diagnostic(&mut lines, &message, 18);
+        let joined: String = lines
+            .iter()
+            .map(|line| line.strip_prefix(' ').unwrap())
+            .collect();
+        assert_eq!(joined, noter::core::terminal_text::sanitize_line(&message));
+        for line in lines {
+            assert!(display_width(&line) <= 18);
+            assert!(fit_line(&line, 18).starts_with(&line));
+        }
+        assert!(joined.ends_with("final-name.tmp"));
+    }
+
+    #[test]
+    fn both_save_detail_views_reverse_immediately_after_scrolling_past_bottom() {
+        let mut session = untitled();
+        let message = "diagnostic ".repeat(80);
+        session.last_save_warnings =
+            Some(SaveWarnings::new(vec![storage_error(&message)], Vec::new()));
+        let reservation = session
+            .reserve_save_recovery(PathBuf::from("note.txt"))
+            .unwrap();
+        session.report_save(
+            reservation,
+            Ok(SaveOutcome::CommitStateUnknown {
+                revision: Revision::INITIAL,
+                error: storage_error(&message),
+                recovery_artifact: storage_error("retained .noter-save-exact.tmp"),
+            }),
+        );
+        for prompt in [PromptMode::SaveWarnings, PromptMode::ReconcileSave(0)] {
+            session.prompt = prompt;
+            session.reconcile_scroll = 0;
+            for _ in 0..200 {
+                handle_event(&mut session, TuiEvent::Key(TuiKey::Down), 40, 6);
+            }
+            let bottom = session.reconcile_scroll;
+            assert!(bottom > 0);
+            handle_event(&mut session, TuiEvent::Key(TuiKey::Down), 40, 6);
+            assert_eq!(session.reconcile_scroll, bottom);
+            handle_event(&mut session, TuiEvent::Key(TuiKey::Up), 40, 6);
+            assert_eq!(session.reconcile_scroll, bottom - 1);
+            // Resizing also clamps an earlier smaller viewport's offset.
+            handle_event(&mut session, TuiEvent::Key(TuiKey::Down), 240, 100);
+            assert_eq!(session.reconcile_scroll, 0);
+        }
+    }
+
+    #[test]
+    fn uncertain_saves_take_priority_over_latest_save_warnings() {
+        let mut session = untitled();
+        session.last_save_warnings = Some(SaveWarnings::new(
+            vec![storage_error("retained .noter-save-earlier.tmp")],
+            Vec::new(),
+        ));
+        let reservation = session
+            .reserve_save_recovery(PathBuf::from("note.txt"))
+            .unwrap();
+        session.report_save(
+            reservation,
+            Ok(SaveOutcome::CommitStateUnknown {
+                revision: Revision::INITIAL,
+                error: storage_error("unknown"),
+                recovery_artifact: storage_error("retained .noter-save-new.tmp"),
+            }),
+        );
+        key(&mut session, TuiKey::Ctrl('r'));
+        assert_eq!(session.prompt, PromptMode::ReconcileSave(0));
+        assert!(session.save_is_blocked());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_retained_save_warning_names_the_actual_sibling() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "prior").unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "new ");
+        assert_eq!(session.save(), SaveStep::Committed);
+        let siblings = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".noter-save-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(siblings.len(), 1);
+        let sibling = &siblings[0];
+        key(&mut session, TuiKey::Ctrl('r'));
+        assert_eq!(session.prompt, PromptMode::SaveWarnings);
+        let frame = render_frame(&session, 1024, 12);
+        assert!(frame.contains(sibling.file_name().unwrap().to_str().unwrap()));
+        assert!(frame.contains("concurrent actor"));
+        key(&mut session, TuiKey::Enter);
+        assert_eq!(std::fs::read(sibling).unwrap(), b"prior");
+        assert_eq!(std::fs::read(path).unwrap(), b"new prior");
     }
 
     #[test]

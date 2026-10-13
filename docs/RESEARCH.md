@@ -2,11 +2,26 @@
 
 **Initial research:** 2026-07-25
 
-**Updated:** 2026-10-11
+**Updated:** 2026-10-12
 
 This document records the evidence behind the roadmap. It is intentionally
 separate from the product requirements so that claims can be revised when the
 toolchain, operating systems, or editor ecosystem changes.
+
+## 2026-10-12: Volatile Linux recovery roots
+
+The same storage audit found that the Linux classifier explicitly accepted
+tmpfs as local. A native tmpfs probe successfully persisted and recovered
+synthetic records. The kernel's [tmpfs documentation](https://docs.kernel.org/filesystems/tmpfs.html)
+states that its contents are lost on unmount and distinguishes memory-backed
+ramfs. The pinned [Linux filesystem identifiers](https://github.com/torvalds/linux/blob/v6.17/include/uapi/linux/magic.h)
+identify tmpfs, ramfs and hugetlbfs. FR-062 and ADR-0004 now exclude these known
+volatile roots, with a real tmpfs precondition/refusal/preservation regression
+and separate classifier-unit assertions. This is a known-type refusal, not
+detection of every volatile device or a power-loss durability claim.
+The [hugetlbfs contract](https://docs.kernel.org/admin-guide/mm/hugetlbpage.html#using-huge-pages)
+also describes memory-backed files and the absence of ordinary write support;
+it is unsuitable for the recovery protocol independently of its local mount.
 
 ## 2026-10-12: Native Linux recovery identity fixture
 
@@ -22,6 +37,58 @@ kernel's advertised capability range even when an older libcap-ng cannot expand
 distinguish privacy enforcement from missing targets or failed child startup.
 These are test-only isolated Linux observations, not a new recovery root or
 Windows/macOS permission claim.
+
+The next fixture extends this same broker to explicit and inherited named-user
+POSIX ACL grants. Linux's [ACL contract](https://man7.org/linux/man-pages/man5/acl.5.html)
+maps group permission bits to the ACL mask and combines inherited default ACLs
+with creation permissions. A recorded named-user entry alone therefore does
+not establish effective access. The outsider must successfully access all four
+initial directories, then receive exact denials against live private artifacts.
+The fixture uses the [Linux ACL xattr ABI](https://github.com/torvalds/linux/blob/v6.17/include/uapi/linux/posix_acl_xattr.h)
+already exercised by the platform's ancestor-refusal regression, with no new
+library or system-account dependency. Receipts preserve both access and default
+ACL bytes before and after Noter's existing mode tightening; they do not claim
+that every stored ACL entry was removed or cover every ACL combination.
+
+## 2026-10-12: Measured editor bottlenecks and RTL failure
+
+The [current-adapter CPU receipt](M5_EDITOR_EVIDENCE.md#recorded-windows-baseline)
+now measures the real editor path on frozen 1 MiB and 8 MiB prose. With
+AccessKit active, the 8 MiB edit updates emit 139,273 nodes and take about
+674 to 798 ms at p95 on the recorded Windows machine. This is CPU-side elapsed
+time, not presented-paint latency or native screen-reader cost. The next
+performance experiment must account for full-document semantics while reducing
+repeated layout and update work; disabling accessibility is not an acceptance
+criterion.
+
+The [identified-font RTL fixture](M5_EDITOR_EVIDENCE.md#accessible-text-fidelity)
+also reconstructs 59 accessible scalars from a 52-scalar source. The active
+bundled-font regression passes, so font identity and actual glyph coverage are
+necessary reproduction inputs. Upstream
+[egui issue 8576](https://github.com/emilk/egui/issues/8576) and
+[pull request 8698](https://github.com/emilk/egui/pull/8698) discuss decreasing
+RTL shaping-cluster offsets. The latter is open at revision
+`27ded9ed3ccc6bdab5b1caef2fcec10fbf8c8985`; the broader bidi work in
+[pull request 8577](https://github.com/emilk/egui/pull/8577) is draft at
+`c93e8863e958507056415e2a6dace56e23ba5f3a`.
+An [isolated experiment](M5_EDITOR_EVIDENCE.md#accessible-text-fidelity) applied
+the small epaint cluster change to 0.35.0 with the same identified font. Counts
+became equal at 52, but eight scalar positions still differed because tested
+RTL runs were reversed. This rejects count equality as a repair criterion and
+does not accept either dependency candidate. The next candidate must preserve
+logical source order and validate mixed-direction boundaries, caret and
+directional selection, source fidelity, and active full-document accessibility.
+Native AT-SPI, UIA, and macOS observations remain separate requirements before
+closing issue #60.
+
+Additional input probing with that identified font reproduces a nine-scalar
+source with widget cursor index ten; previous-word deletion panics when overflow
+checks are enabled. The shared bounded-buffer guard validates the cursor before
+calling egui's helper and preserves all bytes when the position is invalid.
+It retains upstream word semantics for valid positions and accepts no dependency
+patch. This is a narrow input fix, not evidence of complete bidi editing or
+accessible-text correctness. The [input fixture](M5_EDITOR_EVIDENCE.md#invalid-shaped-text-cursor-and-word-deletion)
+separates active buffer tests from local-font and native-platform evidence.
 
 ## 2026-10-11: Next quality checkpoint after beta.2
 

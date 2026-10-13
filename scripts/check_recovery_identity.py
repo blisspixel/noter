@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,51 @@ PRIVATE_DIRECTORIES = (
     "state/recovery/records",
     "state/recovery/quarantine",
 )
+CASES = (
+    "new-private",
+    "existing-shared",
+    "existing-named-acl",
+    "inherited-named-acl",
+)
+
+
+def named_user_acl(uid: int) -> bytes:
+    """Linux POSIX ACL v2: only the owner and one named user have access."""
+    if not 0 < uid < 0xFFFFFFFF:
+        raise ValueError("a non-root defined numeric user is required")
+    entries = (
+        (1, 7, 0xFFFFFFFF),
+        (2, 7, uid),
+        (4, 0, 0xFFFFFFFF),
+        (16, 7, 0xFFFFFFFF),
+        (32, 0, 0xFFFFFFFF),
+    )
+    return struct.pack("<I", 2) + b"".join(
+        struct.pack("<HHI", *entry) for entry in entries
+    )
+
+
+def read_acl(path: Path, kind: str) -> bytes | None:
+    try:
+        return os.getxattr(path, f"system.posix_acl_{kind}")
+    except OSError as error:
+        if error.errno != errno.ENODATA:
+            raise
+        return None
+
+
+def access_policy(path: Path) -> dict:
+    facts = path.lstat()
+    return {
+        "uid": facts.st_uid,
+        "gid": facts.st_gid,
+        "mode": oct(stat.S_IMODE(facts.st_mode)),
+        **{
+            f"posix_{kind}_acl_hex": None if acl is None else acl.hex()
+            for kind in ("access", "default")
+            for acl in (read_acl(path, kind),)
+        },
+    }
 
 
 def test_executable(artifacts: Path) -> Path:
@@ -99,15 +145,16 @@ def expect_denied(operation) -> None:
 def probe(root: Path, uid: int, gid: int, shared: bool = False) -> dict:
     identity = require_identity(uid, gid)
     if shared:
+        expected = json.loads((root / "precondition.json").read_text())
         for relative in PRIVATE_DIRECTORIES:
             directory = root / relative
-            assert stat.S_IMODE(directory.stat().st_mode) == 0o777
+            assert access_policy(directory) == expected[relative]
             list(directory.iterdir())
             precondition = directory / "shared-precondition"
             with precondition.open("xb") as stream:
                 stream.write(b"shared access independently established")
             precondition.unlink()
-        return {"identity": identity, "precondition_operations": 12}
+        return {"identity": identity, "precondition_operations": 12, "policy": expected}
     control = root / "control"
     original = control / "original"
     assert original.read_bytes() == b"accessible control"
@@ -191,12 +238,36 @@ def run_case(
     sentinel = root / "outside.txt"
     sentinel.write_bytes(b"unrelated outside bytes")
     initial = None
-    if mode == "existing-shared":
+    if mode not in CASES:
+        raise ValueError("unknown native identity case")
+    if mode != "new-private":
+        initial_policy = {}
         for relative in PRIVATE_DIRECTORIES:
             path = root / relative
-            path.mkdir()
+            path.mkdir(mode=0o777)
             os.chown(path, owner, owner)
-            path.chmod(0o777)
+            if mode == "existing-shared":
+                path.chmod(0o777)
+            elif mode == "existing-named-acl" or relative == "state":
+                os.setxattr(path, "system.posix_acl_access", named_user_acl(outsider))
+            if mode == "inherited-named-acl" and relative == "state":
+                os.setxattr(path, "system.posix_acl_default", named_user_acl(outsider))
+            policy = access_policy(path)
+            assert policy["uid"] == policy["gid"] == owner
+            if mode == "existing-shared":
+                assert policy["mode"] == "0o777"
+                assert policy["posix_access_acl_hex"] is None
+            else:
+                assert policy["mode"] == "0o770"
+                assert policy["posix_access_acl_hex"] == named_user_acl(outsider).hex()
+            assert policy["posix_default_acl_hex"] == (
+                named_user_acl(outsider).hex()
+                if mode == "inherited-named-acl"
+                else None
+            )
+            initial_policy[relative] = policy
+        (root / "precondition.json").write_text(json.dumps(initial_policy))
+        (root / "precondition.json").chmod(0o644)
     environment = {
         "PATH": "/usr/bin:/bin",
         "HOME": str(root),
@@ -204,7 +275,7 @@ def run_case(
         "NOTER_TEST_RECOVERY_IDENTITY_ROOT": str(root),
     }
     script = str(base / "probe.py")
-    if mode == "existing-shared":
+    if mode != "new-private":
         initial = json.loads(
             subprocess.check_output(
                 identity_command(
@@ -246,21 +317,7 @@ def run_case(
                     facts.st_uid == owner and stat.S_IMODE(facts.st_mode) & 0o077 == 0
                 )
                 policies.append(
-                    {
-                        "name": str(path.relative_to(root)),
-                        "uid": facts.st_uid,
-                        "gid": facts.st_gid,
-                        "mode": oct(stat.S_IMODE(facts.st_mode)),
-                    }
-                )
-                try:
-                    access_acl = os.getxattr(path, "system.posix_acl_access")
-                except OSError as error:
-                    if error.errno != errno.ENODATA:
-                        raise
-                    access_acl = None
-                policies[-1]["posix_access_acl_hex"] = (
-                    None if access_acl is None else access_acl.hex()
+                    {"name": str(path.relative_to(root)), **access_policy(path)}
                 )
                 if path in files:
                     before[path] = (
@@ -362,10 +419,7 @@ def run(artifacts: Path, disposable: bool) -> dict:
         executable_digest = hashlib.sha256(executable.read_bytes()).hexdigest()
         shutil.copyfile(__file__, base / "probe.py")
         (base / "probe.py").chmod(0o644)
-        cases = [
-            run_case(base, executable, mode, *identities)
-            for mode in ("new-private", "existing-shared")
-        ]
+        cases = [run_case(base, executable, mode, *identities) for mode in CASES]
         assert hashlib.sha256(executable.read_bytes()).hexdigest() == executable_digest
     return {
         "platform": {

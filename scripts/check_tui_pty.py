@@ -10,7 +10,9 @@ expectation. Pass the binary to test, for example `target/debug/noter`.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import select
 import subprocess
 import sys
@@ -97,6 +99,31 @@ def settings_difference(before: list, after: list) -> list[str]:
     return changed
 
 
+def check_save_warning_review(master: int, document: Path, prior: bytes) -> bytes:
+    """Review Linux's actual retained sibling without editing or removing bytes."""
+
+    siblings = list(document.parent.glob(".noter-save-*.tmp"))
+    expect(len(siblings) == 1, "the save did not retain exactly one prior sibling")
+    sibling = siblings[0]
+    current = document.read_bytes()
+    os.write(master, b"\x12")
+    screen = read_until(master, b"Closing does not remove files")
+    expect(b"Latest save warnings" in screen, "Ctrl+R did not open save warnings")
+    expect(
+        b"Closing does not remove files" in screen,
+        "the complete warning pane was not drawn",
+    )
+    # Diagnostic wrapping and ANSI styling may split the synthetic basename.
+    plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", screen)
+    compact = b"".join(plain.split())
+    expect(sibling.name.encode() in compact, "the actual retained basename is absent")
+    os.write(master, b"X\r")
+    screen += next_frame(master)
+    expect(sibling.read_bytes() == prior, "warning review changed the retained bytes")
+    expect(document.read_bytes() == current, "warning review changed saved bytes")
+    return screen
+
+
 def check_editing_session(binary: str, state_directory: str) -> None:
     """Type split UTF-8 and a paste, save, exit, and check the terminal."""
 
@@ -125,6 +152,8 @@ def check_editing_session(binary: str, state_directory: str) -> None:
     screen += read_until(master, b"line")
     os.write(master, b"\x13")
     screen += read_until(master, b"Wrote")
+    if sys.platform == "linux":
+        screen += check_save_warning_review(master, document, "héllo\n".encode())
     os.write(master, b"\x18")
     screen += read_until(master, b"\x1b[?1049l")
     status = process.wait(timeout=10)
@@ -145,7 +174,7 @@ def check_editing_session(binary: str, state_directory: str) -> None:
 def check_hangup_recovery(binary: str, state_directory: str) -> None:
     """Close the terminal on unsaved text, then restore it on the next launch."""
 
-    unsaved = "never saved: 世界"
+    unsaved = "never saved: ordinary English draft"
     master, slave = pty.openpty()
     process = subprocess.Popen(
         [binary, "--tui"],
@@ -159,7 +188,7 @@ def check_hangup_recovery(binary: str, state_directory: str) -> None:
     os.close(slave)
     next_frame(master)
     os.write(master, unsaved.encode())
-    read_until(master, unsaved[-2:].encode())
+    read_until(master, unsaved.encode())
     os.close(master)
     process.wait(timeout=10)
 
@@ -186,8 +215,101 @@ def check_hangup_recovery(binary: str, state_directory: str) -> None:
     os.close(slave)
 
 
+def check_volatile_recovery_refusal(binary: str) -> None:
+    """Show real tmpfs refusal while retaining records and permitting a save."""
+
+    with (
+        tempfile.TemporaryDirectory(prefix="noter-volatile-", dir="/dev/shm") as state,
+        tempfile.TemporaryDirectory(prefix="noter-persistent-") as workspace,
+    ):
+        mount = json.loads(
+            subprocess.check_output(
+                ["findmnt", "--json", "--target", state, "--output", "FSTYPE"],
+                text=True,
+            )
+        )
+        expect(
+            mount["filesystems"][0]["fstype"] == "tmpfs",
+            "the volatile-state fixture requires a real tmpfs mount",
+        )
+        control = Path(state, "control.txt")
+        control.write_bytes(b"accessible volatile control")
+        expect(
+            control.read_bytes() == b"accessible volatile control", "control I/O failed"
+        )
+        recovery = Path(state, "noter", "recovery")
+        previous = recovery / "records" / "previous.rec"
+        previous.parent.mkdir(parents=True)
+        previous.write_bytes(b"preserved recovery sentinel")
+        facts = previous.stat()
+        identity = (facts.st_dev, facts.st_ino, facts.st_size)
+        document = Path(workspace, "note.txt")
+        document.write_bytes(b"ordinary English note\n")
+        master, slave = pty.openpty()
+        settings_before = termios.tcgetattr(slave)
+        process = None
+        try:
+            process = subprocess.Popen(
+                [binary, "--tui", str(document)],
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                env=terminal_environment(state),
+                close_fds=True,
+            )
+            screen = next_frame(master)
+            expect(
+                b"Private crash recovery is unavailable" in screen,
+                "the volatile-state refusal is not visible in the terminal",
+            )
+            os.write(master, b"\x1b[F updated")
+            screen = read_until(master, b"updated")
+            expect(b"updated" in screen, "editing failed with recovery unavailable")
+            os.write(master, b"\x13")
+            screen = read_until(master, b"Wrote")
+            expect(b"Wrote" in screen, "saving failed with recovery unavailable")
+            os.write(master, b"\x18")
+            screen = read_until(master, b"\x1b[?1049l")
+            expect(process.wait(timeout=10) == 0, "the refused-root session failed")
+            expect(b"\x1b[?1049l" in screen, "the alternate screen was not left")
+            expect(
+                not settings_difference(settings_before, termios.tcgetattr(slave)),
+                "the refused-root session did not restore terminal settings",
+            )
+        finally:
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+            os.close(master)
+            os.close(slave)
+        expect(
+            document.read_bytes() == b"ordinary English note updated\n",
+            "the saved document bytes differ with recovery unavailable",
+        )
+        facts = previous.stat()
+        expect(
+            (facts.st_dev, facts.st_ino, facts.st_size) == identity,
+            "record identity changed",
+        )
+        expect(
+            previous.read_bytes() == b"preserved recovery sentinel",
+            "record bytes changed",
+        )
+        expect(
+            control.read_bytes() == b"accessible volatile control",
+            "control bytes changed",
+        )
+        expect(
+            sorted(
+                path.relative_to(recovery).as_posix() for path in recovery.rglob("*")
+            )
+            == ["records", "records/previous.rec"],
+            "refused recovery created, removed or renamed an entry",
+        )
+
+
 def main(arguments: list[str] | None = None) -> int:
-    """Run both terminal checks against the named binary."""
+    """Run the terminal checks against the named binary."""
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", help="path to a built noter executable")
@@ -198,6 +320,8 @@ def main(arguments: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory() as state_directory:
         check_editing_session(options.binary, state_directory)
         check_hangup_recovery(options.binary, state_directory)
+    if sys.platform == "linux":
+        check_volatile_recovery_refusal(options.binary)
     print("terminal interface checks passed")
     return 0
 

@@ -1,16 +1,27 @@
 # Playtest Brief
 
-**Updated:** 2026-10-11
+**Updated:** 2026-10-12
 
-**Build under test:** [beta.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2),
-tag `v0.1.0-beta.2`, commit `9cdaa3b8cef9a85259236302654cbf40c34e7339`,
-printing `noter 0.1.0-beta.2`. Use that source checkout or a matching verified
-release artifact. Record the binary checksum for every report. Beta.1's terminal
-preview has known safety defects; do not use it for this round. The
-[publication record](evidence/beta2-publication-2026-10-11.md) identifies verified
-artifacts; the [readiness record](RELEASE_READINESS.md) retains remaining gates.
+**Build under test:** [beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1),
+tag `v0.1.0-beta.2.1`, printing `noter 0.1.0-beta.2.1`. Use that source
+checkout or a matching verified release artifact. Record the binary checksum
+for every report. Beta.1's terminal preview has known safety defects; do not
+use it for this round. The beta.2
+[publication record](evidence/beta2-publication-2026-10-11.md) identifies that
+earlier tag; the [readiness record](RELEASE_READINESS.md) retains remaining gates.
 
-## Current round: Linux integration and beta hardening
+## Current round: beta.2.1 follow-up
+
+- On Linux, save an existing file from the terminal and press Ctrl+R. The
+  warning must name the retained `.noter-save-*.tmp` sibling. Closing the
+  view must leave both that sibling and the saved file unchanged.
+- If `XDG_DATA_HOME` is on tmpfs, the terminal must say private crash recovery
+  is unavailable, and an explicit save must still write the note. Do not point
+  a real document's recovery root at a memory filesystem to try this.
+- On Hyprland, the hidden-workspace check below is still required. Beta.2.1
+  does not claim that stall is resolved.
+
+## Previous round: Linux integration and beta hardening
 
 Use a disposable Markdown fixture and keep real documents out of the report.
 Build the exact reviewed checkout using the source installer, or verify a matching

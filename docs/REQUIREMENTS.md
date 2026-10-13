@@ -193,6 +193,11 @@ The complete desktop-scale and compositor matrix remains a beta.3/RC gate.
   the general temporary directory. Recovery is available only when the state
   root and recovery subdirectories are opened without following links and
   verified as stable, owner-controlled directories with least-permission access.
+  Recovery must refuse known volatile filesystems before writing recovery
+  content. The 2026-10-12 safety clarification includes Linux tmpfs, ramfs and
+  hugetlbfs even when their directories are private; an ordinary document may
+  still be edited or explicitly saved there. Filesystem locality alone does
+  not establish persistent recovery storage.
   On Windows, new recovery records use the per-user LocalAppData known folder,
   separate from preferences in RoamingAppData. Existing recovery records in
   the former RoamingAppData location remain eligible for bounded startup review

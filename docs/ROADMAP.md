@@ -1,11 +1,13 @@
 # Noter Roadmap
 
-**Updated:** 2026-10-11
+**Updated:** 2026-10-12
 
-**Current checkpoint:** beta.2 published on 2026-10-11 from
+**Current checkpoint:** `0.1.0-beta.2.1` release source, a scoped follow-up to
+beta.2. The last verified publication is beta.2 on 2026-10-11 from
 `9cdaa3b8cef9a85259236302654cbf40c34e7339`.
-The [publication record](evidence/beta2-publication-2026-10-11.md) binds the
-release, passing CI, and verified artifacts to that immutable source.
+The [publication record](evidence/beta2-publication-2026-10-11.md) binds that
+release. Beta.2.1 does not complete M4-H1, the M5 gate, or continuous Markdown.
+Its publication evidence is recorded after the tag is verified.
 
 **Release objective:** a trustworthy, focused editor for `.txt` and `.md` files
 with classic notepad ergonomics, native Markdown editing, explicit Markdown
@@ -31,7 +33,8 @@ criteria and evidence land on one immutable green commit.
 | `0.1.0-alpha.2` | **Correctness alpha:** safe to dogfood for real notes with backups on supported local state roots | Recovery, clipboard, overwrite confirm, first-contact honesty, and alpha evidence | **Published 2026-08-29** |
 | `0.1.0-beta.1` | Terminal interface preview, installer scripts, caret and Markdown Enter refinements | Planned M4-H1, M5 gate, and M6 continuous editing did not land | **Published 2026-09-25** |
 | `0.1.0-beta.2` | **Focused beta hardening:** make existing surfaces safer | Terminal save, input, drawing, recovery, installer, and Linux desktop fixes; scoped evidence | **Published 2026-10-11**; [verification](evidence/beta2-publication-2026-10-11.md) |
-| `0.1.0-beta.3` | Production editor foundation and continuous Markdown | Complete M4-H1 matrix, M5 gate, and M6 continuous editing | After beta.2 |
+| `0.1.0-beta.2.1` | **Scoped follow-up:** name retained save warnings, guard invalid word deletion, refuse known volatile Linux recovery roots, and record current-adapter and RTL evidence | No M4-H1, M5, or continuous-Markdown exit | Release source 2026-10-12 |
+| `0.1.0-beta.3` | Production editor foundation and continuous Markdown | Complete M4-H1 matrix, M5 gate, and M6 continuous editing | After beta.2.1 |
 | `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.3 |
 | `0.1.0` | First public-quality release | Every v0.1 requirement in REQUIREMENTS has evidence | After successful RC dogfood |
 | `0.2.x` and later | Post-release work only after explicit ratification | Deferred non-goals from REQUIREMENTS become in-scope only by decision | Not planned yet |
@@ -114,6 +117,17 @@ does not expand unsafe UI surface.
     and deferred environment matrix. No broader platform, large-file, or
     continuous Markdown exit criterion is marked Verified by this release.
 
+### Toward `0.1.0-beta.2.1`
+
+8c. **Release source prepared.** This checkpoint names retained save siblings
+    in the terminal, refuses tmpfs, ramfs, and hugetlbfs recovery roots before
+    recovery writes, and ignores an out-of-range shaped cursor during word
+    deletion. The current-adapter CPU samples and the RTL accessible-text
+    failure are evidence, not an M5 decision. Confirmed removal of retained
+    siblings is not included: portable Unix deletion is still name-based, and
+    a shared parent can race. Issues #44, #50, #51, #52, #53, #54, #59, and
+    #60 stay open. No beta.3 exit criterion is marked Verified.
+
 ### Toward `0.1.0-beta.3`
 
 9. **Complete M4-H1 recovery namespace binding:** verify and retain the state and
@@ -140,6 +154,28 @@ environments are pending. M4-H1 remains a prerequisite for expanded UI file
 limits. Issue #44 awaits the postponed Omarchy test; it is not closed by
 ordinary Windows CI. The RC quality, packaging, and dogfood work remains in
 #54 and #53 after these beta.3 gates.
+
+The [recorded CPU baseline](M5_EDITOR_EVIDENCE.md#recorded-windows-baseline)
+identifies whole-document AccessKit updates as a current-adapter bottleneck;
+it does not pass the native M5 gate. [#60](https://github.com/blisspixel/noter/issues/60)
+also tracks native RTL accessible-text duplication. Bundled-font headless
+source-equality checks pass; the additional identified local-font fixture
+reproduces 52-versus-59 TextRun characters. The
+[negative evidence](M5_EDITOR_EVIDENCE.md#accessible-text-fidelity) distinguishes
+that headless reproduction from native accessibility and keeps #60 open for a
+repair. [#59](https://github.com/blisspixel/noter/issues/59) tracks actionable
+retained-save warnings and safe explicit cleanup. Cleanup must preserve raced
+external revisions and cannot delete files by a guessed name or glob.
+The terminal now retains the latest committed save's complete warning messages
+in a scrollable Ctrl+R view; exact native Linux sibling names are regression
+tested. #59 remains open for identity-bound confirmed cleanup and a tested
+retention policy. Neither dismissing that view nor a later clean save deletes
+an earlier artifact.
+
+The bounded buffers also preserve all source bytes when RTL shaping exposes
+an invalid cursor to word deletion. Active buffer regressions and an explicitly
+invoked identified-font Text Mode mouse/key fixture cover the guard and shared
+Undo/Redo. This does not close #60's accessibility or native bidi acceptance.
 
 ### Toward `0.1.0-rc.1` and `0.1.0`
 
@@ -665,6 +701,13 @@ retain directory handles for the session and route creation, scan, sync, rename,
 quarantine, and cleanup through them. Reject an unsafe or unverifiable root
 before writing recovery content.
 
+The 2026-10-12 recovery-storage clarification in FR-062 also requires refusal
+of known volatile Linux tmpfs, ramfs and hugetlbfs roots before recovery payload
+writes. The classifier and active real tmpfs refusal fixture implement a
+bounded #50 safety slice; complete native matrix verification remains open.
+This does not claim power-loss durability or detection of
+every volatile backing device; the full native storage matrix remains open.
+
 The Unix namespace binding is in tree
 ([ADR-0004](adr/0004-unix-recovery-namespace.md)): a verified, held directory
 chain from `/`, owner and mode checks, local file system classification, ACL
@@ -726,7 +769,8 @@ not power-loss durability or the complete matrix; the
 Classification of other redirected or synchronized roots, the remaining
 fault and race matrix, and exact-head hosted CI keep M4-H1 in progress.
 Linux native CI additionally exercises two real unprivileged numeric identities
-against newly private and previously shared recovery hierarchies while staged
+against newly private and previously shared recovery hierarchies, including
+explicit and inherited named-user POSIX ACL grants, while staged
 bytes and a live lease are held. The fixture proves actual access denial and
 exact restart candidates, and retains identity, permission, and filesystem
 receipts. Windows/macOS identity, ACL, real-root, and remaining race observations
@@ -803,12 +847,14 @@ mirror with the rope chunk by chunk in fast block comparisons, applies the one
 changed range, updates the line-ending profile from the changed bytes (a
 document whose two most common conventions tie still rescans to break the tie),
 and hashes content for the dirty flag only when its length matches the saved
-length. `cargo bench --bench edit_latency` measured the trust kernel's median
-cost per keystroke at 0.09 ms for 1 MiB, 1.0 ms for 8 MiB, and 6.9 ms for
+length. `cargo bench --bench edit_latency` measured the median rope-diff and
+transaction-application cost at 0.09 ms for 1 MiB, 1.0 ms for 8 MiB, and 6.9 ms for
 50 MiB on the Linux development container, where the previous path, which
 copied the rope, compared character by character, rescanned line endings, and
-rehashed the document, measured about 30 ms at 8 MiB. egui's own layout of
-the mirror is not included and remains the dominant cost. A local Windows measurement found a 665.3 MiB process peak when
+rehashed the document, measured about 30 ms at 8 MiB. Those historical core
+measurements exclude mirror mutation, history, projection, layout, and native
+presentation. The current-adapter runner below measures a separate CPU-side
+subset. A local Windows measurement found a 665.3 MiB process peak when
 a 64 MiB file reached that widget path. The current interface therefore refuses
 files above 8 MiB before creating the mirror, preserves the open document, and
 explains the limit. The same 64 MiB run then peaked at 196 MiB without entering
@@ -824,6 +870,16 @@ below. The current renderer's emoji
 output is monochrome and is not accepted as final cross-platform appearance
 evidence. The status bar now renders after the editor and has a same-frame
 caret-coordinate test. No spell-check provider is implemented.
+
+The [2026-10-12 CPU baseline](M5_EDITOR_EVIDENCE.md#recorded-windows-baseline)
+records eight current-adapter cases with all raw samples. At 8 MiB, active
+AccessKit emits 139,273 nodes per edit, with 674-798 ms p95 CPU-side elapsed
+work on the identified Windows host. This is not input-to-presented-paint
+latency or native accessibility acceptance. Current source also reproduces
+RTL TextRun duplication with identified local Arial: 52 source-projection
+characters become 59 accessible characters. [#60](https://github.com/blisspixel/noter/issues/60)
+remains open; the active bundled-font checks, explicitly invoked local-font
+negative fixture, and native AT-SPI report are distinct evidence.
 
 Research completed on 2026-08-23 makes the next decision narrower. The current
 egui `TextEdit` remains the correctness adapter, but stock egui 0.35 with
@@ -851,9 +907,17 @@ application.
 
 ### One-week feasibility gate
 
-The [frozen corpus and measurement protocol](M5_EDITOR_EVIDENCE.md) prepare the
-gate's inputs. This is preparation only; renderer acceptance, measured budgets,
-and native input/accessibility outcomes remain open.
+The [frozen corpus and measurement protocol](M5_EDITOR_EVIDENCE.md) provide the
+gate's inputs and an initial current-adapter CPU diagnostic subset. Renderer
+acceptance, complete measured budgets, and native input/accessibility outcomes
+remain open.
+
+The test-only current-adapter CPU runner now exercises the actual bounded Text
+Mode widget, projection, transaction, history, and recovery scheduling. It
+records raw idle/edit samples and AccessKit update sizes on the frozen 1/8 MiB
+inputs with wrap and accessibility independently enabled or disabled. This
+headless subset does not establish native input-to-paint, memory, IME, or
+screen-reader results; the complete feasibility gate remains open.
 
 1. **Day 1, baseline and corpora:** freeze 1 MiB and 50 MiB representative,
    many-short-line, pathological-long-line, mixed-EOL, Unicode, bidi, and

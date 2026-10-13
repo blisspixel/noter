@@ -1,6 +1,6 @@
 # Release Process
 
-**Reviewed:** 2026-10-11
+**Reviewed:** 2026-10-12
 
 **Current status:** Noter publishes explicitly scoped prerelease builds for
 careful dogfood. No supported stable binary release has been published. Running
@@ -46,6 +46,9 @@ defer a critical or high security or data-safety defect.
 
 The 2026-10-11 beta.2 decision is such a scoped prerelease. Its required and
 deferred native rows are listed in [RELEASE_READINESS.md](RELEASE_READINESS.md).
+The 2026-10-12 beta.2.1 decision is the same class of checkpoint: it publishes
+the retained-warning, volatile-recovery, and word-deletion follow-up without
+claiming the beta.3 editor, continuous Markdown, or RC exits.
 This exception changes feature sequencing and supported-environment claims;
 it does not waive automated gates, artifact verification, independent review,
 or a known security or data-safety defect. Deferred first-release matrix rows

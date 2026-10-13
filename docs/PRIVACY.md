@@ -62,6 +62,11 @@ therefore require restrictive creation permissions, bounded size and retention,
 checksums or identity validation where applicable, and explicit cleanup.
 Recovery never silently overwrites the original document.
 
+Current source refuses known volatile Linux tmpfs, ramfs and hugetlbfs state
+roots before creating recovery entries. Existing files there remain untouched;
+ordinary document editing and explicit saves remain available. This refusal
+does not establish detection of every volatile backing device.
+
 Unix staging files are created with mode 0600. macOS additionally suppresses ACL
 inheritance during creation and verifies the finalized ACL before writing.
 Windows explicitly assigns the process user's SID as owner and creates a
@@ -76,6 +81,13 @@ restricted through that handle to mode 0600 before retention. macOS also removes
 the ACL and verifies its absence. If validation or restriction fails, Noter
 reports the retained artifact and does not claim that owner-only access was
 established.
+
+Current Unix document saves can accumulate retained siblings until manual
+inspection and removal. The window names them in its warning; current source
+also exposes the terminal's latest committed-save warnings through Ctrl+R.
+A safe confirmed cleanup action and a tested per-document retention bound
+remain open in [#59](https://github.com/blisspixel/noter/issues/59).
+Do not treat a filename pattern as proof that an artifact is safe to delete.
 
 ## 5. Diagnostics
 

@@ -509,7 +509,7 @@ mod projected {
         line_endings::{LineEnding, LineEndingInsertionContext, normalize_inserted_text},
     };
 
-    use super::{byte_range_from_char_range, utf8_prefix};
+    use super::{byte_range_from_char_range, previous_word_range, utf8_prefix};
 
     /// A canonical LF display of source that retains exact source byte mappings.
     ///
@@ -914,6 +914,12 @@ mod projected {
             self.rebuild_projection();
         }
 
+        fn delete_previous_word(&mut self, cursor: egui::text::CCursor) -> egui::text::CCursor {
+            let [start, end] = previous_word_range(self.display(), cursor);
+            self.delete_char_range(start.index..end.index);
+            start
+        }
+
         fn insert_text_at(
             &mut self,
             ccursor: &mut egui::text::CCursor,
@@ -1176,6 +1182,12 @@ impl egui::TextBuffer for BoundedTextBuffer<'_> {
         self.value.drain(byte_range);
     }
 
+    fn delete_previous_word(&mut self, cursor: egui::text::CCursor) -> egui::text::CCursor {
+        let [start, end] = previous_word_range(self.value, cursor);
+        self.delete_char_range(start.index..end.index);
+        start
+    }
+
     fn insert_text_at(
         &mut self,
         ccursor: &mut egui::text::CCursor,
@@ -1233,6 +1245,21 @@ impl egui::TextBuffer for BoundedTextBuffer<'_> {
     }
 }
 
+fn previous_word_range(source: &str, cursor: egui::text::CCursor) -> [egui::text::CCursor; 2] {
+    let end = egui::text::CharIndex(source.chars().count());
+    // egui 0.35 can expose a glyph cursor past the source after RTL shaping.
+    // Its previous-word helper subtracts this index without checking bounds.
+    // Repair an invalid cursor without guessing a destructive edit range.
+    if cursor.index > end {
+        let repaired = egui::text::CCursor::new(end);
+        return [repaired; 2];
+    }
+    [
+        egui::text_selection::text_cursor_state::ccursor_previous_word(source, cursor),
+        cursor,
+    ]
+}
+
 fn utf8_prefix(value: &str, maximum: usize) -> &str {
     if value.len() <= maximum {
         return value;
@@ -1285,6 +1312,68 @@ mod tests {
         edit::Selection,
         line_endings::{LineEnding, LineEndingInsertionContext, LineEndingProfile},
     };
+
+    #[test]
+    fn previous_word_delete_repairs_invalid_cursors_without_changing_bytes() {
+        for source in [
+            "",
+            "English beta",
+            "Wide \u{6771} Cafe\u{301}\r\n\u{2067}\u{628}\u{628}\u{2069}\u{1b}",
+        ] {
+            for excess in [1, usize::MAX] {
+                let mut plain = source.to_owned();
+                let mut bounded = BoundedTextBuffer::new(&mut plain, 1024);
+                let end = source.chars().count();
+                let invalid = egui::text::CCursor::new(end.saturating_add(excess));
+                let repaired = bounded.delete_previous_word(invalid);
+                assert_eq!(usize::from(repaired.index), end);
+                assert_eq!(plain, source);
+
+                let mut exact = source.to_owned();
+                let mut projected = ProjectedTextBuffer::new(
+                    &mut exact,
+                    1024,
+                    LineEndingProfile::detect(source).full_insertion_context(),
+                );
+                let display_end = projected.as_str().chars().count();
+                let invalid = egui::text::CCursor::new(display_end.saturating_add(excess));
+                let repaired = projected.delete_previous_word(invalid);
+                assert_eq!(usize::from(repaired.index), display_end);
+                assert_eq!(exact, source);
+            }
+        }
+    }
+
+    #[test]
+    fn previous_word_delete_preserves_valid_unicode_and_line_endings() {
+        for suffix in ["beta", "\u{628}\u{628}", "\u{5e9}\u{5dc}\u{5d5}\u{5dd}"] {
+            let prefix = "First\r\nWide \u{6771}\rCafe\u{301}\u{1b}\nPrefix ";
+            let source = format!("{prefix}{suffix}");
+            let mut plain = source.clone();
+            let mut bounded = BoundedTextBuffer::new(&mut plain, 1024);
+            let cursor = egui::text::CCursor::new(source.chars().count());
+            let repaired = bounded.delete_previous_word(cursor);
+            assert_eq!(usize::from(repaired.index), prefix.chars().count());
+            assert_eq!(plain, prefix);
+
+            let mut exact = source.clone();
+            let mut projected = ProjectedTextBuffer::new(
+                &mut exact,
+                1024,
+                LineEndingProfile::detect(&source).full_insertion_context(),
+            );
+            let cursor = egui::text::CCursor::new(projected.as_str().chars().count());
+            let repaired = projected.delete_previous_word(cursor);
+            assert_eq!(
+                usize::from(repaired.index),
+                SourceDisplayProjection::new(prefix)
+                    .display()
+                    .chars()
+                    .count()
+            );
+            assert_eq!(exact, prefix);
+        }
+    }
 
     /// An absent character limit must not clamp, and a present one must.
     ///

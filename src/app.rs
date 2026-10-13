@@ -59,6 +59,9 @@ use crate::keyboard_nav::{
 use crate::markdown_ui::{MarkdownEditor, MarkdownProjectionLimit, markdown_projection_limit};
 use crate::theme::{self, AppTheme, THEME_STORAGE_KEY};
 
+#[cfg(test)]
+mod measurement;
+
 const EDITOR_ID_SALT: &str = "noter-document-editor";
 const TEXT_EDITOR_ACCESSIBLE_NAME: &str = "Document text editor";
 const ABOUT_SUMMARY: &str = "A focused editor for plain text and Markdown files.";

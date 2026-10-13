@@ -481,7 +481,15 @@ access-control list and verifies its absence. Restriction failure is a committed
 cleanup warning, never a false owner-only claim. Portable Unix APIs cannot tie
 deletion atomically to that verified open object, so the artifact is retained
 with a warning that names only the random sibling basename and gives inspection
-and removal guidance. Absent-file installation uses `RENAME_NOREPLACE` where
+and removal guidance. In the terminal, Ctrl+R opens a scrollable view of the
+latest committed save's warnings after its status message expires. Uncertain
+save records take priority over that view. A later committed save replaces the
+latest warning view; it is not a persistent artifact inventory. Closing the
+view removes no files. Confirmed cleanup and bounded retained copies remain
+[#59](https://github.com/blisspixel/noter/issues/59): a safe removal design must
+bind the artifact's identity, content, and parent without deleting a concurrently
+replaced entry. Warning text is diagnostic, not a deletion capability.
+Absent-file installation uses `RENAME_NOREPLACE` where
 available. Its no-overwrite hard-link fallback also retains the temporary name
 with the same actionable warning instead of unlinking by pathname. Windows
 cleanup opens the verified object without write sharing, then marks that exact

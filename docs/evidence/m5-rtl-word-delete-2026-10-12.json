@@ -1,0 +1,90 @@
+{
+  "schema": 1,
+  "recorded_at_utc": "2026-10-12T12:48:36.706797+00:00",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "kind": "Headless identified-font Text Mode mouse/key regression, not native input interoperability",
+  "font": {
+    "basename": "arial.ttf",
+    "bytes": 1045720,
+    "sha256": "b3658eadae55e682b5f69eb64c439c1ecc8f196c0bb8d4756d145d13bc86476a",
+    "blake3": "9493bfec4926242b6602f562e5e69bbc3a7ca1f139b9cf13bd6bb92d0125577d",
+    "redistributed": false
+  },
+  "test_module_sha256": "c34bbbda206d7bd97fe9f5cec45a17ec50638f5b019744fd4ee7673833510bdf",
+  "test_command": "cargo test --locked --bin noter app::measurement::local_font_rtl_word_delete_preserves_source_and_undo -- --exact --ignored --nocapture",
+  "environment": {
+    "NOTER_M5_RTL_FONT": "C:/Windows/Fonts/arial.ttf"
+  },
+  "before": {
+    "base_commit": "d75925264e552f8dce9789301cbb9bb78844093f",
+    "base_tree": "3da8510d8d7d9e343216b3f362552d0a94ab3628",
+    "working_tree_status": "M src/app/measurement.rs",
+    "test_only_diff": "diff --git a/src/app/measurement.rs b/src/app/measurement.rs\nindex e737575..db1def0 100644\n--- a/src/app/measurement.rs\n+++ b/src/app/measurement.rs\n@@ -303,6 +303,10 @@ fn rtl_accessible_text_runs_match_source_projection() {\n #[test]\n #[ignore = \"Local RTL font fixture for known #60; requires NOTER_M5_RTL_FONT\"]\n fn local_font_rtl_accessible_text_runs_match_source_projection() {\n+    assert_accessible_source(RTL_SOURCE, Some(local_rtl_font()));\n+}\n+\n+fn local_rtl_font() -> Vec<u8> {\n     use skrifa::MetadataProvider as _;\n \n     // This local fixture retains source equality as the repair criterion. It\n@@ -327,5 +331,136 @@ fn local_font_rtl_accessible_text_runs_match_source_projection() {\n         bytes.len(),\n         blake3::hash(&bytes)\n     );\n-    assert_accessible_source(RTL_SOURCE, Some(bytes));\n+    bytes\n+}\n+\n+#[test]\n+#[ignore = \"Local RTL input fixture; requires NOTER_M5_RTL_FONT\"]\n+fn local_font_rtl_word_delete_preserves_source_and_undo() {\n+    let font = local_rtl_font();\n+    for (os, modifiers, key) in [\n+        (\n+            egui::os::OperatingSystem::Windows,\n+            egui::Modifiers::CTRL,\n+            egui::Key::Backspace,\n+        ),\n+        (\n+            egui::os::OperatingSystem::Nix,\n+            egui::Modifiers::CTRL,\n+            egui::Key::W,\n+        ),\n+        (\n+            egui::os::OperatingSystem::Mac,\n+            egui::Modifiers::ALT,\n+            egui::Key::Backspace,\n+        ),\n+    ] {\n+        for batched in [false, true] {\n+            for source in [\"Aurora beta\", \"Aurora \\u{628}\\u{628}\"] {\n+                let (mut app, context) = local_font_input_app(source, &font, os);\n+                let mut sequence = 0;\n+                frame(&mut app, &context, &mut sequence, Vec::new());\n+                let pos = egui::pos2(600.0, 12.0);\n+                let mut click = vec![\n+                    egui::Event::PointerMoved(pos),\n+                    egui::Event::PointerButton {\n+                        pos,\n+                        button: egui::PointerButton::Primary,\n+                        pressed: true,\n+                        modifiers: egui::Modifiers::NONE,\n+                    },\n+                    egui::Event::PointerButton {\n+                        pos,\n+                        button: egui::PointerButton::Primary,\n+                        pressed: false,\n+                        modifiers: egui::Modifiers::NONE,\n+                    },\n+                ];\n+                let delete = || egui::Event::Key {\n+                    key,\n+                    physical_key: None,\n+                    pressed: true,\n+                    repeat: false,\n+                    modifiers,\n+                };\n+                if batched {\n+                    click.push(delete());\n+                }\n+                frame(&mut app, &context, &mut sequence, click);\n+                if !batched {\n+                    frame(&mut app, &context, &mut sequence, vec![delete()]);\n+                }\n+                if source.contains('\\u{628}') {\n+                    // Pointer handling can leave the oversized glyph cursor\n+                    // after a same-frame key. Every command against that\n+                    // invalid position must preserve the entire source.\n+                    assert_eq!(app.text, source);\n+                    assert_eq!(app.document.revision(), Revision::INITIAL);\n+                    assert!(!app.history.can_undo());\n+                    if batched {\n+                        frame(&mut app, &context, &mut sequence, vec![delete()]);\n+                        assert_eq!(app.text, source);\n+                        assert_eq!(app.document.revision(), Revision::INITIAL);\n+                        assert!(!app.history.can_undo());\n+                    }\n+                    let cursor = egui::TextEdit::load_state(&context, app.editor_id())\n+                        .unwrap()\n+                        .cursor\n+                        .char_range()\n+                        .unwrap();\n+                    assert_eq!(usize::from(cursor.primary.index), source.chars().count());\n+                    assert_eq!(cursor.primary, cursor.secondary);\n+                    frame(&mut app, &context, &mut sequence, vec![delete()]);\n+                }\n+                assert_eq!(\n+                    app.text,\n+                    \"Aurora \",\n+                    \"os={os:?} batched={batched} key={key:?} source_chars={}\",\n+                    source.chars().count()\n+                );\n+                assert_eq!(\n+                    app.document.revision(),\n+                    Revision::INITIAL.checked_next().unwrap()\n+                );\n+                assert!(app.document.rope().bytes().eq(app.text.bytes()));\n+                app.execute_edit_command(EditCommand::Undo, &context);\n+                assert_eq!(app.text, source);\n+                assert!(app.document.rope().bytes().eq(source.bytes()));\n+                app.execute_edit_command(EditCommand::Redo, &context);\n+                assert_eq!(\n+                    app.text,\n+                    \"Aurora \",\n+                    \"os={os:?} batched={batched} key={key:?} source_chars={}\",\n+                    source.chars().count()\n+                );\n+                assert!(app.document.rope().bytes().eq(app.text.bytes()));\n+            }\n+        }\n+    }\n+}\n+\n+fn local_font_input_app(\n+    source: &str,\n+    font: &[u8],\n+    os: egui::os::OperatingSystem,\n+) -> (NoterApp, egui::Context) {\n+    let context = egui::Context::default();\n+    context.set_os(os);\n+    theme::configure_styles(&context);\n+    context.add_font(egui::epaint::text::FontInsert::new(\n+        \"m5-local-rtl-input-fixture\",\n+        egui::FontData::from_owned(font.to_vec()),\n+        vec![egui::epaint::text::InsertFontFamily {\n+            family: egui::FontFamily::Monospace,\n+            priority: egui::epaint::text::FontPriority::Lowest,\n+        }],\n+    ));\n+    let app = NoterApp {\n+        document: Document::from_bytes(source.as_bytes()).expect(\"the source loads\"),\n+        text: source.to_owned(),\n+        view: DocumentView::Text,\n+        ..NoterApp::default()\n+    };\n+    context.memory_mut(|memory| memory.request_focus(app.editor_id()));\n+    (app, context)\n }",
+    "binary_sha256": "94c23266a7c079994fabd8b74754849cc68142ceac2abc527800748676da19b2",
+    "exit_code": 101,
+    "log_sha256": "b6ae9cb529fda13b96927701db77be9bb7da447d69b2c0d7f7a77c4680655ace",
+    "result_lines": [
+      "NOTER_M5_RTL_FONT_BYTES=1045720; BLAKE3=9493bfec4926242b6602f562e5e69bbc3a7ca1f139b9cf13bd6bb92d0125577d",
+      "attempt to subtract with overflow",
+      "test app::measurement::local_font_rtl_word_delete_preserves_source_and_undo ... FAILED",
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 594 filtered out; finished in 0.03s"
+    ]
+  },
+  "after": {
+    "clean_commit": "b78da6c3705bb3104cffc1b1f006920b48689e13",
+    "tree": "eec9d8753a7fa487b7438f81ce7ef74344ca69ab",
+    "binary_sha256": "bff343e454499a4974238f4d581204d1311b8515bd1b3e62a6b3c217d417edeb",
+    "exit_code": 0,
+    "log_sha256": "e00eba506b3fcb12fa64b75d1fbe7376237770bf1f2044e85f2d9d2c9563f902",
+    "result_lines": [
+      "NOTER_M5_RTL_FONT_BYTES=1045720; BLAKE3=9493bfec4926242b6602f562e5e69bbc3a7ca1f139b9cf13bd6bb92d0125577d",
+      "test app::measurement::local_font_rtl_word_delete_preserves_source_and_undo ... ok",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 596 filtered out; finished in 0.11s"
+    ],
+    "cases": 12,
+    "case_dimensions": {
+      "event_policies": [
+        "Windows Ctrl+Backspace",
+        "Unix Ctrl+W",
+        "macOS Option+Backspace"
+      ],
+      "batching": [
+        "separate click/key",
+        "same-frame click/key"
+      ],
+      "sources": [
+        "English control",
+        "Arabic run"
+      ]
+    },
+    "assertions": [
+      "Invalid position preserves exact source and initial revision",
+      "Invalid position adds no Undo entry",
+      "Repair reaches actual display end",
+      "Valid deletion preserves English prefix",
+      "Exactly one document revision for valid deletion",
+      "Shared Undo restores exact original bytes",
+      "Shared Redo restores exact intended deletion",
+      "Rope and adapter source agree"
+    ]
+  },
+  "unchanged_accessibility_failure": {
+    "same_after_binary": true,
+    "command": "cargo test --locked --bin noter app::measurement::local_font_rtl_accessible_text_runs_match_source_projection -- --exact --ignored --nocapture",
+    "exit_code": 101,
+    "source_characters": 52,
+    "accessible_characters": 59,
+    "log_sha256": "a61fdf1e2939ee1022259b7f40452a3443c5cdc74846832c34dfdcc5ee64cdec",
+    "result_lines": [
+      "NOTER_M5_RTL_FONT_BYTES=1045720; BLAKE3=9493bfec4926242b6602f562e5e69bbc3a7ca1f139b9cf13bd6bb92d0125577d",
+      "accessible TextRun text differs from the source projection: expected 52 characters, received 59",
+      "test app::measurement::local_font_rtl_accessible_text_runs_match_source_projection ... FAILED",
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 596 filtered out; finished in 0.01s"
+    ]
+  },
+  "limits": [
+    "No complete bidi, visual caret, selection, or accessible-text repair",
+    "OS policies are injected headless events on Windows, not native Linux/macOS execution",
+    "No new release artifact or performance acceptance claim"
+  ]
+}
