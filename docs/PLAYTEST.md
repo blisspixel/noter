@@ -2,9 +2,11 @@
 
 **Updated:** 2026-10-13
 
-**Build under test:** source version `0.1.0-beta.2.2`. Publication creates tag
-`v0.1.0-beta.2.2` on the reviewed main commit. Until that tag exists, build
-the source checkout that contains this version. The published
+**Build under test:** [beta.2.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.2),
+tag `v0.1.0-beta.2.2` at `e835efb9a7efd2f3d417d6e8558d90c59bed8259`, printing
+`noter 0.1.0-beta.2.2`. The
+[publication record](evidence/beta2.2-publication-2026-10-13.md) identifies that
+tag. The published
 [beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1)
 tag does not include the retained-sibling bound. Record the binary checksum
 for every report. Beta.1's terminal preview has known safety defects; do not

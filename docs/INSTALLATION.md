@@ -18,7 +18,9 @@ release channel exists. Source installation remains supported. See the
 
 Beta.1's terminal preview has known save-failure, recovery, and terminal-control
 defects fixed in beta.2. Use beta.2.2 from an identified source checkout or a
-matching verified release artifact. The beta.2.1
+matching verified release artifact. The beta.2.2
+[publication record](evidence/beta2.2-publication-2026-10-13.md) verifies that
+tag. The beta.2.1
 [publication record](evidence/beta2.1-publication-2026-10-13.md) verifies that
 earlier tag. The beta.2
 [publication record](evidence/beta2-publication-2026-10-11.md) remains the

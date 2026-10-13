@@ -18,6 +18,11 @@ continuous Markdown workflow, or the release candidate. Issues
 [#54](https://github.com/blisspixel/noter/issues/54),
 [#59](https://github.com/blisspixel/noter/issues/59), and
 [#60](https://github.com/blisspixel/noter/issues/60) remain open.
+The release tag is
+[v0.1.0-beta.2.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.2),
+published on 2026-10-13 from `e835efb9a7efd2f3d417d6e8558d90c59bed8259`.
+[Publication evidence](docs/evidence/beta2.2-publication-2026-10-13.md) records
+the public asset check.
 
 - Refuse another save when a destination directory already holds eight retained
   `.noter-save-<hex>.tmp` siblings. The refusal leaves the open document
