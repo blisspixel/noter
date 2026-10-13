@@ -1,10 +1,12 @@
 # Playtest Brief
 
-**Updated:** 2026-10-12
+**Updated:** 2026-10-13
 
 **Build under test:** [beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1),
-tag `v0.1.0-beta.2.1`, printing `noter 0.1.0-beta.2.1`. Use that source
-checkout or a matching verified release artifact. Record the binary checksum
+tag `v0.1.0-beta.2.1` at `4753953bd1748089752b7a173230e4909a5a723c`, printing
+`noter 0.1.0-beta.2.1`. The
+[publication record](evidence/beta2.1-publication-2026-10-13.md) identifies that
+tag. Use that source checkout or a matching verified release artifact. Record the binary checksum
 for every report. Beta.1's terminal preview has known safety defects; do not
 use it for this round. The beta.2
 [publication record](evidence/beta2-publication-2026-10-11.md) identifies that
