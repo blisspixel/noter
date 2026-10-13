@@ -276,6 +276,28 @@ pub struct RetainedSiblingRemovalCount {
     pub unsupported: usize,
 }
 
+/// How one identity-checked removal changes the batch counters.
+///
+/// `Unsupported` is only the platform handle-delete refusal. A rejected name
+/// or a second link stays `Kept` so the caller does not describe it as an
+/// unsupported delete.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RetainedSiblingRemovalEffect {
+    Removed,
+    Unsupported,
+    Kept,
+}
+
+fn retained_sibling_removal_effect(result: io::Result<()>) -> RetainedSiblingRemovalEffect {
+    match result {
+        Ok(()) => RetainedSiblingRemovalEffect::Removed,
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+            RetainedSiblingRemovalEffect::Unsupported
+        }
+        Err(_) => RetainedSiblingRemovalEffect::Kept,
+    }
+}
+
 /// Removes each sibling independently and returns the ones that remain.
 pub fn remove_verified_retained_siblings(
     siblings: &[RetainedSaveSibling],
@@ -285,14 +307,14 @@ pub fn remove_verified_retained_siblings(
     let mut unsupported = 0usize;
     let mut remaining = Vec::new();
     for sibling in siblings {
-        match remove_verified_retained_sibling(sibling) {
-            Ok(()) => removed = removed.saturating_add(1),
-            Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+        match retained_sibling_removal_effect(remove_verified_retained_sibling(sibling)) {
+            RetainedSiblingRemovalEffect::Removed => removed = removed.saturating_add(1),
+            RetainedSiblingRemovalEffect::Unsupported => {
                 kept = kept.saturating_add(1);
                 unsupported = unsupported.saturating_add(1);
                 remaining.push(sibling.clone());
             }
-            Err(_) => {
+            RetainedSiblingRemovalEffect::Kept => {
                 kept = kept.saturating_add(1);
                 remaining.push(sibling.clone());
             }
@@ -3716,15 +3738,130 @@ mod tests {
         if cfg!(windows) {
             assert_eq!(count.removed, 1);
             assert_eq!(count.kept, 0);
+            assert_eq!(count.unsupported, 0);
             assert!(remaining.is_empty());
             assert!(!path.exists());
         } else {
             assert_eq!(count.removed, 0);
+            assert_eq!(count.kept, 1);
             assert_eq!(count.unsupported, 1);
             assert_eq!(remaining.len(), 1);
             assert_eq!(fs::read(&path)?, b"artifact");
             assert!(retained_sibling_removal_message(count).contains("file was kept"));
         }
         Ok(())
+    }
+
+    #[test]
+    fn retained_save_sibling_names_reject_uppercase_non_hex_and_non_unicode() {
+        let valid = candidate_name(&[0xab; RANDOM_NAME_BYTES]);
+        assert!(is_retained_save_sibling_name(std::ffi::OsStr::new(&valid)));
+
+        let hex_start = TEMPORARY_PREFIX.len();
+        let mut uppercase = valid.clone();
+        uppercase.replace_range(hex_start..=hex_start, "A");
+        assert!(!is_retained_save_sibling_name(std::ffi::OsStr::new(
+            &uppercase
+        )));
+
+        let mut non_hex = valid;
+        non_hex.replace_range(hex_start..=hex_start, "g");
+        assert!(!is_retained_save_sibling_name(std::ffi::OsStr::new(
+            &non_hex
+        )));
+
+        let invalid = {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStringExt;
+                std::ffi::OsString::from_vec(vec![0xff])
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::ffi::OsStringExt;
+                std::ffi::OsString::from_wide(&[0xD800])
+            }
+        };
+        assert!(invalid.to_str().is_none());
+        assert!(!is_retained_save_sibling_name(&invalid));
+    }
+
+    #[test]
+    fn verified_retained_sibling_batch_does_not_count_a_rejected_name_as_unsupported()
+    -> io::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        fs::write(&path, b"document")?;
+        let sibling = RetainedSaveSibling::new(path.clone(), FileIdentity::new(1, 2));
+
+        let (count, remaining) = remove_verified_retained_siblings(std::slice::from_ref(&sibling));
+
+        assert_eq!(
+            count,
+            RetainedSiblingRemovalCount {
+                removed: 0,
+                kept: 1,
+                unsupported: 0,
+            }
+        );
+        assert_eq!(remaining, vec![sibling]);
+        assert_eq!(fs::read(&path)?, b"document");
+        Ok(())
+    }
+
+    #[test]
+    fn retained_sibling_removal_effect_keeps_unsupported_distinct_from_other_errors() {
+        assert_eq!(
+            retained_sibling_removal_effect(Ok(())),
+            RetainedSiblingRemovalEffect::Removed
+        );
+        assert_eq!(
+            retained_sibling_removal_effect(Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "handle delete is unavailable",
+            ))),
+            RetainedSiblingRemovalEffect::Unsupported
+        );
+        assert_eq!(
+            retained_sibling_removal_effect(Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "rejected name",
+            ))),
+            RetainedSiblingRemovalEffect::Kept
+        );
+        assert_eq!(
+            retained_sibling_removal_effect(Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "replaced name",
+            ))),
+            RetainedSiblingRemovalEffect::Kept
+        );
+    }
+
+    #[test]
+    fn retained_sibling_removal_message_names_unsupported_only_when_nothing_was_removed() {
+        let unsupported = retained_sibling_removal_message(RetainedSiblingRemovalCount {
+            removed: 0,
+            kept: 1,
+            unsupported: 1,
+        });
+        assert!(unsupported.contains("could not delete"));
+        assert!(unsupported.contains("file was kept"));
+
+        let rejected = retained_sibling_removal_message(RetainedSiblingRemovalCount {
+            removed: 0,
+            kept: 1,
+            unsupported: 0,
+        });
+        assert!(rejected.contains("0 removed and 1 kept"));
+        assert!(!rejected.contains("could not delete"));
+
+        let mixed = retained_sibling_removal_message(RetainedSiblingRemovalCount {
+            removed: 1,
+            kept: 1,
+            unsupported: 1,
+        });
+        assert!(mixed.contains("1 removed and 1 kept"));
+        assert!(!mixed.contains("could not delete"));
     }
 }

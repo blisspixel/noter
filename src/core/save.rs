@@ -1319,14 +1319,19 @@ mod tests {
         assert!(!SaveWarnings::new(vec![cleanup.clone()], Vec::new()).is_empty());
         assert!(!SaveWarnings::new(Vec::new(), vec![durability.clone()]).is_empty());
         assert!(!SaveWarnings::new(vec![cleanup], vec![durability]).is_empty());
-        assert!(
-            !SaveWarnings::new(Vec::new(), Vec::new())
-                .with_retained(vec![RetainedSaveSibling::new(
-                    std::path::PathBuf::from(".noter-save-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tmp"),
-                    FileIdentity::new(1, 2),
-                )])
-                .is_empty()
+        let sibling = RetainedSaveSibling::new(
+            std::path::PathBuf::from(".noter-save-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tmp"),
+            FileIdentity::new(1, 2),
         );
+        let retained_only = SaveWarnings::new(Vec::new(), Vec::new()).with_retained(vec![sibling]);
+        assert!(!retained_only.is_empty());
+        let observed = retained_only.retained();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(
+            observed[0].path(),
+            std::path::Path::new(".noter-save-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tmp")
+        );
+        assert_eq!(observed[0].identity(), FileIdentity::new(1, 2));
     }
 
     #[test]
