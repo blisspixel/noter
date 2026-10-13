@@ -22,6 +22,8 @@ The release tag is
 [v0.1.0-beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1).
 Publication evidence is recorded after that tag is verified.
 
+- Point cargo-wix at MSI package sequence 0.0.5 so this prerelease, whose
+  identifier is not a single integer, can build the Windows installer.
 - Refuse Linux tmpfs, ramfs and hugetlbfs recovery roots before creating
   recovery entries; retain existing records and report recovery unavailable.
   A real tmpfs terminal session shows that refusal, still saves, and leaves

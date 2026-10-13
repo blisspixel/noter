@@ -202,6 +202,11 @@ def validate_manifest(text: str) -> list[str]:
             errors.append("cargo-dist targets differ from the approved release set")
         if dist.get("cargo-cyclonedx") is not False:
             errors.append("cargo-dist generic SBOM generation must remain disabled")
+        wix_metadata = manifest["package"]["metadata"].get("wix")
+        if not isinstance(wix_metadata, dict) or wix_metadata.get("version") != "0.0.5":
+            errors.append(
+                "cargo-wix version override must stay the numeric MSI package sequence"
+            )
         extra_artifacts = package_dist.get("extra-artifacts")
         if not isinstance(extra_artifacts, list) or len(extra_artifacts) != 1:
             errors.append("release must declare exactly one target-specific SBOM set")

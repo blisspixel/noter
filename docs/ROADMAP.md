@@ -122,7 +122,8 @@ does not expand unsafe UI surface.
 8c. **Release source prepared.** This checkpoint names retained save siblings
     in the terminal, refuses tmpfs, ramfs, and hugetlbfs recovery roots before
     recovery writes, and ignores an out-of-range shaped cursor during word
-    deletion. The current-adapter CPU samples and the RTL accessible-text
+    deletion. The Windows installer keeps package sequence 0.0.5 through the
+    cargo-wix version override. The current-adapter CPU samples and the RTL accessible-text
     failure are evidence, not an M5 decision. Confirmed removal of retained
     siblings is not included: portable Unix deletion is still name-based, and
     a shared parent can race. Issues #44, #50, #51, #52, #53, #54, #59, and

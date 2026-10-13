@@ -1130,6 +1130,13 @@ class ReleaseConfigurationTests(unittest.TestCase):
             "MSI is missing third-party license inventory", validate_wix(changed)
         )
 
+    def test_rejects_a_cargo_wix_version_that_is_not_the_msi_sequence(self) -> None:
+        changed = self.manifest.replace('version = "0.0.5"', 'version = "0.0.4"', 1)
+        self.assertIn(
+            "cargo-wix version override must stay the numeric MSI package sequence",
+            validate_manifest(changed),
+        )
+
     def test_rejects_an_msi_without_a_monotonic_package_sequence(self) -> None:
         changed = self.wix.replace(b"Version='0.0.5'", b"Version='$(var.Version)'", 1)
         self.assertIn(
