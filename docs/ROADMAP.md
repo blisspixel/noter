@@ -2,10 +2,13 @@
 
 **Updated:** 2026-10-13
 
-**Current checkpoint:** published `0.1.0-beta.2.1` on 2026-10-13 from
+**Current checkpoint:** `0.1.0-beta.2.2` candidate. It is not published until
+the release workflow binds tag `v0.1.0-beta.2.2`. It does not complete M4-H1,
+the M5 gate, or continuous Markdown. The published predecessor is
+`0.1.0-beta.2.1` on 2026-10-13 from
 `4753953bd1748089752b7a173230e4909a5a723c`.
 The [publication record](evidence/beta2.1-publication-2026-10-13.md) binds that
-tag. Beta.2.1 does not complete M4-H1, the M5 gate, or continuous Markdown.
+tag.
 The [beta.2 publication record](evidence/beta2-publication-2026-10-11.md)
 remains the earlier checkpoint.
 
@@ -34,7 +37,8 @@ criteria and evidence land on one immutable green commit.
 | `0.1.0-beta.1` | Terminal interface preview, installer scripts, caret and Markdown Enter refinements | Planned M4-H1, M5 gate, and M6 continuous editing did not land | **Published 2026-09-25** |
 | `0.1.0-beta.2` | **Focused beta hardening:** make existing surfaces safer | Terminal save, input, drawing, recovery, installer, and Linux desktop fixes; scoped evidence | **Published 2026-10-11**; [verification](evidence/beta2-publication-2026-10-11.md) |
 | `0.1.0-beta.2.1` | **Scoped follow-up:** name retained save warnings, guard invalid word deletion, refuse known volatile Linux recovery roots, and record current-adapter and RTL evidence | No M4-H1, M5, or continuous-Markdown exit | **Published 2026-10-13**; [verification](evidence/beta2.1-publication-2026-10-13.md) |
-| `0.1.0-beta.3` | Production editor foundation and continuous Markdown | Complete M4-H1 matrix, M5 gate, and M6 continuous editing | After beta.2.1 |
+| `0.1.0-beta.2.2` | **Scoped follow-up:** bound retained save siblings and delete only a verified handle | No M4-H1, M5, or continuous-Markdown exit. #59 stays open on Unix | **Candidate** |
+| `0.1.0-beta.3` | Production editor foundation and continuous Markdown | Complete M4-H1 matrix, M5 gate, and M6 continuous editing | After beta.2.2 |
 | `0.1.0-rc.1` | Release candidate: install, update, full Markdown quality, matrices | M6 quality engine; M7 distribution; full platform matrices; dogfood window starts | After beta.3 |
 | `0.1.0` | First public-quality release | Every v0.1 requirement in REQUIREMENTS has evidence | After successful RC dogfood |
 | `0.2.x` and later | Post-release work only after explicit ratification | Deferred non-goals from REQUIREMENTS become in-scope only by decision | Not planned yet |
@@ -131,6 +135,18 @@ does not expand unsafe UI surface.
     siblings is not included: portable Unix deletion is still name-based, and
     a shared parent can race. Issues #44, #50, #51, #52, #53, #54, #59, and
     #60 stay open. No beta.3 exit criterion is marked Verified.
+
+### Toward `0.1.0-beta.2.2`
+
+8d. **Candidate.** A destination that already holds eight exact retained
+    `.noter-save-<32 lowercase hex>.tmp` names refuses another in-place save.
+    The refusal creates nothing, deletes nothing by name, leaves the open
+    document unreplaced, and leaves Save As available. A confirmed window or
+    terminal action removes a sibling only after reopening it, matching its
+    identity, and seeing one link. Windows deletes that handle. Unix keeps the
+    file. The Windows installer package sequence is 0.0.6. Issues #44, #50,
+    #51, #52, #53, #54, #59, and #60 stay open. No beta.3 exit criterion is
+    marked Verified.
 
 ### Toward `0.1.0-beta.3`
 

@@ -83,7 +83,7 @@ on Linux, Noter also adapts to session text scale and Omarchy palettes.
 
 ### Install a release
 
-[Download beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1)
+[Download beta.2.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.2)
 for Windows, Linux, and macOS (Intel and Apple Silicon). These commands select
 that release; you can also build from source below.
 The installer verifies the archive's SHA-256 checksum and installs `noter` for
@@ -92,15 +92,15 @@ your user. Download it, read it, then run it:
 Windows (PowerShell):
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2.1/scripts/install.ps1 -OutFile install-noter.ps1
-powershell -ExecutionPolicy Bypass -File .\install-noter.ps1 -Version 0.1.0-beta.2.1
+Invoke-WebRequest https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2.2/scripts/install.ps1 -OutFile install-noter.ps1
+powershell -ExecutionPolicy Bypass -File .\install-noter.ps1 -Version 0.1.0-beta.2.2
 ```
 
 macOS or Linux:
 
 ```sh
-curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2.1/scripts/install.sh
-sh install-noter.sh --version 0.1.0-beta.2.1
+curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2.2/scripts/install.sh
+sh install-noter.sh --version 0.1.0-beta.2.2
 ```
 
 It installs to `%LOCALAPPDATA%\Programs\Noter\bin` (added to your user
@@ -141,17 +141,24 @@ and update contracts are documented in [docs/INSTALLATION.md](docs/INSTALLATION.
 
 ## Project status
 
-**Source version:** `0.1.0-beta.2.1`
+**Source version:** `0.1.0-beta.2.2`
 
-[Beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1),
-published on 2026-10-13, is a scoped follow-up to the
-[beta.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2)
-hardening prerelease. Its
-[publication record](docs/evidence/beta2.1-publication-2026-10-13.md) identifies
-that tag. It names retained save siblings in the terminal, refuses
-known volatile Linux recovery roots, and keeps an invalid right-to-left cursor
-from deleting text. It does not finish the recovery matrix, the measured editor
-gate, or continuous Markdown editing. Keep backups during prerelease use.
+[Beta.2.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.2)
+is a scoped follow-up to the published
+[beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1)
+prerelease. It bounds retained save siblings and removes one only after a
+fresh identity and single-link check. Unix keeps that file. It does not finish
+the recovery matrix, the measured editor gate, or continuous Markdown editing.
+Issues
+[#44](https://github.com/blisspixel/noter/issues/44),
+[#50](https://github.com/blisspixel/noter/issues/50),
+[#51](https://github.com/blisspixel/noter/issues/51),
+[#52](https://github.com/blisspixel/noter/issues/52),
+[#53](https://github.com/blisspixel/noter/issues/53),
+[#54](https://github.com/blisspixel/noter/issues/54),
+[#59](https://github.com/blisspixel/noter/issues/59), and
+[#60](https://github.com/blisspixel/noter/issues/60)
+stay open. Keep backups during prerelease use.
 
 Beta.2, published on 2026-10-11, fixed beta.1's terminal save-failure,
 recovery, and terminal-control defects. Its

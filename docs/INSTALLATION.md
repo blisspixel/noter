@@ -2,25 +2,25 @@
 
 **Reviewed:** 2026-10-13
 
-**Guide version:** `0.1.0-beta.2.1`
+**Guide version:** `0.1.0-beta.2.2`
 
-This guide describes beta.2.1 source and its
-[prerelease](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1).
-Beta.2.1 is a scoped follow-up to
-[beta.2](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2).
-It names retained save siblings, refuses known volatile Linux recovery roots,
-and guards an invalid right-to-left word deletion. It does not complete the
-recovery matrix, the measured editor gate, or continuous Markdown editing.
-Keep backups during evaluation.
+This guide describes beta.2.2 source and its
+[prerelease](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.2).
+Beta.2.2 is a scoped follow-up to the published
+[beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1)
+prerelease. It bounds retained save siblings and removes one only after a
+fresh identity and single-link check. Unix keeps that file. It does not
+complete the recovery matrix, the measured editor gate, or continuous Markdown
+editing. Keep backups during evaluation.
 Windows and macOS artifacts are not yet platform-signed, and no self-updating
 release channel exists. Source installation remains supported. See the
 [release process](RELEASING.md).
 
 Beta.1's terminal preview has known save-failure, recovery, and terminal-control
-defects fixed in beta.2. Use beta.2.1 from an identified source checkout or a
+defects fixed in beta.2. Use beta.2.2 from an identified source checkout or a
 matching verified release artifact. The beta.2.1
 [publication record](evidence/beta2.1-publication-2026-10-13.md) verifies that
-tag. The beta.2
+earlier tag. The beta.2
 [publication record](evidence/beta2-publication-2026-10-11.md) remains the
 verification for that earlier tag. The [readiness record](RELEASE_READINESS.md)
 separates source observations from publication and native verification.
@@ -28,7 +28,7 @@ separates source observations from publication and native verification.
 ## Prerelease artifacts
 
 The artifacts are on the
-[beta.2.1 release page](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1).
+[beta.2.2 release page](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.2).
 Download an asset before executing it and verify its GitHub attestation.
 Published SHA-256 sidecars and
 the unified checksum list cover the source archive, platform archives, and
@@ -42,7 +42,7 @@ not a supported stable installer.
 
 ## Standalone binary install
 
-The examples below select the beta.2.1 tag and artifacts. You can also
+The examples below select the beta.2.2 tag and artifacts. You can also
 build the source checkout. The version-matched installer scripts
 install a binary without build tools. Download the script, read it, then run it;
 do not pipe a remote script into a shell.
@@ -50,15 +50,15 @@ do not pipe a remote script into a shell.
 Windows (PowerShell):
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2.1/scripts/install.ps1 -OutFile install-noter.ps1
-powershell -ExecutionPolicy Bypass -File .\install-noter.ps1 -Version 0.1.0-beta.2.1
+Invoke-WebRequest https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2.2/scripts/install.ps1 -OutFile install-noter.ps1
+powershell -ExecutionPolicy Bypass -File .\install-noter.ps1 -Version 0.1.0-beta.2.2
 ```
 
 macOS or Linux:
 
 ```sh
-curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2.1/scripts/install.sh
-sh install-noter.sh --version 0.1.0-beta.2.1
+curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2.2/scripts/install.sh
+sh install-noter.sh --version 0.1.0-beta.2.2
 ```
 
 The binary installer:
@@ -305,12 +305,12 @@ Examples:
 
 ```powershell
 .\scripts\install.ps1 -Check
-.\scripts\install.ps1 -Binary -Version 0.1.0-beta.2.1
+.\scripts\install.ps1 -Binary -Version 0.1.0-beta.2.2
 ```
 
 ```sh
 sh scripts/install.sh --check
-sh scripts/install.sh --binary --version 0.1.0-beta.2.1
+sh scripts/install.sh --binary --version 0.1.0-beta.2.2
 ```
 
 An explicit install root takes precedence, then `CARGO_INSTALL_ROOT` when set.

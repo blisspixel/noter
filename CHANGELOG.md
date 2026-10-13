@@ -6,6 +6,19 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+## 0.1.0-beta.2.2 - 2026-10-13
+
+Scoped follow-up to beta.2.1. This is not the beta.3 editor foundation, the
+continuous Markdown workflow, or the release candidate. Issues
+[#44](https://github.com/blisspixel/noter/issues/44),
+[#50](https://github.com/blisspixel/noter/issues/50),
+[#51](https://github.com/blisspixel/noter/issues/51),
+[#52](https://github.com/blisspixel/noter/issues/52),
+[#53](https://github.com/blisspixel/noter/issues/53),
+[#54](https://github.com/blisspixel/noter/issues/54),
+[#59](https://github.com/blisspixel/noter/issues/59), and
+[#60](https://github.com/blisspixel/noter/issues/60) remain open.
+
 - Refuse another save when a destination directory already holds eight retained
   `.noter-save-<hex>.tmp` siblings. The refusal leaves the open document
   unreplaced, does not delete those files, and leaves Save As available.
@@ -13,6 +26,8 @@ that candidate is frozen for publication.
   it and checking that it is still the same single-link object. Unix keeps the
   file because it cannot delete that object by handle.
   [#59](https://github.com/blisspixel/noter/issues/59) stays open.
+- Point cargo-wix at MSI package sequence 0.0.6 so this prerelease, whose
+  identifier is not a single integer, can build the Windows installer.
 
 ## 0.1.0-beta.2.1 - 2026-10-12
 
