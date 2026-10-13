@@ -2,26 +2,34 @@
 
 **Updated:** 2026-10-13
 
-**Build under test:** [beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1),
-tag `v0.1.0-beta.2.1` at `4753953bd1748089752b7a173230e4909a5a723c`, printing
-`noter 0.1.0-beta.2.1`. The
-[publication record](evidence/beta2.1-publication-2026-10-13.md) identifies that
-tag. Use that source checkout or a matching verified release artifact. Record the binary checksum
+**Build under test:** source version `0.1.0-beta.2.2`. Publication creates tag
+`v0.1.0-beta.2.2` on the reviewed main commit. Until that tag exists, build
+the source checkout that contains this version. The published
+[beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1)
+tag does not include the retained-sibling bound. Record the binary checksum
 for every report. Beta.1's terminal preview has known safety defects; do not
 use it for this round. The beta.2
 [publication record](evidence/beta2-publication-2026-10-11.md) identifies that
 earlier tag; the [readiness record](RELEASE_READINESS.md) retains remaining gates.
 
-## Current round: beta.2.1 follow-up
+## Current round: retained sibling bound
 
+- Save an existing file in one directory until eight exact
+  `.noter-save-<32 lowercase hex>.tmp` siblings remain. The next in-place save
+  must refuse, leave the open document unreplaced, and leave those files in
+  place. Save As to another directory must remain available.
+- On Windows, the confirmed removal action deletes only a reopened single-link
+  sibling. On Unix, the same action keeps the file.
+- Closing the terminal warning view must not delete files. An 80-column
+  terminal must still show that closing removes no files.
 - On Linux, save an existing file from the terminal and press Ctrl+R. The
   warning must name the retained `.noter-save-*.tmp` sibling. Closing the
   view must leave both that sibling and the saved file unchanged.
 - If `XDG_DATA_HOME` is on tmpfs, the terminal must say private crash recovery
   is unavailable, and an explicit save must still write the note. Do not point
   a real document's recovery root at a memory filesystem to try this.
-- On Hyprland, the hidden-workspace check below is still required. Beta.2.1
-  does not claim that stall is resolved.
+- On Hyprland, the hidden-workspace check below is still required. This
+  candidate does not claim that stall is resolved.
 
 ## Previous round: Linux integration and beta hardening
 

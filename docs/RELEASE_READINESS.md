@@ -1,6 +1,6 @@
 # Beta.2 Hardening Readiness
 
-**Updated:** 2026-10-11
+**Updated:** 2026-10-13
 
 **Published checkpoint:** focused beta.2 prerelease, approved and published on
 2026-10-11 from `9cdaa3b8cef9a85259236302654cbf40c34e7339`.
@@ -8,7 +8,10 @@ The [publication record](evidence/beta2-publication-2026-10-11.md) binds the
 [release](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2), passing
 CI, public assets, provenance, and installed version to that source. This record
 retains preparation history and deferred checks. The later scoped publication is
-[0.1.0-beta.2.1](evidence/beta2.1-publication-2026-10-13.md). First-release
+[0.1.0-beta.2.1](evidence/beta2.1-publication-2026-10-13.md).
+Source version `0.1.0-beta.2.2` is the next scoped candidate. It is not a
+publication record until the release workflow binds its tag. It does not close
+issues #44, #50, #51, #52, #53, #54, #59, or #60. First-release
 requirements remain in [REQUIREMENTS.md](REQUIREMENTS.md) and sequence in
 [ROADMAP.md](ROADMAP.md).
 

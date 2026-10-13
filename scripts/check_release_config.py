@@ -38,7 +38,7 @@ PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 REVIEWED_RELEASE_WORKFLOW_SHA256 = (
     "47d59e2b0ed6bc38dd91596e90072d43762db04667aa3c2fcc3b7498a279a8b5"
 )
-REVIEWED_WIX_SHA256 = "ad955b84ea360907742030e21487695b7dad7237b5bba8027f885bdf8b5609fb"
+REVIEWED_WIX_SHA256 = "e5d076bdc22fb9defddd69fda19150c50a48d6a82abba227b2d059de87d3d986"
 REVIEWED_CI_WORKFLOW_SHA256 = (
     "6236b428436955612b66c386146e22966e1b856c6f79a41276cec2c20614ad7c"
 )
@@ -49,7 +49,7 @@ REVIEWED_WINDOWS_CLOUD_FILTER_SCRIPT_SHA256 = (
     "11fe78e1c8347a546c7632338249d5bd89e907c169f5224736160886721a0e80"
 )
 REVIEWED_RELEASE_ARTIFACT_VALIDATOR_SHA256 = (
-    "c5ba2573bd7312f832998996966be06d3a30e8b2bba226306fba671fdb4f3866"
+    "34b529f7f876f513c3bc3e1f59a249007eb28e01c95a4984eb917500f20ac453"
 )
 WIX_NAMESPACE = {"wix": "http://schemas.microsoft.com/wix/2006/wi"}
 WIX_XML_COMMENT = re.compile(rb"<!--.*?-->", flags=re.DOTALL)
@@ -158,7 +158,7 @@ def validate_manifest(text: str) -> list[str]:
     errors: list[str] = []
     requirements = {
         'cargo-dist-version = "0.32.0"': "pinned cargo-dist version",
-        'version = "0.1.0-beta.2.1"': "prerelease package version",
+        'version = "0.1.0-beta.2.2"': "prerelease package version",
         'installers = ["shell", "powershell", "homebrew", "msi"]': (
             "cross-platform installer set"
         ),
@@ -203,7 +203,7 @@ def validate_manifest(text: str) -> list[str]:
         if dist.get("cargo-cyclonedx") is not False:
             errors.append("cargo-dist generic SBOM generation must remain disabled")
         wix_metadata = manifest["package"]["metadata"].get("wix")
-        if not isinstance(wix_metadata, dict) or wix_metadata.get("version") != "0.0.5":
+        if not isinstance(wix_metadata, dict) or wix_metadata.get("version") != "0.0.6":
             errors.append(
                 "cargo-wix version override must stay the numeric MSI package sequence"
             )
@@ -862,9 +862,9 @@ def validate_wix(contents: bytes) -> list[str]:
         errors.append(
             "MSI product and package identities must rotate per release build"
         )
-    if product.get("Version") != "0.0.5":
+    if product.get("Version") != "0.0.6":
         errors.append("MSI package version differs from its monotonic release sequence")
-    if display_version.get("Value") != "0.1.0-beta.2.1":
+    if display_version.get("Value") != "0.1.0-beta.2.2":
         errors.append("MSI display version differs from the Noter package version")
     if major_upgrade.get("AllowSameVersionUpgrades") is not None:
         errors.append("MSI must not permit ambiguous same-version upgrades")
@@ -937,15 +937,15 @@ def validate_license_inventory(
                 "CI test job differs from its reviewed cross-platform program"
             )
     for text, expected, description in [
-        (manifest, 'version = "0.1.0-beta.2.1"', "root prerelease version"),
+        (manifest, 'version = "0.1.0-beta.2.2"', "root prerelease version"),
         (
             manifest,
-            'noter-platform = { version = "=0.1.0-beta.2.1"',
+            'noter-platform = { version = "=0.1.0-beta.2.2"',
             "path dependency prerelease version",
         ),
         (
             platform_manifest,
-            'version = "0.1.0-beta.2.1"',
+            'version = "0.1.0-beta.2.2"',
             "platform crate prerelease version",
         ),
         (about_config, "ignore-dev-dependencies = true", "runtime-only inventory"),
