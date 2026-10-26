@@ -3,6 +3,22 @@ all-features = true
 
 [advisories]
 version = 2
+ignore = [
+    # RUSTSEC-2026-0370: zvariant is unmaintained as standalone crate; merged into zbus 6.0 wire module.
+    # Transitive dependency of accesskit_unix 0.21.1 / atspi-common 0.13.0 via eframe.
+    # No standalone patched version exists; tracked for upstream accesskit upgrade (Issue #84).
+    "RUSTSEC-2026-0370",
+
+    # RUSTSEC-2026-0371: zbus_names is unmaintained as standalone crate; merged into zbus 6.0 names module.
+    # Transitive dependency of accesskit_unix 0.21.1 / atspi-common 0.13.0 via eframe.
+    # No standalone patched version exists; tracked for upstream accesskit upgrade (Issue #84).
+    "RUSTSEC-2026-0371",
+
+    # RUSTSEC-2026-0372: zvariant_derive is unmaintained as standalone crate; merged into zbus 6.0.
+    # Transitive dependency of accesskit_unix 0.21.1 / atspi-common 0.13.0 via eframe.
+    # No standalone patched version exists; tracked for upstream accesskit upgrade (Issue #84).
+    "RUSTSEC-2026-0372",
+]
 
 [licenses]
 version = 2
