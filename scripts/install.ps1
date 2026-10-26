@@ -271,7 +271,7 @@ function Install-FromSource {
             $invalidResult.ExitCode -ne 2 -or
             -not [string]::IsNullOrEmpty($invalidResult.StdOut) -or
             -not $invalidResult.StdErr.Contains('unknown theme `invalid`; expected system, light, dark, green, or amber') -or
-            -not $invalidResult.StdErr.Contains('Usage:')
+            -not $invalidResult.StdErr.Contains('Try `noter --help`.')
         ) {
             throw 'The staged executable did not preserve the release command-line error contract.'
         }

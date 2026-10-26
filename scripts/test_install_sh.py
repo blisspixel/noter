@@ -191,7 +191,7 @@ class SourceInstallerTests(unittest.TestCase):
             "#!/bin/sh\n"
             'case "$1" in\n'
             "  --version) printf 'noter 0.1.0-beta.1\\n' ;;\n"
-            "  --theme) printf 'unknown theme `invalid`; expected system, light, dark, green, or amber\\nUsage: noter\\n' >&2; exit 2 ;;\n"
+            "  --theme) printf 'unknown theme `invalid`; expected system, light, dark, green, or amber\\nTry `noter --help`.\\n' >&2; exit 2 ;;\n"
             "esac\n"
         )
         self.built.chmod(0o755)
@@ -257,6 +257,17 @@ class SourceInstallerTests(unittest.TestCase):
         self.assertEqual(self.installed.read_text(), "last working binary")
         self.assertFalse(Path(self.cargo_root_log.read_text()).exists())
 
+    def test_old_error_contract_preserves_previous_executable(self) -> None:
+        self.built.write_text(
+            self.built.read_text().replace("Try `noter --help`.", "Usage: noter")
+        )
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("command-line error contract", result.stderr)
+        self.assertEqual(self.installed.read_text(), "last working binary")
+        self.assertFalse(Path(self.cargo_root_log.read_text()).exists())
+        self.assertFalse(list(self.bin_dir.glob(".noter.install.????????")))
+
     def test_verified_source_binary_replaces_previous_executable(self) -> None:
         result = self.install()
 
@@ -285,6 +296,11 @@ def embedded_heredoc(script: str, function_name: str) -> str:
 
 
 class DesktopAssetTests(unittest.TestCase):
+    def test_installer_guidance_uses_no_stale_release_example(self) -> None:
+        script = Path(__file__).with_name("install.sh").read_text(encoding="utf-8")
+        self.assertNotIn("0.1.0-beta.1", script)
+        self.assertIn("pass --version VERSION", script)
+
     def test_installer_embeds_the_packaging_desktop_files(self) -> None:
         script = Path(__file__).with_name("install.sh").read_text(encoding="utf-8")
         root = Path(__file__).resolve().parents[1]
@@ -332,8 +348,15 @@ class LinuxDesktopInstallerTests(ReleaseInstallerTests):
         self.assertNotIn("@EXEC@", desktop)
         self.assertIn("noter-installer", self.icon_path().read_text(encoding="utf-8"))
 
+        self.assertIn(f"Installed icon '{self.icon_path()}'.", result.stdout)
+        recovery = self.data_home / "noter" / "recovery" / "records" / "fixture"
+        recovery.parent.mkdir(parents=True)
+        recovery.write_bytes(b"private unsaved fixture")
         removed = self.uninstall(spaced)
         self.assertEqual(removed.returncode, 0, removed.stderr)
+        self.assertIn("private recovery records were not touched", removed.stdout)
+        self.assertIn("docs/INSTALLATION.md#uninstall-a-source-build", removed.stdout)
+        self.assertEqual(recovery.read_bytes(), b"private unsaved fixture")
         self.assertFalse(binary.exists())
         self.assertFalse(self.desktop_path().exists())
         self.assertFalse(self.icon_path().exists())

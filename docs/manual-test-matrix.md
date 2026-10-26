@@ -191,6 +191,11 @@ full manual matrix.
 - [ ] TXT-06 Combining marks survive navigation, selection, clipboard, save, and
   undo.
 - [ ] TXT-07 Bidirectional samples render and edit without corruption or panic.
+  For #69, click within single-script Arabic and Hebrew words and mixed lines
+  ending in Latin text or digits, in Text and Markdown modes. Verify the drawn
+  caret, reported column, insertion and Backspace target agree; save and compare
+  exact bytes, then Undo and verify the original bytes. Record fallback font,
+  display scale, and platform. Current window behavior is known defective.
 - [ ] TXT-08 A 100,000-character single line remains bounded and recoverable.
 
 ## 7. Accessibility and keyboard

@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-10-13
+**Updated:** 2026-10-26
 
 **Current checkpoint:** published `0.1.0-beta.2.2` on 2026-10-13 from
 `e835efb9a7efd2f3d417d6e8558d90c59bed8259`.
@@ -1151,6 +1151,30 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 - No critical or high data-safety or security issue is open.
 - Two people, including one non-primary developer and one non-Windows user, use
   the candidate for at least 14 days without data loss.
+
+## Resumed backlog review (2026-10-26)
+
+The published checkpoint remains beta.2.2. PR #86 integrated repository hygiene
+and the scoped dependency-audit policy. Its main CI passed lint, native tests,
+coverage, and thirteen mutation partitions; Windows partition 3 exceeded the
+90-minute job limit. The resumed work expands Windows to twelve complete
+partitions with the same scope and time bound. Exact-head CI must establish
+the result; the cancelled run is not green evidence.
+
+- Current-editor correctness and safety remain first: visible RTL caret and
+  hit-testing (#69), accessible source mapping (#60), recovery discoverability
+  (#70), persistent readable warnings (#68), and terminal restoration (#72).
+- Finish bounded usability defects without changing save policy: terminal
+  conflict decisions (#71), help sizing (#74), failed-save wording (#75), and
+  display startup diagnostics (#73).
+- Installer guidance (#76) and concise CLI help/errors (#81) are implemented in
+  the resumed work; exact-head CI and review are required before integration.
+- Toolchain maintenance (#77) and the interface plan (#83, with #78 through #82)
+  remain open. Theme and receipt proposals need contract alignment and their
+  own tests and native visual evidence.
+- M4-H1 (#50) still precedes the M5 decision (#51), continuous Markdown (#52),
+  quality engine (#54), and RC platform/distribution/dogfood evidence (#53).
+  Hyprland verification (#44) and Unix retained-file cleanup (#59) stay open.
 
 ## Immediate backlog (maps to version train)
 

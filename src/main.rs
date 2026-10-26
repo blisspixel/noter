@@ -29,7 +29,7 @@ use noter::core::file_observation::preflight_regular_file;
 use noter::core::terminal_text::escaped_cli_path;
 use theme::AppTheme;
 
-const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --gui\n  --tui\n  --theme system|light|dark|green|amber\n  --view text|markdown\n  -h, --help\n  -V, --version\n\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` shows the local update status and makes no network request.\nOption values are case-insensitive.\n\nWithout --gui or --tui, Noter opens a window. On non-macOS Unix, such as\nLinux or BSD, with no DISPLAY, WAYLAND_DISPLAY, or WAYLAND_SOCKET and a\nterminal on standard input and output, it opens the terminal interface\ninstead, and `noter update` prints its status.";
+const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --gui            open a desktop window\n  --tui            open the terminal editor\n  --theme NAME     startup theme: system, light, dark, green, amber\n  --view NAME      text (exact source) or markdown\n  -h, --help       show this help\n  -V, --version    show the version\n\nWindow defaults: saved theme or System; view follows the file type.\nTerminal defaults: Dark theme and Text Mode.\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` shows the local update status and makes no network request.\nOption values are case-insensitive.\n\nWithout --gui or --tui, Noter opens a window. On non-macOS Unix, such as\nLinux or BSD, with no DISPLAY, WAYLAND_DISPLAY, or WAYLAND_SOCKET and a\nterminal on standard input and output, it opens the terminal interface\ninstead, and `noter update` prints its status.";
 const THEME_ERROR_VALUES: &str = "system, light, dark, green, or amber";
 
 fn main() -> eframe::Result {
@@ -38,7 +38,7 @@ fn main() -> eframe::Result {
         Err(message) => {
             write_line(
                 std::io::stderr().lock(),
-                &format!("noter: {message}\n\n{HELP}"),
+                &format!("noter: {message}\nTry `noter --help`."),
             );
             std::process::exit(2);
         }
@@ -61,10 +61,7 @@ fn main() -> eframe::Result {
     if let Some(path) = launch.initial_path.as_deref()
         && let Err(message) = check_document_argument(path)
     {
-        write_line(
-            std::io::stderr().lock(),
-            &format!("noter: {message}\n\n{HELP}"),
-        );
+        write_line(std::io::stderr().lock(), &format!("noter: {message}"));
         std::process::exit(2);
     }
 
