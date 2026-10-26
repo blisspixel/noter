@@ -58,6 +58,9 @@ powershell -ExecutionPolicy Bypass -File .\install-noter.ps1 -Version 0.1.0-beta
 
 macOS or Linux:
 
+The binary installer needs `curl`, `tar`, and `xz` (`xz-utils` on Debian and
+Ubuntu), plus `sha256sum` or `shasum` for checksum verification.
+
 ```sh
 curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2.2/scripts/install.sh
 sh install-noter.sh --version 0.1.0-beta.2.2
@@ -238,9 +241,9 @@ noter update
 | `noter --tui [FILE]` | runs | Opens the document in interactive Terminal UI (TUI) mode |
 | `noter --gui [FILE]` | runs | Forces graphical desktop interface mode |
 | `noter update` | runs | Opens the local update status, titled `Update status - Noter`, or prints it where the terminal interface would open |
-| Unknown option, invalid or missing option value, second document path | 2 | One line on standard error, then usage |
+| Unknown option, invalid or missing option value, second document path | 2 | One error line on standard error, then a pointer to `noter --help` |
 | A Linux or BSD window library cannot be loaded | 1 | The missing library and the packages that provide it |
-| FILE missing, a directory, or unreadable | 2 | `noter: cannot open ...`, then usage |
+| FILE missing, a directory, or unreadable | 2 | `noter: cannot open ...` on one line; no help block |
 
 `--theme system|light|dark|green|amber` and `--view text|markdown` select the
 startup theme and view. Their values are accepted in any letter case. `--` ends

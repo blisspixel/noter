@@ -1113,11 +1113,14 @@ search. Collections contribute their first face. The first frame may draw a
 replacement box for a character whose font is still loading; the thread
 requests a repaint when fonts arrive.
 
-egui shapes each same-font run with HarfBuzz rules, so joining, ligatures, and
-a single-direction right-to-left run lay out correctly. It does not apply the
-Unicode bidirectional algorithm across runs or split runs by script, so a line
-that mixes directions is not reordered. That stays with the production text
-engine in section 9.3.
+egui shapes each same-font run with HarfBuzz rules for joining and ligatures.
+The current adapter has known RTL accessible-text duplication (#60) and visible
+caret/hit-testing defects (#69), including single-script lines: an edit can
+change a different letter from the one beside the drawn caret. Single-direction
+RTL editing is not verified. It also does not apply the Unicode bidirectional
+algorithm across runs or split runs by script, so mixed-direction lines are not
+reordered. Correct source mapping and editing remain production text-engine
+requirements in section 9.3.
 
 ## 12. Native Markdown architecture
 

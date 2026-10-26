@@ -21,7 +21,9 @@ fn invalid_arguments_exit_unsuccessfully_with_actionable_guidance() {
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8(output.stderr).expect("stderr should be valid UTF-8");
     assert!(stderr.contains("unknown theme `blue`; expected system, light, dark, green, or amber"));
-    assert!(stderr.contains("Usage:"));
+    assert_eq!(stderr.lines().count(), 2);
+    assert!(stderr.ends_with("Try `noter --help`.\n"));
+    assert!(!stderr.contains("Usage:"));
 }
 
 #[test]
@@ -31,7 +33,17 @@ fn help_and_version_exit_successfully_without_starting_the_gui() {
     assert!(help.stderr.is_empty());
     let help_text = String::from_utf8(help.stdout).expect("help should be valid UTF-8");
     assert!(help_text.contains("noter [OPTIONS] [--] [FILE]"));
-    assert!(help_text.contains("--theme system|light|dark|green|amber"));
+    assert!(help_text.contains("--theme NAME     startup theme:"));
+    assert!(help_text.lines().all(|line| line.chars().count() <= 80));
+    for description in [
+        "open a desktop window",
+        "open the terminal editor",
+        "text (exact source) or markdown",
+        "show this help",
+        "show the version",
+    ] {
+        assert!(help_text.contains(description));
+    }
 
     let version = run_noter(["--version"]);
     assert!(version.status.success());
@@ -64,4 +76,30 @@ fn non_unicode_option_exits_with_a_controlled_error_instead_of_panicking() {
     let stderr = String::from_utf8(output.stderr).expect("stderr should be valid UTF-8");
     assert!(stderr.contains("option names must be valid Unicode"));
     assert!(!stderr.contains("panicked"));
+}
+
+#[test]
+fn usage_errors_are_two_lines_and_file_errors_are_one_line() {
+    for arguments in [
+        vec!["--theme", "neon"],
+        vec!["--bogus"],
+        vec!["--gui", "--tui"],
+    ] {
+        let output = run_noter(arguments);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8(output.stderr).expect("valid stderr");
+        assert_eq!(stderr.lines().count(), 2);
+        assert!(stderr.ends_with("Try `noter --help`.\n"));
+    }
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let missing = temporary.path().join("missing-界\u{202e}\n.md");
+    let output = run_noter([missing.as_os_str()]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("valid stderr");
+    assert_eq!(stderr.lines().count(), 1);
+    assert!(stderr.starts_with("noter: cannot open"));
+    assert!(!stderr.contains("Usage:"));
+    assert!(!stderr.contains('\u{202e}'));
 }

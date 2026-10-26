@@ -12,7 +12,7 @@ usage() {
 Usage: sh install.sh [OPTIONS]
 
 Options:
-  --version VERSION  Install this release, for example 0.1.0-beta.1
+  --version VERSION  Install the specified release version
                      (default: the newest release, including prereleases)
   --root PATH        Install into PATH/bin
   --binary           Download a release even when run from a checkout
@@ -41,7 +41,7 @@ absolute() {
 # releases/latest skips prereleases, so it cannot find one here.
 newest_release_tag() {
     releases=$(download_to_stdout "https://api.github.com/repos/$repo/releases?per_page=1") ||
-        fail "could not ask GitHub for the newest release. GitHub limits anonymous requests; wait, or pass --version 0.1.0-beta.1."
+        fail "could not ask GitHub for the newest release. GitHub limits anonymous requests; wait, or pass --version VERSION for a known release."
     printf '%s\n' "$releases" |
         sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
         head -n 1
@@ -320,6 +320,7 @@ install_linux_desktop() {
     }
     mv -f "$icon_stage" "$icon_path" || fail "cannot install the icon."
     refresh_desktop_database "$apps_dir"
+    printf "Installed icon '%s'.\n" "$icon_path"
     printf "Installed desktop entry '%s'.\n" "$desktop_path"
 }
 
@@ -405,7 +406,7 @@ install_from_source() {
     [ "$invalid_status" -eq 2 ] &&
         [ ! -s "$invalid_stdout" ] &&
         grep -F 'unknown theme `invalid`; expected system, light, dark, green, or amber' "$invalid_stderr" >/dev/null &&
-        grep -F 'Usage:' "$invalid_stderr" >/dev/null ||
+        grep -F 'Try `noter --help`.' "$invalid_stderr" >/dev/null ||
         fail "the staged executable did not preserve the release command-line error contract."
     [ ! -d "$bin_dir/noter" ] || fail "the install destination is a directory."
     mv -f "$stage_dir/noter" "$bin_dir/noter"
@@ -578,10 +579,11 @@ main() {
             printf "Would remove '%s'.\n" "$target_binary"
         elif [ -e "$target_binary" ]; then
             rm -f "$target_binary"
-            printf "Removed '%s'. Documents and settings were not touched.\n" "$target_binary"
+            printf "Removed '%s'. Documents, settings, and private recovery records were not touched.\n" "$target_binary"
         else
             printf "No Noter binary at '%s'.\n" "$target_binary"
         fi
+        printf "Recovery locations and removal guidance: https://github.com/blisspixel/noter/blob/main/docs/INSTALLATION.md#uninstall-a-source-build\n"
         remove_linux_desktop
         return
     fi

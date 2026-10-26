@@ -54,6 +54,7 @@ $global:LASTEXITCODE = 0
         [PSCustomObject]@{ Source = $script:fakeCargo }
     }
     $script:reportedVersion = 'noter wrong-version'
+    $script:errorGuidance = 'Try `noter --help`.'
     function Invoke-NoterCli {
         param([string]$Binary, [string[]]$Arguments)
         if ($Arguments[0] -eq '--version') {
@@ -62,7 +63,7 @@ $global:LASTEXITCODE = 0
         return [PSCustomObject]@{
             ExitCode = 2
             StdOut = ''
-            StdErr = 'unknown theme `invalid`; expected system, light, dark, green, or amber. Usage:'
+            StdErr = 'unknown theme `invalid`; expected system, light, dark, green, or amber. ' + $script:errorGuidance
         }
     }
 
@@ -83,6 +84,24 @@ $global:LASTEXITCODE = 0
     }
 
     $script:reportedVersion = 'noter 0.1.0-beta.1'
+    $script:errorGuidance = 'Usage: noter'
+    try {
+        Install-FromSource -ResolvedSource $source -ResolvedInstallRoot (Join-Path $fixture 'install')
+        throw 'An obsolete staged error contract unexpectedly installed.'
+    } catch {
+        if (-not $_.Exception.Message.Contains('command-line error contract')) { throw }
+    }
+    if ((Get-Content -LiteralPath $installed -Raw) -ne 'last working binary') {
+        throw 'A failed error-contract check replaced the working executable.'
+    }
+    $stageRoot = Get-Content -LiteralPath $env:TEST_CARGO_ROOT_LOG -Raw
+    if ((Test-Path -LiteralPath $stageRoot) -or
+        @(Get-ChildItem -LiteralPath $binDir | Where-Object {
+            $_.Name -match '^noter\.exe\.new\.[0-9a-f]{32}$'
+        }).Count -ne 0) {
+        throw 'A failed error-contract check left a private stage.'
+    }
+    $script:errorGuidance = 'Try `noter --help`.'
     Install-FromSource -ResolvedSource $source -ResolvedInstallRoot (Join-Path $fixture 'install') | Out-Null
     if ((Get-Content -LiteralPath $installed -Raw) -ne 'new verified binary') {
         throw 'A verified source binary did not replace the old executable.'

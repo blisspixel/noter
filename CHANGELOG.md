@@ -6,6 +6,17 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Expand Windows mutation testing to twelve complete partitions after a cold
+  runner exceeded the unchanged 90-minute bound; retain the full mutation scope.
+
+- Keep command-line usage errors to two lines with a help pointer, describe each
+  public option in help, and omit help from file-open errors (#81).
+- Document binary-installer extraction prerequisites, remove stale release
+  examples, announce the Linux icon, and name retained private recovery records
+  on uninstall (#76).
+- Disclose the current window RTL caret and hit-testing defect alongside the
+  accessible-text defect and extend the native verification case (#69).
+
 - Add session start and cleanup protocol (`Start tidy, stop tidy`) to repository
   working agreement.
 - Update `clipboard-win` to 5.4.3 and configure scoped cargo-audit policy for

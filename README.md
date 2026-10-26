@@ -50,8 +50,11 @@ dossier.
   interface measures wide and combining characters and relies on the
   terminal's own layout. Current source has a known
   [RTL accessible-text duplication defect](https://github.com/blisspixel/noter/issues/60)
-  under some fallback fonts; assistive-technology caret and selection positions
-  can be incorrect for those runs.
+  under some fallback fonts, and a
+  [visible RTL caret and hit-testing defect](https://github.com/blisspixel/noter/issues/69).
+  Window edits can change a different letter from the one beside the drawn
+  caret, including within a single-script line. Use care when editing RTL text;
+  Undo restores an unintended edit.
 - **One Document, Full Focus:** Single-document ergonomics instead of a
   workspace that wants to become a platform.
 
@@ -97,6 +100,9 @@ powershell -ExecutionPolicy Bypass -File .\install-noter.ps1 -Version 0.1.0-beta
 ```
 
 macOS or Linux:
+
+The binary installer needs `curl`, `tar`, and `xz` (`xz-utils` on Debian and
+Ubuntu), plus `sha256sum` or `shasum` for checksum verification.
 
 ```sh
 curl -fsSLo install-noter.sh https://raw.githubusercontent.com/blisspixel/noter/v0.1.0-beta.2.2/scripts/install.sh
