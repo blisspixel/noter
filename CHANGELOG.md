@@ -6,6 +6,12 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Add session start and cleanup protocol (`Start tidy, stop tidy`) to repository
+  working agreement.
+- Update `clipboard-win` to 5.4.3 and configure scoped cargo-audit policy for
+  unmaintained transitive `zbus_names`, `zvariant`, and `zvariant_derive`
+  advisories merged upstream into `zbus 6.0`.
+
 ## 0.1.0-beta.2.2 - 2026-10-13
 
 Scoped follow-up to beta.2.1. This is not the beta.3 editor foundation, the
