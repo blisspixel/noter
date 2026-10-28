@@ -24,7 +24,7 @@ RELEASE_TARGETS = (
     "x86_64-unknown-linux-gnu",
 )
 TARGET_RUNNERS = {
-    "aarch64-apple-darwin": "macos-14",
+    "aarch64-apple-darwin": "macos-15",
     "x86_64-apple-darwin": "macos-15-intel",
     "x86_64-pc-windows-msvc": "windows-2022",
     "x86_64-unknown-linux-gnu": "ubuntu-22.04",
