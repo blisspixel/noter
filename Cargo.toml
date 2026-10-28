@@ -155,6 +155,9 @@ dispatch-releases = true
 # their deterministic drift checks.
 allow-dirty = ["ci", "msi"]
 
+[workspace.metadata.dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+
 [workspace.metadata.dist.github-action-commits]
 "actions/checkout" = "3d3c42e5aac5ba805825da76410c181273ba90b1"
 "actions/upload-artifact" = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
