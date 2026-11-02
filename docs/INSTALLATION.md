@@ -236,13 +236,14 @@ noter update
 | --- | --- | --- |
 | `noter --version`, `noter -V` | 0 | Prints `noter <version>` and exits |
 | `noter --help`, `noter -h`, `noter update --help` | 0 | Prints the usage block and exits |
-| `noter` | runs | Opens an untitled document in a window, or in the terminal interface on a headless Linux or BSD terminal |
+| `noter` | runs, or 1 | Opens an untitled document in a window, or in the terminal interface on a headless Linux or BSD terminal. With no terminal and no reachable display, prints a short explanation and exits 1 |
 | `noter FILE` | runs | Opens an existing readable file |
 | `noter --tui [FILE]` | runs | Opens the document in interactive Terminal UI (TUI) mode |
-| `noter --gui [FILE]` | runs | Forces graphical desktop interface mode |
-| `noter update` | runs | Opens the local update status, titled `Update status - Noter`, or prints it where the terminal interface would open |
+| `noter --gui [FILE]` | runs, or 1 | Forces the desktop window. On Linux or BSD with no reachable display, prints the same short explanation and exits 1 |
+| `noter update` | 0 or runs | Prints the local update status when no display is available or a named display cannot be reached, including when standard input is not a terminal. Otherwise opens it, titled `Update status - Noter` |
 | Unknown option, invalid or missing option value, second document path | 2 | One error line on standard error, then a pointer to `noter --help` |
 | A Linux or BSD window library cannot be loaded | 1 | The missing library and the packages that provide it |
+| A Linux or BSD display is missing, or the named display cannot be opened | 1 | A short explanation and `noter --tui`. The terminal interface does not open by itself |
 | FILE missing, a directory, or unreadable | 2 | `noter: cannot open ...` on one line; no help block |
 
 `--theme system|light|dark|green|amber` and `--view text|markdown` select the
@@ -252,12 +253,17 @@ option parsing so a document path may begin with `-`.
 Without `--gui` or `--tui`, Noter opens a window. On Linux, the BSDs, and other
 non-macOS Unix systems, where windows need an X11 or Wayland display server, a
 launch with none of `DISPLAY`, `WAYLAND_DISPLAY`, or `WAYLAND_SOCKET` set to a
-non-empty value
-whose standard input and standard output are both interactive terminals opens
-the terminal interface instead, such as over SSH. `noter update` in that
-situation prints the update status to standard output and exits. macOS and
-Windows always open a window unless `--tui` is given. `--gui` and `--tui`
-together are an argument error.
+non-empty value, and whose standard input and standard output are both
+interactive terminals, opens the terminal interface instead, such as over SSH.
+`noter update` prints the update status to standard output and exits 0 when no
+display variable is set, whether or not standard input is a terminal, and when
+a named display cannot be reached. A display that opens still shows the status
+window. A normal launch with no display variable and no interactive terminal,
+`--gui` with no display variable, or a named display that cannot be reached,
+prints a short explanation and `noter --tui`, then exits 1. It does not open
+the terminal interface.
+macOS and Windows always open a window unless `--tui` is given. `--gui` and
+`--tui` together are an argument error.
 
 Argument mistakes fail on the command line. Problems with a file's *content*,
 such as invalid UTF-8 or a document above the current interactive size limit,
@@ -446,7 +452,8 @@ root. Use that same root for future updates and uninstallation.
 `Help > Check for Updates` and `noter update` open the same local status dialog.
 The current dialog explains that Noter does not check in the background and can
 open the GitHub releases page only after an explicit user action. It does not
-query an API, download an artifact, or replace the application.
+query an API, download an artifact, or replace the application. When that
+window cannot open, `noter update` prints the same status and exits.
 
 A session started by `noter update` names its window `Update status - Noter`
 until the status is closed, so the command is not mistaken for a blank editor.

@@ -34,6 +34,10 @@ fn help_and_version_exit_successfully_without_starting_the_gui() {
     let help_text = String::from_utf8(help.stdout).expect("help should be valid UTF-8");
     assert!(help_text.contains("noter [OPTIONS] [--] [FILE]"));
     assert!(help_text.contains("--theme NAME     startup theme:"));
+    assert!(
+        help_text.contains("`noter update` prints its status whenever that window cannot open.")
+    );
+    assert!(help_text.contains("prints a short explanation instead of a toolkit error."));
     assert!(help_text.lines().all(|line| line.chars().count() <= 80));
     for description in [
         "open a desktop window",
@@ -102,4 +106,55 @@ fn usage_errors_are_two_lines_and_file_errors_are_one_line() {
     assert!(stderr.starts_with("noter: cannot open"));
     assert!(!stderr.contains("Usage:"));
     assert!(!stderr.contains('\u{202e}'));
+}
+
+/// Runs Noter with no X11 or Wayland display and with standard streams that
+/// are not terminals. `Command::output` closes standard input and captures
+/// the other two streams.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn run_noter_without_display<I, S>(arguments: I) -> Output
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    Command::new(env!("CARGO_BIN_EXE_noter"))
+        .args(arguments)
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("WAYLAND_SOCKET")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("the Noter executable should run")
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+fn headless_update_prints_status_without_opening_a_window() {
+    let output = run_noter_without_display(["update"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be valid UTF-8");
+    assert!(stdout.contains(&format!("noter {}", env!("CARGO_PKG_VERSION"))));
+    assert!(stdout.contains("Noter does not check for updates in the background."));
+    assert!(stdout.contains("https://github.com/blisspixel/noter/releases"));
+    assert!(!stdout.contains("WinitEventLoop"));
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+fn headless_launch_explains_a_missing_display_without_a_toolkit_dump() {
+    for arguments in [Vec::<&str>::new(), vec!["--gui"]] {
+        let output = run_noter_without_display(arguments);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr should be valid UTF-8");
+        assert!(stderr.contains("the graphical display is missing or could not be opened."));
+        assert!(stderr.contains("Or use the terminal interface: noter --tui"));
+        assert!(!stderr.contains("opening the terminal interface"));
+        assert!(!stderr.contains("tui error"));
+        assert!(!stderr.contains("WinitEventLoop"));
+        assert!(!stderr.contains("XOpenDisplayFailed"));
+        assert!(!stderr.contains("os error at"));
+    }
 }

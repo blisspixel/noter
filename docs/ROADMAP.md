@@ -1164,13 +1164,12 @@ the result; the cancelled run is not green evidence.
 - Current-editor correctness and safety remain first: visible RTL caret and
   hit-testing (#69), accessible source mapping (#60), recovery discoverability
   (#70), and persistent readable warnings (#68).
-- `SIGTERM` leaves the alternate screen, turns mouse reporting off, and
-  restores cooked terminal settings (#72).
-- The terminal shortcut bar and help overlay fit an 80-column terminal
-  (#89, #74).
+- `SIGTERM` restores the terminal (#72). The terminal shortcut bar and help
+  overlay fit an 80-column terminal (#89, #74). A missing or unreachable
+  display prints a plain explanation, and `noter update` prints its status
+  without a window (#73).
 - Finish bounded usability defects without changing save policy: terminal
-  conflict decisions (#71), failed-save wording (#75), and display startup
-  diagnostics (#73).
+  conflict decisions (#71) and failed-save wording (#75).
 - Installer guidance (#76) and concise CLI help/errors (#81) are implemented in
   the resumed work; exact-head CI and review are required before integration.
 - Toolchain maintenance (#77) and the interface plan (#83, with #78 through #82)

@@ -29,7 +29,7 @@ use noter::core::file_observation::preflight_regular_file;
 use noter::core::terminal_text::escaped_cli_path;
 use theme::AppTheme;
 
-const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --gui            open a desktop window\n  --tui            open the terminal editor\n  --theme NAME     startup theme: system, light, dark, green, amber\n  --view NAME      text (exact source) or markdown\n  -h, --help       show this help\n  -V, --version    show the version\n\nWindow defaults: saved theme or System; view follows the file type.\nTerminal defaults: Dark theme and Text Mode.\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` shows the local update status and makes no network request.\nOption values are case-insensitive.\n\nWithout --gui or --tui, Noter opens a window. On non-macOS Unix, such as\nLinux or BSD, with no DISPLAY, WAYLAND_DISPLAY, or WAYLAND_SOCKET and a\nterminal on standard input and output, it opens the terminal interface\ninstead, and `noter update` prints its status.";
+const HELP: &str = "Noter\n\nUsage:\n  noter [OPTIONS] [--] [FILE]\n  noter update\n\nOptions:\n  --gui            open a desktop window\n  --tui            open the terminal editor\n  --theme NAME     startup theme: system, light, dark, green, amber\n  --view NAME      text (exact source) or markdown\n  -h, --help       show this help\n  -V, --version    show the version\n\nWindow defaults: saved theme or System; view follows the file type.\nTerminal defaults: Dark theme and Text Mode.\nFILE must name an existing readable file; Noter never creates it for you.\n`noter update` shows the local update status and makes no network request.\nOption values are case-insensitive.\n\nWithout --gui or --tui, Noter opens a window. On non-macOS Unix, such as\nLinux or BSD, with no DISPLAY, WAYLAND_DISPLAY, or WAYLAND_SOCKET and a\nterminal on standard input and output, it opens the terminal interface\ninstead. `noter update` prints its status whenever that window cannot open.\nA missing display with no terminal, or a named display that cannot be\nreached, prints a short explanation instead of a toolkit error. `--gui`\ndoes not open the terminal interface when no display is available.";
 const THEME_ERROR_VALUES: &str = "system, light, dark, green, or amber";
 
 fn main() -> eframe::Result {
@@ -65,12 +65,17 @@ fn main() -> eframe::Result {
         std::process::exit(2);
     }
 
-    let interface = choose_interface(launch.interface, LaunchEnvironment::current());
-    if interface == Interface::TerminalFallback {
-        if launch.show_updates {
+    let environment = LaunchEnvironment::current();
+    let interface = choose_interface(launch.interface, environment);
+    match displayless_startup(launch.interface, launch.show_updates, environment) {
+        Some(DisplaylessStartup::UpdateStatus) => {
             write_line(std::io::stdout().lock(), &update_status_text());
             return Ok(());
         }
+        Some(DisplaylessStartup::MissingDisplay) => explain_missing_display(),
+        None => {}
+    }
+    if interface == Interface::TerminalFallback {
         write_line(
             std::io::stderr().lock(),
             "noter: no graphical display found; opening the terminal interface",
@@ -87,6 +92,11 @@ fn main() -> eframe::Result {
         return Ok(());
     }
 
+    open_window(launch)
+}
+
+/// Opens the desktop window after the launch has chosen that interface.
+fn open_window(launch: LaunchOptions) -> eframe::Result {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let named = |name: &str| display_variable_names_server(std::env::var_os(name).as_deref());
@@ -129,12 +139,23 @@ fn main() -> eframe::Result {
     #[cfg(not(all(unix, not(target_os = "macos"))))]
     let is_wayland = false;
     let options = native_options(viewport, is_wayland);
+    let show_updates = launch.show_updates;
 
-    eframe::run_native(
+    let launched = eframe::run_native(
         "Noter",
         options,
         Box::new(move |cc| Ok(Box::new(NoterApp::new(cc, &launch)))),
-    )
+    );
+    if let Err(error) = &launched
+        && unreachable_display(&error.to_string())
+    {
+        if show_updates {
+            write_line(std::io::stdout().lock(), &update_status_text());
+            return Ok(());
+        }
+        explain_missing_display();
+    }
+    launched
 }
 
 fn native_options(
@@ -316,9 +337,10 @@ fn display_variable_names_server(value: Option<&OsStr>) -> bool {
 ///
 /// An explicit request always wins. Otherwise the window opens unless it
 /// cannot: only a display-server platform with no display, launched from an
-/// interactive terminal, falls back to the terminal interface. Without a
-/// terminal the window path runs and reports its own failure, because a
-/// terminal interface with no terminal would fail less clearly.
+/// interactive terminal, falls back to the terminal interface. A launch with
+/// no terminal still selects the window here. [`displayless_startup`] stops
+/// that launch before the toolkit runs, because a terminal interface with no
+/// terminal would fail less clearly.
 const fn choose_interface(request: InterfaceRequest, environment: LaunchEnvironment) -> Interface {
     match request {
         InterfaceRequest::Tui => Interface::Terminal,
@@ -339,6 +361,71 @@ fn update_status_text() -> String {
         "noter {}\n{UPDATE_STATUS}\nReleases: {RELEASES_URL}",
         env!("CARGO_PKG_VERSION")
     )
+}
+
+/// A launch that must finish before the window toolkit runs.
+///
+/// A named display still goes to the window path. If that connection fails,
+/// [`unreachable_display`] turns the toolkit error into the same explanation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DisplaylessStartup {
+    /// `noter update` prints the local status and exits successfully.
+    UpdateStatus,
+    /// The editor cannot open a window or a terminal, so it explains and exits.
+    MissingDisplay,
+}
+
+/// Decides the launches that finish before the window toolkit runs.
+///
+/// On a platform that needs a display server, an empty or absent `DISPLAY`,
+/// `WAYLAND_DISPLAY`, and `WAYLAND_SOCKET` cannot open a window. `noter update`
+/// prints its status instead. An explicit terminal request, or an automatic
+/// launch from an interactive terminal, still opens the terminal interface.
+/// Every other launch on that platform stops with [`missing_display_hint`].
+/// macOS, Windows, and a named display continue.
+const fn displayless_startup(
+    request: InterfaceRequest,
+    show_updates: bool,
+    environment: LaunchEnvironment,
+) -> Option<DisplaylessStartup> {
+    if !environment.needs_display_server || environment.display_server_present {
+        return None;
+    }
+    if show_updates {
+        return Some(DisplaylessStartup::UpdateStatus);
+    }
+    match request {
+        InterfaceRequest::Tui => None,
+        InterfaceRequest::Auto if environment.interactive_terminal => None,
+        InterfaceRequest::Auto | InterfaceRequest::Gui => Some(DisplaylessStartup::MissingDisplay),
+    }
+}
+
+/// The explanation for a missing display or a display that cannot be opened.
+const fn missing_display_hint() -> &'static str {
+    "the graphical display is missing or could not be opened.\n\
+     Or use the terminal interface: noter --tui"
+}
+
+/// Writes the missing-display explanation and exits unsuccessfully.
+fn explain_missing_display() -> ! {
+    write_line(
+        std::io::stderr().lock(),
+        &format!("noter: {}", missing_display_hint()),
+    );
+    std::process::exit(1);
+}
+
+/// Reports whether `message` is a display the window toolkit could not open.
+///
+/// The matched sentences are the stable `Display` text from winit 0.30 and
+/// wayland-client 0.31. Other toolkit failures, including a missing graphics
+/// library reported by a different sentence, stay visible as their own errors.
+fn unreachable_display(message: &str) -> bool {
+    message.contains("neither WAYLAND_DISPLAY nor WAYLAND_SOCKET")
+        || message.contains("Failed to open connection to X server")
+        || message.contains("Could not find wayland compositor")
+        || message.contains("WAYLAND_SOCKET was set but contained garbage")
 }
 
 /// Rejects a startup document argument that cannot name an openable file.
@@ -458,10 +545,119 @@ mod tests {
             Interface::Window
         );
         // A launcher without a terminal cannot host the terminal interface.
+        // displayless_startup stops this selection before the toolkit runs.
         assert_eq!(
             choose_interface(InterfaceRequest::Auto, environment(true, false, false)),
             Interface::Window
         );
+    }
+
+    #[test]
+    fn a_missing_display_is_explained_before_the_toolkit_runs() {
+        let headless = environment(true, false, false);
+        let terminal = environment(true, false, true);
+        let named = environment(true, true, false);
+
+        assert_eq!(
+            displayless_startup(InterfaceRequest::Auto, true, headless),
+            Some(DisplaylessStartup::UpdateStatus)
+        );
+        assert_eq!(
+            displayless_startup(InterfaceRequest::Auto, true, terminal),
+            Some(DisplaylessStartup::UpdateStatus)
+        );
+        // An interactive terminal still opens the terminal interface.
+        assert_eq!(
+            displayless_startup(InterfaceRequest::Auto, false, terminal),
+            None
+        );
+        assert_eq!(
+            displayless_startup(InterfaceRequest::Auto, false, headless),
+            Some(DisplaylessStartup::MissingDisplay)
+        );
+        // `--gui` does not fall through to the terminal interface.
+        assert_eq!(
+            displayless_startup(InterfaceRequest::Gui, false, terminal),
+            Some(DisplaylessStartup::MissingDisplay)
+        );
+        assert_eq!(
+            displayless_startup(InterfaceRequest::Tui, false, headless),
+            None
+        );
+        // A named display still tries the window, including `noter update`.
+        assert_eq!(
+            displayless_startup(InterfaceRequest::Auto, false, named),
+            None
+        );
+        assert_eq!(
+            displayless_startup(InterfaceRequest::Auto, true, named),
+            None
+        );
+        assert_eq!(
+            displayless_startup(InterfaceRequest::Gui, false, named),
+            None
+        );
+    }
+
+    #[test]
+    fn platforms_without_a_display_server_do_not_claim_one_is_missing() {
+        for present in [false, true] {
+            for terminal in [false, true] {
+                for request in [
+                    InterfaceRequest::Auto,
+                    InterfaceRequest::Gui,
+                    InterfaceRequest::Tui,
+                ] {
+                    for show_updates in [false, true] {
+                        assert_eq!(
+                            displayless_startup(
+                                request,
+                                show_updates,
+                                environment(false, present, terminal)
+                            ),
+                            None
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_an_unreachable_display_becomes_the_plain_hint() {
+        let hint = missing_display_hint();
+        assert!(hint.contains("noter --tui"));
+        assert!(hint.contains("the graphical display is missing or could not be opened."));
+        assert!(!hint.contains("WinitEventLoop"));
+        assert!(!hint.contains("os error at"));
+
+        assert!(unreachable_display(
+            "winit EventLoopError: os error at platform_impl/linux/mod.rs:762: neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set."
+        ));
+        assert!(unreachable_display(
+            "neither WAYLAND_DISPLAY nor WAYLAND_SOCKET is set; note: enable the `winit/x11` feature to support X11"
+        ));
+        assert!(unreachable_display(
+            "winit EventLoopError: os error at xdisplay.rs:83: Failed to open connection to X server"
+        ));
+        assert!(unreachable_display("Could not find wayland compositor"));
+        assert!(unreachable_display(
+            "WAYLAND_SOCKET was set but contained garbage"
+        ));
+
+        for unrelated in [
+            "",
+            "WinitEventLoop",
+            "XOpenDisplayFailed",
+            "glutin error: failed to create a context",
+            "egui_glow: shader compilation failed",
+            "app creation error: boom",
+            "Failed to load one of xlib's shared libraries",
+            "The wayland library could not be loaded",
+            "Exit Failure: 1",
+        ] {
+            assert!(!unreachable_display(unrelated), "{unrelated}");
+        }
     }
 
     #[test]
