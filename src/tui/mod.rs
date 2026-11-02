@@ -1520,16 +1520,7 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
         true,
     );
     out.push_str("\r\n");
-    push_bar(&mut out, LEGEND_TOP, columns, palette.bg, palette.fg, false);
-    out.push_str("\r\n");
-    push_bar(
-        &mut out,
-        LEGEND_BOTTOM,
-        columns,
-        palette.bg,
-        palette.fg,
-        false,
-    );
+    push_legends(&mut out, columns, &palette);
 
     // The cursor stays hidden unless it has a place: over help, or with the
     // caret scrolled out of view, a visible cursor would mark a wrong cell.
@@ -1641,48 +1632,309 @@ fn save_reconciliation_lines(session: &TuiSession, index: usize, columns: usize)
     lines
 }
 
-const LEGEND_TOP: &str =
-    " ^G Help       ^O Save As    ^W Where Is   ^K Cut Line   ^U Paste      ^J Jump Line ";
-const LEGEND_BOTTOM: &str =
-    " ^X Exit       ^S Save       ^F Find       ^Z Undo       ^Y Redo       ^E Markdown  ";
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LegendCommand {
+    Help,
+    SaveAs,
+    Find,
+    CutLine,
+    Paste,
+    Jump,
+    Exit,
+    Save,
+    Undo,
+    Redo,
+    Markdown,
+}
+
+struct LegendEntry {
+    label: &'static str,
+    command: LegendCommand,
+}
+
+struct LegendSpan {
+    command: LegendCommand,
+    /// First terminal column of this label, 1-based and inclusive.
+    first: u16,
+    /// Last terminal column of this label, 1-based and inclusive.
+    last: u16,
+}
+
+const LEGEND_TOP: &[LegendEntry] = &[
+    LegendEntry {
+        label: "^G Help",
+        command: LegendCommand::Help,
+    },
+    LegendEntry {
+        label: "^O Save As",
+        command: LegendCommand::SaveAs,
+    },
+    LegendEntry {
+        label: "^W Where Is",
+        command: LegendCommand::Find,
+    },
+    LegendEntry {
+        label: "^K Cut Line",
+        command: LegendCommand::CutLine,
+    },
+    LegendEntry {
+        label: "^U Paste",
+        command: LegendCommand::Paste,
+    },
+    LegendEntry {
+        label: "^J Jump Line",
+        command: LegendCommand::Jump,
+    },
+];
+
+const LEGEND_BOTTOM: &[LegendEntry] = &[
+    LegendEntry {
+        label: "^X Exit",
+        command: LegendCommand::Exit,
+    },
+    LegendEntry {
+        label: "^S Save",
+        command: LegendCommand::Save,
+    },
+    LegendEntry {
+        label: "^F Find",
+        command: LegendCommand::Find,
+    },
+    LegendEntry {
+        label: "^Z Undo",
+        command: LegendCommand::Undo,
+    },
+    LegendEntry {
+        label: "^Y Redo",
+        command: LegendCommand::Redo,
+    },
+    LegendEntry {
+        label: "^E Markdown",
+        command: LegendCommand::Markdown,
+    },
+];
+
+fn push_legends(out: &mut String, columns: usize, palette: &TuiPalette) {
+    let (legend_top, _) = legend_line(LEGEND_TOP, columns);
+    push_bar(out, &legend_top, columns, palette.bg, palette.fg, false);
+    out.push_str("\r\n");
+    let (legend_bottom, _) = legend_line(LEGEND_BOTTOM, columns);
+    push_bar(out, &legend_bottom, columns, palette.bg, palette.fg, false);
+}
+
+/// Lays `entries` into `columns` cells.
+///
+/// Extra space is shared across the labels that fit. A label that does not
+/// fit is left off whole, so a narrow terminal never cuts a word in half.
+/// The span for each label includes the gap after it, and those spans are
+/// the click targets.
+fn legend_line(entries: &[LegendEntry], columns: usize) -> (String, Vec<LegendSpan>) {
+    if columns == 0 {
+        return (String::new(), Vec::new());
+    }
+    let mut chosen: Vec<&LegendEntry> = Vec::new();
+    let mut used = 0usize;
+    for entry in entries {
+        let width = display_width(entry.label);
+        let gap = usize::from(!chosen.is_empty());
+        if used + gap + width > columns {
+            break;
+        }
+        chosen.push(entry);
+        used += gap + width;
+    }
+    if chosen.is_empty() {
+        return (" ".repeat(columns), Vec::new());
+    }
+    let gaps = chosen.len() - 1;
+    let label_cells: usize = chosen.iter().map(|entry| display_width(entry.label)).sum();
+    let extra = columns - label_cells - gaps;
+    let base = extra / chosen.len();
+    let mut remainder = extra % chosen.len();
+    let mut line = String::new();
+    let mut spans = Vec::with_capacity(chosen.len());
+    let mut column = 0usize;
+    for (index, entry) in chosen.iter().enumerate() {
+        let mut pad = base;
+        if remainder > 0 {
+            pad += 1;
+            remainder -= 1;
+        }
+        let start = column;
+        line.push_str(entry.label);
+        line.extend(std::iter::repeat_n(' ', pad));
+        column += display_width(entry.label) + pad;
+        if index + 1 < chosen.len() {
+            line.push(' ');
+            column += 1;
+        }
+        spans.push(LegendSpan {
+            command: entry.command,
+            first: (start + 1) as u16,
+            last: column as u16,
+        });
+    }
+    (line, spans)
+}
+
+fn legend_command(row: u16, col: u16, rows: u16, columns: usize) -> Option<LegendCommand> {
+    let entries = if row + 1 == rows {
+        LEGEND_TOP
+    } else if row == rows {
+        LEGEND_BOTTOM
+    } else {
+        return None;
+    };
+    legend_line(entries, columns)
+        .1
+        .into_iter()
+        .find(|span| col >= span.first && col <= span.last)
+        .map(|span| span.command)
+}
+
+fn apply_legend_command(session: &mut TuiSession, command: LegendCommand) {
+    match command {
+        LegendCommand::Help => session.show_help = true,
+        LegendCommand::SaveAs => {
+            session.open_save_as();
+        }
+        LegendCommand::Find => {
+            session.prompt = PromptMode::Find;
+            session.prompt_input.clear();
+        }
+        LegendCommand::CutLine => session.cut_line(),
+        LegendCommand::Paste => session.paste(),
+        LegendCommand::Jump => {
+            session.prompt = PromptMode::GoToLine;
+            session.prompt_input.clear();
+        }
+        LegendCommand::Exit => trigger_exit(session),
+        LegendCommand::Save => {
+            session.save();
+        }
+        LegendCommand::Undo => session.undo(),
+        LegendCommand::Redo => session.redo(),
+        LegendCommand::Markdown => session.toggle_view(),
+    }
+}
+
+/// Help text. The first line says how to close the overlay, so a short
+/// terminal still shows that even when later rows do not fit.
+const HELP_PARAGRAPHS: &[&str] = &[
+    "^G or Esc closes this help.",
+    "Arrows and mouse move. Home and End move within the line.",
+    "PgUp and PgDn scroll a page. The wheel scrolls lines.",
+    "^S Save. ^O Save As. ^X, ^C, or ^Q Exit.",
+    "^W or ^F Find. ^K Cut line. ^U Paste.",
+    "^Z Undo. ^Y Redo. ^J Jump line. ^E Markdown.",
+    "^T Theme. ^R Review save warnings.",
+];
+
+/// Breaks `text` on spaces so every returned line is at most `width` cells.
+fn wrap_plain(text: &str, width: usize) -> Vec<String> {
+    if width == 0 || text.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut cells = 0usize;
+    for word in text.split(' ').filter(|word| !word.is_empty()) {
+        let word_cells = display_width(word);
+        if word_cells > width {
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+                cells = 0;
+            }
+            let mut chunk = String::new();
+            let mut chunk_cells = 0usize;
+            for character in word.chars() {
+                let mut step = cell_width(character, chunk_cells);
+                if chunk_cells + step > width && !chunk.is_empty() {
+                    lines.push(std::mem::take(&mut chunk));
+                    chunk_cells = 0;
+                    step = cell_width(character, chunk_cells);
+                }
+                if step > width {
+                    continue;
+                }
+                chunk.push(character);
+                chunk_cells += step;
+            }
+            if !chunk.is_empty() {
+                current = chunk;
+                cells = chunk_cells;
+            }
+            continue;
+        }
+        let gap = usize::from(!current.is_empty());
+        if cells + gap + word_cells > width {
+            lines.push(std::mem::take(&mut current));
+            cells = 0;
+        } else if gap == 1 {
+            current.push(' ');
+            cells += 1;
+        }
+        current.push_str(word);
+        cells += word_cells;
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn box_rule(left: char, fill: char, right: char, width: usize) -> String {
+    let mut line = String::with_capacity(width);
+    line.push(left);
+    line.extend(std::iter::repeat_n(fill, width.saturating_sub(2)));
+    if width >= 2 {
+        line.push(right);
+    }
+    line
+}
+
+fn box_content(text: &str, width: usize) -> String {
+    let inner = width.saturating_sub(4);
+    let mut line = String::from("║ ");
+    line.push_str(&fit_line(text, inner));
+    line.push_str(" ║");
+    line
+}
 
 fn render_help_overlay(out: &mut String, cols: u16, rows: u16, palette: &TuiPalette) {
-    let width = 64.min((cols as usize).saturating_sub(4));
-    let height = 18.min((rows as usize).saturating_sub(4));
-    let start_col = (cols as usize).saturating_sub(width) / 2 + 1;
-    let start_row = (rows as usize).saturating_sub(height) / 2 + 1;
+    let columns = usize::from(cols);
+    let screen_rows = usize::from(rows);
+    if columns < 8 || screen_rows < 3 {
+        return;
+    }
+    let box_width = columns.min(68);
+    let inner = box_width.saturating_sub(4);
+    let mut body = Vec::new();
+    for paragraph in HELP_PARAGRAPHS {
+        body.extend(wrap_plain(paragraph, inner));
+    }
+    let body_room = screen_rows.saturating_sub(2);
+    if body.len() > body_room {
+        body.truncate(body_room);
+    }
+    if body.is_empty() {
+        return;
+    }
+    let box_height = body.len() + 2;
+    let start_col = columns.saturating_sub(box_width) / 2 + 1;
+    let start_row = screen_rows.saturating_sub(box_height) / 2 + 1;
+    let mut lines = Vec::with_capacity(box_height);
+    lines.push(box_rule('╔', '═', '╗', box_width));
+    for text in &body {
+        lines.push(box_content(text, box_width));
+    }
+    lines.push(box_rule('╚', '═', '╝', box_width));
 
-    let lines = [
-        "╔══════════════════════════════════════════════════════════════╗",
-        "║                     NOTER HELP & SHORTCUTS                   ║",
-        "╠══════════════════════════════════════════════════════════════╣",
-        "║  Navigation:                                                 ║",
-        "║    Arrows / Mouse Click : Move cursor                        ║",
-        "║    Home / End           : Line Start / End                   ║",
-        "║    PgUp / PgDown        : Page Scroll                        ║",
-        "║    Scroll Wheel         : Scroll lines up/down               ║",
-        "║                                                              ║",
-        "║  Editing & Actions:                                          ║",
-        "║    ^S                   : Save file                          ║",
-        "║    ^R                   : Review save warnings / uncertainty  ║",
-        "║    ^O                   : Save As (asks before replacing)    ║",
-        "║    ^X or ^Q             : Exit editor (prompts if modified)  ║",
-        "║    ^W or ^F             : Find text in document              ║",
-        "║    ^K                   : Cut current line                   ║",
-        "║    ^U                   : Paste line                         ║",
-        "║    ^Z / ^Y              : Undo / Redo                        ║",
-        "║    ^E                   : Toggle Markdown formatted view     ║",
-        "║    ^T                   : Cycle Theme (Green/Amber/Dark/Lite)║",
-        "║    ^J                   : Jump to Line Number                ║",
-        "║    ^G or Esc            : Close this help dialog             ║",
-        "╚══════════════════════════════════════════════════════════════╝",
-    ];
-
-    for (i, line) in lines.iter().enumerate().take(height) {
+    for (index, line) in lines.iter().enumerate() {
         let _ = write!(
             out,
-            "\x1b[{};{}H\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m\x1b[1m{line:<width$}\x1b[0m",
-            start_row + i,
+            "\x1b[{};{}H\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m\x1b[1m{line}\x1b[0m",
+            start_row + index,
             start_col,
             palette.bar_bg.r,
             palette.bar_bg.g,
@@ -1690,7 +1942,6 @@ fn render_help_overlay(out: &mut String, cols: u16, rows: u16, palette: &TuiPale
             palette.accent.r,
             palette.accent.g,
             palette.accent.b,
-            width = width
         );
     }
 }
@@ -2089,39 +2340,8 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, cols: u16, rows: u16)
                     session.caret_byte =
                         span.start + offset_at_column(&text[span.start..span.end], column);
                     session.follow_caret = true;
-                } else if row == rows - 1 {
-                    // Clicked top legend: ^G Help, ^O Save, ^W Where Is, ^K Cut Line, ^U Paste, ^J Jump Line
-                    if col < 15 {
-                        session.show_help = true;
-                    } else if col < 29 {
-                        session.open_save_as();
-                    } else if col < 43 {
-                        session.prompt = PromptMode::Find;
-                        session.prompt_input.clear();
-                    } else if col < 57 {
-                        session.cut_line();
-                    } else if col < 71 {
-                        session.paste();
-                    } else {
-                        session.prompt = PromptMode::GoToLine;
-                        session.prompt_input.clear();
-                    }
-                } else if row == rows {
-                    // Clicked bottom legend: ^X Exit, ^S Save, ^F Find, ^Z Undo, ^Y Redo, ^E Markdown
-                    if col < 15 {
-                        trigger_exit(session);
-                    } else if col < 29 {
-                        session.save();
-                    } else if col < 43 {
-                        session.prompt = PromptMode::Find;
-                        session.prompt_input.clear();
-                    } else if col < 57 {
-                        session.undo();
-                    } else if col < 71 {
-                        session.redo();
-                    } else {
-                        session.toggle_view();
-                    }
+                } else if let Some(command) = legend_command(row, col, rows, usize::from(cols)) {
+                    apply_legend_command(session, command);
                 }
             }
         },
@@ -2392,6 +2612,140 @@ mod tests {
         assert!(frame.contains("Markdown Header"));
         assert!(frame.contains("^O Save"));
         assert!(frame.contains("^X Exit"));
+    }
+
+    #[test]
+    fn shortcut_bar_keeps_every_label_whole_at_80_columns() {
+        let session = untitled();
+        let visible = strip_own_sequences(&render_frame(&session, 80, 24));
+        let rows: Vec<&str> = visible.split("\r\n").collect();
+        let top = rows[rows.len() - 2];
+        let bottom = rows[rows.len() - 1];
+        assert_eq!(display_width(top), 80, "top legend {top:?}");
+        assert_eq!(display_width(bottom), 80, "bottom legend {bottom:?}");
+        assert!(top.contains("^J Jump Line"), "clipped top legend: {top:?}");
+        assert!(
+            bottom.contains("^E Markdown"),
+            "clipped bottom legend: {bottom:?}"
+        );
+        assert!(!top.contains("Jump L "));
+        assert!(!bottom.contains("Markdo "));
+    }
+
+    #[test]
+    fn shortcut_bar_drops_a_whole_label_when_the_terminal_is_narrow() {
+        let (line, spans) = legend_line(LEGEND_TOP, 63);
+        assert_eq!(display_width(&line), 63);
+        assert!(line.contains("^U Paste"), "{line:?}");
+        assert!(!line.contains("Jump"), "{line:?}");
+        assert_eq!(spans.len(), 5);
+    }
+
+    #[test]
+    fn legend_clicks_run_the_label_under_the_pointer() {
+        for width in [80u16, 100, 140] {
+            let (_, top) = legend_line(LEGEND_TOP, usize::from(width));
+            let (_, bottom) = legend_line(LEGEND_BOTTOM, usize::from(width));
+            assert_eq!(top.len(), 6, "width {width}");
+            assert_eq!(bottom.len(), 6, "width {width}");
+            click_legend(&top, 23, width);
+            click_legend(&bottom, 24, width);
+        }
+    }
+
+    fn click_legend(spans: &[LegendSpan], row: u16, width: u16) {
+        for span in spans {
+            let mut session = untitled();
+            let col = span.first + (span.last - span.first) / 2;
+            match span.command {
+                LegendCommand::CutLine | LegendCommand::Undo => {
+                    session.insert_str("one");
+                }
+                LegendCommand::Redo => {
+                    session.insert_str("one");
+                    handle_event(&mut session, TuiEvent::Key(TuiKey::Ctrl('z')), width, 24);
+                }
+                LegendCommand::Paste => session.clipboard = "more".to_owned(),
+                _ => {}
+            }
+            handle_event(
+                &mut session,
+                TuiEvent::Mouse(TuiMouseEvent::Press { col, row }),
+                width,
+                24,
+            );
+            match span.command {
+                LegendCommand::Help => assert!(session.show_help),
+                LegendCommand::SaveAs | LegendCommand::Save => {
+                    assert_eq!(session.prompt, PromptMode::SaveAs);
+                }
+                LegendCommand::Find => assert_eq!(session.prompt, PromptMode::Find),
+                LegendCommand::CutLine => {
+                    assert_eq!(session.text(), "");
+                    assert_eq!(session.clipboard, "one");
+                }
+                LegendCommand::Paste => {
+                    assert!(session.text().contains("more"), "{}", session.text());
+                }
+                LegendCommand::Jump => assert_eq!(session.prompt, PromptMode::GoToLine),
+                LegendCommand::Exit => assert!(session.should_exit),
+                LegendCommand::Undo => assert_eq!(session.text(), ""),
+                LegendCommand::Redo => assert_eq!(session.text(), "one"),
+                LegendCommand::Markdown => assert_eq!(session.view, DocumentView::Markdown),
+            }
+        }
+    }
+
+    #[test]
+    fn help_rows_stay_inside_the_border() {
+        for width in [20usize, 80, 140] {
+            let box_width = width.min(68);
+            let inner = box_width - 4;
+            for paragraph in HELP_PARAGRAPHS {
+                for wrapped in wrap_plain(paragraph, inner) {
+                    let row = box_content(&wrapped, box_width);
+                    assert_eq!(display_width(&row), box_width, "{row:?}");
+                    assert!(row.starts_with('║') && row.ends_with('║'), "{row:?}");
+                }
+            }
+            assert_eq!(
+                display_width(&box_rule('╔', '═', '╗', box_width)),
+                box_width
+            );
+            assert_eq!(
+                display_width(&box_rule('╚', '═', '╝', box_width)),
+                box_width
+            );
+        }
+    }
+
+    #[test]
+    fn help_overlay_fits_80_by_24_and_names_every_binding() {
+        let mut session = untitled();
+        session.show_help = true;
+        let frame = render_frame(&session, 80, 24);
+        let visible = strip_own_sequences(&frame);
+        for needle in [
+            "closes this help",
+            "^S Save",
+            "^O Save As",
+            "^X, ^C, or ^Q Exit",
+            "^W or ^F Find",
+            "^K Cut line",
+            "^U Paste",
+            "^Z Undo",
+            "^Y Redo",
+            "^J Jump line",
+            "^E Markdown",
+            "^T Theme",
+            "^R Review save warnings",
+            "Home and End",
+            "PgUp and PgDn",
+            "╔",
+            "╚",
+        ] {
+            assert!(visible.contains(needle), "help missing {needle}");
+        }
     }
 
     #[test]

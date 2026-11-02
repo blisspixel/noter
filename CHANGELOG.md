@@ -6,6 +6,9 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Fit the terminal shortcut bar and help overlay in an 80-column terminal.
+  Labels stay whole, help names every binding and how to close it, and help
+  rows stay inside the border (#89, #74).
 - Expand Windows mutation testing to twelve complete partitions after a cold
   runner exceeded the unchanged 90-minute bound; retain the full mutation scope.
 
