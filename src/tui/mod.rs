@@ -3352,21 +3352,24 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// Changes the platform change token without changing bytes or leaving the
-    /// file unwritable. Unix records ctime, so a timestamp update and a mode
-    /// toggle are both used, and the original mode is restored exactly.
+    /// Changes the platform change token without changing bytes.
+    ///
+    /// Unix records ctime. A timestamp update and a mode toggle both move it,
+    /// and the original mode is restored exactly. Windows records file
+    /// attributes in the token. A timestamp update does not move it, so the
+    /// fixture sets not-content-indexed and leaves the file writable.
     fn touch_metadata(path: &std::path::Path) {
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .expect("metadata fixture");
-        file.set_modified(
-            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
-        )
-        .expect("metadata timestamp");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .expect("metadata fixture");
+            file.set_modified(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+            )
+            .expect("metadata timestamp");
             let mode = file.metadata().expect("metadata").permissions().mode();
             let mut toggled = file.metadata().expect("metadata").permissions();
             toggled.set_mode(mode ^ 0o200);
@@ -3379,14 +3382,7 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            let mut permissions = file.metadata().expect("metadata").permissions();
-            permissions.set_readonly(true);
-            file.set_permissions(permissions.clone())
-                .expect("attribute toggle");
-            permissions.set_readonly(false);
-            file.set_permissions(permissions)
-                .expect("attribute restore");
-            assert!(!file.metadata().expect("metadata").permissions().readonly());
+            noter_platform::mark_file_not_content_indexed(path).expect("metadata fixture");
         }
     }
 
