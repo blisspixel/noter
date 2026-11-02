@@ -1722,10 +1722,11 @@ mod imp {
         leave_screen: &'static [u8],
     ) {
         // SAFETY: `termios` is exclusively written here, before `ready` is
-        // published. `signal` installs one handler for a valid signal number.
-        // `sighandler_t` is a `size_t` in this binding, so the function pointer
-        // crosses that boundary; the handler itself has the C signature POSIX
-        // requires.
+        // published. `sigaction` installs one handler for a valid signal
+        // number. The mask and flags stay zero, so this handler is not
+        // re-entered while it restores the terminal. `sighandler_t` is a
+        // `size_t` in this binding, so the function pointer crosses that
+        // boundary; the handler itself has the C signature POSIX requires.
         #[allow(unsafe_code, clippy::fn_to_numeric_cast)]
         unsafe {
             (*TERMINATE_RESTORE.termios.get()).write(restorer.orig_termios);
@@ -1736,21 +1737,20 @@ mod imp {
                 .leave_len
                 .store(leave_screen.len(), Ordering::Release);
             TERMINATE_RESTORE.ready.store(true, Ordering::Release);
-            libc::signal(
-                libc::SIGTERM,
-                terminate_restore_handler as *const () as libc::sighandler_t,
-            );
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = unix_terminate_restore_handler as *const () as libc::sighandler_t;
+            libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut());
         }
     }
 
     /// Restores the terminal and ends the process. Safe to run from `SIGTERM`.
-    extern "C" fn terminate_restore_handler(_signal: libc::c_int) {
-        apply_terminal_terminate();
+    extern "C" fn unix_terminate_restore_handler(_signal: libc::c_int) {
+        unix_apply_terminal_terminate();
     }
 
-    fn apply_terminal_terminate() {
+    fn unix_apply_terminal_terminate() {
         if !TERMINATE_RESTORE.ready.load(Ordering::Acquire) {
-            end_terminated_process();
+            unix_end_terminated_process();
             return;
         }
         // SAFETY: `ready` was stored with release after `termios` was written
@@ -1771,16 +1771,25 @@ mod imp {
                 );
             }
         }
-        end_terminated_process();
+        unix_end_terminated_process();
     }
 
-    fn end_terminated_process() {
-        // SAFETY: `signal`, `raise`, and `_exit` are async-signal-safe. The
-        // default disposition is restored first so `raise` cannot re-enter
-        // this handler. `_exit` runs only if `raise` returns.
+    fn unix_end_terminated_process() {
+        // SAFETY: `sigaction`, `sigemptyset`, `sigaddset`, `sigprocmask`,
+        // `raise`, and `_exit` are async-signal-safe. Delivery blocks
+        // `SIGTERM` until the handler returns, and installing `SIG_DFL` does
+        // not clear that block, so `raise` would return. The default
+        // disposition is installed first, the block is cleared, then `raise`
+        // kills the process. `_exit` runs only if `raise` returns.
         #[allow(unsafe_code)]
         unsafe {
-            libc::signal(libc::SIGTERM, libc::SIG_DFL);
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = libc::SIG_DFL;
+            libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut());
+            let mut blocked: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&raw mut blocked);
+            libc::sigaddset(&raw mut blocked, libc::SIGTERM);
+            libc::sigprocmask(libc::SIG_UNBLOCK, &raw const blocked, std::ptr::null_mut());
             libc::raise(libc::SIGTERM);
             libc::_exit(143);
         }
@@ -3232,7 +3241,7 @@ mod imp {
 
         fn arm_and_raise_sigterm() -> ! {
             let guard = super::unix_enable_raw_terminal().expect("raw mode");
-            super::unix_restore_terminal_on_terminate(guard.restorer(), LEAVE_SEQUENCE);
+            crate::restore_terminal_on_terminate(guard.restorer(), LEAVE_SEQUENCE);
             // The process is about to die by signal, which skips this guard.
             // Forgetting it would let a handler that returns restore the
             // terminal on the way out and hide that failure.
@@ -3274,7 +3283,12 @@ mod imp {
             }
             let output = read_available(&master)?;
             let settings = read_termios(&slave)?;
-            assert_eq!(status.signal(), Some(libc::SIGTERM), "stderr: {errors}");
+            assert_eq!(
+                status.signal(),
+                Some(libc::SIGTERM),
+                "code {:?}, stderr: {errors}",
+                status.code()
+            );
             assert!(
                 output
                     .windows(LEAVE_SEQUENCE.len())

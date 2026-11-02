@@ -300,7 +300,7 @@ jobs:
           --minimum-test-timeout 120
           --shard ${{ matrix.shard }}
           --exclude-re
-          '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|[Uu]nix|from_open_parent|linux|[Mm]acos|windows_require_bound_(directory|entry))'
+          '(required_metadata|metadata_source_status|post_exchange_source_facts_match|finalize_unix_displaced_destination|[Uu]nix|from_open_parent|linux|[Mm]acos|windows_require_bound_(directory|entry)|restore_terminal_on_terminate)'
       - name: Run macOS platform mutation tests
         if: runner.os == 'macOS'
         env:
