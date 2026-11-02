@@ -880,8 +880,13 @@ impl TuiSession {
                 );
                 SaveStep::NotSaved
             }
-            Ok(SaveOutcome::NotCommitted { error, .. }) => {
-                self.set_status(format!("Not saved: {}", error.message()));
+            Ok(SaveOutcome::NotCommitted { cleanup_error, .. }) => {
+                // The engine diagnostic stays on the outcome for recovery.
+                // The status names the folder instead of that diagnostic.
+                self.set_status(crate::save_status::not_committed_status(
+                    &reservation.destination,
+                    cleanup_error.as_ref(),
+                ));
                 SaveStep::NotSaved
             }
             Ok(SaveOutcome::CommitStateUnknown {
@@ -3032,6 +3037,101 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_save_names_the_folder_and_keeps_the_text() {
+        use noter::core::revision::Revision;
+        use noter::core::save::{SaveOutcome, SaveStage, StorageError};
+
+        let mut session = untitled();
+        type_text(&mut session, "kept");
+        let destination = std::path::PathBuf::from("readonly").join("note.txt");
+        let reservation = session
+            .reserve_save_recovery(destination)
+            .expect("save reservation");
+        let step = session.report_save(
+            reservation,
+            Ok(SaveOutcome::NotCommitted {
+                revision: Revision::INITIAL,
+                error: StorageError::new(
+                    SaveStage::CreateTemporary,
+                    "create private sibling failed with PermissionDenied, OS code 13",
+                ),
+                cleanup_error: None,
+            }),
+        );
+        session.finish_save(step);
+
+        assert_eq!(step, SaveStep::NotSaved);
+        assert!(!session.should_exit);
+        assert!(session.save_recoveries.is_empty());
+        assert_eq!(session.text(), "kept");
+        assert!(session.has_unsaved_state());
+        let status = session
+            .status_message
+            .as_ref()
+            .expect("the failure must be visible")
+            .0
+            .as_str();
+        assert!(status.contains("could not write in `readonly`"));
+        assert!(status.contains("This text is still open"));
+        assert!(status.contains("the file on disk was not changed"));
+        assert!(status.contains("Choose another location"));
+        assert!(!status.contains("PermissionDenied"));
+        assert!(!status.contains("OS code"));
+        assert!(!status.contains("create private sibling"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_as_into_an_unwritable_directory_names_that_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct RestoreWrite(std::path::PathBuf);
+        impl Drop for RestoreWrite {
+            fn drop(&mut self) {
+                if let Ok(metadata) = std::fs::metadata(&self.0) {
+                    let mut permissions = metadata.permissions();
+                    permissions.set_mode(0o755);
+                    let _ = std::fs::set_permissions(&self.0, permissions);
+                }
+            }
+        }
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let folder = root.path().join("readonly");
+        std::fs::create_dir(&folder).expect("folder");
+        let _restore = RestoreWrite(folder.clone());
+        let mut permissions = std::fs::metadata(&folder).expect("metadata").permissions();
+        permissions.set_mode(0o555);
+        std::fs::set_permissions(&folder, permissions).expect("revoke write permission");
+
+        let destination = folder.join("note.txt");
+        let mut session = untitled();
+        type_text(&mut session, "kept");
+        session.prompt_input = destination.to_string_lossy().into_owned();
+        let step = session.submit_save_as();
+        session.finish_save(step);
+
+        assert_eq!(step, SaveStep::NotSaved);
+        assert!(!destination.exists());
+        assert_eq!(session.text(), "kept");
+        assert!(session.has_unsaved_state());
+        assert!(session.save_recoveries.is_empty());
+        let status = session
+            .status_message
+            .as_ref()
+            .expect("the failure must be visible")
+            .0
+            .as_str();
+        assert!(status.contains("could not write in `"));
+        assert!(status.contains("readonly"));
+        assert!(status.contains("This text is still open"));
+        assert!(status.contains("Choose another location"));
+        assert!(!status.contains("PermissionDenied"));
+        assert!(!status.contains("OS code"));
+        assert!(!status.contains("create private sibling"));
+    }
+
+    #[test]
     fn committed_save_warnings_remain_reviewable_after_status_expiry() {
         use noter::core::save::{
             ContentFingerprint, Durability, FileChangeToken, FileIdentity, FileObservation,
@@ -3525,12 +3625,11 @@ mod tests {
         assert_eq!(step, SaveStep::NotSaved);
         assert!(!session.should_exit);
         assert_eq!(session.after_save, AfterSave::Stay);
-        assert!(
-            session
-                .status_message
-                .as_ref()
-                .is_some_and(|(message, _)| message.contains("disk full"))
-        );
+        assert!(session.status_message.as_ref().is_some_and(|(message, _)| {
+            message.contains("could not write in the current directory")
+                && message.contains("This text is still open")
+                && !message.contains("disk full")
+        }));
         assert!(session.save_recoveries.is_empty());
     }
 

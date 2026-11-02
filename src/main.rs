@@ -18,6 +18,7 @@ mod go_to_line_ui;
 mod idle_screen;
 mod keyboard_nav;
 mod markdown_ui;
+mod save_status;
 mod theme;
 mod tui;
 

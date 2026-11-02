@@ -1155,17 +1155,14 @@ impl NoterApp {
                 let mut message =
                     "Save stopped because the destination changed. Your edits remain unsaved."
                         .to_owned();
-                append_cleanup_error(&mut message, cleanup_error.as_ref());
+                crate::save_status::append_cleanup_warning(&mut message, cleanup_error.as_ref());
                 Some(message)
             }
-            Ok(SaveOutcome::NotCommitted {
-                error,
-                cleanup_error,
-                ..
-            }) => {
-                let mut message = format!("Save did not commit: {error}");
-                append_cleanup_error(&mut message, cleanup_error.as_ref());
-                Some(message)
+            Ok(SaveOutcome::NotCommitted { cleanup_error, .. }) => {
+                Some(crate::save_status::not_committed_status(
+                    attempt.destination(),
+                    cleanup_error.as_ref(),
+                ))
             }
             Ok(SaveOutcome::CommitStateUnknown {
                 error,
@@ -4824,16 +4821,6 @@ fn write_screenshot_png(path: &std::path::Path, image: &egui::ColorImage) -> std
         .save_with_format(path, image::ImageFormat::Png)
         .map_err(std::io::Error::other)?;
     Ok(())
-}
-
-fn append_cleanup_error(
-    message: &mut String,
-    cleanup_error: Option<&noter::core::save::StorageError>,
-) {
-    if let Some(cleanup_error) = cleanup_error {
-        message.push_str(" Cleanup also failed and a private artifact may remain: ");
-        message.push_str(&cleanup_error.to_string());
-    }
 }
 
 const fn dialog_remains_open(window_open: bool, close_clicked: bool) -> bool {
@@ -11805,9 +11792,45 @@ mod tests {
         );
 
         let message = app.error_msg.expect("the failure must be visible");
-        assert!(message.contains("primary failure"));
+        assert!(message.contains("could not write in the current directory"));
+        assert!(message.contains("This text is still open"));
+        assert!(!message.contains("primary failure"));
         assert!(message.contains("Cleanup also failed"));
         assert!(message.contains("private artifact was preserved"));
+        assert!(app.save_recoveries.is_empty());
+    }
+
+    #[test]
+    fn a_failed_save_names_the_folder_instead_of_the_engine_diagnostic() {
+        use noter::core::revision::Revision;
+        use noter::core::save::{SaveStage, StorageError};
+
+        let mut app = NoterApp::default();
+        let before = String::from(app.document.rope());
+        let reservation = test_save_recovery_reservation(
+            &mut app,
+            SaveAttempt::SaveAs(PathBuf::from("readonly").join("note.txt")),
+        );
+        app.handle_save_result(
+            Ok(SaveOutcome::NotCommitted {
+                revision: Revision::INITIAL,
+                error: StorageError::new(
+                    SaveStage::CreateTemporary,
+                    "create private sibling failed with PermissionDenied, OS code 13",
+                ),
+                cleanup_error: None,
+            }),
+            reservation,
+        );
+
+        let message = app.error_msg.expect("the failure must be visible");
+        assert!(message.contains("could not write in `readonly`"));
+        assert!(message.contains("the file on disk was not changed"));
+        assert!(message.contains("Choose another location"));
+        assert!(!message.contains("PermissionDenied"));
+        assert!(!message.contains("OS code"));
+        assert!(!message.contains("create private sibling"));
+        assert_eq!(String::from(app.document.rope()), before);
         assert!(app.save_recoveries.is_empty());
     }
 

@@ -6,6 +6,9 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Name the folder when a save cannot write, and say the open text was not
+  written and the file on disk was not changed. The terminal also reports a
+  private artifact that could not be removed (#75).
 - Explain a missing or unreachable graphical display in one plain message,
   with `noter --tui`, instead of a toolkit error. `noter update` prints its
   local status whenever that window cannot open (#73).
