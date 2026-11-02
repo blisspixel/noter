@@ -6,6 +6,10 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- When a terminal save finds a disk change, offer reload, keep editing, Save
+  As, and overwrite after a second confirmation. A metadata-only change says
+  the text still matches. The open text stays recoverable until reload, a
+  committed save, or an explicit discard (#71).
 - Name the folder when a save cannot write, and say the open text was not
   written and the file on disk was not changed. The terminal also reports a
   private artifact that could not be removed (#75).

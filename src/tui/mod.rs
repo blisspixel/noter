@@ -8,7 +8,9 @@
 //!   ^U Paste, ^J Jump, ^G Help) and Modern (Ctrl+S, Ctrl+Q, Ctrl+F, Ctrl+Z, Ctrl+Y, Ctrl+E,
 //!   Ctrl+T, Ctrl+A).
 //! - Saving never exits or discards text unless the write committed. Replacing an existing
-//!   file or splitting a hard link asks first.
+//!   file or splitting a hard link asks first. A save that finds a disk change offers
+//!   reload, keep editing, Save As, and overwrite after a second confirmation. Until
+//!   reload, a committed save, or an explicit discard, that open text stays recoverable.
 //! - Phosphor CRT themes (Green Screen and Amber Screen) matching Noter's desktop visuals.
 //! - Fluid formatted Markdown viewing toggle (^E).
 //! - Terminal mouse support (click to set caret, scroll wheel to scroll lines, clickable legend).
@@ -20,10 +22,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use noter::core::conflict::{
+    ConflictCommand, ConflictDecision, ConflictEffect, ConflictState, ExternalChangeKind,
+    classify_external_change,
+};
 use noter::core::document::{Document, PreparedSaveAs};
 use noter::core::edit::{
     EditOrigin, EditTimestamp, EditTransaction, Selection, TextEdit, TextRange,
 };
+use noter::core::file_observation::inspect_target;
 use noter::core::fs_storage::{
     remove_verified_retained_siblings, retained_sibling_removal_message,
 };
@@ -32,7 +39,10 @@ use noter::core::line_endings::{logical_lines, normalize_inserted_text};
 use noter::core::navigation::{
     LineNavigationError, MoveDirection, MoveUnit, line_start_offset, move_caret,
 };
-use noter::core::save::{SaveOutcome, SaveWarnings};
+use noter::core::revision::Revision;
+use noter::core::save::{
+    FileObservation, SaveOutcome, SaveStage, SaveWarnings, TargetExpectation, TargetState,
+};
 use noter::core::save_recovery::{
     MAX_SAVE_RECOVERY_DESTINATION_BYTES, MAX_SAVE_RECOVERY_MESSAGE_BYTES,
     MAX_SAVE_RECOVERY_RECORDS, bounded_destination_label, recovery_path_clipboard_text,
@@ -54,8 +64,11 @@ use crate::crash_recovery::{
     SaveDurabilityRisk,
 };
 
+mod disk_conflict;
 mod input;
 mod save_warnings;
+
+use disk_conflict::ReviewedDisk;
 
 use crate::theme::AppTheme;
 pub use input::{InputDecoder, TuiEvent, TuiKey, TuiMouseEvent};
@@ -78,6 +91,12 @@ pub enum PromptMode {
     ReconcileSave(usize),
     /// Scrollable cleanup and durability diagnostics from the latest save.
     SaveWarnings,
+    /// A save found a disk change and is waiting for reload, keep, Save As, or overwrite.
+    DiskChange,
+    /// Overwrite was requested and still needs a second confirmation.
+    ConfirmDiskOverwrite,
+    /// Reload would discard unsaved text and still needs a second confirmation.
+    ConfirmDiskReload,
 }
 
 /// The answer to a startup recovery offer.
@@ -216,6 +235,17 @@ enum RetainedSiblingRemoval {
     Armed,
 }
 
+/// The open text is the last copy of a version the disk no longer matches.
+///
+/// Content can still match the last save, so this is separate from dirty
+/// state. Keep Editing leaves it set. Reload, a committed save, and an
+/// explicit discard clear it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExternalRetention {
+    Clear,
+    AtRisk,
+}
+
 /// State for the terminal editor session.
 pub struct TuiSession {
     pub document: Document,
@@ -251,6 +281,13 @@ pub struct TuiSession {
     reconcile_scroll: usize,
     last_save_warnings: Option<SaveWarnings>,
     retained_sibling_removal: RetainedSiblingRemoval,
+    /// Decision state shared with the window. The terminal does not watch while idle.
+    conflict: ConflictState,
+    /// Destination reviewed for the visible disk decision, if one is open.
+    reviewed_disk: Option<ReviewedDisk>,
+    /// Set when a save finds a disk change, and cleared only by reload, a
+    /// committed save, a matching observation, or an explicit discard.
+    external_retention: ExternalRetention,
 }
 
 impl TuiSession {
@@ -301,6 +338,9 @@ impl TuiSession {
             reconcile_scroll: 0,
             last_save_warnings: None,
             retained_sibling_removal: RetainedSiblingRemoval::Idle,
+            conflict: ConflictState::default(),
+            reviewed_disk: None,
+            external_retention: ExternalRetention::Clear,
         };
         if options.initial_path.is_some() {
             session.recovery.defer_startup_offers();
@@ -328,7 +368,27 @@ impl TuiSession {
     }
 
     fn has_unsaved_state(&self) -> bool {
-        self.document.is_dirty() || self.save_durability.is_at_risk()
+        self.document.is_dirty()
+            || self.external_retention == ExternalRetention::AtRisk
+            || self.save_durability.is_at_risk()
+    }
+
+    /// Remembers that the open text must survive a crash and an exit.
+    fn note_external_retention(&mut self) {
+        if self.external_retention == ExternalRetention::AtRisk {
+            return;
+        }
+        self.external_retention = ExternalRetention::AtRisk;
+        self.sync_recovery();
+    }
+
+    /// Drops crash retention once the open text is no longer the last copy.
+    fn clear_external_retention(&mut self) {
+        if self.external_retention == ExternalRetention::Clear {
+            return;
+        }
+        self.external_retention = ExternalRetention::Clear;
+        self.sync_recovery();
     }
 
     /// Runs recovery work that has come due, reports a failed write once,
@@ -594,6 +654,9 @@ impl TuiSession {
 
     /// Saves the document in place (^S), or asks for a name when untitled.
     pub fn save(&mut self) -> SaveStep {
+        if self.disk_prompt_is_open() {
+            return SaveStep::AwaitingInput;
+        }
         if self.save_is_blocked() {
             self.set_status(UNCERTAIN_SAVE_GUIDANCE);
             return SaveStep::NotSaved;
@@ -656,6 +719,9 @@ impl TuiSession {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.set_status(format!("Not saved: {error}"));
+                if self.reviewed_disk.is_some() && self.conflict.is_prompting() {
+                    self.show_disk_conflict();
+                }
                 return SaveStep::NotSaved;
             }
         };
@@ -795,7 +861,11 @@ impl TuiSession {
             return SaveStep::NotSaved;
         };
         if !confirmed {
-            self.set_status("Not saved");
+            if self.reviewed_disk.is_some() && self.conflict.is_prompting() {
+                self.show_disk_conflict();
+            } else {
+                self.set_status("Not saved");
+            }
             return SaveStep::NotSaved;
         }
         match pending {
@@ -836,6 +906,275 @@ impl TuiSession {
         self.report_save(reservation, result)
     }
 
+    /// Records a conflict and shows reload, keep, Save As, and maybe overwrite.
+    ///
+    /// Keep Editing does not rebaseline. The next Save conflicts again and asks
+    /// for a decision. An explicit Save resets a previous Keep so the terminal,
+    /// which does not watch the file while idle, is not a dead end.
+    fn begin_disk_conflict(
+        &mut self,
+        revision: Revision,
+        expected: TargetExpectation,
+        actual: TargetState,
+        cleanup_failed: bool,
+    ) {
+        let kind = classify_external_change(Some(expected), Some(Ok(actual)));
+        if !kind.requires_prompt() {
+            self.clear_external_retention();
+            self.dismiss_disk_conflict();
+            self.set_status(disk_conflict::MATCHES_AGAIN);
+            return;
+        }
+        self.reviewed_disk = Some(ReviewedDisk {
+            expected,
+            actual,
+            cleanup_failed,
+        });
+        self.conflict.reduce(ConflictCommand::Reset);
+        self.conflict.reduce(ConflictCommand::ObservedExact {
+            kind,
+            evidence: Ok(actual),
+            revision,
+        });
+        // The bytes on disk are no longer the trusted baseline. Keep the
+        // open text even when it still matches the last save.
+        self.note_external_retention();
+        self.show_disk_conflict();
+    }
+
+    fn show_disk_conflict(&mut self) {
+        if self.reviewed_disk.is_none() || self.conflict.prompt_kind().is_none() {
+            return;
+        }
+        let notice = self.disk_prompt_notice();
+        self.prompt = PromptMode::DiskChange;
+        self.prompt_input.clear();
+        self.set_status(notice);
+    }
+
+    fn disk_prompt_notice(&self) -> &'static str {
+        let Some(reviewed) = self.reviewed_disk else {
+            return disk_conflict::notice(disk_conflict::NoticeFacts {
+                kind: ExternalChangeKind::Unchanged,
+                metadata_only: false,
+                cleanup_failed: false,
+                overwrite_allowed: false,
+            });
+        };
+        let kind = self
+            .conflict
+            .prompt_kind()
+            .unwrap_or(ExternalChangeKind::Unchanged);
+        disk_conflict::notice(disk_conflict::NoticeFacts {
+            kind,
+            metadata_only: disk_conflict::metadata_only(&reviewed),
+            cleanup_failed: reviewed.cleanup_failed,
+            overwrite_allowed: self.overwrite_allowed(),
+        })
+    }
+
+    fn overwrite_allowed(&self) -> bool {
+        let Some(reviewed) = self.reviewed_disk else {
+            return false;
+        };
+        !self.save_is_blocked()
+            && self.document.path().is_some()
+            && matches!(reviewed.actual, TargetState::Regular(_))
+            && matches!(
+                self.conflict.prompt_kind(),
+                Some(ExternalChangeKind::ContentOrIdentityChanged)
+            )
+    }
+
+    const fn disk_prompt_is_open(&self) -> bool {
+        matches!(
+            self.prompt,
+            PromptMode::DiskChange
+                | PromptMode::ConfirmDiskOverwrite
+                | PromptMode::ConfirmDiskReload
+        )
+    }
+
+    fn dismiss_disk_conflict(&mut self) {
+        self.reviewed_disk = None;
+        self.conflict.reduce(ConflictCommand::Reset);
+        if self.disk_prompt_is_open() {
+            self.prompt = PromptMode::None;
+        }
+    }
+
+    fn keep_disk_text(&mut self) {
+        self.conflict
+            .reduce(ConflictCommand::Decide(ConflictDecision::KeepEditing));
+        // A stale keep leaves a visible confirm in place. An accepted keep
+        // does not rebaseline, and the open text stays retained.
+        if self.conflict.is_prompting() {
+            return;
+        }
+        self.reviewed_disk = None;
+        self.prompt = PromptMode::None;
+        self.prompt_input.clear();
+        self.after_save = AfterSave::Stay;
+        self.should_exit = false;
+        self.set_status(disk_conflict::KEPT);
+    }
+
+    fn request_disk_reload(&mut self) -> SaveStep {
+        let effect = self
+            .conflict
+            .reduce(ConflictCommand::Decide(ConflictDecision::ReloadDisk));
+        if !matches!(effect, ConflictEffect::RequestReload) {
+            self.show_disk_conflict();
+            return SaveStep::AwaitingInput;
+        }
+        // A clean document reloads immediately, as the window does. Typed
+        // edits get a second confirmation. External retention is not a
+        // second copy of text the user typed.
+        if self.document.is_dirty() {
+            self.prompt = PromptMode::ConfirmDiskReload;
+            self.set_status(disk_conflict::RELOAD_CONFIRM);
+            SaveStep::AwaitingInput
+        } else {
+            self.reload_disk_version()
+        }
+    }
+
+    fn request_disk_overwrite(&mut self) {
+        if !self.overwrite_allowed() {
+            return;
+        }
+        let effect = self
+            .conflict
+            .reduce(ConflictCommand::Decide(ConflictDecision::RequestOverwrite));
+        if matches!(effect, ConflictEffect::PromptOverwriteConfirm(_)) {
+            self.prompt = PromptMode::ConfirmDiskOverwrite;
+            self.set_status(disk_conflict::OVERWRITE_CONFIRM);
+        }
+    }
+
+    fn cancel_disk_overwrite(&mut self) {
+        self.conflict
+            .reduce(ConflictCommand::Decide(ConflictDecision::CancelOverwrite));
+        self.show_disk_conflict();
+    }
+
+    /// Replaces the disk file only when the second confirmation's observation is still current.
+    fn confirm_disk_overwrite(&mut self) -> SaveStep {
+        if self.save_is_blocked() {
+            self.show_disk_conflict();
+            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            return SaveStep::NotSaved;
+        }
+        let ConflictEffect::AuthorizeOverwrite(reviewed) = self
+            .conflict
+            .reduce(ConflictCommand::Decide(ConflictDecision::ConfirmOverwrite))
+        else {
+            self.show_disk_conflict();
+            return SaveStep::AwaitingInput;
+        };
+        let Some(path) = self.document.path().map(std::path::Path::to_path_buf) else {
+            self.dismiss_disk_conflict();
+            self.set_status(disk_conflict::RELOAD_FAILED);
+            return SaveStep::NotSaved;
+        };
+        match inspect_target(&path, SaveStage::InspectInitial) {
+            Ok(TargetState::Regular(observation)) if observation == reviewed => {
+                self.write_over_reviewed_disk(observation)
+            }
+            Ok(observed) => self.note_disk_changed_again(observed),
+            Err(_) => self.note_disk_unreadable(),
+        }
+    }
+
+    fn write_over_reviewed_disk(&mut self, observation: FileObservation) -> SaveStep {
+        // Rebaseline only after the second confirmation and a matching re-read.
+        // A declined hard-link prompt leaves this baseline, as the window does.
+        self.document.rebaseline_to_observed_disk(observation);
+        self.reviewed_disk = None;
+        self.prompt = PromptMode::None;
+        self.save()
+    }
+
+    fn note_disk_changed_again(&mut self, observed: TargetState) -> SaveStep {
+        let Some(mut reviewed) = self.reviewed_disk else {
+            self.dismiss_disk_conflict();
+            self.set_status(disk_conflict::CHANGED_AGAIN);
+            return SaveStep::AwaitingInput;
+        };
+        let kind = classify_external_change(Some(reviewed.expected), Some(Ok(observed)));
+        reviewed.actual = observed;
+        self.reviewed_disk = Some(reviewed);
+        if !kind.requires_prompt() {
+            self.clear_external_retention();
+            self.dismiss_disk_conflict();
+            self.set_status(disk_conflict::MATCHES_AGAIN);
+            return SaveStep::NotSaved;
+        }
+        self.note_external_retention();
+        self.conflict.reduce(ConflictCommand::ObservedExact {
+            kind,
+            evidence: Ok(observed),
+            revision: self.document.revision(),
+        });
+        self.show_disk_conflict();
+        self.set_status(disk_conflict::CHANGED_AGAIN);
+        SaveStep::AwaitingInput
+    }
+
+    fn note_disk_unreadable(&mut self) -> SaveStep {
+        self.conflict.reduce(ConflictCommand::ObservedExact {
+            kind: ExternalChangeKind::Unreadable,
+            evidence: Err(()),
+            revision: self.document.revision(),
+        });
+        self.show_disk_conflict();
+        self.set_status(disk_conflict::UNREADABLE_OVERWRITE);
+        SaveStep::AwaitingInput
+    }
+
+    fn reload_disk_version(&mut self) -> SaveStep {
+        let Some(path) = self.document.path().map(std::path::Path::to_path_buf) else {
+            self.fail_disk_reload();
+            return SaveStep::AwaitingInput;
+        };
+        // A load error can name the path. Keep the fixed sentence instead.
+        let Ok(loaded) = Document::from_path(&path) else {
+            self.fail_disk_reload();
+            return SaveStep::AwaitingInput;
+        };
+        if self.has_unsaved_state() {
+            self.recovery.on_discarded();
+        }
+        self.install_loaded_document(loaded);
+        SaveStep::NotSaved
+    }
+
+    fn fail_disk_reload(&mut self) {
+        self.show_disk_conflict();
+        self.set_status(disk_conflict::RELOAD_FAILED);
+    }
+
+    fn install_loaded_document(&mut self, document: Document) {
+        let revision = document.revision();
+        self.document = document;
+        self.caret_byte = 0;
+        self.scroll_row = 0;
+        self.scroll_col = 0;
+        self.follow_caret = true;
+        self.history.reset(revision);
+        self.save_durability = SaveDurabilityRisk::Clear;
+        self.pending_save = None;
+        self.reviewed_disk = None;
+        self.external_retention = ExternalRetention::Clear;
+        self.conflict.reduce(ConflictCommand::Reset);
+        self.prompt = PromptMode::None;
+        self.prompt_input.clear();
+        self.after_save = AfterSave::Stay;
+        self.should_exit = false;
+        self.sync_recovery();
+        self.set_status(disk_conflict::LOADED);
+    }
+
     /// Turns a save result into status text and the next step.
     fn report_save(
         &mut self,
@@ -848,6 +1187,8 @@ impl TuiSession {
                 warnings,
                 ..
             }) => {
+                self.external_retention = ExternalRetention::Clear;
+                self.dismiss_disk_conflict();
                 let warning_count = warnings.cleanup().len() + warnings.durability().len();
                 self.save_durability = SaveDurabilityRisk::from_warnings(&warnings);
                 if self.save_durability.is_at_risk() {
@@ -874,15 +1215,19 @@ impl TuiSession {
                 self.last_save_warnings = (!warnings.is_empty()).then_some(warnings);
                 SaveStep::Committed
             }
-            Ok(SaveOutcome::Conflict { .. }) => {
-                self.set_status(
-                    "Not saved: the file changed on disk. Use ^O Save As to keep this text under a new name.",
-                );
+            Ok(SaveOutcome::Conflict {
+                revision,
+                expected,
+                actual,
+                cleanup_error,
+            }) => {
+                self.begin_disk_conflict(revision, expected, actual, cleanup_error.is_some());
                 SaveStep::NotSaved
             }
             Ok(SaveOutcome::NotCommitted { cleanup_error, .. }) => {
                 // The engine diagnostic stays on the outcome for recovery.
                 // The status names the folder instead of that diagnostic.
+                self.dismiss_disk_conflict();
                 self.set_status(crate::save_status::not_committed_status(
                     &reservation.destination,
                     cleanup_error.as_ref(),
@@ -894,6 +1239,7 @@ impl TuiSession {
                 recovery_artifact,
                 ..
             }) => {
+                self.dismiss_disk_conflict();
                 let SaveRecoveryReservation {
                     destination,
                     destination_label,
@@ -909,6 +1255,7 @@ impl TuiSession {
                 SaveStep::NotSaved
             }
             Err(error) => {
+                self.dismiss_disk_conflict();
                 self.set_status(format!("Not saved: {error}"));
                 SaveStep::NotSaved
             }
@@ -1322,6 +1669,15 @@ fn prompt_parts(session: &TuiSession) -> Option<(String, &str, &'static str)> {
                 "",
             ));
         }
+        PromptMode::DiskChange => {
+            return Some((session.disk_prompt_notice().to_owned(), "", ""));
+        }
+        PromptMode::ConfirmDiskOverwrite => {
+            return Some((disk_conflict::OVERWRITE_CONFIRM.to_owned(), "", ""));
+        }
+        PromptMode::ConfirmDiskReload => {
+            return Some((disk_conflict::RELOAD_CONFIRM.to_owned(), "", ""));
+        }
         PromptMode::None | PromptMode::SaveWarnings => return None,
     };
     Some((label.to_owned(), input, hint))
@@ -1492,6 +1848,8 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
                 .into_owned()
         },
     );
+    // Dirty edits, uncertain durability, and a divergent disk version all
+    // mark the title. Exit uses the same signal.
     let dirty = if session.has_unsaved_state() {
         " *"
     } else {
@@ -1833,6 +2191,8 @@ const HELP_PARAGRAPHS: &[&str] = &[
     "^W or ^F Find. ^K Cut line. ^U Paste.",
     "^Z Undo. ^Y Redo. ^J Jump line. ^E Markdown.",
     "^T Theme. ^R Review save warnings.",
+    "Disk change: r reloads, k keeps, o overwrites after confirm.",
+    "A disk change keeps this text until reload, save, or discard.",
 ];
 
 /// Breaks `text` on spaces so every returned line is at most `width` cells.
@@ -2249,6 +2609,14 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, cols: u16, rows: u16)
             }
             return;
         }
+        PromptMode::DiskChange
+        | PromptMode::ConfirmDiskOverwrite
+        | PromptMode::ConfirmDiskReload => {
+            if let TuiEvent::Key(key) = event {
+                handle_disk_prompt_key(session, key);
+            }
+            return;
+        }
         PromptMode::SaveAs => {
             match event {
                 TuiEvent::Key(TuiKey::Enter) => {
@@ -2256,9 +2624,14 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, cols: u16, rows: u16)
                     session.finish_save(step);
                 }
                 TuiEvent::Key(TuiKey::Escape) => {
-                    session.prompt = PromptMode::None;
-                    session.finish_save(SaveStep::NotSaved);
-                    session.set_status("Save As cancelled");
+                    if session.reviewed_disk.is_some() && session.conflict.is_prompting() {
+                        session.show_disk_conflict();
+                        session.finish_save(SaveStep::NotSaved);
+                    } else {
+                        session.prompt = PromptMode::None;
+                        session.finish_save(SaveStep::NotSaved);
+                        session.set_status("Save As cancelled");
+                    }
                 }
                 TuiEvent::Key(TuiKey::Backspace) => {
                     session.prompt_input.pop();
@@ -2480,7 +2853,63 @@ fn handle_paste(session: &mut TuiSession, pasted: &str) {
         | PromptMode::ExitConfirm
         | PromptMode::RecoveryOffer
         | PromptMode::ReconcileSave(_)
-        | PromptMode::SaveWarnings => {}
+        | PromptMode::SaveWarnings
+        | PromptMode::DiskChange
+        | PromptMode::ConfirmDiskOverwrite
+        | PromptMode::ConfirmDiskReload => {}
+    }
+}
+
+fn handle_disk_prompt_key(session: &mut TuiSession, key: TuiKey) {
+    if session.prompt == PromptMode::DiskChange {
+        handle_disk_change_key(session, key);
+    } else if session.prompt == PromptMode::ConfirmDiskOverwrite {
+        handle_disk_overwrite_key(session, key);
+    } else if session.prompt == PromptMode::ConfirmDiskReload {
+        handle_disk_reload_key(session, key);
+    }
+}
+
+fn handle_disk_change_key(session: &mut TuiSession, key: TuiKey) {
+    match key {
+        TuiKey::Char('r' | 'R') => {
+            let step = session.request_disk_reload();
+            session.finish_save(step);
+        }
+        TuiKey::Char('k' | 'K') | TuiKey::Escape => session.keep_disk_text(),
+        TuiKey::Char('o' | 'O') => session.request_disk_overwrite(),
+        TuiKey::Ctrl('o') => {
+            let effect = session
+                .conflict
+                .reduce(ConflictCommand::Decide(ConflictDecision::SaveAs));
+            if matches!(effect, ConflictEffect::RequestSaveAs) {
+                let step = session.open_save_as();
+                session.finish_save(step);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_disk_overwrite_key(session: &mut TuiSession, key: TuiKey) {
+    match key {
+        TuiKey::Char('y' | 'Y') => {
+            let step = session.confirm_disk_overwrite();
+            session.finish_save(step);
+        }
+        TuiKey::Char('n' | 'N') | TuiKey::Escape => session.cancel_disk_overwrite(),
+        _ => {}
+    }
+}
+
+fn handle_disk_reload_key(session: &mut TuiSession, key: TuiKey) {
+    match key {
+        TuiKey::Char('y' | 'Y') => {
+            let step = session.reload_disk_version();
+            session.finish_save(step);
+        }
+        TuiKey::Char('n' | 'N') | TuiKey::Escape => session.show_disk_conflict(),
+        _ => {}
     }
 }
 
@@ -2747,6 +3176,8 @@ mod tests {
             "^E Markdown",
             "^T Theme",
             "^R Review save warnings",
+            "o overwrites",
+            "until reload",
             "Home and End",
             "PgUp and PgDn",
             "╔",
@@ -2897,6 +3328,68 @@ mod tests {
         without_startup_status(session)
     }
 
+    fn session_for_with_store(path: &std::path::Path, store: &std::path::Path) -> TuiSession {
+        TuiSession::new(
+            &LaunchOptions {
+                initial_path: Some(path.to_path_buf()),
+                ..LaunchOptions::default()
+            },
+            CrashRecoverySession::open_at(store),
+        )
+        .expect("fixture document should load")
+    }
+
+    fn recovery_record_paths(store: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let records = crate::crash_recovery::recovery_store_root_for_test(store).join("records");
+        std::fs::read_dir(records)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| path.extension().is_some_and(|ext| ext == "rec"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Changes the platform change token without changing bytes or leaving the
+    /// file unwritable. Unix records ctime, so a timestamp update and a mode
+    /// toggle are both used, and the original mode is restored exactly.
+    fn touch_metadata(path: &std::path::Path) {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("metadata fixture");
+        file.set_modified(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+        )
+        .expect("metadata timestamp");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = file.metadata().expect("metadata").permissions().mode();
+            let mut toggled = file.metadata().expect("metadata").permissions();
+            toggled.set_mode(mode ^ 0o200);
+            file.set_permissions(toggled).expect("mode toggle");
+            let mut restored = file.metadata().expect("metadata").permissions();
+            restored.set_mode(mode);
+            file.set_permissions(restored).expect("mode restore");
+            let restored_mode = file.metadata().expect("metadata").permissions().mode();
+            assert_eq!(restored_mode & 0o777, mode & 0o777);
+        }
+        #[cfg(windows)]
+        {
+            let mut permissions = file.metadata().expect("metadata").permissions();
+            permissions.set_readonly(true);
+            file.set_permissions(permissions.clone())
+                .expect("attribute toggle");
+            permissions.set_readonly(false);
+            file.set_permissions(permissions)
+                .expect("attribute restore");
+            assert!(!file.metadata().expect("metadata").permissions().readonly());
+        }
+    }
+
     fn untitled() -> TuiSession {
         without_startup_status(
             TuiSession::new(
@@ -2950,12 +3443,12 @@ mod tests {
         assert_eq!(session.after_save, AfterSave::Stay);
         assert!(session.document.is_dirty());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "someone else");
-        assert!(
-            session
-                .status_message
-                .as_ref()
-                .is_some_and(|(message, _)| message.contains("Save As"))
-        );
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert!(session.status_message.as_ref().is_some_and(|(message, _)| {
+            message.contains("Text changed")
+                && message.contains("Save As")
+                && !message.contains("Metadata")
+        }));
     }
 
     #[test]
@@ -3643,13 +4136,574 @@ mod tests {
         std::fs::write(&path, "someone else").unwrap();
         key(&mut session, TuiKey::Ctrl('s'));
 
-        // The conflict status points at ^O, which is prefilled with this path.
+        // Same-path Save As is still an ordinary save, so the conflict remains.
         key(&mut session, TuiKey::Ctrl('o'));
         key(&mut session, TuiKey::Enter);
 
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "someone else");
+        assert_eq!(session.text(), "mine first");
+        assert!(session.document.is_dirty());
+    }
+
+    #[test]
+    fn metadata_only_conflict_keeps_text_until_overwrite_is_confirmed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        let original = "café\u{1b}\n";
+        std::fs::write(&path, original).unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "α");
+        let edited = session.text();
+        let baseline = session.document.saved_target();
+        let TargetExpectation::Existing(before) = baseline.unwrap() else {
+            panic!("a loaded file has a baseline");
+        };
+        touch_metadata(&path);
+        let TargetState::Regular(after) = inspect_target(&path, SaveStage::InspectInitial).unwrap()
+        else {
+            panic!("the fixture stays a regular file");
+        };
+        assert_eq!(before.identity(), after.identity());
+        assert_eq!(before.fingerprint(), after.fingerprint());
+        assert_eq!(before.length(), after.length());
+        assert_ne!(before, after, "the change token did not move");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+        key(&mut session, TuiKey::Ctrl('s'));
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert!(session.has_unsaved_state());
+        let frame = render_frame(&session, 80, 24);
+        assert_frame_is_terminal_safe(&frame, 80);
+        let visible = strip_own_sequences(&frame);
+        assert!(
+            visible.contains("Metadata") && visible.contains("matches"),
+            "{visible}"
+        );
+        assert!(visible.contains("(o)verwrite"), "{visible}");
+        assert!(!visible.contains("Text changed"), "{visible}");
+
+        let caret = session.caret_byte;
+        key(&mut session, TuiKey::Char('y'));
+        key(&mut session, TuiKey::Char('z'));
+        handle_event(
+            &mut session,
+            TuiEvent::Paste("pasted\u{1b}".to_owned()),
+            80,
+            24,
+        );
+        handle_event(
+            &mut session,
+            TuiEvent::Mouse(TuiMouseEvent::Press { col: 12, row: 2 }),
+            80,
+            24,
+        );
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert_eq!(session.text(), edited);
+        assert_eq!(session.caret_byte, caret);
+        assert_eq!(session.save(), SaveStep::AwaitingInput);
+        key(&mut session, TuiKey::Ctrl('s'));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+        key(&mut session, TuiKey::Ctrl('o'));
+        assert_eq!(session.prompt, PromptMode::SaveAs);
+        key(&mut session, TuiKey::Escape);
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+
+        key(&mut session, TuiKey::Char('o'));
+        assert_eq!(session.prompt, PromptMode::ConfirmDiskOverwrite);
+        assert!(strip_own_sequences(&render_frame(&session, 80, 24)).contains("Replace the disk"));
+        key(&mut session, TuiKey::Char('n'));
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+        key(&mut session, TuiKey::Char('k'));
+        assert_eq!(session.prompt, PromptMode::None);
+        assert_eq!(session.text(), edited);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(session.document.saved_target(), baseline);
+        assert!(session.document.is_dirty());
+        assert!(session.has_unsaved_state());
+        assert!(status_text(&session).contains("not written"));
+
+        key(&mut session, TuiKey::Ctrl('s'));
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        key(&mut session, TuiKey::Char('o'));
+        key(&mut session, TuiKey::Char('y'));
+        assert_eq!(session.prompt, PromptMode::None);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+        assert!(!session.document.is_dirty());
+        assert!(!session.has_unsaved_state());
+        assert_ne!(session.document.saved_target(), baseline);
+    }
+
+    #[test]
+    fn reload_asks_before_replacing_unsaved_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "first").unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "mine ");
+        assert!(session.history.can_undo());
+        std::fs::write(&path, "雪").unwrap();
+
+        key(&mut session, TuiKey::Ctrl('s'));
+        let visible = strip_own_sequences(&render_frame(&session, 80, 24));
+        assert!(visible.contains("Text changed"), "{visible}");
+        assert!(!visible.contains("Metadata"), "{visible}");
+        key(&mut session, TuiKey::Char('r'));
+        assert_eq!(session.prompt, PromptMode::ConfirmDiskReload);
+        key(&mut session, TuiKey::Char('n'));
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert_eq!(session.text(), "mine first");
+        assert!(session.document.is_dirty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "雪");
+
+        key(&mut session, TuiKey::Char('r'));
+        key(&mut session, TuiKey::Char('y'));
+        assert_eq!(session.text(), "雪");
+        assert!(!session.document.is_dirty());
+        assert!(!session.has_unsaved_state());
+        assert_eq!(session.prompt, PromptMode::None);
+        assert_eq!(session.caret_byte, 0);
+        assert!(!session.history.can_undo());
+        assert!(status_text(&session).contains("Loaded"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "雪");
+    }
+
+    #[test]
+    fn unedited_text_reloads_from_disk_without_a_second_question() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "original").unwrap();
+        let mut session = session_for(&path);
+        std::fs::write(&path, "雪").unwrap();
+
+        key(&mut session, TuiKey::Ctrl('s'));
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert!(!session.document.is_dirty());
+        assert!(session.has_unsaved_state());
+        assert!(strip_own_sequences(&render_frame(&session, 80, 24)).contains("note.txt *"));
+
+        key(&mut session, TuiKey::Char('r'));
+        assert_eq!(session.prompt, PromptMode::None);
+        assert_ne!(session.prompt, PromptMode::ConfirmDiskReload);
+        assert_eq!(session.text(), "雪");
+        assert!(!session.document.is_dirty());
+        assert!(!session.has_unsaved_state());
+        assert_eq!(session.caret_byte, 0);
+        let visible = strip_own_sequences(&render_frame(&session, 80, 24));
+        assert!(visible.contains("note.txt │"), "{visible}");
+        assert!(!visible.contains("note.txt *"), "{visible}");
+    }
+
+    #[test]
+    fn keeping_an_external_change_does_not_replace_or_rebaseline() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "original").unwrap();
+        let mut session = session_for(&path);
+        let baseline = session.document.saved_target();
+        std::fs::write(&path, "external").unwrap();
+
+        key(&mut session, TuiKey::Ctrl('s'));
+        let visible = strip_own_sequences(&render_frame(&session, 80, 24));
+        assert!(
+            visible.contains("Text changed") && !visible.contains("Metadata"),
+            "{visible}"
+        );
+        key(&mut session, TuiKey::Escape);
+        assert_eq!(session.prompt, PromptMode::None);
+        assert_eq!(session.text(), "original");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        assert_eq!(session.document.saved_target(), baseline);
+        assert!(!session.document.is_dirty());
+        assert!(session.has_unsaved_state());
+
+        key(&mut session, TuiKey::Ctrl('x'));
+        assert_eq!(session.prompt, PromptMode::ExitConfirm);
+        assert!(!session.should_exit);
+        key(&mut session, TuiKey::Char('y'));
+        assert!(!session.should_exit);
+        assert_eq!(session.after_save, AfterSave::Stay);
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert_eq!(session.text(), "original");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+
+        key(&mut session, TuiKey::Char('k'));
+        key(&mut session, TuiKey::Ctrl('x'));
+        assert_eq!(session.prompt, PromptMode::ExitConfirm);
+        key(&mut session, TuiKey::Char('n'));
+        assert!(session.should_exit);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        assert_eq!(session.text(), "original");
+    }
+
+    #[test]
+    fn a_missing_file_cannot_be_overwritten() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "first").unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "mine ");
+        std::fs::remove_file(&path).unwrap();
+
+        key(&mut session, TuiKey::Ctrl('s'));
+        let visible = strip_own_sequences(&render_frame(&session, 80, 24));
+        assert!(visible.contains("missing"), "{visible}");
+        assert!(!visible.contains("(o)"), "{visible}");
+        key(&mut session, TuiKey::Char('o'));
+        key(&mut session, TuiKey::Char('z'));
+        assert!(!path.exists());
+        assert_eq!(session.text(), "mine first");
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+
+        key(&mut session, TuiKey::Char('r'));
+        assert_eq!(session.prompt, PromptMode::ConfirmDiskReload);
+        key(&mut session, TuiKey::Char('n'));
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert_eq!(session.text(), "mine first");
+        key(&mut session, TuiKey::Char('r'));
+        key(&mut session, TuiKey::Char('y'));
+        assert_eq!(session.text(), "mine first");
+        assert!(session.history.can_undo());
+        assert!(status_text(&session).contains("still open"));
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn overwrite_stops_when_the_disk_changes_after_review() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "first").unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "mine ");
+        let baseline = session.document.saved_target();
+        std::fs::write(&path, "external A").unwrap();
+
+        key(&mut session, TuiKey::Ctrl('s'));
+        key(&mut session, TuiKey::Char('o'));
+        assert_eq!(session.prompt, PromptMode::ConfirmDiskOverwrite);
+        std::fs::write(&path, "external B").unwrap();
+        key(&mut session, TuiKey::Char('y'));
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external B");
+        assert_eq!(session.text(), "mine first");
+        assert!(session.document.is_dirty());
+        assert!(session.has_unsaved_state());
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert_ne!(session.prompt, PromptMode::ConfirmDiskOverwrite);
+        assert!(status_text(&session).contains("changed again"));
+        assert_eq!(session.document.saved_target(), baseline);
+    }
+
+    #[test]
+    fn overwrite_stops_when_the_path_is_no_longer_a_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "first").unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "mine ");
+        let baseline = session.document.saved_target();
+        std::fs::write(&path, "external").unwrap();
+
+        key(&mut session, TuiKey::Ctrl('s'));
+        key(&mut session, TuiKey::Char('o'));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        key(&mut session, TuiKey::Char('y'));
+
+        assert!(path.is_dir());
+        assert_eq!(session.text(), "mine first");
+        assert_eq!(session.document.saved_target(), baseline);
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert!(status_text(&session).contains("changed again"));
+        let visible = strip_own_sequences(&render_frame(&session, 80, 24));
+        assert!(visible.contains("directory"), "{visible}");
+        assert!(!visible.contains("(o)"), "{visible}");
+    }
+
+    #[test]
+    fn a_disk_that_matches_again_is_not_overwritten() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "original").unwrap();
+        let mut session = session_for(&path);
+        let TargetExpectation::Existing(expected) = session.document.saved_target().unwrap() else {
+            panic!("a loaded file has a baseline");
+        };
+        std::fs::write(&path, "external").unwrap();
+        key(&mut session, TuiKey::Ctrl('s'));
+        key(&mut session, TuiKey::Char('o'));
+        assert_eq!(session.prompt, PromptMode::ConfirmDiskOverwrite);
+
+        let step = session.note_disk_changed_again(TargetState::Regular(expected));
+        assert_eq!(step, SaveStep::NotSaved);
+        assert_eq!(session.prompt, PromptMode::None);
+        assert!(status_text(&session).contains("matches again"));
+        assert_eq!(session.text(), "original");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        assert!(!session.document.is_dirty());
+        assert!(!session.has_unsaved_state());
+
+        key(&mut session, TuiKey::Ctrl('s'));
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        assert!(session.has_unsaved_state());
+    }
+
+    #[test]
+    fn matching_disk_again_drops_external_retention() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("note.txt");
+        let store = root.path().join("private");
+        std::fs::write(&path, "original").unwrap();
+        let mut session = session_for_with_store(&path, &store);
+        let TargetExpectation::Existing(expected) = session.document.saved_target().unwrap() else {
+            panic!("a loaded file has a baseline");
+        };
+        std::fs::write(&path, "external").unwrap();
+        key(&mut session, TuiKey::Ctrl('s'));
+        session
+            .recovery
+            .force_due_persist_for_test(&session.document, Selection::caret(session.caret_byte));
+        assert!(!recovery_record_paths(&store).is_empty());
+
+        let step = session.note_disk_changed_again(TargetState::Regular(expected));
+
+        assert_eq!(step, SaveStep::NotSaved);
+        assert!(!session.has_unsaved_state());
+        assert!(recovery_record_paths(&store).is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+    }
+
+    #[test]
+    fn save_as_to_another_path_leaves_the_conflicting_file_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        let other = directory.path().join("copy.txt");
+        std::fs::write(&path, "first").unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "mine ");
+        std::fs::write(&path, "someone else").unwrap();
+        key(&mut session, TuiKey::Ctrl('s'));
+
+        key(&mut session, TuiKey::Ctrl('o'));
+        assert_eq!(session.prompt, PromptMode::SaveAs);
+        key(&mut session, TuiKey::Escape);
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+
+        key(&mut session, TuiKey::Ctrl('o'));
+        session.prompt_input.clear();
+        type_text(&mut session, &other.to_string_lossy());
+        key(&mut session, TuiKey::Enter);
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "someone else");
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "mine first");
+        assert_eq!(session.prompt, PromptMode::None);
+        assert!(!session.document.is_dirty());
+        assert!(!session.has_unsaved_state());
+        assert_eq!(session.document.path(), Some(other.as_path()));
+        key(&mut session, TuiKey::Ctrl('s'));
         assert_eq!(session.prompt, PromptMode::None);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "someone else");
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "mine first");
+    }
+
+    #[test]
+    fn declining_save_as_replace_returns_to_the_disk_decision() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        let occupied = directory.path().join("occupied.txt");
+        std::fs::write(&path, "first").unwrap();
+        std::fs::write(&occupied, "keep").unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "mine ");
+        std::fs::write(&path, "someone else").unwrap();
+        key(&mut session, TuiKey::Ctrl('s'));
+
+        key(&mut session, TuiKey::Ctrl('o'));
+        session.prompt_input.clear();
+        type_text(&mut session, &occupied.to_string_lossy());
+        key(&mut session, TuiKey::Enter);
+        assert_eq!(session.prompt, PromptMode::ConfirmReplace);
+        key(&mut session, TuiKey::Char('n'));
+
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert_eq!(std::fs::read_to_string(&occupied).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "someone else");
+        assert_eq!(session.text(), "mine first");
         assert!(session.document.is_dirty());
+    }
+
+    #[test]
+    fn a_conflict_cleanup_failure_is_named_without_the_engine_diagnostic() {
+        use noter::core::save::{FileChangeToken, FileObservation, StorageError};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "text").unwrap();
+        let mut session = session_for(&path);
+        let TargetExpectation::Existing(expected) = session.document.saved_target().unwrap() else {
+            panic!("a loaded file has a baseline");
+        };
+        let actual = FileObservation::new(
+            expected.identity(),
+            expected.fingerprint(),
+            expected.length(),
+            expected.link_count(),
+            FileChangeToken::new(expected.change_token().primary().wrapping_add(9), 1),
+        );
+        let reservation = session.reserve_save_recovery(path.clone()).unwrap();
+        let step = session.report_save(
+            reservation,
+            Ok(SaveOutcome::Conflict {
+                revision: session.document.revision(),
+                expected: TargetExpectation::Existing(expected),
+                actual: TargetState::Regular(actual),
+                cleanup_error: Some(StorageError::new(SaveStage::Cleanup, "secret\u{1b}path")),
+            }),
+        );
+
+        assert_eq!(step, SaveStep::NotSaved);
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "text");
+        let frame = render_frame(&session, 80, 24);
+        assert_frame_is_terminal_safe(&frame, 80);
+        let visible = strip_own_sequences(&frame);
+        assert!(visible.contains("Metadata"), "{visible}");
+        assert!(visible.contains("Private file remains"), "{visible}");
+        assert!(!visible.contains("secret"), "{visible}");
+        assert!(!visible.contains("Cleanup"), "{visible}");
+    }
+
+    #[test]
+    fn reload_of_dirty_text_drops_the_recovery_record() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("note.txt");
+        let store = root.path().join("private");
+        std::fs::write(&path, "saved").unwrap();
+        {
+            let mut session = session_for_with_store(&path, &store);
+            type_text(&mut session, "edited ");
+            session.recovery.force_due_persist_for_test(
+                &session.document,
+                Selection::caret(session.caret_byte),
+            );
+            assert!(!recovery_record_paths(&store).is_empty());
+            std::fs::write(&path, "雪").unwrap();
+            key(&mut session, TuiKey::Ctrl('s'));
+            key(&mut session, TuiKey::Char('r'));
+            assert_eq!(session.prompt, PromptMode::ConfirmDiskReload);
+            key(&mut session, TuiKey::Char('y'));
+            assert_eq!(session.text(), "雪");
+            assert!(!session.has_unsaved_state());
+            assert!(recovery_record_paths(&store).is_empty());
+        }
+        let next = untitled_with_store(&store);
+        assert_eq!(next.prompt, PromptMode::None);
+        assert!(next.recovery.active_offer().is_none());
+    }
+
+    #[test]
+    fn clean_external_text_is_retained_until_reload() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("note.txt");
+        let store = root.path().join("private");
+        std::fs::write(&path, "original").unwrap();
+        {
+            let mut session = session_for_with_store(&path, &store);
+            std::fs::write(&path, "external").unwrap();
+            key(&mut session, TuiKey::Ctrl('s'));
+            assert!(!session.document.is_dirty());
+            assert!(session.has_unsaved_state());
+            session.recovery.force_due_persist_for_test(
+                &session.document,
+                Selection::caret(session.caret_byte),
+            );
+            assert!(!recovery_record_paths(&store).is_empty());
+            key(&mut session, TuiKey::Char('r'));
+            assert_eq!(session.prompt, PromptMode::None);
+            assert_eq!(session.text(), "external");
+            assert!(!session.has_unsaved_state());
+            assert!(recovery_record_paths(&store).is_empty());
+        }
+        let next = untitled_with_store(&store);
+        assert_eq!(next.prompt, PromptMode::None);
+        assert!(next.recovery.active_offer().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symbolic_link_cannot_be_overwritten() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        let other = directory.path().join("other.txt");
+        std::fs::write(&path, "first").unwrap();
+        std::fs::write(&other, "elsewhere").unwrap();
+        let mut session = session_for(&path);
+        type_text(&mut session, "mine ");
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&other, &path).unwrap();
+
+        key(&mut session, TuiKey::Ctrl('s'));
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        let visible = strip_own_sequences(&render_frame(&session, 80, 24));
+        assert!(visible.contains("symbolic link"), "{visible}");
+        assert!(!visible.contains("(o)"), "{visible}");
+        key(&mut session, TuiKey::Char('o'));
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "elsewhere");
+        assert!(path.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(session.text(), "mine first");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn declined_hard_link_after_overwrite_keeps_the_new_baseline() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        let other_name = directory.path().join("other-name.txt");
+        std::fs::write(&path, "shared").unwrap();
+        let mut session = session_for(&path);
+        std::fs::hard_link(&path, &other_name).unwrap();
+        type_text(&mut session, "new ");
+        let baseline = session.document.saved_target();
+        std::fs::write(&path, "external").unwrap();
+
+        key(&mut session, TuiKey::Ctrl('s'));
+        assert_eq!(session.prompt, PromptMode::DiskChange);
+        let visible = strip_own_sequences(&render_frame(&session, 80, 24));
+        assert!(
+            visible.contains("Text changed") && !visible.contains("Metadata"),
+            "{visible}"
+        );
+        key(&mut session, TuiKey::Char('o'));
+        key(&mut session, TuiKey::Char('y'));
+
+        assert_eq!(session.prompt, PromptMode::ConfirmHardLink(2));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        assert_eq!(std::fs::read_to_string(&other_name).unwrap(), "external");
+        assert_eq!(session.text(), "new shared");
+        assert_ne!(session.document.saved_target(), baseline);
+
+        key(&mut session, TuiKey::Char('n'));
+        assert_eq!(session.prompt, PromptMode::None);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        key(&mut session, TuiKey::Ctrl('s'));
+        assert_eq!(session.prompt, PromptMode::ConfirmHardLink(2));
+        assert_ne!(session.prompt, PromptMode::DiskChange);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        assert_eq!(std::fs::read_to_string(&other_name).unwrap(), "external");
+    }
+
+    fn status_text(session: &TuiSession) -> String {
+        session
+            .status_message
+            .as_ref()
+            .map(|(message, _)| message.clone())
+            .unwrap_or_default()
     }
 
     #[cfg(unix)]

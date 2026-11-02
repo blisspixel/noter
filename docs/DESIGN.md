@@ -657,7 +657,10 @@ classifies focus and timer observations against the trusted save baseline and
 offers Reload, Keep Editing, and Save As without silent overwrite.
 Overwrite-with-second-confirm is implemented as a pure two-step conflict
 decision (`RequestOverwrite` then `ConfirmOverwrite`) that only then rebaselines
-the trusted save expectation and saves.
+the trusted save expectation and saves. The terminal save path uses this same
+reducer when a save reports a conflict. It does not watch the file while idle.
+A divergent observation keeps the open text recoverable until reload, a
+committed save, or an explicit discard.
 
 Dialogs cannot directly mutate document state. They emit commands to the same
 dispatcher used by keyboard shortcuts and menus. Repeated close events are
@@ -1587,8 +1590,15 @@ Current state:
   without saving removes the record, and an untitled launch offers Restore,
   Discard, or Later. On Unix the TUI ignores `SIGHUP`, so a closed terminal
   or dropped SSH session ends input instead of the process, and the text is
-  written to recovery before exit. The TUI does not yet watch the file for
-  external changes while idle or offer Reload.
+  written to recovery before exit. The TUI does not watch the file for
+  external changes while idle. When a save finds a disk change, it offers
+  Reload, Keep Editing, Save As, and Overwrite after a second confirmation.
+  Overwrite rechecks the reviewed file and rebaselines only when that
+  observation is still current. Keep Editing does not rebaseline. A change
+  whose bytes still match says that the metadata changed and the text
+  matches. Reload asks before it discards unsaved text. Until reload, a
+  committed save, or an explicit discard, the open text stays recoverable,
+  including when it still matches the last save.
 - **Shortcuts:** `Ctrl+S` Save, `Ctrl+O` Save As (prefilled with the current
   name), `Ctrl+X`, `Ctrl+Q`, or `Ctrl+C` Exit, `Ctrl+W` or `Ctrl+F` Find,
   `Ctrl+K` Cut Line, `Ctrl+U` Paste, `Ctrl+Z` Undo, `Ctrl+Y` Redo, `Ctrl+E`

@@ -1169,8 +1169,10 @@ the result; the cancelled run is not green evidence.
   display prints a plain explanation, and `noter update` prints its status
   without a window (#73). A failed save names the folder and keeps the open
   text (#75).
-- Finish bounded usability defects without changing save policy: terminal
-  conflict decisions (#71).
+- The terminal offers reload, keep editing, Save As, and overwrite after a
+  second confirmation when a save finds a disk change. A metadata-only change
+  says the text still matches. The open text stays recoverable until reload,
+  a committed save, or an explicit discard (#71).
 - Installer guidance (#76) and concise CLI help/errors (#81) are implemented in
   the resumed work; exact-head CI and review are required before integration.
 - Toolchain maintenance (#77) and the interface plan (#83, with #78 through #82)
