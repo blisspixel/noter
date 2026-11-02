@@ -6,6 +6,8 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Restore the terminal when `SIGTERM` ends a terminal session. The alternate
+  screen and mouse reporting turn off, and cooked settings return (#72).
 - Fit the terminal shortcut bar and help overlay in an 80-column terminal.
   Labels stay whole, help names every binding and how to close it, and help
   rows stay inside the border (#89, #74).

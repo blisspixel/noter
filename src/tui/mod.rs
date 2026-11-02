@@ -2011,6 +2011,9 @@ pub fn run(options: &LaunchOptions) -> io::Result<()> {
     noter_platform::ignore_terminal_hangup();
     let raw_terminal = noter_platform::enable_raw_terminal()?;
     let restorer = raw_terminal.restorer();
+    // SIGTERM does not unwind, so the guard and the panic hook would not run.
+    #[cfg(unix)]
+    noter_platform::restore_terminal_on_terminate(restorer, LEAVE_SCREEN);
     let previous_hook = Arc::new(std::panic::take_hook());
     let chained_hook = Arc::clone(&previous_hook);
     std::panic::set_hook(Box::new(move |info| {

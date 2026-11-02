@@ -1610,8 +1610,10 @@ Current state:
   mode. A guard leaves the alternate screen, mouse reporting, and bracketed
   paste on every return path, and because release builds abort on panic, a
   panic hook also restores the terminal settings from a copy the platform
-  crate provides. On Unix the loop waits for input with `poll` so it can
-  redraw after a resize; on Windows reads block until input arrives.
+  crate provides. `SIGTERM` does not unwind, so on Unix a signal handler
+  restores those same modes and the cooked settings, then ends the process.
+  On Unix the loop waits for input with `poll` so it can redraw after a
+  resize; on Windows reads block until input arrives.
 - **Lines and search:** line and column decisions use the core logical-line
   split rather than rope line indexing, which also breaks at Unicode
   separators. Find uses the core literal search with Unicode case folding and

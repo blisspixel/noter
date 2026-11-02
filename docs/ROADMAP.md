@@ -1163,7 +1163,9 @@ the result; the cancelled run is not green evidence.
 
 - Current-editor correctness and safety remain first: visible RTL caret and
   hit-testing (#69), accessible source mapping (#60), recovery discoverability
-  (#70), persistent readable warnings (#68), and terminal restoration (#72).
+  (#70), and persistent readable warnings (#68).
+- `SIGTERM` leaves the alternate screen, turns mouse reporting off, and
+  restores cooked terminal settings (#72).
 - The terminal shortcut bar and help overlay fit an 80-column terminal
   (#89, #74).
 - Finish bounded usability defects without changing save policy: terminal
