@@ -787,6 +787,17 @@ pub fn ignore_terminal_hangup() {
     imp::unix_ignore_terminal_hangup();
 }
 
+/// Restores the captured terminal settings and writes `leave_screen` if
+/// `SIGTERM` arrives, then dies from that signal.
+///
+/// A normal return and the panic hook already restore the terminal. `SIGTERM`
+/// does not unwind, so neither runs. The handler uses only calls that are safe
+/// from a signal. It does not save the document and it does not run destructors.
+#[cfg(unix)]
+pub fn restore_terminal_on_terminate(restorer: TerminalRestorer, leave_screen: &'static [u8]) {
+    imp::unix_restore_terminal_on_terminate(restorer, leave_screen);
+}
+
 /// Returns the current terminal dimensions as `(columns, rows)`.
 #[must_use]
 pub fn terminal_size() -> (u16, u16) {
@@ -807,11 +818,13 @@ pub fn is_terminal_stdout() -> bool {
 
 #[cfg(unix)]
 mod imp {
+    use std::cell::UnsafeCell;
     use std::ffi::OsStr;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::ffi::{CString, OsString};
     use std::fs::{File, OpenOptions};
     use std::io;
+    use std::mem::MaybeUninit;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::fd::AsRawFd;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -819,6 +832,7 @@ mod imp {
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
     use rustix::fs::{
         AtFlags, Gid, Mode, OFlags, RawMode, RenameFlags, Uid, fchmod, fchown, linkat, openat,
@@ -1673,6 +1687,111 @@ mod imp {
         #[allow(unsafe_code)]
         unsafe {
             libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        }
+    }
+
+    /// Settings and leave-screen bytes the `SIGTERM` handler may use.
+    ///
+    /// The handler cannot take a lock or allocate. `termios` is written on the
+    /// arming thread, then `ready` is stored with release. The handler reads
+    /// `termios` only after an acquire load sees that store. `leave_ptr`
+    /// addresses a `'static` slice.
+    struct TerminateRestore {
+        ready: AtomicBool,
+        leave_ptr: AtomicPtr<u8>,
+        leave_len: AtomicUsize,
+        termios: UnsafeCell<MaybeUninit<libc::termios>>,
+    }
+
+    // SAFETY: the arming thread writes `termios` before the release store of
+    // `ready`, and the handler reads it only after the matching acquire load.
+    // The leave pointer stays valid for the process lifetime.
+    #[allow(unsafe_code)]
+    unsafe impl Sync for TerminateRestore {}
+
+    static TERMINATE_RESTORE: TerminateRestore = TerminateRestore {
+        ready: AtomicBool::new(false),
+        leave_ptr: AtomicPtr::new(std::ptr::null_mut()),
+        leave_len: AtomicUsize::new(0),
+        termios: UnsafeCell::new(MaybeUninit::uninit()),
+    };
+
+    /// Arms the `SIGTERM` handler with the settings captured before raw mode.
+    pub fn unix_restore_terminal_on_terminate(
+        restorer: UnixTerminalRestorer,
+        leave_screen: &'static [u8],
+    ) {
+        // SAFETY: `termios` is exclusively written here, before `ready` is
+        // published. `sigaction` installs one handler for a valid signal
+        // number. The mask and flags stay zero, so this handler is not
+        // re-entered while it restores the terminal. `sighandler_t` is a
+        // `size_t` in this binding, so the function pointer crosses that
+        // boundary; the handler itself has the C signature POSIX requires.
+        #[allow(unsafe_code, clippy::fn_to_numeric_cast)]
+        unsafe {
+            (*TERMINATE_RESTORE.termios.get()).write(restorer.orig_termios);
+            TERMINATE_RESTORE
+                .leave_ptr
+                .store(leave_screen.as_ptr().cast_mut(), Ordering::Release);
+            TERMINATE_RESTORE
+                .leave_len
+                .store(leave_screen.len(), Ordering::Release);
+            TERMINATE_RESTORE.ready.store(true, Ordering::Release);
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = unix_terminate_restore_handler as *const () as libc::sighandler_t;
+            libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut());
+        }
+    }
+
+    /// Restores the terminal and ends the process. Safe to run from `SIGTERM`.
+    extern "C" fn unix_terminate_restore_handler(_signal: libc::c_int) {
+        unix_apply_terminal_terminate();
+    }
+
+    fn unix_apply_terminal_terminate() {
+        if !TERMINATE_RESTORE.ready.load(Ordering::Acquire) {
+            unix_end_terminated_process();
+            return;
+        }
+        // SAFETY: `ready` was stored with release after `termios` was written
+        // and the leave pointer was published. `tcsetattr` and `write` are
+        // async-signal-safe and use only those published values. The leave
+        // sequence is shorter than a terminal write, so one `write` delivers it.
+        #[allow(unsafe_code)]
+        unsafe {
+            let settings = (*TERMINATE_RESTORE.termios.get()).assume_init_ref();
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, settings);
+            let bytes = TERMINATE_RESTORE.leave_ptr.load(Ordering::Acquire);
+            let length = TERMINATE_RESTORE.leave_len.load(Ordering::Acquire);
+            if !bytes.is_null() {
+                libc::write(
+                    libc::STDOUT_FILENO,
+                    bytes.cast::<libc::c_void>().cast_const(),
+                    length,
+                );
+            }
+        }
+        unix_end_terminated_process();
+    }
+
+    fn unix_end_terminated_process() {
+        // SAFETY: `sigaction`, `sigemptyset`, `sigaddset`, `sigprocmask`,
+        // `raise`, and `_exit` are async-signal-safe. Delivery blocks
+        // `SIGTERM` until the handler returns, and installing `SIG_DFL` does
+        // not clear that block, so `raise` would return. The default
+        // disposition is installed first, the block is cleared, then `raise`
+        // kills the process. `_exit` runs only if `raise` returns.
+        #[allow(unsafe_code)]
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = libc::SIG_DFL;
+            libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut());
+            let mut blocked: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&raw mut blocked);
+            libc::sigaddset(&raw mut blocked, libc::SIGTERM);
+            libc::sigprocmask(libc::SIG_UNBLOCK, &raw const blocked, std::ptr::null_mut());
+            libc::raise(libc::SIGTERM);
+            libc::_exit(143);
         }
     }
 
@@ -3005,6 +3124,190 @@ mod imp {
                     ..expected
                 }
             ));
+        }
+
+        const LEAVE_SEQUENCE: &[u8] = b"\x1b[?1049l\x1b[?1000l";
+
+        fn open_pty() -> io::Result<(std::fs::File, std::fs::File)> {
+            use std::ffi::CStr;
+            use std::os::fd::FromRawFd;
+
+            // SAFETY: `posix_openpt`, `grantpt`, `unlockpt`, `ptsname`, and
+            // `open` are the documented sequence for one new pseudo-terminal.
+            // The slave name is copied before any later call. Each descriptor
+            // is owned by exactly one `File`.
+            #[allow(unsafe_code)]
+            unsafe {
+                let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+                if master < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::grantpt(master) != 0 || libc::unlockpt(master) != 0 {
+                    let error = io::Error::last_os_error();
+                    libc::close(master);
+                    return Err(error);
+                }
+                let name_ptr = libc::ptsname(master);
+                if name_ptr.is_null() {
+                    let error = io::Error::last_os_error();
+                    libc::close(master);
+                    return Err(error);
+                }
+                let name = CStr::from_ptr(name_ptr).to_owned();
+                let slave = libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
+                if slave < 0 {
+                    let error = io::Error::last_os_error();
+                    libc::close(master);
+                    return Err(error);
+                }
+                Ok((
+                    std::fs::File::from_raw_fd(master),
+                    std::fs::File::from_raw_fd(slave),
+                ))
+            }
+        }
+
+        fn force_cooked(file: &std::fs::File) -> io::Result<()> {
+            use std::os::fd::AsRawFd;
+
+            // SAFETY: `tcgetattr` and `tcsetattr` use the slave descriptor and
+            // a stack `termios` that outlives both calls.
+            #[allow(unsafe_code)]
+            unsafe {
+                let mut settings = std::mem::zeroed();
+                if libc::tcgetattr(file.as_raw_fd(), &raw mut settings) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                settings.c_lflag |= libc::ICANON | libc::ECHO | libc::ISIG;
+                settings.c_oflag |= libc::OPOST;
+                if libc::tcsetattr(file.as_raw_fd(), libc::TCSANOW, &raw const settings) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        }
+
+        fn read_termios(file: &std::fs::File) -> io::Result<libc::termios> {
+            use std::os::fd::AsRawFd;
+
+            // SAFETY: `tcgetattr` writes one stack `termios` for this descriptor.
+            #[allow(unsafe_code)]
+            unsafe {
+                let mut settings = std::mem::zeroed();
+                if libc::tcgetattr(file.as_raw_fd(), &raw mut settings) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(settings)
+            }
+        }
+
+        fn read_available(file: &std::fs::File) -> io::Result<Vec<u8>> {
+            use std::os::fd::AsRawFd;
+
+            let fd = file.as_raw_fd();
+            let mut collected = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let mut query = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: `poll` and `read` use the master descriptor and a
+                // stack buffer that outlive the calls. A zero timeout does not
+                // wait.
+                #[allow(unsafe_code)]
+                let ready = unsafe { libc::poll(&raw mut query, 1, 0) };
+                if ready == 0 {
+                    break;
+                }
+                if ready < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                #[allow(unsafe_code)]
+                let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+                if count <= 0 {
+                    break;
+                }
+                let count = usize::try_from(count).unwrap_or(0);
+                collected.extend_from_slice(&buffer[..count]);
+            }
+            Ok(collected)
+        }
+
+        fn arm_and_raise_sigterm() -> ! {
+            let guard = super::unix_enable_raw_terminal().expect("raw mode");
+            crate::restore_terminal_on_terminate(guard.restorer(), LEAVE_SEQUENCE);
+            // The process is about to die by signal, which skips this guard.
+            // Forgetting it would let a handler that returns restore the
+            // terminal on the way out and hide that failure.
+            std::mem::forget(guard);
+            // SAFETY: `raise` sends `SIGTERM` to this process. The handler
+            // restores the terminal and re-raises the default disposition.
+            #[allow(unsafe_code)]
+            unsafe {
+                libc::raise(libc::SIGTERM);
+            }
+            std::process::exit(2);
+        }
+
+        #[test]
+        fn sigterm_restores_cooked_settings_and_writes_the_leave_sequence() -> io::Result<()> {
+            use std::io::Read;
+            use std::os::unix::process::ExitStatusExt;
+            use std::process::{Command, Stdio};
+
+            if std::env::var_os("NOTER_TERMINATE_RESTORE_CHILD").is_some() {
+                arm_and_raise_sigterm();
+            }
+
+            let (master, slave) = open_pty()?;
+            force_cooked(&slave)?;
+            let mut child = Command::new(std::env::current_exe()?)
+                .arg("sigterm_restores_cooked_settings_and_writes_the_leave_sequence")
+                .arg("--test-threads=1")
+                .arg("--nocapture")
+                .env("NOTER_TERMINATE_RESTORE_CHILD", "1")
+                .stdin(Stdio::from(slave.try_clone()?))
+                .stdout(Stdio::from(slave.try_clone()?))
+                .stderr(Stdio::piped())
+                .spawn()?;
+            let status = child.wait()?;
+            let mut errors = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                stderr.read_to_string(&mut errors)?;
+            }
+            let output = read_available(&master)?;
+            let settings = read_termios(&slave)?;
+            assert_eq!(
+                status.signal(),
+                Some(libc::SIGTERM),
+                "code {:?}, stderr: {errors}",
+                status.code()
+            );
+            assert!(
+                output
+                    .windows(LEAVE_SEQUENCE.len())
+                    .any(|window| window == LEAVE_SEQUENCE),
+                "leave sequence missing from {output:?}; stderr: {errors}"
+            );
+            assert_eq!(
+                settings.c_lflag & (libc::ICANON | libc::ECHO | libc::ISIG),
+                libc::ICANON | libc::ECHO | libc::ISIG,
+                "local flags {:#x}",
+                settings.c_lflag
+            );
+            assert_eq!(
+                settings.c_oflag & libc::OPOST,
+                libc::OPOST,
+                "output flags {:#x}",
+                settings.c_oflag
+            );
+            Ok(())
         }
     }
 }

@@ -14,6 +14,7 @@ import json
 import os
 import re
 import select
+import signal
 import subprocess
 import sys
 import tempfile
@@ -215,6 +216,47 @@ def check_hangup_recovery(binary: str, state_directory: str) -> None:
     os.close(slave)
 
 
+def check_sigterm_restores_the_terminal(binary: str, state_directory: str) -> None:
+    """SIGTERM leaves the alternate screen and restores cooked settings."""
+
+    master, slave = pty.openpty()
+    settings_before = termios.tcgetattr(slave)
+    process = subprocess.Popen(
+        [binary, "--tui"],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        env=terminal_environment(state_directory),
+        close_fds=True,
+    )
+    screen = b""
+    status = None
+    settings_after = None
+    try:
+        next_frame(master)
+        process.send_signal(signal.SIGTERM)
+        screen = read_until(master, b"\x1b[?1049l", 5.0)
+        status = process.wait(timeout=10)
+        settings_after = termios.tcgetattr(slave)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        os.close(master)
+        os.close(slave)
+    expect(
+        status == -signal.SIGTERM,
+        f"SIGTERM did not end the process by signal: {status}",
+    )
+    expect(b"\x1b[?1049l" in screen, "SIGTERM did not leave the alternate screen")
+    expect(b"\x1b[?1000l" in screen, "SIGTERM did not disable mouse reporting")
+    expect(b"\x1b[?1002l" in screen, "SIGTERM did not disable button-event reporting")
+    expect(b"\x1b[?1006l" in screen, "SIGTERM did not disable SGR mouse reporting")
+    expect(b"\x1b[?2004l" in screen, "SIGTERM did not disable bracketed paste")
+    changed = settings_difference(settings_before, settings_after)
+    expect(not changed, f"SIGTERM left terminal settings changed: {changed}")
+
+
 def check_volatile_recovery_refusal(binary: str) -> None:
     """Show real tmpfs refusal while retaining records and permitting a save."""
 
@@ -320,6 +362,8 @@ def main(arguments: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory() as state_directory:
         check_editing_session(options.binary, state_directory)
         check_hangup_recovery(options.binary, state_directory)
+    with tempfile.TemporaryDirectory() as state_directory:
+        check_sigterm_restores_the_terminal(options.binary, state_directory)
     if sys.platform == "linux":
         check_volatile_recovery_refusal(options.binary)
     print("terminal interface checks passed")
