@@ -6,6 +6,10 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- When a terminal save finds a disk change, offer reload, keep editing, Save
+  As, and overwrite after a second confirmation. A metadata-only change says
+  the text still matches. The open text stays recoverable until reload, a
+  committed save, or an explicit discard (#71).
 - Name the folder when a save cannot write, and say the open text was not
   written and the file on disk was not changed. The terminal also reports a
   private artifact that could not be removed (#75).
@@ -17,8 +21,13 @@ that candidate is frozen for publication.
 - Fit the terminal shortcut bar and help overlay in an 80-column terminal.
   Labels stay whole, help names every binding and how to close it, and help
   rows stay inside the border (#89, #74).
+- Upgrade `async-executor` to 1.14.1. Version 1.14.0 was yanked after a
+  use-after-free when a waker fires during `Executor::drop`.
+- Upgrade `pulldown-cmark` to 0.13.6 for RUSTSEC-2026-0433. Wikilinks stay
+  disabled. Parsing without that option is outside the advisory, and the
+  patched crate is what `cargo audit` accepts.
 - Upgrade `pulldown-cmark` to 0.13.5 for RUSTSEC-2026-0414. Wikilinks stay
-  disabled. The patched crate is what `cargo audit` accepts.
+  disabled.
 - Expand Windows mutation testing to twelve complete partitions after a cold
   runner exceeded the unchanged 90-minute bound; retain the full mutation scope.
 

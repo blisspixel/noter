@@ -356,6 +356,20 @@ pub fn open_for_cleanup(path: &Path) -> io::Result<File> {
     platform_open_for_cleanup(path)
 }
 
+/// Sets the not-content-indexed attribute on an existing file.
+///
+/// Windows stores file attributes in the change token. This sets that one
+/// attribute. Bytes, identity, link count, and the read-only bit stay as
+/// they were. Opening the file for the update can advance the change time.
+/// A second call leaves the attribute set.
+///
+/// # Errors
+///
+/// Returns an operating-system error when the path cannot be opened or the
+/// attribute update is rejected.
+#[cfg(windows)]
+pub use imp::windows_mark_not_content_indexed as mark_file_not_content_indexed;
+
 /// Opens an existing Windows entry for reconciliation and prevents mutation.
 ///
 /// The returned handle denies new or existing write and delete access while it
@@ -3350,14 +3364,15 @@ mod imp {
     use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, DELETE, FILE_ADD_FILE,
-        FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_BASIC_INFO,
-        FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
-        FILE_DISPOSITION_INFO_EX, FILE_EXECUTE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
-        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_READ_EA, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, FileBasicInfo, FileDispositionInfo,
-        FileDispositionInfoEx, FileIdInfo, GetFileInformationByHandle,
-        GetFileInformationByHandleEx, MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL,
-        ReplaceFileW, SYNCHRONIZE, SetFileInformationByHandle, WRITE_DAC,
+        FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+        FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE,
+        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
+        FILE_EXECUTE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_LIST_DIRECTORY,
+        FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_READ_EA, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FileBasicInfo, FileDispositionInfo, FileDispositionInfoEx, FileIdInfo,
+        GetFileInformationByHandle, GetFileInformationByHandleEx, MOVEFILE_WRITE_THROUGH,
+        MoveFileExW, READ_CONTROL, ReplaceFileW, SYNCHRONIZE, SetFileInformationByHandle,
+        WRITE_DAC,
     };
     use windows_sys::Win32::System::Console::{
         ATTACH_PARENT_PROCESS, AttachConsole, CONSOLE_SCREEN_BUFFER_INFO, ENABLE_ECHO_INPUT,
@@ -3907,6 +3922,50 @@ mod imp {
             u64::from(basic.nNumberOfLinks),
             FileChangeToken::new(timestamps.ChangeTime, i64::from(timestamps.FileAttributes)),
         ))
+    }
+
+    /// Sets the not-content-indexed attribute on an existing file.
+    ///
+    /// Time fields are zero, which asks Windows not to assign new timestamps.
+    /// Opening the file can still advance the change time. The read-only bit
+    /// is preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an operating-system error when the path cannot be opened or the
+    /// attribute update is rejected.
+    #[allow(unsafe_code)]
+    pub fn windows_mark_not_content_indexed(path: &Path) -> io::Result<()> {
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let current = windows_timestamp_information(&file)?;
+        let info = FILE_BASIC_INFO {
+            CreationTime: 0,
+            LastAccessTime: 0,
+            LastWriteTime: 0,
+            ChangeTime: 0,
+            FileAttributes: current.FileAttributes | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
+        };
+        let info_size = u32::try_from(size_of::<FILE_BASIC_INFO>()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "FILE_BASIC_INFO size does not fit the Windows API parameter",
+            )
+        })?;
+        // SAFETY: `file` is open for attribute write, `info` is a live
+        // `FILE_BASIC_INFO`, and the byte count is its exact size. Zero time
+        // fields do not assign new timestamps; the attributes word is new.
+        if unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileBasicInfo,
+                std::ptr::from_ref(&info).cast(),
+                info_size,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     pub fn windows_create_private_new_file(path: &Path) -> io::Result<File> {
@@ -6080,7 +6139,10 @@ mod tests {
         install_new, replace_existing, unix_restrict_open_file_to_owner,
     };
     #[cfg(windows)]
-    use super::{InstallNewOutcome, ParentSyncOutcome, ReplaceExistingOutcome, install_new};
+    use super::{
+        InstallNewOutcome, ParentSyncOutcome, ReplaceExistingOutcome, install_new,
+        mark_file_not_content_indexed,
+    };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::{
         apply_required_metadata, capture_required_metadata, required_metadata_matches_source,
@@ -6419,6 +6481,67 @@ mod tests {
         assert!(matches!(install_outcome, InstallNewOutcome::Clean));
         assert_eq!(replace_parent.sync()?, ParentSyncOutcome::Unsupported);
         assert_eq!(install_parent.sync()?, ParentSyncOutcome::Unsupported);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn not_content_indexed_mark_changes_only_that_attribute() -> io::Result<()> {
+        use std::os::windows::fs::MetadataExt;
+
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
+
+        let directory = tempdir()?;
+        let path = directory.path().join("note.txt");
+        let bytes = b"unchanged content";
+        fs::write(&path, bytes)?;
+        let before = file_facts(&File::open(&path)?)?;
+        let marked = i64::from(FILE_ATTRIBUTE_NOT_CONTENT_INDEXED);
+        assert_eq!(before.change_token().secondary() & marked, 0);
+        // Snapshot after the read above so that open is not blamed on the mark.
+        let before_metadata = fs::metadata(&path)?;
+
+        mark_file_not_content_indexed(&path)?;
+
+        let after_metadata = fs::metadata(&path)?;
+        let after = file_facts(&File::open(&path)?)?;
+        assert_eq!(fs::read(&path)?, bytes);
+        assert_eq!(before.identity(), after.identity());
+        assert_eq!(before.link_count(), after.link_count());
+        // Opening the file can advance the change time by a few milliseconds.
+        // A timestamp replaced by the epoch or a far-future value falls outside
+        // this minute.
+        let before_change = before.change_token().primary();
+        let after_change = after.change_token().primary();
+        assert!(after_change >= before_change);
+        assert!(
+            after_change - before_change < 10_000_000 * 60,
+            "change time moved from {before_change} to {after_change}"
+        );
+        assert_eq!(
+            after.change_token().secondary(),
+            before.change_token().secondary() | marked
+        );
+        assert_eq!(
+            after_metadata.creation_time(),
+            before_metadata.creation_time()
+        );
+        // Opening the file may refresh a stale access time. The bound rejects
+        // the Windows epoch and a far-future value.
+        let accessed = after_metadata.accessed()?;
+        assert!(accessed > std::time::SystemTime::UNIX_EPOCH);
+        assert!(accessed < std::time::SystemTime::now() + std::time::Duration::from_hours(24));
+        assert_eq!(after_metadata.modified()?, before_metadata.modified()?);
+        assert!(!after_metadata.permissions().readonly());
+
+        mark_file_not_content_indexed(&path)?;
+        let repeated = file_facts(&File::open(&path)?)?;
+        assert_eq!(
+            repeated.change_token().secondary(),
+            after.change_token().secondary()
+        );
+        assert_eq!(fs::read(&path)?, bytes);
+        assert!(!fs::metadata(&path)?.permissions().readonly());
         Ok(())
     }
 
