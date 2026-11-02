@@ -1167,9 +1167,10 @@ the result; the cancelled run is not green evidence.
 - `SIGTERM` restores the terminal (#72). The terminal shortcut bar and help
   overlay fit an 80-column terminal (#89, #74). A missing or unreachable
   display prints a plain explanation, and `noter update` prints its status
-  without a window (#73).
+  without a window (#73). A failed save names the folder and keeps the open
+  text (#75).
 - Finish bounded usability defects without changing save policy: terminal
-  conflict decisions (#71) and failed-save wording (#75).
+  conflict decisions (#71).
 - Installer guidance (#76) and concise CLI help/errors (#81) are implemented in
   the resumed work; exact-head CI and review are required before integration.
 - Toolchain maintenance (#77) and the interface plan (#83, with #78 through #82)
