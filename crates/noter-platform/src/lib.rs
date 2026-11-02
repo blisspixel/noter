@@ -359,8 +359,9 @@ pub fn open_for_cleanup(path: &Path) -> io::Result<File> {
 /// Sets the not-content-indexed attribute on an existing file.
 ///
 /// Windows stores file attributes in the change token. This sets that one
-/// attribute and leaves the bytes, identity, link count, read-only bit, and
-/// timestamps unchanged. A second call leaves the attribute set.
+/// attribute. Bytes, identity, link count, and the read-only bit stay as
+/// they were. Opening the file for the update can advance the change time.
+/// A second call leaves the attribute set.
 ///
 /// # Errors
 ///
@@ -3925,9 +3926,9 @@ mod imp {
 
     /// Sets the not-content-indexed attribute on an existing file.
     ///
-    /// Windows stores file attributes in the change token. Timestamp updates
-    /// do not move that token. Time fields are zero, which asks Windows to
-    /// leave them unchanged, and the read-only bit is preserved.
+    /// Time fields are zero, which asks Windows not to assign new timestamps.
+    /// Opening the file can still advance the change time. The read-only bit
+    /// is preserved.
     ///
     /// # Errors
     ///
@@ -3952,7 +3953,7 @@ mod imp {
         })?;
         // SAFETY: `file` is open for attribute write, `info` is a live
         // `FILE_BASIC_INFO`, and the byte count is its exact size. Zero time
-        // fields leave timestamps unchanged; only the attributes word is new.
+        // fields do not assign new timestamps; the attributes word is new.
         if unsafe {
             SetFileInformationByHandle(
                 file.as_raw_handle(),
@@ -6507,9 +6508,15 @@ mod tests {
         assert_eq!(fs::read(&path)?, bytes);
         assert_eq!(before.identity(), after.identity());
         assert_eq!(before.link_count(), after.link_count());
-        assert_eq!(
-            before.change_token().primary(),
-            after.change_token().primary()
+        // Opening the file can advance the change time by a few milliseconds.
+        // A timestamp replaced by the epoch or a far-future value falls outside
+        // this minute.
+        let before_change = before.change_token().primary();
+        let after_change = after.change_token().primary();
+        assert!(after_change >= before_change);
+        assert!(
+            after_change - before_change < 10_000_000 * 60,
+            "change time moved from {before_change} to {after_change}"
         );
         assert_eq!(
             after.change_token().secondary(),
@@ -6529,7 +6536,10 @@ mod tests {
 
         mark_file_not_content_indexed(&path)?;
         let repeated = file_facts(&File::open(&path)?)?;
-        assert_eq!(repeated.change_token(), after.change_token());
+        assert_eq!(
+            repeated.change_token().secondary(),
+            after.change_token().secondary()
+        );
         assert_eq!(fs::read(&path)?, bytes);
         assert!(!fs::metadata(&path)?.permissions().readonly());
         Ok(())
