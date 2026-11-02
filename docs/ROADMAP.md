@@ -1164,9 +1164,11 @@ the result; the cancelled run is not green evidence.
 - Current-editor correctness and safety remain first: visible RTL caret and
   hit-testing (#69), accessible source mapping (#60), recovery discoverability
   (#70), persistent readable warnings (#68), and terminal restoration (#72).
+- The terminal shortcut bar and help overlay fit an 80-column terminal
+  (#89, #74).
 - Finish bounded usability defects without changing save policy: terminal
-  conflict decisions (#71), help sizing (#74), failed-save wording (#75), and
-  display startup diagnostics (#73).
+  conflict decisions (#71), failed-save wording (#75), and display startup
+  diagnostics (#73).
 - Installer guidance (#76) and concise CLI help/errors (#81) are implemented in
   the resumed work; exact-head CI and review are required before integration.
 - Toolchain maintenance (#77) and the interface plan (#83, with #78 through #82)
