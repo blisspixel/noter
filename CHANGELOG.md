@@ -6,6 +6,9 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Explain a missing or unreachable graphical display in one plain message,
+  with `noter --tui`, instead of a toolkit error. `noter update` prints its
+  local status whenever that window cannot open (#73).
 - Restore the terminal when `SIGTERM` ends a terminal session. The alternate
   screen and mouse reporting turn off, and cooked settings return (#72).
 - Fit the terminal shortcut bar and help overlay in an 80-column terminal.

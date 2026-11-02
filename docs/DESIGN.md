@@ -1623,6 +1623,10 @@ Current state:
 - **Launch:** `--tui` selects it explicitly. Without `--gui` or `--tui`, only
   non-macOS Unix launches with no display server and a terminal on standard
   input and output fall back to it (see `choose_interface` in `src/main.rs`).
+  A missing display with no terminal, `--gui` with no display, and a named
+  display that cannot be opened stop with a short explanation instead of a
+  toolkit error. `noter update` prints its local status in each of those cases
+  and when the terminal fallback would have opened.
 
 ## 20. 120Hz/ProMotion rendering and virtualized rope editor
 
