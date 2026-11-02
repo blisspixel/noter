@@ -28,6 +28,9 @@ that candidate is frozen for publication.
   patched crate is what `cargo audit` accepts.
 - Upgrade `pulldown-cmark` to 0.13.5 for RUSTSEC-2026-0414. Wikilinks stay
   disabled.
+- Expand Windows mutation testing to sixteen complete partitions after
+  partition 4 of twelve reached the 90-minute ceiling on main run
+  41408493226. The mutant scope and the ceiling are unchanged.
 - Expand Windows mutation testing to twelve complete partitions after a cold
   runner exceeded the unchanged 90-minute bound; retain the full mutation scope.
 

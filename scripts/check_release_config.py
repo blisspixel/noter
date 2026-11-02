@@ -40,7 +40,7 @@ REVIEWED_RELEASE_WORKFLOW_SHA256 = (
 )
 REVIEWED_WIX_SHA256 = "e5d076bdc22fb9defddd69fda19150c50a48d6a82abba227b2d059de87d3d986"
 REVIEWED_CI_WORKFLOW_SHA256 = (
-    "634e8be4721b98f7da03664a97079d10b8412d1e886576eec6f95fa943e9ac8e"
+    "97fe9a515be2f65694b92964db60f285ff78107cc267b3376d3a39cf5d1444af"
 )
 REVIEWED_CI_TEST_JOB_SHA256 = (
     "5ebc1e95ec5d225fd3ddbbf75b134882e4b3adb33ae6c8b2054079b89d13aa65"
@@ -1074,18 +1074,22 @@ def validate_ci_mutation_topology(ci_workflow: str) -> list[str]:
         ("ubuntu-latest", "linux-0-of-3", "0/3"),
         ("ubuntu-latest", "linux-1-of-3", "1/3"),
         ("ubuntu-latest", "linux-2-of-3", "2/3"),
-        ("windows-latest", "windows-0-of-12", "0/12"),
-        ("windows-latest", "windows-1-of-12", "1/12"),
-        ("windows-latest", "windows-2-of-12", "2/12"),
-        ("windows-latest", "windows-3-of-12", "3/12"),
-        ("windows-latest", "windows-4-of-12", "4/12"),
-        ("windows-latest", "windows-5-of-12", "5/12"),
-        ("windows-latest", "windows-6-of-12", "6/12"),
-        ("windows-latest", "windows-7-of-12", "7/12"),
-        ("windows-latest", "windows-8-of-12", "8/12"),
-        ("windows-latest", "windows-9-of-12", "9/12"),
-        ("windows-latest", "windows-10-of-12", "10/12"),
-        ("windows-latest", "windows-11-of-12", "11/12"),
+        ("windows-latest", "windows-0-of-16", "0/16"),
+        ("windows-latest", "windows-1-of-16", "1/16"),
+        ("windows-latest", "windows-2-of-16", "2/16"),
+        ("windows-latest", "windows-3-of-16", "3/16"),
+        ("windows-latest", "windows-4-of-16", "4/16"),
+        ("windows-latest", "windows-5-of-16", "5/16"),
+        ("windows-latest", "windows-6-of-16", "6/16"),
+        ("windows-latest", "windows-7-of-16", "7/16"),
+        ("windows-latest", "windows-8-of-16", "8/16"),
+        ("windows-latest", "windows-9-of-16", "9/16"),
+        ("windows-latest", "windows-10-of-16", "10/16"),
+        ("windows-latest", "windows-11-of-16", "11/16"),
+        ("windows-latest", "windows-12-of-16", "12/16"),
+        ("windows-latest", "windows-13-of-16", "13/16"),
+        ("windows-latest", "windows-14-of-16", "14/16"),
+        ("windows-latest", "windows-15-of-16", "15/16"),
         ("macos-latest", "macos", ""),
     ]
     if matrix_rows != expected_rows:
