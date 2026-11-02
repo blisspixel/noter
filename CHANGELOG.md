@@ -21,6 +21,8 @@ that candidate is frozen for publication.
 - Fit the terminal shortcut bar and help overlay in an 80-column terminal.
   Labels stay whole, help names every binding and how to close it, and help
   rows stay inside the border (#89, #74).
+- Upgrade `async-executor` to 1.14.1. Version 1.14.0 was yanked after a
+  use-after-free when a waker fires during `Executor::drop`.
 - Upgrade `pulldown-cmark` to 0.13.6 for RUSTSEC-2026-0433. Wikilinks stay
   disabled. Parsing without that option is outside the advisory, and the
   patched crate is what `cargo audit` accepts.
