@@ -1102,7 +1102,7 @@ first-class Terminal User Interface (TUI).
 - `noter update` and Help > Check for Updates backed by one manifest policy,
   supporting direct in-place updates with Windows detached-helper process swapping;
 - native Terminal User Interface (TUI) mode (`noter --tui`) with shared core
-  policy, dual modern/Nano shortcuts, mouse support, terminal themes, and
+  policy, dual modern/Nano shortcuts, mouse support, host-terminal color, and
   headless auto-detection;
 - per-user installation without elevation by default;
 - package-manager ownership and update behavior;
@@ -1178,9 +1178,11 @@ followed at `3f157a1`. Long warnings (#68) are on main at `fbfc786`.
   disk-change decisions (#71), installer guidance (#76), and concise CLI help
   (#81).
 - The repository and CI pin Rust 1.99.1 (#77). Release Linux binaries stay on
-  Ubuntu 22.04, so the published glibc floor remains 2.35. The interface plan
-  (#83, with #78 through #82) remains open. Theme and receipt proposals need
-  contract alignment and their own tests and native visual evidence.
+  Ubuntu 22.04, so the published glibc floor remains 2.35. The terminal
+  follows the host terminal's colors, ignores `--theme`, and honors a
+  non-empty `NO_COLOR` (#80). The window keeps its palettes, including bright
+  Green Screen and Amber Screen phosphor. Dark-default theme files (#78), the
+  quiet receipt (#82), and the rest of the interface plan (#83) remain open.
 - M4-H1 (#50) still precedes the M5 decision (#51), continuous Markdown (#52),
   quality engine (#54), and RC platform/distribution/dogfood evidence (#53).
   Hyprland verification (#44) and Unix retained-file cleanup (#59) stay open.
