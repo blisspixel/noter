@@ -645,7 +645,7 @@ mod tests {
         records
             .remove_if_identifies(OsStr::new("one.rec"), &created)
             .unwrap();
-        assert!(records.entry_names(8).unwrap().is_empty());
+        assert_eq!(records.entry_names(8).unwrap(), Vec::<OsString>::new());
         assert_eq!(
             records.remove(OsStr::new("one.rec")).unwrap_err().kind(),
             io::ErrorKind::NotFound
@@ -714,7 +714,7 @@ mod tests {
                 .kind(),
             io::ErrorKind::NotFound
         );
-        assert!(records.entry_names(8).unwrap().is_empty());
+        assert_eq!(records.entry_names(8).unwrap(), Vec::<OsString>::new());
     }
 
     #[test]
