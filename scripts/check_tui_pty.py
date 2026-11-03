@@ -303,6 +303,8 @@ def check_volatile_recovery_refusal(binary: str) -> None:
         document = Path(workspace, "note.txt")
         document.write_bytes(b"ordinary English note\n")
         master, slave = pty.openpty()
+        # Pin 80 columns, the width where a long path can crowd the reason.
+        set_window_size(slave, 80, 24)
         settings_before = termios.tcgetattr(slave)
         process = None
         try:
@@ -316,9 +318,26 @@ def check_volatile_recovery_refusal(binary: str) -> None:
             )
             screen = next_frame(master)
             expect(
-                b"Private crash recovery is unavailable" in screen,
+                b"Recovery is off for this session:" in screen,
                 "the volatile-state refusal is not visible in the terminal",
             )
+            os.write(master, b"\x12")
+            screen = read_until(master, b"Choose a private")
+            plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", screen)
+            compact = b" ".join(plain.split())
+            reason_at = compact.find(b"unsupported file system")
+            step_at = compact.find(b"Choose a private directory")
+            expect(
+                reason_at != -1 and step_at != -1 and reason_at < step_at,
+                "the review does not show the file-system reason before the next step: "
+                + compact[:500].decode("utf-8", "replace"),
+            )
+            expect(
+                b"Saves still work" in compact,
+                "the review drops the save promise",
+            )
+            os.write(master, b"\x12")
+            next_frame(master)
             os.write(master, b"\x1b[F updated")
             screen = read_until(master, b"updated")
             expect(b"updated" in screen, "editing failed with recovery unavailable")

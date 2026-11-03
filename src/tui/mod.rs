@@ -3815,11 +3815,21 @@ mod tests {
         assert!(session.recovery.is_unavailable());
 
         let frame = strip_own_sequences(&render_frame(&session, 80, 24));
+        let message = session.recovery.unavailable_message();
+        let reason = message
+            .strip_prefix("Recovery is off for this session: ")
+            .expect("the reason leads");
+        // The status bar is one 80-column line. A long platform sentence is
+        // cut after the reason starts; the review below holds the rest.
+        let visible_reason: String = reason.chars().take(24).collect();
         assert!(
             frame.contains("Recovery is off for this session:"),
             "{frame}"
         );
-        assert!(frame.contains("os error"), "{frame}");
+        assert!(
+            frame.contains(&visible_reason),
+            "the 80-column bar must show the start of the reason:\n{frame}\n{message}"
+        );
         session.set_status("temporary");
         assert!(strip_own_sequences(&render_frame(&session, 80, 24)).contains("temporary"));
         session.status_message = None;
