@@ -1182,7 +1182,8 @@ followed at `3f157a1`.
   (#80). The window keeps its palettes, including bright Green Screen and
   Amber Screen phosphor. A file-and-directory sync with no storage warning
   shows `Saved N B, synced to disk` and the locale short time for three
-  seconds. A file-only sync, including a normal Windows save, does not
+  seconds. Opening, reloading, or a new document clears it. A file-only
+  sync, including a normal Windows save, does not
   (#82). Dark-default theme files (#78) and the rest of the interface plan
   (#83) remain open.
 - M4-H1 (#50) still precedes the M5 decision (#51), continuous Markdown (#52),

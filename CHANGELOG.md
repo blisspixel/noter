@@ -8,7 +8,9 @@ that candidate is frozen for publication.
 
 - After a save that synced both the file and its folder and has no storage
   warning, the window shows `Saved N B, synced to disk` and the locale short
-  time for three seconds, then `Saved`. Light and Dark use a green checked
+  time for three seconds, then `Saved`. Opening a file, reloading, or
+  starting a new document clears it. A clock reading that contains a
+  terminal control is not shown. Light and Dark use a green checked
   against the panel. Green Screen and Amber Screen use their existing
   phosphor text color, and those palettes are unchanged. The terminal shows
   the same sentence in green, or without color when `NO_COLOR` is set, and
