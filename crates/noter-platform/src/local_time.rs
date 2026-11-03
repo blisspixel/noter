@@ -18,7 +18,35 @@ const TIME_BUFFER_BYTES: usize = 128;
 /// of guessing a time.
 #[must_use]
 pub fn local_short_time() -> Option<String> {
-    platform_local_short_time()
+    #[cfg(windows)]
+    {
+        platform_local_short_time()
+    }
+    #[cfg(unix)]
+    {
+        // `unix_` is the Windows mutation exclude. cargo-mutants does not
+        // evaluate cfg, so this body would otherwise be reported missed.
+        unix_local_short_time()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        // `linux` and `windows` are the mutation excludes on the other host.
+        // This body is compiled on neither CI platform.
+        linux_windows_local_short_time()
+    }
+}
+
+/// `written` includes the trailing NUL from `GetTimeFormatEx`.
+///
+/// A count of one is only that NUL. A count past the buffer is not a clock.
+/// The live API does not return those values, so the bounds have their own tests.
+#[cfg(any(windows, test))]
+fn windows_clock_units(buffer: &[u16], written: i32) -> Option<&[u16]> {
+    let count = usize::try_from(written).ok()?;
+    if count <= 1 || count > buffer.len() {
+        return None;
+    }
+    Some(&buffer[..count - 1])
 }
 
 #[cfg(windows)]
@@ -42,25 +70,41 @@ fn platform_local_short_time() -> Option<String> {
             capacity,
         )
     };
-    let count = usize::try_from(written).ok()?;
-    if count <= 1 || count > buffer.len() {
-        return None;
-    }
-    let text = String::from_utf16(&buffer[..count - 1]).ok()?;
+    let units = windows_clock_units(&buffer, written)?;
+    let text = String::from_utf16(units).ok()?;
     clock_text_for_receipt(&text)
 }
 
 #[cfg(unix)]
-fn platform_local_short_time() -> Option<String> {
-    let locale = TimeLocale::from_environment()?;
+fn unix_local_short_time() -> Option<String> {
+    let locale = UnixTimeLocale::from_environment()?;
     let format = locale.short_format()?;
-    let broken = local_tm()?;
+    let broken = unix_local_tm()?;
     locale.format(&broken, &format)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn platform_local_short_time() -> Option<String> {
+fn linux_windows_local_short_time() -> Option<String> {
     None
+}
+
+/// How many leading bytes `accept` takes.
+///
+/// The slice is finite, so the count ends. Callers advance by this count
+/// once. An increment inside the scan can be mutated into a step that never
+/// reaches the end of the format.
+#[cfg(any(unix, test))]
+fn leading_accepted_len(bytes: &[u8], accept: impl Fn(u8) -> bool) -> usize {
+    bytes
+        .iter()
+        .copied()
+        .take_while(|byte| accept(*byte))
+        .count()
+}
+
+#[cfg(any(unix, test))]
+const fn is_strftime_flag(byte: u8) -> bool {
+    matches!(byte, b'-' | b'_' | b'0' | b'^' | b'#' | b'+')
 }
 
 /// Removes seconds from a POSIX `T_FMT` string.
@@ -83,35 +127,32 @@ fn locale_short_time_format(format: &str) -> Option<String> {
         if bytes[index] != b'%' {
             let character = format[index..].chars().next()?;
             out.push(character);
-            index += character.len_utf8();
+            index = index.checked_add(character.len_utf8())?;
             continue;
         }
         let start = index;
-        index += 1;
+        index = index.checked_add(1)?;
         if index >= bytes.len() {
             return None;
         }
         if bytes[index] == b'%' {
             out.push('%');
             out.push('%');
-            index += 1;
+            index = index.checked_add(1)?;
             continue;
         }
-        while index < bytes.len() && matches!(bytes[index], b'-' | b'_' | b'0' | b'^' | b'#' | b'+')
-        {
-            index += 1;
-        }
-        while index < bytes.len() && bytes[index].is_ascii_digit() {
-            index += 1;
-        }
+        index = index.checked_add(leading_accepted_len(&bytes[index..], is_strftime_flag))?;
+        index = index.checked_add(leading_accepted_len(&bytes[index..], |byte| {
+            byte.is_ascii_digit()
+        }))?;
         if index < bytes.len() && matches!(bytes[index], b'E' | b'O') {
-            index += 1;
+            index = index.checked_add(1)?;
         }
         if index >= bytes.len() || !bytes[index].is_ascii_alphabetic() {
             return None;
         }
         let conversion = bytes[index];
-        index += 1;
+        index = index.checked_add(1)?;
         match conversion {
             b'S' => {
                 if out.ends_with([':', '.', ',', '-']) {
@@ -133,10 +174,10 @@ fn locale_short_time_format(format: &str) -> Option<String> {
 }
 
 #[cfg(unix)]
-struct TimeLocale(libc::locale_t);
+struct UnixTimeLocale(libc::locale_t);
 
 #[cfg(unix)]
-impl TimeLocale {
+impl UnixTimeLocale {
     fn from_environment() -> Option<Self> {
         // SAFETY: `LC_TIME_MASK` limits the locale object to time formatting.
         // An empty locale name reads the environment for that category only.
@@ -193,7 +234,7 @@ impl TimeLocale {
 }
 
 #[cfg(unix)]
-impl Drop for TimeLocale {
+impl Drop for UnixTimeLocale {
     fn drop(&mut self) {
         if self.0.is_null() {
             return;
@@ -207,7 +248,7 @@ impl Drop for TimeLocale {
 }
 
 #[cfg(unix)]
-fn local_tm() -> Option<libc::tm> {
+fn unix_local_tm() -> Option<libc::tm> {
     // SAFETY: a null pointer asks for the current calendar time. `-1` is the
     // documented failure value and leaves no output to read.
     #[allow(unsafe_code)]
@@ -300,11 +341,21 @@ mod tests {
         );
         assert_eq!(locale_short_time_format("%%S").as_deref(), Some("%%S"));
         assert_eq!(locale_short_time_format("%EY").as_deref(), Some("%EY"));
+        for preserved in ["%-H", "%_H", "%0H", "%^H", "%#H", "%+H", "%12H", "%EH"] {
+            assert_eq!(
+                locale_short_time_format(preserved).as_deref(),
+                Some(preserved),
+                "{preserved}"
+            );
+        }
         assert_eq!(locale_short_time_format("%X"), None);
         assert_eq!(locale_short_time_format("%c"), None);
         assert_eq!(locale_short_time_format("%EX"), None);
         assert_eq!(locale_short_time_format(""), None);
         assert_eq!(locale_short_time_format("%"), None);
+        assert_eq!(locale_short_time_format("%-"), None);
+        assert_eq!(locale_short_time_format("%3"), None);
+        assert_eq!(locale_short_time_format("%E"), None);
         assert_eq!(locale_short_time_format("%S"), None);
         assert_eq!(
             locale_short_time_format("午後 %H:%M:%S").as_deref(),
@@ -320,6 +371,25 @@ mod tests {
         assert_eq!(
             locale_short_time_format("%H:%M%t").as_deref(),
             Some("%H:%M%t")
+        );
+    }
+
+    #[test]
+    fn windows_clock_units_reject_a_count_the_buffer_does_not_hold() {
+        use super::windows_clock_units;
+
+        let buffer = [u16::from(b'1'), u16::from(b'4'), 0];
+        assert_eq!(windows_clock_units(&buffer, 0), None);
+        assert_eq!(windows_clock_units(&buffer, 1), None);
+        assert_eq!(windows_clock_units(&buffer, -1), None);
+        assert_eq!(windows_clock_units(&buffer, 4), None);
+        assert_eq!(
+            windows_clock_units(&buffer, 3),
+            Some([u16::from(b'1'), u16::from(b'4')].as_slice())
+        );
+        assert_eq!(
+            windows_clock_units(&buffer, 2),
+            Some([u16::from(b'1')].as_slice())
         );
     }
 
