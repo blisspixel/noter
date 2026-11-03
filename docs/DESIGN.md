@@ -1602,7 +1602,7 @@ Current state:
 - **Shortcuts:** `Ctrl+S` Save, `Ctrl+O` Save As (prefilled with the current
   name), `Ctrl+X`, `Ctrl+Q`, or `Ctrl+C` Exit, `Ctrl+W` or `Ctrl+F` Find,
   `Ctrl+K` Cut Line, `Ctrl+U` Paste, `Ctrl+Z` Undo, `Ctrl+Y` Redo, `Ctrl+E`
-  Markdown styling, `Ctrl+T` Theme, `Ctrl+R` Save Reconciliation,
+  Markdown styling, `Ctrl+R` Save Reconciliation,
   `Ctrl+G` Help.
 - **Mouse:** click to place the caret, wheel to scroll, and clickable shortcut
   legend. There is no drag selection.
@@ -1628,8 +1628,15 @@ Current state:
   split rather than rope line indexing, which also breaks at Unicode
   separators. Find uses the core literal search with Unicode case folding and
   highlights the engine's exact source ranges.
-- **Color:** 24-bit color for the Light, Dark, Green Screen, and Amber Screen
-  palettes; System uses Dark.
+- **Color:** the host terminal supplies the colors. Headings, Markdown markers,
+  and the current mode are cyan. Line numbers and shortcut labels are dim.
+  Find matches, the position line, prompts, and the shortcut bars use reverse
+  video. A committed save is green, a durability or storage warning is yellow,
+  and a failed save is red. Those save lines are not reverse video. A
+  non-empty `NO_COLOR` suppresses those colors and leaves bold, dim, italic,
+  and reverse. `--theme` selects the window palette and does not change the
+  terminal. The window keeps its own palettes, including the bright Green
+  Screen and Amber Screen phosphor themes.
 - **Launch:** `--tui` selects it explicitly. Without `--gui` or `--tui`, only
   non-macOS Unix launches with no display server and a terminal on standard
   input and output fall back to it (see `choose_interface` in `src/main.rs`).

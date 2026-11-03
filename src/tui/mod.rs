@@ -6,12 +6,13 @@
 //! Features:
 //! - Dual shortcuts: Nano (^O Save As with a prefilled name, ^X Exit, ^W `WhereIs`, ^K Cut,
 //!   ^U Paste, ^J Jump, ^G Help) and Modern (Ctrl+S, Ctrl+Q, Ctrl+F, Ctrl+Z, Ctrl+Y, Ctrl+E,
-//!   Ctrl+T, Ctrl+A).
+//!   Ctrl+A).
 //! - Saving never exits or discards text unless the write committed. Replacing an existing
 //!   file or splitting a hard link asks first. A save that finds a disk change offers
 //!   reload, keep editing, Save As, and overwrite after a second confirmation. Until
 //!   reload, a committed save, or an explicit discard, that open text stays recoverable.
-//! - Phosphor CRT themes (Green Screen and Amber Screen) matching Noter's desktop visuals.
+//! - The host terminal supplies the colors. A non-empty `NO_COLOR` turns color off.
+//!   `--theme` selects the window theme and does not change this interface.
 //! - Fluid formatted Markdown viewing toggle (^E).
 //! - Terminal mouse support (click to set caret, scroll wheel to scroll lines, clickable legend).
 //! - Authoritative revision tracking, atomic safe save, and Undo/Redo history.
@@ -66,11 +67,12 @@ use crate::crash_recovery::{
 
 mod disk_conflict;
 mod input;
+mod paint;
 mod save_warnings;
 
 use disk_conflict::ReviewedDisk;
+use paint::{Paint, Role, no_color_from_env, push_bar};
 
-use crate::theme::AppTheme;
 pub use input::{InputDecoder, TuiEvent, TuiKey, TuiMouseEvent};
 
 /// Active modal prompt in the status area.
@@ -154,79 +156,18 @@ pub enum SaveStep {
     AwaitingInput,
 }
 
-/// ANSI color definition for TUI rendering.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct AnsiColor {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-}
-
-impl AnsiColor {
-    pub const fn new(r: u8, g: u8, b: u8) -> Self {
-        Self { r, g, b }
-    }
-}
-
-/// Palette colors for TUI rendering matching Noter desktop themes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct TuiPalette {
-    pub bg: AnsiColor,
-    pub fg: AnsiColor,
-    pub bar_bg: AnsiColor,
-    pub bar_fg: AnsiColor,
-    pub gutter_fg: AnsiColor,
-    pub accent: AnsiColor,
-    pub match_bg: AnsiColor,
-    pub match_fg: AnsiColor,
-}
-
-impl TuiPalette {
-    #[must_use]
-    pub const fn for_theme(theme: AppTheme) -> Self {
-        match theme {
-            AppTheme::GreenScreen => Self {
-                bg: AnsiColor::new(3, 10, 5),
-                fg: AnsiColor::new(174, 255, 177),
-                bar_bg: AnsiColor::new(14, 40, 18),
-                bar_fg: AnsiColor::new(174, 255, 177),
-                gutter_fg: AnsiColor::new(70, 130, 80),
-                accent: AnsiColor::new(66, 255, 78),
-                match_bg: AnsiColor::new(66, 255, 78),
-                match_fg: AnsiColor::new(3, 10, 5),
-            },
-            AppTheme::AmberScreen => Self {
-                bg: AnsiColor::new(14, 9, 2),
-                fg: AnsiColor::new(255, 215, 137),
-                bar_bg: AnsiColor::new(45, 30, 10),
-                bar_fg: AnsiColor::new(255, 215, 137),
-                gutter_fg: AnsiColor::new(150, 115, 60),
-                accent: AnsiColor::new(255, 180, 40),
-                match_bg: AnsiColor::new(255, 180, 40),
-                match_fg: AnsiColor::new(14, 9, 2),
-            },
-            AppTheme::Light => Self {
-                bg: AnsiColor::new(250, 251, 251),
-                fg: AnsiColor::new(31, 33, 36),
-                bar_bg: AnsiColor::new(225, 228, 233),
-                bar_fg: AnsiColor::new(31, 33, 36),
-                gutter_fg: AnsiColor::new(130, 135, 145),
-                accent: AnsiColor::new(13, 110, 253),
-                match_bg: AnsiColor::new(255, 235, 59),
-                match_fg: AnsiColor::new(31, 33, 36),
-            },
-            AppTheme::Dark | AppTheme::System => Self {
-                bg: AnsiColor::new(20, 22, 25),
-                fg: AnsiColor::new(230, 232, 236),
-                bar_bg: AnsiColor::new(35, 39, 45),
-                bar_fg: AnsiColor::new(230, 232, 236),
-                gutter_fg: AnsiColor::new(100, 105, 115),
-                accent: AnsiColor::new(77, 159, 255),
-                match_bg: AnsiColor::new(180, 130, 20),
-                match_fg: AnsiColor::new(255, 255, 255),
-            },
-        }
-    }
+/// How a temporary status line is drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum StatusTone {
+    /// Reverse video, the ordinary status bar.
+    #[default]
+    Plain,
+    /// Green. A committed save with no durability warning.
+    Success,
+    /// Yellow. Durability or storage still needs attention.
+    Warning,
+    /// Red. The save did not commit.
+    Error,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -246,10 +187,32 @@ enum ExternalRetention {
     AtRisk,
 }
 
+/// Whether the terminal may use color.
+///
+/// `Off` is a non-empty `NO_COLOR`, or a test that forces the plain frame.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TerminalColor {
+    Host,
+    Off,
+}
+
+impl TerminalColor {
+    fn from_env() -> Self {
+        if no_color_from_env() {
+            Self::Off
+        } else {
+            Self::Host
+        }
+    }
+
+    const fn paint(self) -> Paint {
+        Paint::new(matches!(self, Self::Off))
+    }
+}
+
 /// State for the terminal editor session.
 pub struct TuiSession {
     pub document: Document,
-    pub theme: AppTheme,
     pub view: DocumentView,
     pub caret_byte: usize,
     pub scroll_row: usize,
@@ -261,6 +224,9 @@ pub struct TuiSession {
     pub prompt: PromptMode,
     pub prompt_input: String,
     pub status_message: Option<(String, std::time::Instant)>,
+    status_tone: StatusTone,
+    /// Set once from `NO_COLOR` when the session starts. Tests set it directly.
+    terminal_color: TerminalColor,
     pub search_query: Option<String>,
     pub show_help: bool,
     /// Bounded undo and redo, shared with the window through the core.
@@ -315,7 +281,8 @@ impl TuiSession {
             Document::new()
         };
 
-        let theme = options.theme.unwrap_or(AppTheme::Dark);
+        // `--theme` selects the window palette. The terminal follows the host.
+        let _ = options.theme;
         let view = options.view.unwrap_or(DocumentView::Text);
         let history = UndoHistory::new(HistoryLimits::default(), document.revision());
         // Read the hint before the path launch hides the in-memory offers.
@@ -328,7 +295,6 @@ impl TuiSession {
 
         let mut session = Self {
             document,
-            theme,
             view,
             caret_byte: 0,
             scroll_row: 0,
@@ -338,6 +304,8 @@ impl TuiSession {
             prompt: PromptMode::None,
             prompt_input: String::new(),
             status_message: None,
+            status_tone: StatusTone::Plain,
+            terminal_color: TerminalColor::from_env(),
             search_query: None,
             show_help: false,
             history,
@@ -490,7 +458,20 @@ impl TuiSession {
 
     /// Sets a temporary status message visible for 3 seconds.
     pub fn set_status(&mut self, message: impl Into<String>) {
+        self.set_toned_status(message, StatusTone::Plain);
+    }
+
+    fn set_toned_status(&mut self, message: impl Into<String>, tone: StatusTone) {
         self.status_message = Some((message.into(), std::time::Instant::now()));
+        self.status_tone = tone;
+    }
+
+    fn set_save_error(&mut self, message: impl Into<String>) {
+        self.set_toned_status(message, StatusTone::Error);
+    }
+
+    fn set_uncertain_guidance(&mut self) {
+        self.set_toned_status(UNCERTAIN_SAVE_GUIDANCE, StatusTone::Warning);
     }
 
     /// Clears a status message that has been visible for 3 seconds and
@@ -688,7 +669,7 @@ impl TuiSession {
             return SaveStep::AwaitingInput;
         }
         if self.save_is_blocked() {
-            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            self.set_uncertain_guidance();
             return SaveStep::NotSaved;
         }
         let Some(target) = self.document.path().map(std::path::Path::to_path_buf) else {
@@ -710,7 +691,7 @@ impl TuiSession {
     /// Opens the Save As prompt (^O), prefilled with the current path.
     pub fn open_save_as(&mut self) -> SaveStep {
         if self.save_is_blocked() {
-            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            self.set_uncertain_guidance();
             return SaveStep::NotSaved;
         }
         self.prompt_input = self
@@ -726,7 +707,7 @@ impl TuiSession {
     pub fn submit_save_as(&mut self) -> SaveStep {
         if self.save_is_blocked() {
             self.prompt = PromptMode::None;
-            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            self.set_uncertain_guidance();
             return SaveStep::NotSaved;
         }
         if self.prompt_input.trim().is_empty() {
@@ -748,7 +729,7 @@ impl TuiSession {
         let prepared = match self.document.prepare_save_as(&path) {
             Ok(prepared) => prepared,
             Err(error) => {
-                self.set_status(format!("Not saved: {error}"));
+                self.set_save_error(format!("Not saved: {error}"));
                 if self.reviewed_disk.is_some() && self.conflict.is_prompting() {
                     self.show_disk_conflict();
                 }
@@ -775,15 +756,15 @@ impl TuiSession {
         if self.save_recoveries.len() >= MAX_SAVE_RECOVERY_RECORDS
             || self.save_recoveries.try_reserve(1).is_err()
         {
-            self.set_status("Save stopped: uncertain-save evidence cannot be retained");
+            self.set_save_error("Save stopped: uncertain-save evidence cannot be retained");
             return None;
         }
         if destination.as_os_str().as_encoded_bytes().len() > MAX_SAVE_RECOVERY_DESTINATION_BYTES {
-            self.set_status("Save stopped: destination path is too large to retain safely");
+            self.set_save_error("Save stopped: destination path is too large to retain safely");
             return None;
         }
         let Some(destination_label) = bounded_destination_label(&destination) else {
-            self.set_status("Save stopped: destination label cannot be retained");
+            self.set_save_error("Save stopped: destination label cannot be retained");
             return None;
         };
         let mut message = String::new();
@@ -791,7 +772,7 @@ impl TuiSession {
             .try_reserve_exact(MAX_SAVE_RECOVERY_MESSAGE_BYTES)
             .is_err()
         {
-            self.set_status("Save stopped: uncertain-save diagnostic cannot be retained");
+            self.set_save_error("Save stopped: uncertain-save diagnostic cannot be retained");
             return None;
         }
         Some(SaveRecoveryReservation {
@@ -838,7 +819,10 @@ impl TuiSession {
         let columns = usize::from(cols);
         let lines = match self.prompt {
             PromptMode::SaveWarnings => save_warnings::lines(self, columns),
-            PromptMode::ReconcileSave(index) => save_reconciliation_lines(self, index, columns),
+            PromptMode::ReconcileSave(index) => save_reconciliation_rows(self, index, columns)
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect(),
             _ => return,
         };
         let maximum = lines
@@ -884,7 +868,7 @@ impl TuiSession {
         self.prompt = PromptMode::None;
         if self.save_is_blocked() {
             self.pending_save = None;
-            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            self.set_uncertain_guidance();
             return SaveStep::NotSaved;
         }
         let Some(pending) = self.pending_save.take() else {
@@ -894,7 +878,7 @@ impl TuiSession {
             if self.reviewed_disk.is_some() && self.conflict.is_prompting() {
                 self.show_disk_conflict();
             } else {
-                self.set_status("Not saved");
+                self.set_save_error("Not saved");
             }
             return SaveStep::NotSaved;
         }
@@ -919,7 +903,7 @@ impl TuiSession {
         hard_link_confirmed: bool,
     ) -> SaveStep {
         if self.save_is_blocked() {
-            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            self.set_uncertain_guidance();
             return SaveStep::NotSaved;
         }
         let result = if hard_link_confirmed {
@@ -1092,7 +1076,7 @@ impl TuiSession {
     fn confirm_disk_overwrite(&mut self) -> SaveStep {
         if self.save_is_blocked() {
             self.show_disk_conflict();
-            self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+            self.set_uncertain_guidance();
             return SaveStep::NotSaved;
         }
         let ConflictEffect::AuthorizeOverwrite(reviewed) = self
@@ -1231,16 +1215,23 @@ impl TuiSession {
                     }
                 }
                 if self.save_durability.is_at_risk() {
-                    self.set_status(
+                    self.set_toned_status(
                         "Saved with uncertain durability. Keep open and Save again. ^R details.",
+                        StatusTone::Warning,
                     );
                 } else if warning_count == 0 {
-                    self.set_status(format!("Wrote {} bytes", observation.length()));
+                    self.set_toned_status(
+                        format!("Wrote {} bytes", observation.length()),
+                        StatusTone::Success,
+                    );
                 } else {
-                    self.set_status(format!(
-                        "Wrote {} bytes with {warning_count} storage warning(s). ^R details.",
-                        observation.length()
-                    ));
+                    self.set_toned_status(
+                        format!(
+                            "Wrote {} bytes with {warning_count} storage warning(s). ^R details.",
+                            observation.length()
+                        ),
+                        StatusTone::Warning,
+                    );
                 }
                 self.last_save_warnings = (!warnings.is_empty()).then_some(warnings);
                 SaveStep::Committed
@@ -1258,7 +1249,7 @@ impl TuiSession {
                 // The engine diagnostic stays on the outcome for recovery.
                 // The status names the folder instead of that diagnostic.
                 self.dismiss_disk_conflict();
-                self.set_status(crate::save_status::not_committed_status(
+                self.set_save_error(crate::save_status::not_committed_status(
                     &reservation.destination,
                     cleanup_error.as_ref(),
                 ));
@@ -1281,12 +1272,12 @@ impl TuiSession {
                     destination_label,
                     message,
                 });
-                self.set_status(UNCERTAIN_SAVE_GUIDANCE);
+                self.set_uncertain_guidance();
                 SaveStep::NotSaved
             }
             Err(error) => {
                 self.dismiss_disk_conflict();
-                self.set_status(format!("Not saved: {error}"));
+                self.set_save_error(format!("Not saved: {error}"));
                 SaveStep::NotSaved
             }
         }
@@ -1313,17 +1304,6 @@ impl TuiSession {
             SaveStep::NotSaved => self.after_save = AfterSave::Stay,
             SaveStep::AwaitingInput => {}
         }
-    }
-
-    /// Cycles the current visual theme (^T).
-    pub fn cycle_theme(&mut self) {
-        self.theme = match self.theme {
-            AppTheme::Dark | AppTheme::System => AppTheme::GreenScreen,
-            AppTheme::GreenScreen => AppTheme::AmberScreen,
-            AppTheme::AmberScreen => AppTheme::Light,
-            AppTheme::Light => AppTheme::Dark,
-        };
-        self.set_status(format!("Theme: {}", self.theme.label()));
     }
 
     /// Toggles between plain text and formatted Markdown mode (^E).
@@ -1513,20 +1493,21 @@ enum Style {
     Muted,
 }
 
-fn push_sgr(out: &mut String, style: Style, palette: &TuiPalette) {
-    let (background, foreground, attributes) = match style {
-        Style::Text => (palette.bg, palette.fg, ""),
-        Style::Match => (palette.match_bg, palette.match_fg, "\x1b[1m"),
-        Style::Heading => (palette.bg, palette.accent, "\x1b[1m"),
-        Style::Marker => (palette.bg, palette.accent, ""),
-        Style::Quote => (palette.bg, palette.fg, "\x1b[3m"),
-        Style::Muted => (palette.bg, palette.gutter_fg, ""),
-    };
-    let _ = write!(
-        out,
-        "\x1b[0m\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m{attributes}",
-        background.r, background.g, background.b, foreground.r, foreground.g, foreground.b,
-    );
+impl Style {
+    const fn role(self) -> Role {
+        match self {
+            Self::Text => Role::Text,
+            Self::Match => Role::Match,
+            Self::Heading => Role::AccentStrong,
+            Self::Marker => Role::Accent,
+            Self::Quote => Role::Quote,
+            Self::Muted => Role::Muted,
+        }
+    }
+}
+
+fn push_style(out: &mut String, paint: Paint, style: Style) {
+    paint.open(out, style.role());
 }
 
 /// Styles Markdown structure on one line without changing a single cell, so
@@ -1574,7 +1555,7 @@ fn push_line_window(
     first_column: usize,
     width: usize,
     spans: &[(std::ops::Range<usize>, Style)],
-    palette: &TuiPalette,
+    paint: Paint,
 ) {
     let last_column = first_column + width;
     let mut column = 0;
@@ -1602,7 +1583,7 @@ fn push_line_window(
                 .find(|(range, _)| range.contains(&offset))
                 .map_or(Style::Text, |(_, style)| *style);
             if current != Some(style) {
-                push_sgr(out, style, palette);
+                push_style(out, paint, style);
                 current = Some(style);
             }
             if visible_end - visible_start == cells {
@@ -1615,31 +1596,9 @@ fn push_line_window(
         column += cells;
     }
     if current != Some(Style::Text) {
-        push_sgr(out, Style::Text, palette);
+        push_style(out, paint, Style::Text);
     }
     out.extend(std::iter::repeat_n(' ', width - drawn));
-}
-
-fn push_bar(
-    out: &mut String,
-    text: &str,
-    cols: usize,
-    background: AnsiColor,
-    foreground: AnsiColor,
-    bold: bool,
-) {
-    let _ = write!(
-        out,
-        "\x1b[0m\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m{}{}\x1b[0m",
-        background.r,
-        background.g,
-        background.b,
-        foreground.r,
-        foreground.g,
-        foreground.b,
-        if bold { "\x1b[1m" } else { "" },
-        fit_line(text, cols),
-    );
 }
 
 /// Returns the status-line prompt as a label, the typed input, and a hint.
@@ -1738,18 +1697,11 @@ impl<'a> Frame<'a> {
 
 /// Draws the document rows, with line numbers, Markdown styling, and
 /// search highlights, from the session's scroll position.
-fn push_viewport(
-    out: &mut String,
-    frame: &Frame<'_>,
-    columns: usize,
-    height: usize,
-    palette: &TuiPalette,
-) {
+fn push_viewport(out: &mut String, frame: &Frame<'_>, columns: usize, height: usize, paint: Paint) {
     let &Frame {
         session,
         text,
         ref table,
-        caret_line,
         ..
     } = frame;
     let offset = text_offset(table.len());
@@ -1764,22 +1716,8 @@ fn push_viewport(
         if index < table.len() {
             let span = table.line(index);
             let line = &text[span.start..span.end];
-            let gutter = if index == caret_line {
-                palette.accent
-            } else {
-                palette.gutter_fg
-            };
-            let _ = write!(
-                out,
-                "\x1b[0m\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m {:>digits$} │ ",
-                palette.bg.r,
-                palette.bg.g,
-                palette.bg.b,
-                gutter.r,
-                gutter.g,
-                gutter.b,
-                index + 1,
-            );
+            paint.open(out, Role::Muted);
+            let _ = write!(out, " {:>digits$} │ ", index + 1);
             let mut spans = if session.view == DocumentView::Markdown {
                 markdown_spans(line)
             } else {
@@ -1792,26 +1730,26 @@ fn push_viewport(
                         .map(|range| (range.start()..range.end(), Style::Match)),
                 );
             }
-            push_line_window(out, line, session.scroll_col, text_width, &spans, palette);
+            push_line_window(out, line, session.scroll_col, text_width, &spans, paint);
         } else {
-            let _ = write!(
-                out,
-                "\x1b[0m\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m{}",
-                palette.bg.r,
-                palette.bg.g,
-                palette.bg.b,
-                palette.gutter_fg.r,
-                palette.gutter_fg.g,
-                palette.gutter_fg.b,
-                fit_line(&format!(" {:>digits$} ", "~"), columns),
-            );
+            paint.open(out, Role::Muted);
+            out.push_str(&fit_line(&format!(" {:>digits$} ", "~"), columns));
         }
         out.push_str("\x1b[0m\r\n");
     }
 }
 
-/// Returns the status line: a prompt, a recent message, or the position.
-fn status_line(frame: &Frame<'_>) -> String {
+const fn tone_role(tone: StatusTone) -> Role {
+    match tone {
+        StatusTone::Plain => Role::BarStrong,
+        StatusTone::Success => Role::Success,
+        StatusTone::Warning => Role::Warning,
+        StatusTone::Error => Role::Error,
+    }
+}
+
+/// Returns the status line and the role that draws it.
+fn status_line(frame: &Frame<'_>) -> (String, Role) {
     let &Frame {
         session,
         text,
@@ -1820,27 +1758,30 @@ fn status_line(frame: &Frame<'_>) -> String {
         caret_column,
     } = frame;
     if let Some((label, input, hint)) = prompt_parts(session) {
-        return format!("{label}{input}{hint}");
+        return (format!("{label}{input}{hint}"), Role::BarStrong);
     }
     if let Some((message, created)) = &session.status_message
         && created.elapsed() < STATUS_LIFETIME
     {
-        return format!(" {message}");
+        return (format!(" {message}"), tone_role(session.status_tone));
     }
     if let Some(hint) = &session.recovery_unavailable_hint {
-        return format!(" {hint}");
+        return (format!(" {hint}"), Role::Warning);
     }
     if let Some(hint) = &session.recovery_path_hint {
-        return format!(" {hint}");
+        return (format!(" {hint}"), Role::BarStrong);
     }
-    format!(
-        " Ln {}, Col {}  │  {} B  │  {} L  │  {}  │  {} ",
-        caret_line + 1,
-        caret_column + 1,
-        text.len(),
-        table.len(),
-        session.document.encoding().status_label(),
-        session.document.line_endings().status_label()
+    (
+        format!(
+            " Ln {}, Col {}  │  {} B  │  {} L  │  {}  │  {} ",
+            caret_line + 1,
+            caret_column + 1,
+            text.len(),
+            table.len(),
+            session.document.encoding().status_label(),
+            session.document.line_endings().status_label()
+        ),
+        Role::BarStrong,
     )
 }
 
@@ -1851,7 +1792,7 @@ fn status_line(frame: &Frame<'_>) -> String {
 pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
     let columns = cols as usize;
     let mut out = String::with_capacity(columns * rows as usize * 4);
-    let palette = TuiPalette::for_theme(session.theme);
+    let paint = session.terminal_color.paint();
     out.push_str("\x1b[?25l\x1b[H");
     if usize::from(rows) <= CHROME_ROWS || columns < MIN_COLUMNS {
         // Too small for the layout: say so in what fits instead of drawing
@@ -1862,10 +1803,10 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
     }
 
     if let PromptMode::ReconcileSave(index) = &session.prompt {
-        return render_save_reconciliation(session, *index, cols, rows, &palette);
+        return render_save_reconciliation(session, *index, cols, rows, paint);
     }
     if session.prompt == PromptMode::SaveWarnings {
-        return save_warnings::render(session, cols, rows, &palette);
+        return save_warnings::render(session, cols, rows, paint);
     }
 
     let text = session.text();
@@ -1891,40 +1832,25 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
     } else {
         ""
     };
+    let mode = format!("[{}]", session.view.label());
     let header = format!(
-        " Noter {} │ {doc_name}{dirty} │ [{}] │ {} ",
-        env!("CARGO_PKG_VERSION"),
-        session.view.label(),
-        session.theme.label()
+        " Noter {} │ {doc_name}{dirty} │ {mode} ",
+        env!("CARGO_PKG_VERSION")
     );
-    push_bar(
-        &mut out,
-        &header,
-        columns,
-        palette.bar_bg,
-        palette.bar_fg,
-        true,
-    );
+    push_mode_header(&mut out, &header, &mode, columns, paint);
     out.push_str("\r\n");
 
-    push_viewport(&mut out, &frame, columns, height, &palette);
+    push_viewport(&mut out, &frame, columns, height, paint);
 
-    let status = status_line(&frame);
-    push_bar(
-        &mut out,
-        &status,
-        columns,
-        palette.bar_bg,
-        palette.bar_fg,
-        true,
-    );
+    let (status, status_role) = status_line(&frame);
+    push_bar(&mut out, &status, columns, paint, status_role);
     out.push_str("\r\n");
-    push_legends(&mut out, columns, &palette);
+    push_legends(&mut out, columns, paint);
 
     // The cursor stays hidden unless it has a place: over help, or with the
     // caret scrolled out of view, a visible cursor would mark a wrong cell.
     if session.show_help {
-        render_help_overlay(&mut out, cols, rows, &palette);
+        render_help_overlay(&mut out, cols, rows, paint);
     } else if let Some((label, input, _)) = prompt_parts(session) {
         let column = 1 + display_width(&label) + display_width(input);
         let _ = write!(
@@ -1946,12 +1872,33 @@ pub fn render_frame(session: &TuiSession, cols: u16, rows: u16) -> String {
     out
 }
 
+/// Draws the title bar and paints the current mode in the accent role.
+///
+/// The mode stays accent only when the fitted line still ends with it. A
+/// terminal too narrow to keep that label draws the whole title as a bar.
+fn push_mode_header(out: &mut String, header: &str, mode: &str, columns: usize, paint: Paint) {
+    let fitted = fit_line(header, columns);
+    let visible = fitted.trim_end();
+    if let Some(head) = visible.strip_suffix(mode) {
+        let tail = &fitted[head.len() + mode.len()..];
+        paint.open(out, Role::BarStrong);
+        out.push_str(head);
+        paint.open(out, Role::AccentStrong);
+        out.push_str(mode);
+        paint.open(out, Role::BarStrong);
+        out.push_str(tail);
+        out.push_str("\x1b[0m");
+    } else {
+        push_bar(out, header, columns, paint, Role::BarStrong);
+    }
+}
+
 fn render_save_reconciliation(
     session: &TuiSession,
     index: usize,
     cols: u16,
     rows: u16,
-    palette: &TuiPalette,
+    paint: Paint,
 ) -> String {
     let columns = usize::from(cols);
     let height = usize::from(rows);
@@ -1965,70 +1912,75 @@ fn render_save_reconciliation(
         index + 1,
         session.save_recoveries.len()
     );
-    push_bar(
-        &mut out,
-        &header,
-        columns,
-        palette.bar_bg,
-        palette.bar_fg,
-        true,
-    );
+    push_bar(&mut out, &header, columns, paint, Role::BarStrong);
     out.push_str("\r\n");
 
-    let lines = save_reconciliation_lines(session, index, columns);
+    let lines = save_reconciliation_rows(session, index, columns);
     let viewport = height.saturating_sub(2);
     let start = session
         .reconcile_scroll
         .min(lines.len().saturating_sub(viewport));
     for row in 0..viewport {
-        push_bar(
-            &mut out,
-            lines.get(start + row).map_or("", String::as_str),
-            columns,
-            palette.bg,
-            palette.fg,
-            false,
-        );
+        let (text, role) = lines
+            .get(start + row)
+            .map_or(("", Role::Text), |(text, role)| (text.as_str(), *role));
+        push_bar(&mut out, text, columns, paint, role);
         out.push_str("\r\n");
     }
-    let footer = session.status_message.as_ref().map_or(
-        " Up/Down scroll | C copy exact path | Y reconciled | N/P record | Esc cancel",
+    let default_footer =
+        " Up/Down scroll | C copy exact path | Y reconciled | N/P record | Esc cancel";
+    let (footer, role) = session.status_message.as_ref().map_or(
+        (default_footer, Role::BarStrong),
         |(message, created)| {
             if created.elapsed() < STATUS_LIFETIME {
-                message
+                (message.as_str(), tone_role(session.status_tone))
             } else {
-                " Up/Down scroll | C copy exact path | Y reconciled | N/P record | Esc cancel"
+                (default_footer, Role::BarStrong)
             }
         },
     );
-    push_bar(
-        &mut out,
-        footer,
-        columns,
-        palette.bar_bg,
-        palette.bar_fg,
-        true,
-    );
+    push_bar(&mut out, footer, columns, paint, role);
     out
 }
 
-fn save_reconciliation_lines(session: &TuiSession, index: usize, columns: usize) -> Vec<String> {
+fn save_reconciliation_rows(
+    session: &TuiSession,
+    index: usize,
+    columns: usize,
+) -> Vec<(String, Role)> {
     let Some(recovery) = session.save_recoveries.get(index) else {
         return Vec::new();
     };
-    let mut lines = vec![
-        format!(" Destination: {}", recovery.destination_label),
-        " Inspect that destination and the retained siblings named below.".to_owned(),
-        " Preserve the version you need; decide whether the earlier save committed.".to_owned(),
-        " Confirming removes only this in-memory safety record. It does not write.".to_owned(),
-        String::new(),
-        " Diagnostic:".to_owned(),
+    let mut rows = vec![
+        (
+            format!(" Destination: {}", recovery.destination_label),
+            Role::Text,
+        ),
+        (
+            " Inspect that destination and the retained siblings named below.".to_owned(),
+            Role::Text,
+        ),
+        (
+            " Preserve the version you need; decide whether the earlier save committed.".to_owned(),
+            Role::Text,
+        ),
+        (
+            " Confirming removes only this in-memory safety record. It does not write.".to_owned(),
+            Role::Text,
+        ),
+        (String::new(), Role::Text),
+        (" Diagnostic:".to_owned(), Role::Text),
     ];
-    save_warnings::append_diagnostic(&mut lines, &recovery.message, columns);
+    let mut diagnostic = Vec::new();
+    save_warnings::append_diagnostic(&mut diagnostic, &recovery.message, columns);
+    rows.extend(diagnostic.into_iter().map(|text| (text, Role::Warning)));
     if recovery.destination.to_str().is_none() {
-        lines.push(" Copy uses reversible operating-system path encoding.".to_owned());
+        rows.push((
+            " Copy uses reversible operating-system path encoding.".to_owned(),
+            Role::Text,
+        ));
     }
-    lines
+    rows
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2113,12 +2065,12 @@ const LEGEND_BOTTOM: &[LegendEntry] = &[
     },
 ];
 
-fn push_legends(out: &mut String, columns: usize, palette: &TuiPalette) {
+fn push_legends(out: &mut String, columns: usize, paint: Paint) {
     let (legend_top, _) = legend_line(LEGEND_TOP, columns);
-    push_bar(out, &legend_top, columns, palette.bg, palette.fg, false);
+    push_bar(out, &legend_top, columns, paint, Role::BarMuted);
     out.push_str("\r\n");
     let (legend_bottom, _) = legend_line(LEGEND_BOTTOM, columns);
-    push_bar(out, &legend_bottom, columns, palette.bg, palette.fg, false);
+    push_bar(out, &legend_bottom, columns, paint, Role::BarMuted);
 }
 
 /// Lays `entries` into `columns` cells.
@@ -2226,7 +2178,7 @@ const HELP_PARAGRAPHS: &[&str] = &[
     "^S Save. ^O Save As. ^X, ^C, or ^Q Exit.",
     "^W or ^F Find. ^K Cut line. ^U Paste.",
     "^Z Undo. ^Y Redo. ^J Jump line. ^E Markdown.",
-    "^T Theme. ^R Review warnings.",
+    "^R Review warnings.",
     "Disk change: r reloads, k keeps, o overwrites after confirm.",
     "A disk change keeps this text until reload, save, or discard.",
 ];
@@ -2302,7 +2254,7 @@ fn box_content(text: &str, width: usize) -> String {
     line
 }
 
-fn render_help_overlay(out: &mut String, cols: u16, rows: u16, palette: &TuiPalette) {
+fn render_help_overlay(out: &mut String, cols: u16, rows: u16, paint: Paint) {
     let columns = usize::from(cols);
     let screen_rows = usize::from(rows);
     if columns < 8 || screen_rows < 3 {
@@ -2332,18 +2284,10 @@ fn render_help_overlay(out: &mut String, cols: u16, rows: u16, palette: &TuiPale
     lines.push(box_rule('╚', '═', '╝', box_width));
 
     for (index, line) in lines.iter().enumerate() {
-        let _ = write!(
-            out,
-            "\x1b[{};{}H\x1b[48;2;{};{};{}m\x1b[38;2;{};{};{}m\x1b[1m{line}\x1b[0m",
-            start_row + index,
-            start_col,
-            palette.bar_bg.r,
-            palette.bar_bg.g,
-            palette.bar_bg.b,
-            palette.accent.r,
-            palette.accent.g,
-            palette.accent.b,
-        );
+        let _ = write!(out, "\x1b[{};{}H", start_row + index, start_col);
+        paint.open(out, Role::AccentStrong);
+        out.push_str(line);
+        out.push_str("\x1b[0m");
     }
 }
 
@@ -2795,9 +2739,6 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, cols: u16, rows: u16)
             TuiKey::Ctrl('e') | TuiKey::F(2) => {
                 session.toggle_view();
             }
-            TuiKey::Ctrl('t') => {
-                session.cycle_theme();
-            }
             TuiKey::Ctrl('g') | TuiKey::F(1) => {
                 session.show_help = !session.show_help;
             }
@@ -2957,7 +2898,7 @@ fn handle_disk_reload_key(session: &mut TuiSession, key: TuiKey) {
 
 fn trigger_exit(session: &mut TuiSession) {
     if session.save_is_blocked() {
-        session.set_status(UNCERTAIN_SAVE_GUIDANCE);
+        session.set_uncertain_guidance();
         return;
     }
     if session.has_unsaved_state() {
@@ -3064,21 +3005,14 @@ mod tests {
     }
 
     #[test]
-    fn tui_session_theme_cycling() {
+    fn ctrl_t_does_not_change_the_terminal() {
         let mut session = untitled();
-        assert_eq!(session.theme, AppTheme::Dark);
-
-        session.cycle_theme();
-        assert_eq!(session.theme, AppTheme::GreenScreen);
-
-        session.cycle_theme();
-        assert_eq!(session.theme, AppTheme::AmberScreen);
-
-        session.cycle_theme();
-        assert_eq!(session.theme, AppTheme::Light);
-
-        session.cycle_theme();
-        assert_eq!(session.theme, AppTheme::Dark);
+        session.insert_str("keep");
+        session.view = DocumentView::Markdown;
+        key(&mut session, TuiKey::Ctrl('t'));
+        assert_eq!(session.text(), "keep");
+        assert_eq!(session.view, DocumentView::Markdown);
+        assert!(session.status_message.is_none());
     }
 
     #[test]
@@ -3216,7 +3150,6 @@ mod tests {
             "^Y Redo",
             "^J Jump line",
             "^E Markdown",
-            "^T Theme",
             "^R Review warnings",
             "o overwrites",
             "until reload",
@@ -5516,13 +5449,16 @@ mod tests {
                 session.scroll_to_caret(cols, rows);
                 let frame = render_frame(&session, cols, rows);
                 assert_frame_is_terminal_safe(&frame, usize::from(cols));
+                proptest::prop_assert!(!paint::contains_truecolor(&frame));
                 proptest::prop_assert!(strip_own_sequences(&frame).split("\r\n").count() <= usize::from(rows));
             }
         }
     }
 
     #[test]
-    fn tui_palette_and_markdown_rendering() {
+    fn terminal_frames_follow_the_host_and_honor_no_color() {
+        use crate::theme::AppTheme;
+
         for theme in [
             AppTheme::Light,
             AppTheme::Dark,
@@ -5530,10 +5466,96 @@ mod tests {
             AppTheme::AmberScreen,
             AppTheme::System,
         ] {
-            let palette = TuiPalette::for_theme(theme);
-            assert!(palette.fg.r != 0 || palette.fg.g != 0 || palette.fg.b != 0);
-        }
+            let mut session = without_startup_status(
+                TuiSession::new(
+                    &LaunchOptions {
+                        theme: Some(theme),
+                        view: Some(DocumentView::Markdown),
+                        ..LaunchOptions::default()
+                    },
+                    CrashRecoverySession::disabled_for_test(),
+                )
+                .expect("theme flag does not affect terminal startup"),
+            );
+            session.terminal_color = TerminalColor::Host;
+            session.insert_str("# Heading\nbeta line\n");
+            session.search_query = Some("beta".to_owned());
+            session.set_toned_status("Wrote 4 bytes", StatusTone::Success);
+            let frame = render_frame(&session, 80, 24);
+            let visible = strip_own_sequences(&frame);
+            assert!(!paint::contains_truecolor(&frame), "{theme:?}");
+            assert!(visible.contains("[Markdown]"), "{theme:?}");
+            assert!(!visible.contains(theme.label()), "{theme:?}");
+            assert!(frame.contains("\x1b[1;36m"), "{theme:?}");
+            assert!(frame.contains("\x1b[32m"), "{theme:?}");
+            assert!(frame.contains("\x1b[0m\x1b[7m"), "{theme:?}");
+            assert!(frame.contains("\x1b[2m"), "{theme:?}");
 
+            session.terminal_color = TerminalColor::Off;
+            let plain = render_frame(&session, 80, 24);
+            assert!(!paint::contains_truecolor(&plain));
+            assert!(!paint::contains_color_sgr(&plain));
+            assert!(plain.contains("\x1b[7m"));
+            assert!(plain.contains("\x1b[1m"));
+            assert!(plain.contains("\x1b[2m"));
+            assert!(!plain.contains("\x1b[32m"));
+            assert!(!plain.contains("\x1b[36m"));
+        }
+    }
+
+    #[test]
+    fn save_status_roles_match_the_outcome() {
+        let mut session = untitled();
+        session.terminal_color = TerminalColor::Host;
+        session.set_toned_status("Wrote 3 bytes", StatusTone::Success);
+        let frame = render_frame(&session, 80, 24);
+        assert!(frame.contains("\x1b[32m"));
+        assert!(strip_own_sequences(&frame).contains("Wrote 3 bytes"));
+
+        session.set_toned_status(
+            "Saved with uncertain durability. Keep open and Save again. ^R details.",
+            StatusTone::Warning,
+        );
+        assert!(render_frame(&session, 80, 24).contains("\x1b[33m"));
+
+        session.set_save_error("Not saved: the folder refused the write");
+        assert!(render_frame(&session, 80, 24).contains("\x1b[31m"));
+
+        session.status_message = None;
+        session.recovery_unavailable_hint =
+            Some("Recovery is off for this session: disk full".to_owned());
+        let hint = render_frame(&session, 80, 24);
+        assert!(hint.contains("\x1b[33m"));
+        assert!(strip_own_sequences(&hint).contains("Recovery is off for this session"));
+
+        session.terminal_color = TerminalColor::Off;
+        let plain = render_frame(&session, 80, 24);
+        assert!(!paint::contains_color_sgr(&plain));
+        assert!(strip_own_sequences(&plain).contains("Recovery is off for this session"));
+    }
+
+    #[test]
+    fn save_warning_screen_is_yellow_and_not_truecolor() {
+        use noter::core::save::{SaveStage, SaveWarnings, StorageError};
+
+        let mut session = untitled();
+        session.terminal_color = TerminalColor::Host;
+        session.last_save_warnings = Some(SaveWarnings::new(
+            vec![StorageError::new(SaveStage::Cleanup, "kept a sibling")],
+            Vec::new(),
+        ));
+        session.prompt = PromptMode::SaveWarnings;
+        let frame = render_frame(&session, 80, 24);
+        let visible = strip_own_sequences(&frame);
+        assert!(!paint::contains_truecolor(&frame));
+        assert!(frame.contains("\x1b[33m"));
+        assert!(visible.contains("Latest save warnings"));
+        assert!(visible.contains("kept a sibling"));
+        assert!(!visible.contains("38;2"));
+    }
+
+    #[test]
+    fn markdown_structure_spans_stay_on_the_source_cells() {
         assert_eq!(
             markdown_spans("# Heading One"),
             vec![(0..13, Style::Heading)]

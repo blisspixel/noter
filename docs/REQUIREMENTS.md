@@ -88,9 +88,10 @@ The complete desktop-scale and compositor matrix remains a beta.3/RC gate.
   editing interface (`noter --tui` or headless display auto-detection) backed
   by the identical `src/core/` trust kernel (revisions, atomic durable save,
   bounded undo/redo, crash recovery, and conflict handling). The TUI provides
-  dual modern and classic shortcuts, mouse caret placement, terminal theme
-  rendering, and rendered terminal Markdown preview. A save that does not
-  commit never exits or discards text. Status: save, Save As, conflict
+  dual modern and classic shortcuts, mouse caret placement, host-terminal
+  color (including a non-empty `NO_COLOR`), and rendered terminal Markdown
+  preview. A save that does not commit never exits or discards text. Status:
+  save, Save As, conflict
   reporting, bounded undo, and crash recovery are shared; idle external-change
   inspection and Reload are not yet available in the TUI.
 - **FR-012 Strict UTF-8:** Accept UTF-8 with or without a UTF-8 BOM. Reject
