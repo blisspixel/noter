@@ -655,6 +655,8 @@ pub struct NoterApp {
     markdown_issue_cache: Option<MarkdownIssueCache>,
     status_cache: Option<StatusCache>,
     error_msg: Option<String>,
+    /// Durable recovery note for a path launch or a restore that needs an explanation.
+    recovery_notice: Option<String>,
     save_recoveries: Vec<SaveRecovery>,
     retained_save_siblings: Vec<RetainedSaveSibling>,
     confirm_retained_sibling_removal: Option<RetainedSiblingPrompt>,
@@ -724,6 +726,7 @@ impl NoterApp {
             markdown_issue_cache: None,
             status_cache: None,
             error_msg: None,
+            recovery_notice: None,
             save_recoveries: Vec::new(),
             retained_save_siblings: Vec::new(),
             confirm_retained_sibling_removal: None,
@@ -791,11 +794,18 @@ impl NoterApp {
         // Explicit file opens and screenshot automation skip interactive recovery
         // offers so double-click open and capture remain deterministic. Records
         // stay on disk for a later untitled launch; Discard is a user choice.
+        // A matching path still gets a calm hint before the offer is hidden.
+        let path_hint = options.initial_path.as_ref().and_then(|path| {
+            app.crash_recovery
+                .path_recovery_hint(path)
+                .map(|hint| hint.message().to_owned())
+        });
         let skip_recovery_offers =
             options.initial_path.is_some() || options.screenshot_path.is_some();
         if skip_recovery_offers {
             app.crash_recovery.defer_startup_offers();
         }
+        app.recovery_notice = path_hint;
         if let Some(path) = options.initial_path.clone() {
             app.open_path(&path, options.view);
         } else if let Some(view) = options.view {
@@ -4107,6 +4117,7 @@ impl NoterApp {
         self.show_crash_recovery_cleanup_failure(ui);
         self.show_pending_legacy_recovery_cleanup(ui);
         self.show_pending_legacy_recovery_review(ui);
+        self.show_recovery_notice(ui);
         self.show_save_recovery_notice(ui);
         let recovery_offer_open = self.crash_recovery.active_offer().is_some();
         let commands_enabled = !blocking_modal_at_start;
@@ -4338,6 +4349,21 @@ impl NoterApp {
         });
     }
 
+    fn show_recovery_notice(&mut self, ui: &mut egui::Ui) {
+        let mut dismiss = false;
+        if let Some(notice) = self.recovery_notice.as_deref() {
+            egui::Panel::top("recovery_notice").show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(ui.visuals().warn_fg_color, notice);
+                    dismiss = ui.button("Dismiss").clicked();
+                });
+            });
+        }
+        if dismiss {
+            self.recovery_notice = None;
+        }
+    }
+
     fn show_pending_legacy_recovery_review(&self, ui: &mut egui::Ui) {
         if !self.crash_recovery.has_pending_legacy_review() {
             return;
@@ -4398,8 +4424,18 @@ impl NoterApp {
                     .map(std::path::Path::new)
                     .map(preferred_view_for_path)
             });
+            let path_bytes = self
+                .crash_recovery
+                .active_offer()
+                .map(|offer| offer.metadata().original_path().to_vec())
+                .unwrap_or_default();
             match self.crash_recovery.restore_active_offer() {
-                Ok((document, selection)) => {
+                Ok((mut document, selection)) => {
+                    let notice = crate::crash_recovery::bind_recovered_destination(
+                        &mut document,
+                        &path_bytes,
+                    );
+                    self.recovery_notice = Some(notice.to_owned());
                     self.install_restored_document(document, selection, preferred_view);
                 }
                 Err(message) => {

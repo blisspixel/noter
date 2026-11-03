@@ -288,14 +288,18 @@ pub struct TuiSession {
     /// Set when a save finds a disk change, and cleared only by reload, a
     /// committed save, a matching observation, or an explicit discard.
     external_retention: ExternalRetention,
+    /// Durable note for a path launch or a restore. Escape clears it. It
+    /// remains after the temporary status expires.
+    recovery_path_hint: Option<String>,
 }
 
 impl TuiSession {
     /// Initializes a new TUI session from launch options.
     ///
     /// An explicit file keeps any startup recovery offers for a later
-    /// untitled launch, as the window does; an untitled launch presents the
-    /// first offer.
+    /// untitled launch, as the window does, and leaves a durable note when a
+    /// copy stores that exact path. An untitled launch presents the first
+    /// offer.
     ///
     /// # Errors
     ///
@@ -311,6 +315,13 @@ impl TuiSession {
         let theme = options.theme.unwrap_or(AppTheme::Dark);
         let view = options.view.unwrap_or(DocumentView::Text);
         let history = UndoHistory::new(HistoryLimits::default(), document.revision());
+        // Read the hint before the path launch hides the in-memory offers.
+        // Hiding them does not delete the records.
+        let recovery_path_hint = options.initial_path.as_ref().and_then(|path| {
+            recovery
+                .path_recovery_hint(path)
+                .map(|hint| hint.terminal_message().to_owned())
+        });
 
         let mut session = Self {
             document,
@@ -341,6 +352,7 @@ impl TuiSession {
             conflict: ConflictState::default(),
             reviewed_disk: None,
             external_retention: ExternalRetention::Clear,
+            recovery_path_hint,
         };
         if options.initial_path.is_some() {
             session.recovery.defer_startup_offers();
@@ -424,21 +436,7 @@ impl TuiSession {
     /// Answers the startup recovery offer that is showing.
     pub fn answer_recovery_offer(&mut self, decision: RecoveryDecision) {
         match decision {
-            RecoveryDecision::Restore => match self.recovery.restore_active_offer() {
-                Ok((document, selection)) => {
-                    self.document = document;
-                    self.save_durability = SaveDurabilityRisk::Clear;
-                    self.caret_byte = selection.active();
-                    self.history.reset(self.document.revision());
-                    self.recovery.on_edited(&self.document, selection);
-                    // Remaining offers stay on disk for a later untitled
-                    // launch; presenting the next one now would replace the
-                    // text just restored.
-                    self.recovery.defer_startup_offers();
-                    self.set_status("Restored unsaved text. Save it to keep it.");
-                }
-                Err(message) => self.set_status(message),
-            },
+            RecoveryDecision::Restore => self.restore_offered_document(),
             RecoveryDecision::Discard => {
                 if self.recovery.discard_active_offer() {
                     self.set_status("Discarded the recovered text");
@@ -456,6 +454,35 @@ impl TuiSession {
         } else {
             PromptMode::None
         };
+    }
+
+    /// Restores the open offer and reconnects it to a regular file when it can.
+    ///
+    /// The explanation stays on the status line after the temporary status
+    /// expires. Escape clears that note and does not discard the text.
+    fn restore_offered_document(&mut self) {
+        let path_bytes = self
+            .recovery
+            .active_offer()
+            .map(|offer| offer.metadata().original_path().to_vec())
+            .unwrap_or_default();
+        match self.recovery.restore_active_offer() {
+            Ok((mut document, selection)) => {
+                let notice =
+                    crate::crash_recovery::bind_recovered_destination(&mut document, &path_bytes);
+                self.document = document;
+                self.save_durability = SaveDurabilityRisk::Clear;
+                self.caret_byte = selection.active();
+                self.history.reset(self.document.revision());
+                self.recovery.on_edited(&self.document, selection);
+                // Remaining offers stay on disk for a later untitled launch.
+                // Presenting the next one now would replace this text.
+                self.recovery.defer_startup_offers();
+                self.recovery_path_hint = Some(format!("{notice} Esc hides this."));
+                self.set_status(notice);
+            }
+            Err(message) => self.set_status(message),
+        }
     }
 
     /// Sets a temporary status message visible for 3 seconds.
@@ -1650,10 +1677,10 @@ fn prompt_parts(session: &TuiSession) -> Option<(String, &str, &'static str)> {
                 || "Untitled".to_owned(),
                 crate::crash_recovery::StartupRecoveryOffer::original_path_label,
             );
+            // The decision keys come first so an 80-column bar cannot cut
+            // them off when the folder and time make the label long.
             return Some((
-                format!(
-                    "Unsaved text from {label} was kept after Noter closed. (r)estore, (d)iscard, (l)ater"
-                ),
+                format!("(r)estore, (d)iscard, (l)ater. Unsaved text from {label}."),
                 "",
                 "",
             ));
@@ -1789,22 +1816,25 @@ fn status_line(frame: &Frame<'_>) -> String {
         caret_line,
         caret_column,
     } = frame;
-    prompt_parts(session).map_or_else(
-        || match &session.status_message {
-            Some((message, created)) if created.elapsed() < STATUS_LIFETIME => {
-                format!(" {message}")
-            }
-            _ => format!(
-                " Ln {}, Col {}  │  {} B  │  {} L  │  {}  │  {} ",
-                caret_line + 1,
-                caret_column + 1,
-                text.len(),
-                table.len(),
-                session.document.encoding().status_label(),
-                session.document.line_endings().status_label()
-            ),
-        },
-        |(label, input, hint)| format!("{label}{input}{hint}"),
+    if let Some((label, input, hint)) = prompt_parts(session) {
+        return format!("{label}{input}{hint}");
+    }
+    if let Some((message, created)) = &session.status_message
+        && created.elapsed() < STATUS_LIFETIME
+    {
+        return format!(" {message}");
+    }
+    if let Some(hint) = &session.recovery_path_hint {
+        return format!(" {hint}");
+    }
+    format!(
+        " Ln {}, Col {}  │  {} B  │  {} L  │  {}  │  {} ",
+        caret_line + 1,
+        caret_column + 1,
+        text.len(),
+        table.len(),
+        session.document.encoding().status_label(),
+        session.document.line_endings().status_label()
     )
 }
 
@@ -2821,6 +2851,9 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, cols: u16, rows: u16)
                 let mut buf = [0u8; 4];
                 let s = c.encode_utf8(&mut buf);
                 session.insert_str(s);
+            }
+            TuiKey::Escape if session.recovery_path_hint.is_some() => {
+                session.recovery_path_hint = None;
             }
             _ => {}
         },
@@ -4999,6 +5032,19 @@ mod tests {
         assert!(session.status_message.is_none());
     }
 
+    /// Bytes stored for a recovery path. Must match `path_to_bytes`.
+    fn stored_recovery_path(path: &std::path::Path) -> Vec<u8> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            path.as_os_str().as_bytes().to_vec()
+        }
+        #[cfg(not(unix))]
+        {
+            path.to_string_lossy().into_owned().into_bytes()
+        }
+    }
+
     fn untitled_with_store(root: &std::path::Path) -> TuiSession {
         TuiSession::new(
             &LaunchOptions::default(),
@@ -5064,13 +5110,18 @@ mod tests {
         let legacy_state = root.path().join("legacy");
         let legacy_store = RecoveryStore::open_in_state(&legacy_state).expect("legacy store");
         let local_store = RecoveryStore::open_in_state(&local_state).expect("local store");
+        // A relative `notes.txt` would bind to whatever file has that name
+        // in the working directory. This path is absent, so restore stays
+        // untitled and the later Save As is the path under test.
+        let missing = root.path().join("missing-notes.txt");
+        let original_path = stored_recovery_path(&missing);
         let parts = |instance, created_at, updated_at, content: &[u8]| RecoverySnapshotParts {
             document_id: RecoveryDocumentId::new([91; 16]),
             instance_id: RecoveryInstanceId::new([instance; 16]),
             revision: Revision::new(1),
             created_at: RecoveryWallTime::from_unix_millis(created_at),
             updated_at: RecoveryWallTime::from_unix_millis(updated_at),
-            original_path: b"notes.txt".to_vec(),
+            original_path: original_path.clone(),
             bom: Bom::Absent,
             encoding: Encoding::Utf8,
             selection: Selection::caret(0),
@@ -5188,6 +5239,128 @@ mod tests {
         assert_eq!(restored.prompt, PromptMode::None);
         drop(restored);
         assert_eq!(untitled_with_store(store.path()).prompt, PromptMode::None);
+    }
+
+    #[test]
+    fn opening_the_same_path_shows_a_durable_hint_and_keeps_the_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let notes = root.path().join("notes");
+        std::fs::create_dir(&notes).unwrap();
+        let draft = notes.join("draft notes.md");
+        let other = root.path().join("draft notes.md");
+        std::fs::write(&draft, "disk text").unwrap();
+        std::fs::write(&other, "other disk").unwrap();
+        let store = tempfile::tempdir().unwrap();
+        {
+            let mut session = session_for_with_store(&draft, store.path());
+            assert!(session.recovery_path_hint.is_none());
+            session.caret_byte = session.text().len();
+            type_text(&mut session, " unsaved");
+            assert!(session.persist_before_exit());
+        }
+
+        let mut reopened = session_for_with_store(&draft, store.path());
+        assert_eq!(reopened.prompt, PromptMode::None);
+        assert_eq!(reopened.text(), "disk text");
+        let hint = reopened
+            .recovery_path_hint
+            .clone()
+            .expect("a matching copy leaves a note");
+        assert!(hint.contains("no file"));
+        assert!(hint.contains("Esc hides this."));
+        reopened.status_message = Some((
+            "old".to_owned(),
+            std::time::Instant::now()
+                .checked_sub(STATUS_LIFETIME)
+                .expect("clock"),
+        ));
+        assert!(reopened.expire_status());
+        let frame = strip_own_sequences(&render_frame(&reopened, 80, 24));
+        assert!(frame.contains(&hint), "{frame}");
+        assert_eq!(recovery_record_paths(store.path()).len(), 1);
+        key(&mut reopened, TuiKey::Escape);
+        assert!(reopened.recovery_path_hint.is_none());
+        let cleared = strip_own_sequences(&render_frame(&reopened, 80, 24));
+        assert!(cleared.contains("Ln 1, Col 1"), "{cleared}");
+        assert!(!cleared.contains("no file"), "{cleared}");
+        drop(reopened);
+        assert_eq!(recovery_record_paths(store.path()).len(), 1);
+
+        let other_open = session_for_with_store(&other, store.path());
+        assert!(other_open.recovery_path_hint.is_none());
+        assert_eq!(other_open.text(), "other disk");
+        drop(other_open);
+
+        let untitled = untitled_with_store(store.path());
+        assert_eq!(untitled.prompt, PromptMode::RecoveryOffer);
+        let wide = strip_own_sequences(&render_frame(&untitled, 120, 24));
+        assert!(wide.contains("notes/draft notes.md"), "{wide}");
+        assert!(wide.contains("UTC"), "{wide}");
+        let narrow = strip_own_sequences(&render_frame(&untitled, 80, 24));
+        assert!(narrow.contains("(r)estore"), "{narrow}");
+        assert!(narrow.contains("(d)iscard"), "{narrow}");
+        assert!(narrow.contains("(l)ater"), "{narrow}");
+        assert!(narrow.contains("notes/draft notes.md"), "{narrow}");
+    }
+
+    #[test]
+    fn restore_reconnects_an_existing_file_and_save_writes_it_back() {
+        let root = tempfile::tempdir().unwrap();
+        let draft = root.path().join("draft notes.md");
+        std::fs::write(&draft, "disk text").unwrap();
+        let store = tempfile::tempdir().unwrap();
+        {
+            let mut session = session_for_with_store(&draft, store.path());
+            session.caret_byte = session.text().len();
+            type_text(&mut session, " unsaved");
+            assert!(session.persist_before_exit());
+        }
+
+        let mut session = untitled_with_store(store.path());
+        assert_eq!(session.prompt, PromptMode::RecoveryOffer);
+        key(&mut session, TuiKey::Char('r'));
+        assert_eq!(session.prompt, PromptMode::None);
+        assert_eq!(session.text(), "disk text unsaved");
+        assert_eq!(session.document.path(), Some(draft.as_path()));
+        assert!(session.document.is_dirty());
+        let note = session.recovery_path_hint.as_deref().expect("restore note");
+        assert!(
+            note.starts_with(crate::crash_recovery::RESTORED_BOUND),
+            "{note}"
+        );
+        key(&mut session, TuiKey::Ctrl('s'));
+        assert!(!session.document.is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(&draft).expect("written"),
+            "disk text unsaved"
+        );
+    }
+
+    #[test]
+    fn restore_of_a_missing_file_stays_untitled_and_says_why() {
+        let root = tempfile::tempdir().unwrap();
+        let draft = root.path().join("gone.md");
+        std::fs::write(&draft, "disk text").unwrap();
+        let store = tempfile::tempdir().unwrap();
+        {
+            let mut session = session_for_with_store(&draft, store.path());
+            session.caret_byte = session.text().len();
+            type_text(&mut session, " kept");
+            assert!(session.persist_before_exit());
+        }
+        std::fs::remove_file(&draft).unwrap();
+
+        let mut session = untitled_with_store(store.path());
+        key(&mut session, TuiKey::Char('r'));
+        assert_eq!(session.text(), "disk text kept");
+        assert!(session.document.path().is_none());
+        assert!(session.document.is_dirty());
+        let note = session.recovery_path_hint.as_deref().expect("restore note");
+        assert!(
+            note.starts_with(crate::crash_recovery::RESTORED_MISSING),
+            "{note}"
+        );
+        assert!(!note.contains("gone.md"), "{note}");
     }
 
     #[test]

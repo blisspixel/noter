@@ -122,7 +122,10 @@ Record byte-comparison commands, fixture checksums, and observed save outcomes:
 - [ ] REC-02 Force-kill after the idle debounce.
 - [ ] REC-03 Force-kill during recovery replacement.
 - [ ] REC-04 Restart offers the newest valid acknowledged revision.
-- [ ] REC-05 Recovered content opens dirty and does not write the original.
+- [ ] REC-05 Recovered content opens dirty and does not write the original until
+      Save. An existing regular file is selected so Save can write it back.
+      A missing path, a directory, a symbolic link, or an uncheckable path stays
+      untitled and the note says why without quoting the path.
 - [ ] REC-06 Save and explicit Discard remove only the owned recovery record.
 - [ ] REC-07 Cancel preserves the recovery record.
 - [ ] REC-08 Corrupt, truncated, wrong-version, and checksum-invalid records are

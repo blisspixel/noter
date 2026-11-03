@@ -223,9 +223,17 @@ The complete desktop-scale and compositor matrix remains a beta.3/RC gate.
   before replacing them with a normal untitled document. Startup review has
   explicit entry, aggregate-byte, offer, quarantine-result, and superseded-copy
   bounds. It retains metadata and exact handles only, reports incomplete review,
-  and leaves unreviewed records untouched for a later launch.
+  and leaves unreviewed records untouched for a later launch. An explicit path
+  launch does not show that offer and does not delete records. When an open
+  record stores that exact path, the launch shows a dismissible note that says
+  to start Noter without a file. The offer label names the parent folder, when
+  the path has one, and the recorded UTC minute.
 - **FR-066 Recovery isolation:** Recovered content opens as dirty and never
-  writes the original file until the user invokes Save.
+  writes the original file until the user invokes Save. When the recorded path
+  is still a regular file, Restore selects that path and the next Save writes
+  only if the observed revision is still current. A missing path, a path that
+  is not a regular file, or a path that cannot be checked stays untitled, and
+  the explanation does not quote the path or a storage diagnostic.
 - **FR-067 Recovery cleanup:** Remove a record only after a successful save or
   explicit discard. Corrupt records are quarantined and explained, not silently
   deleted. A living window retains independent locked ownership proofs for its

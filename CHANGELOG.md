@@ -6,6 +6,14 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- When a path launch has a private recovery copy for that exact file, show a
+  dismissible note that says to start Noter without a file. The note does not
+  restore or delete the copy. Offer labels name the parent folder and the
+  recorded time. Restore reattaches an existing regular file and stays dirty,
+  so Save writes the recovered text back only while that disk revision is
+  still current. A missing path, a directory, a symbolic link, or a path that
+  cannot be checked stays untitled and says why, without quoting the path
+  (#70).
 - When a terminal save finds a disk change, offer reload, keep editing, Save
   As, and overwrite after a second confirmation. A metadata-only change says
   the text still matches. The open text stays recoverable until reload, a

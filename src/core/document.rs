@@ -12,8 +12,8 @@ use super::limits::MAX_DOCUMENT_BYTES;
 use super::line_endings::LineEndingProfile;
 use super::revision::Revision;
 use super::save::{
-    ContentFingerprint, SaveOutcome, SaveSnapshot, SaveStage, TargetExpectation, TargetState,
-    save_snapshot,
+    ContentFingerprint, FileObservation, SaveOutcome, SaveSnapshot, SaveStage, TargetExpectation,
+    TargetState, save_snapshot,
 };
 use super::text_format::{Bom, Encoding};
 
@@ -228,6 +228,20 @@ impl Document {
             ContentFingerprint::from_bytes(b"\0noter-recovery-unsaved-baseline");
         self.saved_serialized_len = None;
         self.saved_target = None;
+    }
+
+    /// Binds recovered text to an existing regular file without marking it saved.
+    ///
+    /// `observation` is the disk revision the next Save must still match. The
+    /// recovered bytes stay dirty, so Save writes them only while that revision
+    /// is current and otherwise reports a conflict.
+    pub fn attach_recovered_destination(&mut self, path: PathBuf, observation: FileObservation) {
+        debug_assert!(
+            self.is_dirty(),
+            "recovered text must stay unsaved until the user saves"
+        );
+        self.path = Some(path);
+        self.saved_target = Some(TargetExpectation::Existing(observation));
     }
 
     /// Rebaselines the trusted save expectation to an observed disk revision.
