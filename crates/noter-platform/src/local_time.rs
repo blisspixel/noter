@@ -175,6 +175,36 @@ fn locale_short_time_format(format: &str) -> Option<String> {
     }
 }
 
+/// Bytes `strftime_l` placed in `buffer`, not including its trailing NUL.
+///
+/// Zero means the result was empty or did not fit. A count past the buffer
+/// is not a clock. A correct `strftime_l` does not return that count, so the
+/// bound has its own test.
+#[cfg(any(unix, test))]
+fn unix_clock_bytes(buffer: &[u8], written: usize) -> Option<&[u8]> {
+    if written == 0 || written >= buffer.len() {
+        None
+    } else {
+        Some(&buffer[..written])
+    }
+}
+
+/// `libc::time` returns `-1` when it has no calendar time.
+#[cfg(unix)]
+const fn unix_calendar_instant(now: libc::time_t) -> Option<libc::time_t> {
+    if now == -1 { None } else { Some(now) }
+}
+
+#[cfg(all(unix, test))]
+thread_local! {
+    static FREED_TIME_LOCALES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(all(unix, test))]
+fn freed_time_locales() -> usize {
+    FREED_TIME_LOCALES.with(std::cell::Cell::get)
+}
+
 #[cfg(unix)]
 struct UnixTimeLocale(libc::locale_t);
 
@@ -227,10 +257,8 @@ impl UnixTimeLocale {
                 self.0,
             )
         };
-        if written == 0 || written >= buffer.len() {
-            return None;
-        }
-        let text = std::str::from_utf8(&buffer[..written]).ok()?;
+        let bytes = unix_clock_bytes(&buffer, written)?;
+        let text = std::str::from_utf8(bytes).ok()?;
         clock_text_for_receipt(text)
     }
 }
@@ -246,6 +274,10 @@ impl Drop for UnixTimeLocale {
         unsafe {
             libc::freelocale(self.0);
         }
+        // The test is the only observer of this free. Leak would otherwise
+        // leave every assertion green.
+        #[cfg(test)]
+        FREED_TIME_LOCALES.with(|count| count.set(count.get().saturating_add(1)));
     }
 }
 
@@ -255,9 +287,7 @@ fn unix_local_tm() -> Option<libc::tm> {
     // documented failure value and leaves no output to read.
     #[allow(unsafe_code)]
     let now = unsafe { libc::time(std::ptr::null_mut()) };
-    if now == -1 {
-        return None;
-    }
+    let now = unix_calendar_instant(now)?;
     // Zero first. `tm` has padding `localtime_r` does not document as written,
     // and `assume_init` would otherwise read those bytes.
     let mut broken = std::mem::MaybeUninit::<libc::tm>::zeroed();
@@ -303,6 +333,33 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::locale_short_time_format;
+
+    #[test]
+    fn unix_clock_bytes_reject_an_empty_or_overlong_write() {
+        let buffer = b"14:02XXXX";
+        assert_eq!(super::unix_clock_bytes(buffer, 0), None);
+        assert_eq!(super::unix_clock_bytes(buffer, buffer.len()), None);
+        assert_eq!(super::unix_clock_bytes(buffer, buffer.len() + 1), None);
+        assert_eq!(super::unix_clock_bytes(buffer, 5), Some(&buffer[..5]));
+        assert_eq!(super::unix_clock_bytes(buffer, 2), Some(&buffer[..2]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_calendar_instant_rejects_only_the_failure_sentinel() {
+        assert_eq!(super::unix_calendar_instant(-1), None);
+        assert_eq!(super::unix_calendar_instant(1), Some(1));
+        assert!(super::unix_calendar_instant(1_700_000_000).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_time_locale_releases_it() {
+        let before = super::freed_time_locales();
+        let locale = super::UnixTimeLocale::from_environment().expect("time locale");
+        drop(locale);
+        assert!(super::freed_time_locales() > before);
+    }
 
     #[test]
     fn locale_short_time_formats_drop_seconds() {
