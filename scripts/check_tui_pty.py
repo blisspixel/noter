@@ -59,12 +59,16 @@ def terminal_environment(state_directory: str) -> dict[str, str]:
     return environment
 
 
-def read_until(master: int, needle: bytes, seconds: float = 15.0) -> bytes:
-    """Collect terminal output until `needle` appears or `seconds` pass."""
+def read_until_any(
+    master: int, needles: tuple[bytes, ...], seconds: float = 15.0
+) -> bytes:
+    """Collect terminal output until one of `needles` appears or `seconds` pass."""
 
     output = b""
     deadline = time.monotonic() + seconds
-    while needle not in output and time.monotonic() < deadline:
+    while (
+        not any(needle in output for needle in needles) and time.monotonic() < deadline
+    ):
         ready, _, _ = select.select([master], [], [], 0.05)
         if ready:
             try:
@@ -72,6 +76,12 @@ def read_until(master: int, needle: bytes, seconds: float = 15.0) -> bytes:
             except OSError:
                 break
     return output
+
+
+def read_until(master: int, needle: bytes, seconds: float = 15.0) -> bytes:
+    """Collect terminal output until `needle` appears or `seconds` pass."""
+
+    return read_until_any(master, (needle,), seconds)
 
 
 # Every frame ends by placing the cursor and showing it; waiting for that
@@ -164,8 +174,13 @@ def check_editing_session(binary: str, state_directory: str) -> None:
     os.write(master, word[3:])
     os.write(master, b"\x1b[200~\npasted\x0fline\x1b[201~")
     screen += read_until(master, b"line")
+    # A retained sibling says Wrote. A clean directory sync says synced to disk.
     os.write(master, b"\x13")
-    screen += read_until(master, b"Wrote")
+    screen += read_until_any(master, (b"Wrote", b"synced to disk"))
+    expect(
+        b"Wrote" in screen or b"synced to disk" in screen,
+        "the save did not report a committed write",
+    )
     if sys.platform == "linux":
         screen += check_save_warning_review(master, document, "héllo\n".encode())
     os.write(master, b"\x18")
@@ -342,8 +357,11 @@ def check_volatile_recovery_refusal(binary: str) -> None:
             screen = read_until(master, b"updated")
             expect(b"updated" in screen, "editing failed with recovery unavailable")
             os.write(master, b"\x13")
-            screen = read_until(master, b"Wrote")
-            expect(b"Wrote" in screen, "saving failed with recovery unavailable")
+            screen = read_until_any(master, (b"Wrote", b"synced to disk"))
+            expect(
+                b"Wrote" in screen or b"synced to disk" in screen,
+                "saving failed with recovery unavailable",
+            )
             os.write(master, b"\x18")
             screen = read_until(master, b"\x1b[?1049l")
             expect(process.wait(timeout=10) == 0, "the refused-root session failed")

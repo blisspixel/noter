@@ -1636,7 +1636,14 @@ Current state:
   non-empty `NO_COLOR` suppresses those colors and leaves bold, dim, italic,
   and reverse. `--theme` selects the window palette and does not change the
   terminal. The window keeps its own palettes, including the bright Green
-  Screen and Amber Screen phosphor themes.
+  Screen and Amber Screen phosphor themes. A save that synced the file and
+  its folder, with no storage warning, shows `Saved N B, synced to disk` and
+  the locale short time. The window keeps that sentence for three seconds and
+  then shows `Saved`. The terminal shows it in green, or without color when
+  `NO_COLOR` is set, and then returns to the position line. Light and Dark
+  use a contrast-checked green. Green Screen and Amber Screen use the phosphor
+  text color already in the palette. A file-only sync, including every normal
+  Windows save, does not say `synced to disk`.
 - **Launch:** `--tui` selects it explicitly. Without `--gui` or `--tui`, only
   non-macOS Unix launches with no display server and a terminal on standard
   input and output fall back to it (see `choose_interface` in `src/main.rs`).
