@@ -1298,7 +1298,11 @@ impl CrashRecoverySession {
 
     #[cfg(test)]
     fn wait_for_persist(&mut self, document: &Document, selection: Selection) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // A recorded revision returns on the first successful poll. This bound
+        // is only the failure path. Two seconds was missed under parallel
+        // Windows tests when the worker was slow to run, so the bound is
+        // fifteen seconds.
+        let deadline = Instant::now() + Duration::from_secs(15);
         let expected = document.revision();
         loop {
             self.poll_persist_outcomes();
@@ -2826,7 +2830,7 @@ mod tests {
         std::fs::write(store.records_dir().join("broken.rec"), b"not-a-record")
             .expect("write broken");
         let session = CrashRecoverySession::open_at(dir.path());
-        assert!(!session.quarantine_notices().is_empty());
+        assert_ne!(session.quarantine_notices().len(), 0);
         assert!(session.active_offer().is_none());
     }
 

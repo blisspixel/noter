@@ -447,7 +447,7 @@ manual platform tests.
 For M1 invariant testing, [`proptest` 1.11](https://docs.rs/proptest/1.11.0/proptest/)
 provides generated cases, shrinking, and composable strategies. Its published
 features show that `std` can be selected without the default fork, timeout, and
-bit-set features, and its Rust requirement is below Noter's pinned 1.97.1
+bit-set features, and its Rust requirement is below Noter's pinned
 toolchain. The M1 suite therefore uses it only as a narrowly configured
 development dependency; it does not enter release artifacts.
 
@@ -499,8 +499,9 @@ I/O and truthful-shell slice measured 4,913,664 bytes, or 4.69 MiB, in the
 stripped Windows release.
 Hashing latency still requires the reproducible M1 benchmark corpus.
 
-For stable file identity, Rust 1.97.1 exposes Unix `dev`, `ino`, and `nlink`
-through [`std::os::unix::fs::MetadataExt`](https://doc.rust-lang.org/1.97.1/std/os/unix/fs/trait.MetadataExt.html).
+For stable file identity, stable Rust exposes Unix `dev`, `ino`, and `nlink`
+through [`std::os::unix::fs::MetadataExt`](https://doc.rust-lang.org/1.99.1/std/os/unix/fs/trait.MetadataExt.html).
+Those methods have been stable since Rust 1.97.1.
 The analogous full Windows methods are still unstable, so the product crate
 cannot use them while keeping a stable toolchain. Microsoft specifies that a
 Windows file is identified by the volume serial number plus the 128-bit ID from

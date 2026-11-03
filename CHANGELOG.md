@@ -6,6 +6,9 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Pin Rust 1.99.1 in the repository toolchain, both package manifests, and CI.
+  Release Linux binaries stay on Ubuntu 22.04, so the published glibc floor
+  remains 2.35 (#77).
 - Show a long save or recovery warning in full. It wraps at word boundaries,
   and Dismiss stays in the window. A committed save that keeps a sibling says
   the save happened and names the follow-up. When recovery is off, the reason

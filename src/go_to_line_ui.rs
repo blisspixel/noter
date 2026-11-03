@@ -329,10 +329,10 @@ mod tests {
         dialog.reset();
 
         assert!(!dialog.is_open());
-        assert!(dialog.input.is_empty());
+        assert_eq!(dialog.input, "");
         assert!(dialog.validation.is_none());
         assert!(!dialog.request_focus);
-        assert!(dialog.deferred_input_events.is_empty());
+        assert_eq!(dialog.deferred_input_events.len(), 0);
     }
 
     #[test]

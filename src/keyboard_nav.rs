@@ -402,7 +402,10 @@ mod tests {
             .events
             .extend([egui::Event::Text("x".to_owned()), navigation.clone()]);
         let _ = context.run_ui(text_first, |ui| {
-            assert!(consume_navigation_gestures(ui, KeyboardPlatform::WindowsLike).is_empty());
+            assert_eq!(
+                consume_navigation_gestures(ui, KeyboardPlatform::WindowsLike).len(),
+                0
+            );
             assert_eq!(ui.input(|input| input.events.len()), 2);
         });
 

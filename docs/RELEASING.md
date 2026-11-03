@@ -23,6 +23,11 @@ revision:
 - GitHub artifact attestations for every published archive, installer,
   checksum, manifest, formula, and SBOM.
 
+The Intel Linux archive is built on Ubuntu 22.04. That image supplies glibc
+2.35, which is the minimum for the published binary. Ubuntu 24.04 would raise
+the floor to glibc 2.39. The release plan, global packaging, and host jobs
+stay on Ubuntu 22.04 for the same reason.
+
 The generated SHA-256 sidecars and unified checksum list cover the source
 archive, platform archives, and Windows MSI. They do not cover the installer
 scripts, Homebrew formula, SBOMs, or distribution manifest. The generated

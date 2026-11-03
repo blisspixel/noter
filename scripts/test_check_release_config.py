@@ -15,6 +15,7 @@ from check_release_config import (
     validate_release_guides,
     validate_repository,
     validate_sbom_generator,
+    validate_toolchain_pin,
     validate_wix,
     validate_workflow,
 )
@@ -71,6 +72,66 @@ class ReleaseConfigurationTests(unittest.TestCase):
 
     def test_repository_configuration_is_consistent(self) -> None:
         self.assertEqual(validate_repository(), [])
+
+    def test_toolchain_pins_must_match_rust_toolchain_toml(self) -> None:
+        errors = validate_toolchain_pin(
+            'channel = "1.99.1"\n',
+            'rust-version = "1.97.1"\n',
+            'rust-version = "1.99.1"\n',
+            [(".github/workflows/ci.yml", "          toolchain: 1.99.1\n")],
+        )
+        self.assertEqual(
+            errors,
+            ["Cargo.toml rust-version must match rust-toolchain.toml (1.99.1)"],
+        )
+
+    def test_toolchain_pin_rejects_a_drifted_workflow_and_platform_manifest(
+        self,
+    ) -> None:
+        errors = validate_toolchain_pin(
+            'channel = "1.99.1"\n',
+            'rust-version = "1.99.1"\n',
+            'rust-version = "1.97.1"\n',
+            [
+                (
+                    ".github/workflows/security-audit.yml",
+                    "          toolchain: 1.97.1\n",
+                )
+            ],
+        )
+        self.assertEqual(
+            errors,
+            [
+                "crates/noter-platform/Cargo.toml rust-version must match "
+                "rust-toolchain.toml (1.99.1)",
+                ".github/workflows/security-audit.yml toolchain pin must match "
+                "rust-toolchain.toml (1.99.1)",
+            ],
+        )
+
+    def test_toolchain_pin_rejects_a_workflow_without_a_pin(self) -> None:
+        errors = validate_toolchain_pin(
+            'channel = "1.99.1"\n',
+            'rust-version = "1.99.1"\n',
+            'rust-version = "1.99.1"\n',
+            [(".github/workflows/ci.yml", "name: CI\n")],
+        )
+        self.assertEqual(
+            errors,
+            [
+                ".github/workflows/ci.yml toolchain pin must match "
+                "rust-toolchain.toml (1.99.1)"
+            ],
+        )
+
+    def test_toolchain_file_must_declare_a_channel(self) -> None:
+        errors = validate_toolchain_pin(
+            "\n",
+            'rust-version = "1.99.1"\n',
+            'rust-version = "1.99.1"\n',
+            [],
+        )
+        self.assertEqual(errors, ["rust-toolchain.toml has no channel pin"])
 
     def test_rejects_stale_consumer_guide_version(self) -> None:
         for field, marker in (

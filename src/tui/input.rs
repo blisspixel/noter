@@ -397,9 +397,9 @@ mod tests {
     #[test]
     fn sequences_split_across_reads_are_joined() {
         let mut decoder = InputDecoder::default();
-        assert!(decoder.feed(b"\x1b[3").is_empty());
+        assert_eq!(decoder.feed(b"\x1b[3").len(), 0);
         assert_eq!(decoder.feed(b"~"), vec![key(TuiKey::Delete)]);
-        assert!(decoder.feed(b"\x1b[<0;12").is_empty());
+        assert_eq!(decoder.feed(b"\x1b[<0;12").len(), 0);
         assert_eq!(
             decoder.feed(b";4M"),
             vec![TuiEvent::Mouse(TuiMouseEvent::Press { col: 12, row: 4 })]
@@ -440,10 +440,10 @@ mod tests {
     #[test]
     fn an_unterminated_paste_keeps_bounded_memory() {
         let mut decoder = InputDecoder::default();
-        assert!(decoder.feed(PASTE_START).is_empty());
+        assert_eq!(decoder.feed(PASTE_START).len(), 0);
         let chunk = vec![b'x'; 1 << 20];
         for _ in 0..70 {
-            assert!(decoder.feed(&chunk).is_empty());
+            assert_eq!(decoder.feed(&chunk).len(), 0);
         }
         assert_eq!(decoder.paste.as_ref().map(Vec::len), Some(MAX_PASTE_BYTES));
         let events = decoder.feed(PASTE_END);
@@ -453,8 +453,8 @@ mod tests {
     #[test]
     fn bracketed_paste_is_one_event_even_across_reads() {
         let mut decoder = InputDecoder::default();
-        assert!(decoder.feed(b"\x1b[200~line one\r\nline \x0f").is_empty());
-        assert!(decoder.feed(b"two\x1b[20").is_empty());
+        assert_eq!(decoder.feed(b"\x1b[200~line one\r\nline \x0f").len(), 0);
+        assert_eq!(decoder.feed(b"two\x1b[20").len(), 0);
         assert_eq!(
             decoder.feed(b"1~x"),
             vec![
@@ -498,7 +498,7 @@ mod tests {
         let mut decoder = InputDecoder::default();
         let mut noise = b"\x1b[".to_vec();
         noise.extend(std::iter::repeat_n(b'1', MAX_SEQUENCE_BYTES));
-        assert!(decoder.feed(&noise).is_empty());
+        assert_eq!(decoder.feed(&noise).len(), 0);
         assert_eq!(decoder.feed(b"z"), vec![key(TuiKey::Char('z'))]);
     }
 

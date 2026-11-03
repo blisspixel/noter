@@ -36,20 +36,20 @@ PINNED_RELEASE_TOOL_DIGESTS = {
 }
 PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 REVIEWED_RELEASE_WORKFLOW_SHA256 = (
-    "47d59e2b0ed6bc38dd91596e90072d43762db04667aa3c2fcc3b7498a279a8b5"
+    "ca2a96678798a0ae2b1156d307e8c6928fefb1ae1748a5c538f76ebdc786aa1c"
 )
 REVIEWED_WIX_SHA256 = "e5d076bdc22fb9defddd69fda19150c50a48d6a82abba227b2d059de87d3d986"
 REVIEWED_CI_WORKFLOW_SHA256 = (
-    "97fe9a515be2f65694b92964db60f285ff78107cc267b3376d3a39cf5d1444af"
+    "523fce58c5ab966b099a0a6a9c87c2900a22e19ec7d177ee2a6d83d3ab87d523"
 )
 REVIEWED_CI_TEST_JOB_SHA256 = (
-    "5ebc1e95ec5d225fd3ddbbf75b134882e4b3adb33ae6c8b2054079b89d13aa65"
+    "b842e228aa0deb0fdada39014c4af4b01909a13d56bd3f4f6bdd138d519ee7ad"
 )
 REVIEWED_WINDOWS_CLOUD_FILTER_SCRIPT_SHA256 = (
     "11fe78e1c8347a546c7632338249d5bd89e907c169f5224736160886721a0e80"
 )
 REVIEWED_RELEASE_ARTIFACT_VALIDATOR_SHA256 = (
-    "d29e6fdd307bd150d639febb18b0db011859bc6215ee00757517276ecfe922ee"
+    "a0b5f1d4d81049b00e0935ed39a127efb20ba97f7ffe545d4e135a355f6312e9"
 )
 WIX_NAMESPACE = {"wix": "http://schemas.microsoft.com/wix/2006/wi"}
 WIX_XML_COMMENT = re.compile(rb"<!--.*?-->", flags=re.DOTALL)
@@ -1211,6 +1211,35 @@ def validate_release_guides(manifest: str, readme: str, installation: str) -> li
     return errors
 
 
+def validate_toolchain_pin(
+    toolchain_file: str,
+    root_manifest: str,
+    platform_manifest: str,
+    workflows: list[tuple[str, str]],
+) -> list[str]:
+    """Require one Rust pin across the toolchain file, manifests, and CI."""
+
+    channel = re.search(r'(?m)^channel = "([^"]+)"\s*$', toolchain_file)
+    if channel is None:
+        return ["rust-toolchain.toml has no channel pin"]
+    pin = channel.group(1)
+    errors: list[str] = []
+    for name, manifest in (
+        ("Cargo.toml", root_manifest),
+        ("crates/noter-platform/Cargo.toml", platform_manifest),
+    ):
+        rust_version = re.search(r'(?m)^rust-version = "([^"]+)"', manifest)
+        if rust_version is None or rust_version.group(1) != pin:
+            errors.append(f"{name} rust-version must match rust-toolchain.toml ({pin})")
+    for name, workflow in workflows:
+        pins = re.findall(r"(?m)^[ ]+toolchain: (\S+)\s*$", workflow)
+        if not pins or any(item != pin for item in pins):
+            errors.append(
+                f"{name} toolchain pin must match rust-toolchain.toml ({pin})"
+            )
+    return errors
+
+
 def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
     """Return every release-configuration contract violation."""
 
@@ -1225,6 +1254,10 @@ def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
         ci_workflow = read_regular_file(root / ".github/workflows/ci.yml").decode(
             "utf-8"
         )
+        security_audit = read_regular_file(
+            root / ".github/workflows/security-audit.yml"
+        ).decode("utf-8")
+        toolchain_file = read_regular_file(root / "rust-toolchain.toml").decode("utf-8")
         windows_cloud_filter_script = read_regular_file(
             root / "scripts/ensure_windows_cloud_filter.ps1"
         )
@@ -1250,7 +1283,16 @@ def validate_repository(root: Path = REPOSITORY_ROOT) -> list[str]:
     except (OSError, UnicodeError, ValueError) as error:
         return [str(error)]
 
-    errors = validate_manifest(manifest)
+    errors = validate_toolchain_pin(
+        toolchain_file,
+        manifest,
+        platform_manifest,
+        [
+            (".github/workflows/ci.yml", ci_workflow),
+            (".github/workflows/security-audit.yml", security_audit),
+        ],
+    )
+    errors.extend(validate_manifest(manifest))
     if (
         sha256(windows_cloud_filter_script).hexdigest()
         != REVIEWED_WINDOWS_CLOUD_FILTER_SCRIPT_SHA256

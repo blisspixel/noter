@@ -471,7 +471,7 @@ are deferred until evidence supports a separate viewer or editing mode.
 
 ### 4.3 Quality and verification
 
-- **NFR-QUAL-01 Toolchain:** Rust 1.97.1 is pinned in the repository and CI.
+- **NFR-QUAL-01 Toolchain:** Rust 1.99.1 is pinned in the repository and CI.
 - **NFR-QUAL-02 Local gates:** Formatting, locked strict Clippy, locked tests,
   documentation links, and the coverage threshold pass before a commit advances.
 - **NFR-QUAL-03 Coverage:** Testable product code remains at least 80 percent line

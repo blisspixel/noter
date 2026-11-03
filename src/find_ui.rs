@@ -123,8 +123,7 @@ impl FindBar {
         let replace_on_enter = replacement_has_focus
             && self
                 .prepared_search(revision, source)
-                .ok()
-                .is_some_and(|search| search.matches_range(source, selection.ordered_range()));
+                .is_ok_and(|search| search.matches_range(source, selection.ordered_range()));
         let mut action = self.take_key_action(
             ui,
             query_has_focus || replacement_has_focus,
@@ -854,7 +853,7 @@ mod tests {
                 Some(FindBarAction::Replace)
             );
         });
-        assert!(bar.replacement.is_empty());
+        assert_eq!(bar.replacement, "");
         let _ = context.run_ui(egui::RawInput::default(), |ui| {
             assert_eq!(bar.show(ui, Revision::INITIAL, source, selection), None);
         });

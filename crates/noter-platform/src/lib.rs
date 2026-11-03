@@ -2769,7 +2769,7 @@ mod imp {
                     "the control file did not inherit the parent ACL",
                 ));
             };
-            assert!(!inherited_acl.is_empty());
+            assert_ne!(inherited_acl, Vec::<u8>::new());
             assert_ne!(inherited_acl, b"!#acl 1\n");
 
             let protected_path = directory.path().join("protected.txt");

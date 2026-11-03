@@ -398,7 +398,7 @@ mod tests {
             ExternalChangeKind::Unreadable,
         ] {
             let text = kind.description();
-            assert!(!text.is_empty());
+            assert_ne!(text, "");
             assert_ne!(text, "xyzzy");
         }
     }

@@ -4583,13 +4583,13 @@ mod tests {
         session
             .recovery
             .force_due_persist_for_test(&session.document, Selection::caret(session.caret_byte));
-        assert!(!recovery_record_paths(&store).is_empty());
+        assert_ne!(recovery_record_paths(&store).len(), 0);
 
         let step = session.note_disk_changed_again(TargetState::Regular(expected));
 
         assert_eq!(step, SaveStep::NotSaved);
         assert!(!session.has_unsaved_state());
-        assert!(recovery_record_paths(&store).is_empty());
+        assert_eq!(recovery_record_paths(&store).len(), 0);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
     }
 
@@ -4706,7 +4706,7 @@ mod tests {
                 &session.document,
                 Selection::caret(session.caret_byte),
             );
-            assert!(!recovery_record_paths(&store).is_empty());
+            assert_ne!(recovery_record_paths(&store).len(), 0);
             std::fs::write(&path, "雪").unwrap();
             key(&mut session, TuiKey::Ctrl('s'));
             key(&mut session, TuiKey::Char('r'));
@@ -4714,7 +4714,7 @@ mod tests {
             key(&mut session, TuiKey::Char('y'));
             assert_eq!(session.text(), "雪");
             assert!(!session.has_unsaved_state());
-            assert!(recovery_record_paths(&store).is_empty());
+            assert_eq!(recovery_record_paths(&store).len(), 0);
         }
         let next = untitled_with_store(&store);
         assert_eq!(next.prompt, PromptMode::None);
@@ -4737,12 +4737,12 @@ mod tests {
                 &session.document,
                 Selection::caret(session.caret_byte),
             );
-            assert!(!recovery_record_paths(&store).is_empty());
+            assert_ne!(recovery_record_paths(&store).len(), 0);
             key(&mut session, TuiKey::Char('r'));
             assert_eq!(session.prompt, PromptMode::None);
             assert_eq!(session.text(), "external");
             assert!(!session.has_unsaved_state());
-            assert!(recovery_record_paths(&store).is_empty());
+            assert_eq!(recovery_record_paths(&store).len(), 0);
         }
         let next = untitled_with_store(&store);
         assert_eq!(next.prompt, PromptMode::None);
@@ -5545,7 +5545,7 @@ mod tests {
             vec![(0..1, Style::Muted), (1..7, Style::Quote)]
         );
         assert_eq!(markdown_spans("```rust"), vec![(0..7, Style::Muted)]);
-        assert!(markdown_spans("#hashtag").is_empty());
-        assert!(markdown_spans("plain").is_empty());
+        assert_eq!(markdown_spans("#hashtag").len(), 0);
+        assert_eq!(markdown_spans("plain").len(), 0);
     }
 }

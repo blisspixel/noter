@@ -1402,7 +1402,7 @@ surface. Default features are disabled and only `std` is enabled; mmap, Rayon,
 serde, digest traits, and zeroization integrations remain absent. The crate is
 licensed under CC0-1.0, Apache-2.0, or Apache-2.0 with LLVM exception. Its
 published metadata does not declare an MSRV, so compatibility is established
-by the pinned 1.97.1 build and the operating-system CI matrix rather than an
+by the pinned toolchain and the operating-system CI matrix rather than an
 unsupported assumption.
 
 The crate includes a build script and optimized assembly or C SIMD paths on
@@ -1414,7 +1414,7 @@ addition resolves four lock-graph packages, moving the graph from 333 to 337.
 Removal requires another audited 256-bit cryptographic digest, migrated
 fingerprint versioning, and equivalent streaming and reference-vector tests.
 
-Stable Rust 1.97.1 exposes Unix device, inode, and hard-link values directly,
+Stable Rust exposes Unix device, inode, and hard-link values directly,
 but its full Windows by-handle identity methods remain unstable. The internal
 `noter-platform` workspace crate therefore owns narrowly scoped unsafe FFI
 boundaries for Windows private creation and descriptor lifecycle, file identity

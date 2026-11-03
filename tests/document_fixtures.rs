@@ -11,7 +11,9 @@ fn decode_hex(encoded: &str) -> Vec<u8> {
     assert!(encoded.len().is_multiple_of(2), "fixture hex must be even");
     encoded
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let pair = std::str::from_utf8(pair).expect("fixture hex must be ASCII");
             u8::from_str_radix(pair, 16).expect("fixture hex must contain hexadecimal bytes")

@@ -5831,7 +5831,7 @@ mod tests {
         let edited = context.run_ui(ui_input(600.0, 400.0, 0.2), |ui| app.update_title(ui.ctx()));
 
         assert_eq!(viewport_titles(&first), ["Untitled - Noter"]);
-        assert!(viewport_titles(&repeat).is_empty());
+        assert_eq!(viewport_titles(&repeat).len(), 0);
         assert_eq!(viewport_titles(&edited), ["Untitled* - Noter"]);
     }
 
@@ -5974,7 +5974,7 @@ mod tests {
         });
 
         assert!(context.memory(|memory| memory.has_focus(app.editor_id())));
-        assert!(app.text.is_empty());
+        assert_eq!(app.text, "");
     }
 
     #[test]
@@ -6092,7 +6092,7 @@ mod tests {
 
         assert_eq!(app.text, "ab xcd");
         assert_eq!(app.view, DocumentView::Markdown);
-        assert!(app.deferred_input_events.is_empty());
+        assert_eq!(app.deferred_input_events.len(), 0);
     }
 
     #[test]
@@ -6192,7 +6192,7 @@ mod tests {
         assert!(app.about_open);
         let context = egui::Context::default();
         let output = context.run_ui(egui::RawInput::default(), |ui| app.show_about(ui.ctx()));
-        assert!(!output.shapes.is_empty());
+        assert_ne!(output.shapes.len(), 0);
         assert_eq!(
             ABOUT_SUMMARY,
             "A focused editor for plain text and Markdown files."
@@ -6971,7 +6971,7 @@ mod tests {
 
         assert_eq!(app.view, DocumentView::Text);
         assert_eq!(app.text, "ax****b");
-        assert!(app.deferred_input_events.is_empty());
+        assert_eq!(app.deferred_input_events.len(), 0);
         assert!(!app.markdown_editor.has_deferred_input());
     }
 
@@ -7012,7 +7012,7 @@ mod tests {
         );
         assert_eq!(app.text, "dirty");
         assert_eq!(String::from(app.document.rope()), "dirty");
-        assert!(app.deferred_input_events.is_empty());
+        assert_eq!(app.deferred_input_events.len(), 0);
 
         let mut typed_behind_modal = ui_input(1_200.0, 760.0, 0.2);
         typed_behind_modal.events = vec![egui::Event::Text("y".to_owned())];
@@ -7270,7 +7270,7 @@ mod tests {
         assert!(!app.go_to_line.is_open());
         assert_eq!(app.text, source);
         assert!(!app.document.is_dirty());
-        assert!(!app.deferred_input_events.is_empty());
+        assert_ne!(app.deferred_input_events.len(), 0);
         let _ = context.run_ui(ui_input(1_200.0, 760.0, 0.2), |ui| {
             app.render_frame(ui);
         });
@@ -7278,7 +7278,7 @@ mod tests {
         assert_eq!(app.text, "dirtyx");
         assert_eq!(String::from(app.document.rope()), "dirtyx");
         assert!(app.document.is_dirty());
-        assert!(app.deferred_input_events.is_empty());
+        assert_eq!(app.deferred_input_events.len(), 0);
     }
 
     #[test]
@@ -8385,7 +8385,7 @@ mod tests {
             app.render_frame(ui);
         });
 
-        assert!(app.text.is_empty());
+        assert_eq!(app.text, "");
         assert_eq!(app.document.rope().len_bytes(), 0);
         assert!(!app.document.is_dirty());
         assert!(app.history.can_redo());
@@ -9079,7 +9079,7 @@ mod tests {
                         vec![terminal, action.clone()]
                     };
                     let first = show_document_test_frame(&mut app, &context, 0.2, events);
-                    assert!(copied_text(&first).is_empty());
+                    assert_eq!(copied_text(&first).len(), 0);
                     if action_first {
                         assert_eq!(active_document_ime_draft(&app), Some("a\r\n漢c"));
                         assert_eq!(app.text, "a\r\nbc");
@@ -9348,13 +9348,13 @@ mod tests {
                     0.2,
                     vec![action.clone(), terminal],
                 );
-                assert!(copied_text(&first).is_empty());
+                assert_eq!(copied_text(&first).len(), 0);
                 assert_eq!(app.text, "a\r\nbc");
                 assert_eq!(active_document_ime_draft(&app), Some("a\r\n漢c"));
                 assert!(!app.history.can_undo());
 
                 let second = show_document_test_frame(&mut app, &context, 0.3, Vec::new());
-                assert!(copied_text(&second).is_empty());
+                assert_eq!(copied_text(&second).len(), 0);
                 assert_eq!(active_document_ime_draft(&app), None);
                 let expected = if commit { "a\r\n漢c" } else { "a\r\nbc" };
                 assert_eq!(app.text, expected);
@@ -9956,7 +9956,7 @@ mod tests {
             ui.set_width(1_200.0);
             app.show_format_toolbar(ui, &mut view_command);
         });
-        assert!(rendered_text(&text_output).is_empty());
+        assert_eq!(rendered_text(&text_output).len(), 0);
         assert_eq!(view_command, None);
 
         app.select_document_view(DocumentView::Markdown);
@@ -10427,7 +10427,7 @@ mod tests {
 
         let context = egui::Context::default();
         app.request_new_document(&context);
-        assert!(app.text.is_empty());
+        assert_eq!(app.text, "");
         assert_eq!(app.document.rope().len_bytes(), 0);
         assert!(!app.document.is_dirty());
         assert!(app.error_msg.is_none());
@@ -10963,7 +10963,7 @@ mod tests {
             app.reserve_save_recovery_slot(SaveAttempt::SaveAs(oversized))
                 .is_none()
         );
-        assert!(app.save_recoveries.is_empty());
+        assert_eq!(app.save_recoveries.len(), 0);
         assert_eq!(
             app.error_msg.as_deref(),
             Some(SAVE_RECOVERY_PATH_LIMIT_MESSAGE)
@@ -11011,7 +11011,7 @@ mod tests {
             b"second bytes"
         );
         assert!(app.reconcile_save_recovery(0));
-        assert!(app.save_recoveries.is_empty());
+        assert_eq!(app.save_recoveries.len(), 0);
         assert!(app.error_msg.is_none());
         Ok(())
     }
@@ -11142,7 +11142,7 @@ mod tests {
             app.discard_pending_abandon(ui.ctx());
         });
 
-        assert!(app.text.is_empty());
+        assert_eq!(app.text, "");
         assert_eq!(app.document.rope().len_bytes(), 0);
         assert!(!app.document.is_dirty());
         assert!(app.lifecycle.pending_intent().is_none());
@@ -11273,7 +11273,7 @@ mod tests {
             .expect("the root viewport should have output")
             .commands;
 
-        assert!(commands.is_empty());
+        assert_eq!(commands.len(), 0);
         assert!(app.document.is_dirty());
         assert_eq!(
             app.lifecycle.pending_intent(),
@@ -11472,12 +11472,12 @@ mod tests {
         app.crash_recovery
             .force_due_persist_for_test(&app.document, app.selection);
         app.defer_input_events(vec![egui::Event::Text("stale editor input".to_owned())]);
-        assert!(!app.deferred_input_events.is_empty());
+        assert_ne!(app.deferred_input_events.len(), 0);
 
         request_external_reload_for_test(&mut app, &context);
 
         assert_eq!(app.text, "external revision");
-        assert!(app.deferred_input_events.is_empty());
+        assert_eq!(app.deferred_input_events.len(), 0);
         assert!(!app.markdown_editor.has_deferred_input());
         assert!(!app.document.is_dirty());
         assert!(app.lifecycle.pending_intent().is_none());
@@ -11902,7 +11902,7 @@ mod tests {
             .expect("the root viewport should have output")
             .commands;
 
-        assert!(commands.is_empty());
+        assert_eq!(commands.len(), 0);
         assert!(app.lifecycle.pending_intent().is_none());
         assert!(!app.lifecycle.close_authorized(app.document.revision()));
         assert!(app.save_follow_up.is_some());
@@ -11985,13 +11985,14 @@ mod tests {
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             app.continue_pending_abandon_if_clean(ui.ctx(), None);
         });
-        assert!(
+        assert_eq!(
             output
                 .viewport_output
                 .get(&egui::ViewportId::ROOT)
                 .expect("root viewport")
                 .commands
-                .is_empty()
+                .len(),
+            0
         );
         assert!(app.lifecycle.pending_intent().is_none());
         assert!(!app.lifecycle.close_authorized(app.document.revision()));
@@ -12057,7 +12058,7 @@ mod tests {
         assert!(!message.contains("primary failure"));
         assert!(message.contains("Cleanup also failed"));
         assert!(message.contains("private artifact was preserved"));
-        assert!(app.save_recoveries.is_empty());
+        assert_eq!(app.save_recoveries.len(), 0);
     }
 
     #[test]
@@ -12091,7 +12092,7 @@ mod tests {
         assert!(!message.contains("OS code"));
         assert!(!message.contains("create private sibling"));
         assert_eq!(String::from(app.document.rope()), before);
-        assert!(app.save_recoveries.is_empty());
+        assert_eq!(app.save_recoveries.len(), 0);
     }
 
     #[test]
@@ -12285,7 +12286,7 @@ mod tests {
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             app.show_hard_link_confirmation(ui.ctx(), None);
         });
-        assert!(!output.shapes.is_empty());
+        assert_ne!(output.shapes.len(), 0);
 
         app.confirm_pending_hard_link_save();
 
@@ -12476,7 +12477,7 @@ mod tests {
         assert_eq!(app.document.path(), Some(selected.as_path()));
         assert_eq!(fs::read(&selected)?, b"first preserved revision");
         assert_eq!(fs::read(&other_link)?, b"shared");
-        assert!(app.save_recoveries.is_empty());
+        assert_eq!(app.save_recoveries.len(), 0);
         assert!(!app.document.is_dirty());
         Ok(())
     }
