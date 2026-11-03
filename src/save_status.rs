@@ -24,6 +24,31 @@ pub fn not_committed_status(destination: &Path, cleanup_error: Option<&StorageEr
     message
 }
 
+/// Notice for a save that committed and still has cleanup or durability
+/// follow-up. It says the save happened. It is not a failed save.
+pub fn committed_save_notice(durability_at_risk: bool, details: &[&str]) -> String {
+    let detail = details
+        .iter()
+        .copied()
+        .filter(|detail| !detail.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if durability_at_risk {
+        let mut notice = String::from(
+            "Keep this window open and Save again. Saved, but storage durability is uncertain.",
+        );
+        if !detail.is_empty() {
+            notice.push(' ');
+            notice.push_str(&detail);
+        }
+        notice
+    } else if detail.is_empty() {
+        "Saved. Follow-up is required.".to_owned()
+    } else {
+        format!("Saved. Follow-up: {detail}")
+    }
+}
+
 /// Appends the retained-artifact warning used when cleanup fails after a
 /// save that did not commit, or after a conflict.
 pub fn append_cleanup_warning(message: &mut String, cleanup_error: Option<&StorageError>) {
@@ -80,6 +105,30 @@ mod tests {
 
         assert!(status.contains("read\\nonly"));
         assert!(!status.contains('\n'));
+    }
+
+    #[test]
+    fn a_committed_save_notice_leads_with_the_next_step_and_is_not_an_error() {
+        let cleanup = "A displaced recovery artifact was preserved as `.noter-save-a123.tmp` beside the destination. Inspect its contents before removal.";
+        let notice = committed_save_notice(false, &[cleanup]);
+
+        assert!(notice.starts_with("Saved. Follow-up:"), "{notice}");
+        assert!(notice.contains(cleanup), "{notice}");
+        assert!(!notice.contains("Error:"), "{notice}");
+
+        let durability = committed_save_notice(true, &["directory sync failed"]);
+        assert!(
+            durability.starts_with("Keep this window open and Save again."),
+            "{durability}"
+        );
+        let step = durability.find("Keep this window open").expect("step");
+        let reason = durability.find("directory sync failed").expect("reason");
+        assert!(step < reason, "{durability}");
+        assert!(!durability.contains("Error:"), "{durability}");
+        assert_eq!(
+            committed_save_notice(true, &["", ""]),
+            "Keep this window open and Save again. Saved, but storage durability is uncertain."
+        );
     }
 
     #[test]

@@ -630,6 +630,24 @@ enum RetainedSiblingPrompt {
     Result(String),
 }
 
+/// Session-long window note that private recovery is off.
+///
+/// Dismiss hides the note. It does not turn recovery back on, and a later
+/// refresh must not show the note again.
+struct RecoveryOffNotice {
+    message: Option<String>,
+    dismissed: bool,
+}
+
+impl RecoveryOffNotice {
+    const fn new() -> Self {
+        Self {
+            message: None,
+            dismissed: false,
+        }
+    }
+}
+
 pub struct NoterApp {
     text: String,
     text_ime_composition: Option<TextImeComposition>,
@@ -655,6 +673,9 @@ pub struct NoterApp {
     markdown_issue_cache: Option<MarkdownIssueCache>,
     status_cache: Option<StatusCache>,
     error_msg: Option<String>,
+    /// Follow-up after a committed save. It is not a failed save.
+    save_follow_up: Option<String>,
+    recovery_off: RecoveryOffNotice,
     /// Durable recovery note for a path launch or a restore that needs an explanation.
     recovery_notice: Option<String>,
     save_recoveries: Vec<SaveRecovery>,
@@ -726,6 +747,8 @@ impl NoterApp {
             markdown_issue_cache: None,
             status_cache: None,
             error_msg: None,
+            save_follow_up: None,
+            recovery_off: RecoveryOffNotice::new(),
             recovery_notice: None,
             save_recoveries: Vec::new(),
             retained_save_siblings: Vec::new(),
@@ -788,9 +811,7 @@ impl NoterApp {
         } else {
             UpdateStatusState::Closed
         };
-        if app.crash_recovery.is_unavailable() {
-            app.error_msg = Some(app.crash_recovery.unavailable_message());
-        }
+        app.surface_recovery_unavailable();
         // Explicit file opens and screenshot automation skip interactive recovery
         // offers so double-click open and capture remain deterministic. Records
         // stay on disk for a later untitled launch; Discard is a user choice.
@@ -1130,6 +1151,7 @@ impl NoterApp {
                 self.retained_save_siblings.clear();
                 self.confirm_retained_sibling_removal = None;
                 self.save_durability = SaveDurabilityRisk::Clear;
+                self.save_follow_up = None;
                 self.crash_recovery
                     .on_committed_save(self.document.revision());
                 None
@@ -1146,20 +1168,24 @@ impl NoterApp {
                     self.crash_recovery
                         .on_committed_save(self.document.revision());
                 }
-                let mut details: Vec<String> =
-                    warnings.cleanup().iter().map(ToString::to_string).collect();
-                details.extend(warnings.durability().iter().map(ToString::to_string));
-                if self.save_durability.is_at_risk() {
-                    Some(format!(
-                        "Saved, but storage durability is uncertain. Keep this window open and Save again: {}",
-                        details.join("; ")
-                    ))
-                } else {
-                    Some(format!(
-                        "Saved, but follow-up is required: {}",
-                        details.join("; ")
-                    ))
-                }
+                let mut details = Vec::new();
+                details.extend(
+                    warnings
+                        .cleanup()
+                        .iter()
+                        .map(noter::core::save::StorageError::message),
+                );
+                details.extend(
+                    warnings
+                        .durability()
+                        .iter()
+                        .map(noter::core::save::StorageError::message),
+                );
+                self.save_follow_up = Some(crate::save_status::committed_save_notice(
+                    self.save_durability.is_at_risk(),
+                    &details,
+                ));
+                None
             }
             Ok(SaveOutcome::Conflict { cleanup_error, .. }) => {
                 let mut message =
@@ -1420,8 +1446,8 @@ impl NoterApp {
     }
 
     fn surface_recovery_unavailable(&mut self) {
-        if self.crash_recovery.is_unavailable() && self.error_msg.is_none() {
-            self.error_msg = Some(self.crash_recovery.unavailable_message());
+        if self.crash_recovery.is_unavailable() && !self.recovery_off.dismissed {
+            self.recovery_off.message = Some(self.crash_recovery.unavailable_message());
         }
     }
 
@@ -1448,7 +1474,9 @@ impl NoterApp {
                 self.document.revision(),
                 self.has_unsaved_state(),
                 self.pending_hard_link_save.is_some(),
-                self.error_msg.is_some() || self.crash_recovery.active_offer().is_some(),
+                self.error_msg.is_some()
+                    || self.save_follow_up.is_some()
+                    || self.crash_recovery.active_offer().is_some(),
             )));
         self.apply_lifecycle_effect(effect, ctx, parent);
     }
@@ -3147,18 +3175,66 @@ impl NoterApp {
         }
     }
 
-    fn show_error(&mut self, ui: &mut egui::Ui) {
+    /// Draws a notice that wraps inside the window and keeps Dismiss reachable.
+    ///
+    /// A short note keeps Dismiss on its row. A note wider than the window
+    /// wraps at word boundaries and places Dismiss on a following row. A top
+    /// panel's height comes from the previous frame, so the first paint can
+    /// clip that extra row. The following paint uses the wrapped height.
+    fn show_wrapping_bar(
+        ui: &mut egui::Ui,
+        id: &'static str,
+        text: &str,
+        color: egui::Color32,
+    ) -> bool {
         let mut dismiss = false;
-        if let Some(error) = self.error_msg.as_deref() {
-            egui::Panel::top("error_bar").show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.colored_label(ui.visuals().error_fg_color, format!("Error: {error}"));
-                    dismiss = ui.button("Dismiss").clicked();
-                });
+        egui::Panel::top(id).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(text).color(color))
+                        .wrap_mode(egui::TextWrapMode::Wrap),
+                );
+                dismiss = ui.button("Dismiss").clicked();
             });
-        }
+        });
+        dismiss
+    }
+
+    fn show_error(&mut self, ui: &mut egui::Ui) {
+        let dismiss = self.error_msg.as_deref().is_some_and(|error| {
+            Self::show_wrapping_bar(
+                ui,
+                "error_bar",
+                &format!("Error: {error}"),
+                ui.visuals().error_fg_color,
+            )
+        });
         if dismiss {
             self.error_msg = None;
+        }
+    }
+
+    fn show_save_follow_up(&mut self, ui: &mut egui::Ui) {
+        let dismiss = self.save_follow_up.as_deref().is_some_and(|notice| {
+            Self::show_wrapping_bar(ui, "save_follow_up", notice, ui.visuals().warn_fg_color)
+        });
+        if dismiss {
+            self.save_follow_up = None;
+        }
+    }
+
+    fn show_recovery_unavailable(&mut self, ui: &mut egui::Ui) {
+        let dismiss = self.recovery_off.message.as_deref().is_some_and(|notice| {
+            Self::show_wrapping_bar(
+                ui,
+                "recovery_unavailable",
+                notice,
+                ui.visuals().warn_fg_color,
+            )
+        });
+        if dismiss {
+            self.recovery_off.message = None;
+            self.recovery_off.dismissed = true;
         }
     }
 
@@ -4112,6 +4188,8 @@ impl NoterApp {
         let mut view_command = None;
         self.show_menu(ui, &mut file_command, &mut edit_command, &mut view_command);
         self.show_error(ui);
+        self.show_save_follow_up(ui);
+        self.show_recovery_unavailable(ui);
         self.show_crash_recovery_quarantine_notices(ui);
         self.show_crash_recovery_persist_failure(ui);
         self.show_crash_recovery_cleanup_failure(ui);
@@ -5001,6 +5079,36 @@ mod tests {
             collect_text_shapes(&shape.shape, &mut text);
         }
         text
+    }
+
+    /// Glyph rows of the galley whose text starts with `prefix`.
+    fn galley_rows(output: &egui::FullOutput, prefix: &str) -> Vec<String> {
+        fn visit(shape: &egui::Shape, prefix: &str, found: &mut Option<Vec<String>>) {
+            match shape {
+                egui::Shape::Text(text_shape) if text_shape.galley.job.text.starts_with(prefix) => {
+                    *found = Some(
+                        text_shape
+                            .galley
+                            .rows
+                            .iter()
+                            .map(|row| row.glyphs.iter().map(|glyph| glyph.chr).collect())
+                            .collect(),
+                    );
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        visit(shape, prefix, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut found = None;
+        for shape in &output.shapes {
+            visit(&shape.shape, prefix, &mut found);
+        }
+        found.unwrap_or_else(|| panic!("expected a galley starting with `{prefix}`"))
     }
 
     fn text_shape_font_size(shape: &egui::Shape, label: &str) -> Option<f32> {
@@ -6147,11 +6255,19 @@ mod tests {
         app.begin_fresh_recovery_identity();
 
         let message = app
-            .error_msg
+            .recovery_off
+            .message
             .as_deref()
             .expect("the unavailability is shown");
-        assert!(message.starts_with(RECOVERY_UNAVAILABLE_MESSAGE));
-        assert!(message.contains(" Reason: "), "{message}");
+        assert!(
+            message.starts_with("Recovery is off for this session:"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Choose a private directory on a persistent local filesystem"),
+            "{message}"
+        );
+        assert!(app.error_msg.is_none());
     }
 
     #[test]
@@ -6472,6 +6588,114 @@ mod tests {
 
             assert_eq!(actual, Some(expected));
         }
+    }
+
+    #[test]
+    fn a_long_save_follow_up_wraps_and_keeps_dismiss_in_the_window() {
+        let notice = format!(
+            "Saved. Follow-up: {}",
+            "inspect the retained sibling before removal ".repeat(8)
+        );
+        let mut app = NoterApp {
+            save_follow_up: Some(notice.clone()),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        // The panel learns its wrapped height from the first paint.
+        let _ = context.run_ui(ui_input(420.0, 280.0, 0.0), |ui| {
+            app.show_save_follow_up(ui);
+        });
+        let output = context.run_ui(ui_input(420.0, 280.0, 0.1), |ui| {
+            app.show_save_follow_up(ui);
+        });
+        let text = rendered_text(&output);
+        let dismiss = text_position(&text, "Dismiss");
+        assert!(
+            (0.0..420.0).contains(&dismiss.x) && (0.0..280.0).contains(&dismiss.y),
+            "Dismiss must stay inside the window, at {dismiss:?}"
+        );
+        let rows = galley_rows(&output, "Saved. Follow-up:");
+        assert!(rows.len() > 1, "the note wraps: {rows:?}");
+        assert_eq!(rows.concat(), notice);
+        for pair in rows.windows(2) {
+            assert!(
+                pair[0].ends_with(' ') || pair[1].starts_with(' '),
+                "wrap must break at a space: {rows:?}"
+            );
+        }
+        let message_y = text
+            .iter()
+            .find(|(value, _)| value.starts_with("Saved. Follow-up:"))
+            .map(|(_, position)| position.y)
+            .expect("the follow-up is drawn");
+        assert!(
+            dismiss.y > message_y,
+            "Dismiss stays under the wrapped note"
+        );
+        assert!(text.iter().all(|(value, _)| !value.starts_with("Error:")));
+
+        let _ = context.run_ui(click_input(420.0, 280.0, 1.0, dismiss), |ui| {
+            app.show_save_follow_up(ui);
+        });
+        assert!(app.save_follow_up.is_none());
+    }
+
+    #[test]
+    fn recovery_off_wraps_until_dismiss_and_does_not_block_close() {
+        let directory = tempdir().expect("tempdir");
+        let blocked = directory.path().join("blocked-recovery-root");
+        std::fs::write(&blocked, b"not a directory").expect("blocking file");
+        let mut app = NoterApp {
+            crash_recovery: CrashRecoverySession::open_at(&blocked),
+            ..NoterApp::default()
+        };
+        app.surface_recovery_unavailable();
+        assert!(app.crash_recovery.is_unavailable());
+        assert!(app.error_msg.is_none());
+
+        let context = egui::Context::default();
+        app.request_close(&context);
+        assert!(
+            app.lifecycle.close_authorized(app.document.revision()),
+            "recovery being off is not unsaved work"
+        );
+
+        let _ = context.run_ui(ui_input(420.0, 280.0, 0.0), |ui| {
+            app.show_recovery_unavailable(ui);
+        });
+        let output = context.run_ui(ui_input(420.0, 280.0, 0.1), |ui| {
+            app.show_recovery_unavailable(ui);
+        });
+        let rows = galley_rows(&output, "Recovery is off");
+        let flat = rows.concat();
+        let reason_at = flat.find("os error").expect("the refusal reason");
+        let step_at = flat.find("Choose a private").expect("the next step");
+        assert!(reason_at < step_at, "{flat}");
+        assert!(rows.len() > 1, "the note wraps: {rows:?}");
+        for pair in rows.windows(2) {
+            assert!(
+                pair[0].ends_with(' ') || pair[1].starts_with(' '),
+                "wrap must break at a space: {rows:?}"
+            );
+        }
+        assert!(
+            rendered_text(&output)
+                .iter()
+                .all(|(value, _)| !value.starts_with("Error:"))
+        );
+        let dismiss = text_position(&rendered_text(&output), "Dismiss");
+        assert!(
+            (0.0..420.0).contains(&dismiss.x) && (0.0..280.0).contains(&dismiss.y),
+            "Dismiss must stay inside the window, at {dismiss:?}"
+        );
+
+        let _ = context.run_ui(click_input(420.0, 280.0, 0.2, dismiss), |ui| {
+            app.show_recovery_unavailable(ui);
+        });
+        assert!(app.recovery_off.message.is_none());
+        assert!(app.recovery_off.dismissed);
+        assert!(app.crash_recovery.is_unavailable());
+        assert!(app.error_msg.is_none());
     }
 
     #[test]
@@ -10984,8 +11208,9 @@ mod tests {
         {
             assert!(!app.lifecycle.close_authorized(app.document.revision()));
             assert!(!commands.contains(&egui::ViewportCommand::Close));
+            assert!(app.error_msg.is_none());
             assert!(
-                app.error_msg
+                app.save_follow_up
                     .as_deref()
                     .is_some_and(|message| message.contains("displaced recovery artifact"))
             );
@@ -11662,9 +11887,7 @@ mod tests {
     #[test]
     fn post_save_warning_stops_the_pending_action_for_review() {
         let mut app = NoterApp {
-            error_msg: Some(
-                "Saved, but follow-up is required: inspect retained artifact".to_owned(),
-            ),
+            save_follow_up: Some("Saved. Follow-up: inspect retained artifact".to_owned()),
             ..NoterApp::default()
         };
         arrange_saving_intent(&mut app, PendingAbandonAction::Quit);
@@ -11682,7 +11905,8 @@ mod tests {
         assert_eq!(commands.len(), 0);
         assert!(app.lifecycle.pending_intent().is_none());
         assert!(!app.lifecycle.close_authorized(app.document.revision()));
-        assert!(app.error_msg.is_some());
+        assert!(app.save_follow_up.is_some());
+        assert!(app.error_msg.is_none());
     }
 
     #[test]
@@ -11939,10 +12163,11 @@ mod tests {
             reservation,
         );
 
+        assert!(app.error_msg.is_none());
         assert_eq!(
-            app.error_msg.as_deref(),
+            app.save_follow_up.as_deref(),
             Some(
-                "Saved, but storage durability is uncertain. Keep this window open and Save again: SyncParent failed: directory sync failed"
+                "Keep this window open and Save again. Saved, but storage durability is uncertain. directory sync failed"
             )
         );
         assert!(app.save_durability.is_at_risk());
@@ -12006,11 +12231,10 @@ mod tests {
         );
         assert!(!app.save_durability.is_at_risk());
         assert!(!app.has_unsaved_state());
-        assert!(
-            app.error_msg
-                .as_deref()
-                .is_some_and(|text| text.contains("backup remains"))
-        );
+        assert!(app.error_msg.is_none());
+        assert!(app.save_follow_up.as_deref().is_some_and(|text| {
+            text.starts_with("Saved. Follow-up:") && text.contains("backup remains")
+        }));
     }
 
     #[test]
@@ -12162,11 +12386,15 @@ mod tests {
         #[cfg(windows)]
         assert!(app.error_msg.is_none());
         #[cfg(unix)]
-        assert!(
-            app.error_msg
-                .as_deref()
-                .is_some_and(|message| message.contains("displaced recovery artifact"))
-        );
+        {
+            assert!(app.error_msg.is_none());
+            assert!(
+                app.save_follow_up
+                    .as_deref()
+                    .is_some_and(|message| message.contains("displaced recovery artifact")
+                        && message.starts_with("Saved."))
+            );
+        }
         Ok(())
     }
 

@@ -78,6 +78,10 @@ pub const RECOVERY_CLEANUP_FAILURE_MESSAGE: &str = "Noter could not remove an ob
 /// User-visible message when the recovery store cannot open.
 pub const RECOVERY_UNAVAILABLE_MESSAGE: &str = "Private crash recovery is unavailable in this session because Noter could not safely open or own its private recovery storage. Saves still work; keep backups of important work.";
 
+/// Next step when recovery is off and the refusal names a reason.
+const RECOVERY_UNAVAILABLE_NEXT_STEP: &str =
+    "Choose a private directory on a persistent local filesystem and restart.";
+
 /// User-visible message when bounded startup review leaves records untouched.
 pub const RECOVERY_SCAN_INCOMPLETE_MESSAGE: &str = "Noter stopped its bounded startup recovery review before checking every private record. Unreviewed records remain unchanged for a later launch.";
 
@@ -524,9 +528,17 @@ impl CrashRecoverySession {
     /// The message to show when recovery is unavailable, with the reason the
     /// storage was refused when one is known.
     pub fn unavailable_message(&self) -> String {
-        self.unavailable_reason.as_ref().map_or_else(
+        self.unavailable_reason.as_deref().map_or_else(
             || RECOVERY_UNAVAILABLE_MESSAGE.to_owned(),
-            |reason| format!("{RECOVERY_UNAVAILABLE_MESSAGE} Reason: {reason}."),
+            |reason| {
+                // The reason and the next step lead so an 80-column line or a
+                // narrow window still shows them. The storage diagnostic is
+                // untrusted path text, so controls are replaced.
+                format!(
+                    "Recovery is off for this session: {}. {RECOVERY_UNAVAILABLE_NEXT_STEP} Saves still work; keep backups of important work.",
+                    sanitize_line(reason)
+                )
+            },
         )
     }
 
@@ -1286,7 +1298,11 @@ impl CrashRecoverySession {
 
     #[cfg(test)]
     fn wait_for_persist(&mut self, document: &Document, selection: Selection) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // A recorded revision returns on the first successful poll. This bound
+        // is only the failure path. Two seconds was missed under parallel
+        // Windows tests when the worker was slow to run, so the bound is
+        // fifteen seconds.
+        let deadline = Instant::now() + Duration::from_secs(15);
         let expected = document.revision();
         loop {
             self.poll_persist_outcomes();
@@ -2279,13 +2295,24 @@ mod tests {
         assert!(session.is_unavailable());
         let message = session.unavailable_message();
         assert!(
-            message.starts_with(RECOVERY_UNAVAILABLE_MESSAGE),
+            message.starts_with("Recovery is off for this session:"),
             "{message}"
         );
         assert!(
             message.contains("can be changed by another user"),
             "{message}"
         );
+        assert!(
+            message.contains(RECOVERY_UNAVAILABLE_NEXT_STEP),
+            "{message}"
+        );
+        let reason_at = message
+            .find("can be changed by another user")
+            .expect("reason");
+        let step_at = message
+            .find(RECOVERY_UNAVAILABLE_NEXT_STEP)
+            .expect("next step");
+        assert!(reason_at < step_at, "{message}");
         assert!(
             message.contains("shared"),
             "the directory is named: {message}"

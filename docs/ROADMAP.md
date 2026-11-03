@@ -1159,14 +1159,19 @@ and the scoped dependency-audit policy. Windows mutation testing is sixteen
 complete partitions, with the same mutant scope and the same 90-minute ceiling.
 That split is on main at `8d9fbb0`. Main push CI run
 [41560720786](https://github.com/blisspixel/noter/actions/runs/41560720786)
-completed with every required job successful.
+completed with every required job successful. Path-launch recovery (#70)
+followed at `3f157a1`. Long warnings (#68) are on main at `fbfc786`.
 
 - Current-editor correctness remains first. A path launch that has a private
   recovery copy for that exact file shows a dismissible note and leaves the
   copy in place. The offer names the parent folder and the recorded time.
   Restore returns to an existing regular file and stays dirty until Save
-  (#70). Persistent readable warnings (#68) are next. Visible RTL caret and
-  hit-testing (#69) and accessible source mapping (#60) stay open.
+  (#70). A long save or recovery warning wraps at word boundaries and keeps
+  its dismiss control in view. A committed save that retains a sibling says
+  the save happened and names the follow-up. Recovery that is off stays
+  visible until dismissed, and the terminal review shows that reason again
+  (#68). Visible RTL caret and hit-testing (#69) and accessible source
+  mapping (#60) stay open.
 - Landed on main in this review: terminal restore on `SIGTERM` (#72), the
   80-column shortcut bar and help overlay (#89, #74), a plain message for a
   missing display (#73), a failed save that names the folder (#75), terminal
