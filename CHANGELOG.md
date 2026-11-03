@@ -6,6 +6,11 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Show a long save or recovery warning in full. It wraps at word boundaries,
+  and Dismiss stays in the window. A committed save that keeps a sibling says
+  the save happened and names the follow-up. When recovery is off, the reason
+  and the next step stay visible for the session. Escape hides that terminal
+  hint, and Ctrl+R shows the reason again. Saves still work (#68).
 - When a path launch has a private recovery copy for that exact file, show a
   dismissible note that says to start Noter without a file. The note does not
   restore or delete the copy. Offer labels name the parent folder and the

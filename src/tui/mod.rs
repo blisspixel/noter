@@ -291,6 +291,9 @@ pub struct TuiSession {
     /// Durable note for a path launch or a restore. Escape clears it. It
     /// remains after the temporary status expires.
     recovery_path_hint: Option<String>,
+    /// Session-long note that private recovery is off. Escape hides the line.
+    /// Ctrl+R still shows the full reason.
+    recovery_unavailable_hint: Option<String>,
 }
 
 impl TuiSession {
@@ -353,6 +356,7 @@ impl TuiSession {
             reviewed_disk: None,
             external_retention: ExternalRetention::Clear,
             recovery_path_hint,
+            recovery_unavailable_hint: None,
         };
         if options.initial_path.is_some() {
             session.recovery.defer_startup_offers();
@@ -361,8 +365,7 @@ impl TuiSession {
             session.prompt = PromptMode::RecoveryOffer;
         }
         if session.recovery.is_unavailable() {
-            let message = session.recovery.unavailable_message();
-            session.set_status(&message);
+            session.recovery_unavailable_hint = Some(session.recovery.unavailable_message());
         }
         Ok(session)
     }
@@ -800,7 +803,7 @@ impl TuiSession {
 
     fn open_save_reconciliation(&mut self) {
         if self.save_recoveries.is_empty() {
-            if self.last_save_warnings.is_some() {
+            if self.last_save_warnings.is_some() || self.recovery.is_unavailable() {
                 self.prompt = PromptMode::SaveWarnings;
                 self.reconcile_scroll = 0;
                 self.retained_sibling_removal = RetainedSiblingRemoval::Idle;
@@ -1824,6 +1827,9 @@ fn status_line(frame: &Frame<'_>) -> String {
     {
         return format!(" {message}");
     }
+    if let Some(hint) = &session.recovery_unavailable_hint {
+        return format!(" {hint}");
+    }
     if let Some(hint) = &session.recovery_path_hint {
         return format!(" {hint}");
     }
@@ -2220,7 +2226,7 @@ const HELP_PARAGRAPHS: &[&str] = &[
     "^S Save. ^O Save As. ^X, ^C, or ^Q Exit.",
     "^W or ^F Find. ^K Cut line. ^U Paste.",
     "^Z Undo. ^Y Redo. ^J Jump line. ^E Markdown.",
-    "^T Theme. ^R Review save warnings.",
+    "^T Theme. ^R Review warnings.",
     "Disk change: r reloads, k keeps, o overwrites after confirm.",
     "A disk change keeps this text until reload, save, or discard.",
 ];
@@ -2852,6 +2858,9 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, cols: u16, rows: u16)
                 let s = c.encode_utf8(&mut buf);
                 session.insert_str(s);
             }
+            TuiKey::Escape if session.recovery_unavailable_hint.is_some() => {
+                session.recovery_unavailable_hint = None;
+            }
             TuiKey::Escape if session.recovery_path_hint.is_some() => {
                 session.recovery_path_hint = None;
             }
@@ -3208,7 +3217,7 @@ mod tests {
             "^J Jump line",
             "^E Markdown",
             "^T Theme",
-            "^R Review save warnings",
+            "^R Review warnings",
             "o overwrites",
             "until reload",
             "Home and End",
@@ -3433,6 +3442,7 @@ mod tests {
     /// startup; tests that read the status line start from a clean one.
     fn without_startup_status(mut session: TuiSession) -> TuiSession {
         session.status_message = None;
+        session.recovery_unavailable_hint = None;
         session
     }
 
@@ -3717,8 +3727,13 @@ mod tests {
             outcome(SaveWarnings::new(Vec::new(), Vec::new())),
         );
         key(&mut session, TuiKey::Ctrl('r'));
-        assert_eq!(session.prompt, PromptMode::None);
+        // The test store is unavailable, so review stays open for that reason.
+        // The cleared save warning must not remain.
+        assert_eq!(session.prompt, PromptMode::SaveWarnings);
         assert!(session.last_save_warnings.is_none());
+        let review = render_frame(&session, 80, 12);
+        assert!(!review.contains(warning));
+        assert!(review.contains("Saves still work"));
     }
 
     #[test]
@@ -3774,6 +3789,67 @@ mod tests {
             assert!(fit_line(&line, 18).starts_with(&line));
         }
         assert!(joined.ends_with("final-name.tmp"));
+    }
+
+    #[test]
+    fn diagnostics_wrap_on_word_boundaries() {
+        let mut lines = Vec::new();
+        save_warnings::append_diagnostic(&mut lines, "alpha beta gamma delta", 12);
+        let bodies: Vec<&str> = lines.iter().map(|line| line.trim()).collect();
+        assert_eq!(bodies, ["alpha beta", "gamma delta"]);
+        for line in &lines {
+            assert!(display_width(line) <= 12, "{line}");
+        }
+    }
+
+    #[test]
+    fn recovery_refusal_stays_until_escape_and_ctrl_r_shows_the_reason() {
+        let directory = tempfile::tempdir().unwrap();
+        let blocked = directory.path().join("blocked-recovery-root");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        let mut session = TuiSession::new(
+            &LaunchOptions::default(),
+            CrashRecoverySession::open_at(&blocked),
+        )
+        .expect("a refused store still opens a session");
+        assert!(session.recovery.is_unavailable());
+
+        let frame = strip_own_sequences(&render_frame(&session, 80, 24));
+        assert!(
+            frame.contains("Recovery is off for this session:"),
+            "{frame}"
+        );
+        assert!(frame.contains("os error"), "{frame}");
+        session.set_status("temporary");
+        assert!(strip_own_sequences(&render_frame(&session, 80, 24)).contains("temporary"));
+        session.status_message = None;
+        assert!(
+            strip_own_sequences(&render_frame(&session, 80, 24))
+                .contains("Recovery is off for this session:")
+        );
+
+        key(&mut session, TuiKey::Escape);
+        assert!(!strip_own_sequences(&render_frame(&session, 80, 24)).contains("Recovery is off"));
+        key(&mut session, TuiKey::Ctrl('r'));
+        assert_eq!(session.prompt, PromptMode::SaveWarnings);
+        let lines = save_warnings::lines(&session, 40);
+        let review = lines.join("\n");
+        let flat = review.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains("Recovery is off for this session:"),
+            "{review}"
+        );
+        assert!(flat.contains("Saves still work"), "{review}");
+        let reason_at = flat.find("os error").expect("the refusal reason");
+        let step_at = flat.find("Choose a private").expect("the next step");
+        assert!(reason_at < step_at, "{review}");
+        assert!(
+            lines.iter().any(|line| line.contains("filesystem")),
+            "filesystem must stay whole: {lines:?}"
+        );
+        for line in &lines {
+            assert!(display_width(line) <= 40, "{line}");
+        }
     }
 
     #[test]
