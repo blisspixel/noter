@@ -35,6 +35,13 @@ patterns rather than toast spam or silent auto-restore:
   Noter without a file. Restore returns to that path when it is still a
   regular file and leaves the text unsaved. Otherwise the document stays
   untitled and the note says why, without quoting the path.
+- **Save follow-up** after a committed save is a wrapped note with Dismiss.
+  It says the save happened, then the retained sibling or the durability
+  uncertainty. Closing stays available once that note is dismissed, except
+  when durability is still uncertain: that state remains unsaved work.
+- **Recovery off** stays on screen for the session, reason first and then the
+  next step. Dismiss hides it. In the terminal, Escape hides the hint and
+  Ctrl+R shows the full reason again. Saves still work.
 - **Damaged recovery** uses quarantine language: what failed (checksum, schema,
   truncated), that the original document was not modified, and that the damaged
   record was set aside when possible.

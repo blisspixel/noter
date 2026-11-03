@@ -27,9 +27,11 @@ earlier tag; the [readiness record](RELEASE_READINESS.md) retains remaining gate
 - On Linux, save an existing file from the terminal and press Ctrl+R. The
   warning must name the retained `.noter-save-*.tmp` sibling. Closing the
   view must leave both that sibling and the saved file unchanged.
-- If `XDG_DATA_HOME` is on tmpfs, the terminal must say private crash recovery
-  is unavailable, and an explicit save must still write the note. Do not point
-  a real document's recovery root at a memory filesystem to try this.
+- If `XDG_DATA_HOME` is on tmpfs, the terminal must keep the reason recovery
+  is off until Escape, and Ctrl+R must show that reason again. An explicit
+  save must still write the note. The window wraps the same note, keeps
+  Dismiss in view, and presents a committed save as saved. Do not point a
+  real document's recovery root at a memory filesystem to try this.
 - On Hyprland, the hidden-workspace check below is still required. This
   candidate does not claim that stall is resolved.
 
