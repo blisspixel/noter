@@ -200,11 +200,6 @@ thread_local! {
     static FREED_TIME_LOCALES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-#[cfg(all(unix, test))]
-fn freed_time_locales() -> usize {
-    FREED_TIME_LOCALES.with(std::cell::Cell::get)
-}
-
 #[cfg(unix)]
 struct UnixTimeLocale(libc::locale_t);
 
@@ -355,10 +350,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn dropping_a_time_locale_releases_it() {
-        let before = super::freed_time_locales();
+        let before = super::FREED_TIME_LOCALES.with(std::cell::Cell::get);
         let locale = super::UnixTimeLocale::from_environment().expect("time locale");
         drop(locale);
-        assert!(super::freed_time_locales() > before);
+        assert!(super::FREED_TIME_LOCALES.with(std::cell::Cell::get) > before);
     }
 
     #[test]
