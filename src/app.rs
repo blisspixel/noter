@@ -887,6 +887,8 @@ impl NoterApp {
     }
 
     fn install_prepared_document(&mut self, document: Document) {
+        // The receipt names one save. Another document must not display it.
+        self.save_receipt = None;
         self.text = String::from(document.rope());
         self.observe_glyphs_in_text();
         self.document = document;
@@ -1341,6 +1343,8 @@ impl NoterApp {
     }
 
     fn start_new_document_unchecked(&mut self) {
+        // The receipt names one save. A new document must not display it.
+        self.save_receipt = None;
         self.text.clear();
         self.document = Document::new();
         self.save_durability = SaveDurabilityRisk::Clear;
@@ -6297,6 +6301,72 @@ mod tests {
             warned,
         );
         assert!(app.save_receipt.is_none());
+        assert!(matches!(
+            app.persistence_text(Instant::now()),
+            PersistenceText::Steady("Saved")
+        ));
+    }
+
+    #[test]
+    fn a_new_or_reloaded_document_does_not_keep_the_previous_receipt() {
+        use noter::core::save::{
+            ContentFingerprint, Durability, FileChangeToken, FileIdentity, FileObservation,
+            SaveWarnings,
+        };
+
+        let observation = FileObservation::new(
+            FileIdentity::new(1, 2),
+            ContentFingerprint::from_bytes(b"hello"),
+            664,
+            1,
+            FileChangeToken::new(3, 4),
+        );
+        let mut app = NoterApp::default();
+        let synced = app
+            .reserve_save_recovery_slot(SaveAttempt::Current(PathBuf::from("note.txt")))
+            .expect("reservation");
+        app.handle_save_result(
+            Ok(SaveOutcome::Committed {
+                revision: Revision::INITIAL,
+                durability: Durability::FileAndDirectorySynced,
+                observation,
+                warnings: SaveWarnings::default(),
+            }),
+            synced,
+        );
+        assert!(app.save_receipt.is_some());
+        app.start_new_document_unchecked();
+        assert!(app.save_receipt.is_none());
+        assert!(matches!(
+            app.persistence_text(Instant::now()),
+            PersistenceText::Steady("Unsaved")
+        ));
+
+        let synced = app
+            .reserve_save_recovery_slot(SaveAttempt::Current(PathBuf::from("note.txt")))
+            .expect("reservation");
+        app.handle_save_result(
+            Ok(SaveOutcome::Committed {
+                revision: Revision::INITIAL,
+                durability: Durability::FileAndDirectorySynced,
+                observation,
+                warnings: SaveWarnings::default(),
+            }),
+            synced,
+        );
+        let previous = app
+            .save_receipt
+            .as_ref()
+            .expect("file and directory sync")
+            .text()
+            .to_owned();
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("other.txt");
+        fs::write(&path, "hello").expect("fixture");
+        app.document = Document::from_path(&path).expect("open");
+        assert!(app.save_receipt.is_some());
+        app.reload_current_path_unchecked();
+        assert!(app.save_receipt.is_none(), "{previous}");
         assert!(matches!(
             app.persistence_text(Instant::now()),
             PersistenceText::Steady("Saved")

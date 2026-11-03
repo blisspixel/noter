@@ -1639,7 +1639,8 @@ Current state:
   Screen and Amber Screen phosphor themes. A save that synced the file and
   its folder, with no storage warning, shows `Saved N B, synced to disk` and
   the locale short time. The window keeps that sentence for three seconds and
-  then shows `Saved`. The terminal shows it in green, or without color when
+  then shows `Saved`. Opening a file, reloading, or starting a new document
+  clears it. The terminal shows it in green, or without color when
   `NO_COLOR` is set, and then returns to the position line. Light and Dark
   use a contrast-checked green. Green Screen and Amber Screen use the phosphor
   text color already in the palette. A file-only sync, including every normal

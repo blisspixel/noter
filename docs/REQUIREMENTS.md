@@ -124,12 +124,14 @@ The complete desktop-scale and compositor matrix remains a beta.3/RC gate.
   a save. Save availability checks must not perform filesystem work during
   repaint. A committed save that reached file and directory sync and has no
   storage warning shows `Saved N B, synced to disk` with the locale short time
-  for three seconds, then returns to `Saved`. The terminal uses the same
+  for three seconds, then returns to `Saved`. Opening a file, reloading, or
+  starting a new document clears that receipt. The terminal uses the same
   sentence and then returns to the position line. Light and Dark draw that
   sentence in a green that meets enhanced contrast on the panel. Green Screen
   and Amber Screen use their existing phosphor text color and do not change
   palette. A file-only sync, a best-effort sync, any storage warning, or a
-  time the platform cannot format keeps the ordinary save status. Windows
+  time the platform cannot format as a terminal-safe clock keeps the ordinary
+  save status. The control check happens before trimming. Windows
   directory sync is unsupported, so a normal Windows save does not say
   `synced to disk`. Uncertain durability and follow-up messages stay as they
   are.

@@ -11,8 +11,11 @@ const TIME_BUFFER_BYTES: usize = 128;
 
 /// Returns the user locale's short local time, without seconds.
 ///
-/// `None` means the operating system could not format a time. Callers show
-/// the ordinary save status instead of guessing a clock reading.
+/// `None` means the operating system could not format a time, the text
+/// contained a terminal control, or nothing remained after trimming. A
+/// control is rejected before trimming, so a trailing newline does not
+/// become a clock reading. Callers show the ordinary save status instead
+/// of guessing a time.
 #[must_use]
 pub fn local_short_time() -> Option<String> {
     platform_local_short_time()
@@ -44,12 +47,7 @@ fn platform_local_short_time() -> Option<String> {
         return None;
     }
     let text = String::from_utf16(&buffer[..count - 1]).ok()?;
-    let text = text.trim();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text.to_owned())
-    }
+    clock_text_for_receipt(&text)
 }
 
 #[cfg(unix)]
@@ -190,12 +188,7 @@ impl TimeLocale {
             return None;
         }
         let text = std::str::from_utf8(&buffer[..written]).ok()?;
-        let text = text.trim();
-        if text.is_empty() {
-            None
-        } else {
-            Some(text.to_owned())
-        }
+        clock_text_for_receipt(text)
     }
 }
 
@@ -222,18 +215,37 @@ fn local_tm() -> Option<libc::tm> {
     if now == -1 {
         return None;
     }
-    let mut broken = std::mem::MaybeUninit::<libc::tm>::uninit();
-    // SAFETY: `now` is a live `time_t`. `broken` is writable. On success the
-    // function initializes every field of that `tm`.
+    // Zero first. `tm` has padding `localtime_r` does not document as written,
+    // and `assume_init` would otherwise read those bytes.
+    let mut broken = std::mem::MaybeUninit::<libc::tm>::zeroed();
+    // SAFETY: `now` is a live `time_t`. `broken` is writable and already
+    // initialized to zero. On success the function writes every field.
     #[allow(unsafe_code)]
     let filled = unsafe { libc::localtime_r(&now, broken.as_mut_ptr()) };
     if filled.is_null() {
         return None;
     }
-    // SAFETY: `localtime_r` returned the same pointer it was given, which is
-    // the contract that `broken` is fully initialized.
+    // SAFETY: `localtime_r` returned the same pointer it was given, so every
+    // field is written. Padding left untouched is still the zero written above.
     #[allow(unsafe_code)]
     Some(unsafe { broken.assume_init() })
+}
+
+/// Keeps a clock reading only when every character is safe to draw.
+///
+/// The control check happens before `trim`. Newline, tab, the C1 next-line
+/// character, and the line and paragraph separators are whitespace, so
+/// trimming them first would present them as an ordinary time.
+fn clock_text_for_receipt(raw: &str) -> Option<String> {
+    if raw.chars().any(crate::is_terminal_unsafe) {
+        return None;
+    }
+    let text = raw.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_owned())
+    }
 }
 
 /// libc 0.2.189 binds this on Linux and FreeBSD, but not on macOS.
@@ -297,6 +309,42 @@ mod tests {
             locale_short_time_format("午後 %H:%M:%S").as_deref(),
             Some("午後 %H:%M")
         );
+        // `%n` and `%t` stay in the format. The clock gate below refuses the
+        // newline or tab that `strftime` would write. Trimming first would
+        // turn either into an ordinary time.
+        assert_eq!(
+            locale_short_time_format("%H:%M:%S%n").as_deref(),
+            Some("%H:%M%n")
+        );
+        assert_eq!(
+            locale_short_time_format("%H:%M%t").as_deref(),
+            Some("%H:%M%t")
+        );
+    }
+
+    #[test]
+    fn a_terminal_control_never_becomes_a_clock_reading() {
+        use super::clock_text_for_receipt;
+
+        assert_eq!(
+            clock_text_for_receipt("  午後2:02  ").as_deref(),
+            Some("午後2:02")
+        );
+        for time in [
+            "",
+            " ",
+            "14:02\n",
+            " \n14:02\n ",
+            "14:02\t",
+            "14:02\u{7f}",
+            "14:02\u{85}",
+            "14:02\u{1b}",
+            "14:02\u{2028}",
+            "14:02\u{2029}",
+            "14:02\u{202e}",
+        ] {
+            assert_eq!(clock_text_for_receipt(time), None, "{time:?}");
+        }
     }
 
     #[test]
@@ -308,7 +356,8 @@ mod tests {
         );
         assert!(time.chars().count() <= 64, "{time}");
         assert!(
-            time.chars().all(|character| !character.is_control()),
+            time.chars()
+                .all(|character| !crate::is_terminal_unsafe(character)),
             "{time}"
         );
         assert!(!time.contains('\n'), "{time}");
