@@ -2823,7 +2823,7 @@ mod tests {
             RecoveryQuarantineReason::InvalidLineage,
             RecoveryQuarantineReason::InstanceMismatch,
         ] {
-            assert!(!reason.description().is_empty());
+            assert_ne!(reason.description(), "");
         }
     }
 

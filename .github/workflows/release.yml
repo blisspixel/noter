@@ -2,6 +2,11 @@
 # Pull requests plan only. A dry run builds private workflow artifacts. Public
 # publication requires an explicit prerelease tag dispatched from the exact
 # protected main tip.
+#
+# The plan, global packaging, and host jobs use ubuntu-22.04. Dist also builds
+# the Intel Linux archive on ubuntu-22.04. That image provides glibc 2.35,
+# which is the minimum for the published binary. Ubuntu 24.04 would raise the
+# floor to glibc 2.39, so these jobs stay on ubuntu-22.04.
 
 name: Release
 permissions:

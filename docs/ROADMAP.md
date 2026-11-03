@@ -1172,9 +1172,10 @@ completed with every required job successful.
   missing display (#73), a failed save that names the folder (#75), terminal
   disk-change decisions (#71), installer guidance (#76), and concise CLI help
   (#81).
-- Toolchain maintenance (#77) and the interface plan (#83, with #78 through #82)
-  remain open. Theme and receipt proposals need contract alignment and their
-  own tests and native visual evidence.
+- The repository and CI pin Rust 1.99.1 (#77). Release Linux binaries stay on
+  Ubuntu 22.04, so the published glibc floor remains 2.35. The interface plan
+  (#83, with #78 through #82) remains open. Theme and receipt proposals need
+  contract alignment and their own tests and native visual evidence.
 - M4-H1 (#50) still precedes the M5 decision (#51), continuous Markdown (#52),
   quality engine (#54), and RC platform/distribution/dogfood evidence (#53).
   Hyprland verification (#44) and Unix retained-file cleanup (#59) stay open.

@@ -23,6 +23,8 @@ RELEASE_TARGETS = (
     "x86_64-pc-windows-msvc",
     "x86_64-unknown-linux-gnu",
 )
+# ubuntu-22.04 keeps the Intel Linux archive on glibc 2.35. ubuntu-24.04
+# would raise that published floor to glibc 2.39.
 TARGET_RUNNERS = {
     "aarch64-apple-darwin": "macos-15",
     "x86_64-apple-darwin": "macos-15-intel",

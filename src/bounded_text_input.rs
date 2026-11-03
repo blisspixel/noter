@@ -1857,7 +1857,7 @@ mod tests {
                 ..Default::default()
             };
             let _ = context.run_ui(preedit, |ui| {
-                assert!(take_events_after_ime_terminal(ui, true, false).is_empty());
+                assert_eq!(take_events_after_ime_terminal(ui, true, false).len(), 0);
                 assert!(!sanitize_projected_text_events(
                     ui,
                     id,
@@ -2177,7 +2177,7 @@ mod tests {
                 };
 
                 let _ = context.run_ui(input, |ui| {
-                    assert!(take_events_after_ime_terminal(ui, true, false).is_empty());
+                    assert_eq!(take_events_after_ime_terminal(ui, true, false).len(), 0);
                     assert!(!sanitize_projected_text_events(
                         ui,
                         id,
@@ -2470,7 +2470,7 @@ mod tests {
             buffer.clear();
             assert_eq!(buffer.as_str(), "");
         }
-        assert!(source.is_empty());
+        assert_eq!(source, "");
 
         let profile = LineEndingProfile::Uniform {
             ending: LineEnding::CrLf,

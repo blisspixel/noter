@@ -2,7 +2,7 @@
 name = "noter"
 version = "0.1.0-beta.2.2"
 edition = "2024"
-rust-version = "1.97.1" # Verified and pinned by rust-toolchain.toml and CI.
+rust-version = "1.99.1" # Verified and pinned by rust-toolchain.toml and CI.
 authors = ["Nick"]
 description = "A focused, private text and Markdown editor for Windows, macOS, and Linux."
 readme = "README.md"

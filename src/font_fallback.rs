@@ -747,7 +747,7 @@ mod tests {
 
         let mut absent = FontWalk::default();
         absent.collect(&directory.path().join("absent"), 0);
-        assert!(absent.files.is_empty());
+        assert_eq!(absent.files.len(), 0);
         assert_eq!(absent.visited_directories, 1);
     }
 
@@ -885,6 +885,6 @@ mod tests {
                 ..
             }
         ));
-        assert!(fallback.recorded().is_empty());
+        assert_eq!(fallback.recorded().len(), 0);
     }
 }

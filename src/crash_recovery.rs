@@ -2803,7 +2803,7 @@ mod tests {
         std::fs::write(store.records_dir().join("broken.rec"), b"not-a-record")
             .expect("write broken");
         let session = CrashRecoverySession::open_at(dir.path());
-        assert!(!session.quarantine_notices().is_empty());
+        assert_ne!(session.quarantine_notices().len(), 0);
         assert!(session.active_offer().is_none());
     }
 

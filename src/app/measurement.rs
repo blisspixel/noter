@@ -36,7 +36,7 @@ fn frame(
     let started = Instant::now();
     let output = context.run_ui(input, |ui| app.show_editor(ui));
     let elapsed = started.elapsed().as_nanos();
-    assert!(!output.shapes.is_empty());
+    assert_ne!(output.shapes.len(), 0);
     assert!(
         app.error_msg.is_none(),
         "the bounded adapter rejected input"

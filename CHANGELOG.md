@@ -6,6 +6,9 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Pin Rust 1.99.1 in the repository toolchain, both package manifests, and CI.
+  Release Linux binaries stay on Ubuntu 22.04, so the published glibc floor
+  remains 2.35 (#77).
 - When a path launch has a private recovery copy for that exact file, show a
   dismissible note that says to start Noter without a file. The note does not
   restore or delete the copy. Offer labels name the parent folder and the

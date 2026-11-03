@@ -3583,7 +3583,7 @@ mod tests {
             );
         };
         let (_observation, cleanup, _durability, retained, _parent_sync) = receipt.into_parts();
-        assert!(retained.is_empty());
+        assert_eq!(retained.len(), 0);
         assert!(
             cleanup
                 .iter()
@@ -3739,7 +3739,7 @@ mod tests {
             assert_eq!(count.removed, 1);
             assert_eq!(count.kept, 0);
             assert_eq!(count.unsupported, 0);
-            assert!(remaining.is_empty());
+            assert_eq!(remaining.len(), 0);
             assert!(!path.exists());
         } else {
             assert_eq!(count.removed, 0);

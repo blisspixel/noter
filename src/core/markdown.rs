@@ -313,7 +313,7 @@ mod tests {
         let source =
             "# Noter\n\nA focused **Markdown** editor.\n\n## Details\n\n- Fast\n- Private\n";
 
-        assert!(analyze_markdown(source).is_empty());
+        assert_eq!(analyze_markdown(source).len(), 0);
     }
 
     #[test]
@@ -416,12 +416,15 @@ mod tests {
     fn fenced_code_preserves_intentional_whitespace_and_heading_text() {
         let source = "# Heading\n\n```text\n### Not a heading   \n\n\n```\n\n## Next\n";
 
-        assert!(analyze_markdown(source).is_empty());
+        assert_eq!(analyze_markdown(source).len(), 0);
     }
 
     #[test]
     fn two_space_hard_break_is_not_reported() {
-        assert!(analyze_markdown("# Heading\n\nFirst line  \nSecond line\n").is_empty());
+        assert_eq!(
+            analyze_markdown("# Heading\n\nFirst line  \nSecond line\n").len(),
+            0
+        );
     }
 
     #[test]
@@ -429,14 +432,14 @@ mod tests {
         let source =
             "# Heading\n\n```text\n### Hidden\n~~~\n#### Still hidden\n```\n\n## Visible\n";
 
-        assert!(analyze_markdown(source).is_empty());
+        assert_eq!(analyze_markdown(source).len(), 0);
     }
 
     #[test]
     fn fence_closer_must_be_bare_and_at_least_as_long_as_the_opener() {
         let source = "# Heading\n\n````text\n```\n### Hidden\n````still code\n#### Hidden too\n````\n\n## Visible\n";
 
-        assert!(analyze_markdown(source).is_empty());
+        assert_eq!(analyze_markdown(source).len(), 0);
         assert_eq!(
             fence_marker("````text"),
             Some(FenceMarker {
@@ -465,7 +468,7 @@ mod tests {
     fn invalid_and_code_indented_atx_markers_are_ignored() {
         let source = "# Heading\n\n####### Too deep\n\n###No separator\n\n    ### Indented code\n\n## Visible\n";
 
-        assert!(analyze_markdown(source).is_empty());
+        assert_eq!(analyze_markdown(source).len(), 0);
     }
 
     #[test]

@@ -1509,7 +1509,7 @@ mod tests {
         assert_eq!(error.message(), "safe diagnostic");
         assert_eq!(creation_failure.error(), &error);
         assert_eq!(creation_failure.cleanup_error(), Some(&cleanup));
-        assert!(receipt.cleanup_warnings().is_empty());
+        assert_eq!(receipt.cleanup_warnings().len(), 0);
         assert_eq!(receipt.durability_warnings().len(), 1);
         assert_eq!(
             receipt.durability_warnings()[0].stage(),

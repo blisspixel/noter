@@ -5660,7 +5660,7 @@ mod tests {
             egui::RawInput::default(),
         );
         assert_eq!(source, "**ab**");
-        assert!(editor.deferred_input_events.is_empty());
+        assert_eq!(editor.deferred_input_events.len(), 0);
     }
 
     #[test]
@@ -6431,7 +6431,7 @@ mod tests {
 
         assert_eq!(source, original);
         assert!(!editor.is_editing());
-        assert!(!output.shapes.is_empty());
+        assert_ne!(output.shapes.len(), 0);
     }
 
     #[test]
@@ -6904,10 +6904,9 @@ mod tests {
         assert!(rendered_drag_scroll_delta(f32::NAN, clip, sixty_hz).abs() <= f32::EPSILON);
         assert!(rendered_drag_scroll_delta(10.0, clip, f32::NAN).abs() <= f32::EPSILON);
         assert!(rendered_drag_scroll_delta(10.0, clip, 0.0).abs() <= f32::EPSILON);
+        let doubled_fast_frame = rendered_drag_scroll_delta(10.0, clip, one_twenty_hz) * 2.0;
         assert!(
-            (rendered_drag_scroll_delta(10.0, clip, one_twenty_hz) * 2.0
-                - rendered_drag_scroll_delta(10.0, clip, sixty_hz))
-            .abs()
+            (doubled_fast_frame - rendered_drag_scroll_delta(10.0, clip, sixty_hz)).abs()
                 <= f32::EPSILON
         );
         assert!(
@@ -7438,7 +7437,7 @@ mod tests {
             );
         });
 
-        assert!(!output.shapes.is_empty());
+        assert_ne!(output.shapes.len(), 0);
         assert_eq!(source, "Make **this** bold");
         assert_eq!(editor.source_selection(), Some(Selection::new(7, 11)));
     }
@@ -7935,7 +7934,7 @@ mod tests {
         assert_eq!(source, "**text**");
         assert_eq!(outcome.origin(), Some(EditOrigin::MarkdownFormatting));
         assert!(editor.is_editing());
-        assert!(!output.shapes.is_empty());
+        assert_ne!(output.shapes.len(), 0);
     }
 
     #[test]
@@ -8198,7 +8197,7 @@ mod tests {
         });
 
         assert_eq!(source, "x\n\nParagraph\n");
-        assert!(!output.shapes.is_empty());
+        assert_ne!(output.shapes.len(), 0);
     }
 
     #[test]

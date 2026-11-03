@@ -433,9 +433,13 @@ fn parse_directory_entry_batch(bytes: &[u8], limit: usize) -> io::Result<Vec<OsS
             return Err(malformed_directory_entries());
         }
         let name_bytes = &entry[name_offset..name_end];
+        // The length check above makes the remainder empty. `as_chunks`
+        // keeps each UTF-16 unit together without a runtime chunk size.
         let units: Vec<u16> = name_bytes
-            .chunks_exact(size_of::<u16>())
-            .map(|unit| u16::from_ne_bytes([unit[0], unit[1]]))
+            .as_chunks::<{ size_of::<u16>() }>()
+            .0
+            .iter()
+            .map(|unit| u16::from_ne_bytes(*unit))
             .collect();
         let name = OsString::from_wide(&units);
         if name != "." && name != ".." {
@@ -2602,14 +2606,14 @@ mod tests {
         let state = parent.path().join("state");
         let namespace = WindowsRecoveryNamespace::open_or_create(&state, OsStr::new("recovery"))?;
         let records = namespace.records();
-        assert!(records.entry_names(1)?.is_empty());
+        assert_eq!(records.entry_names(1)?, Vec::<OsString>::new());
         let expected: Vec<_> = (0..200)
             .map(|index| format!("{index:03}-{}", "x".repeat(140)))
             .collect();
         for name in &expected {
             fs::create_dir(records.path().join(name))?;
         }
-        assert!(records.entry_names(0)?.is_empty());
+        assert_eq!(records.entry_names(0)?, Vec::<OsString>::new());
         assert_eq!(records.entry_names(199)?.len(), 199);
         let mut actual: Vec<_> = records
             .entry_names(201)?

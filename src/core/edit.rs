@@ -496,7 +496,7 @@ impl EditTransaction {
     }
 }
 
-fn classify_edit_intent(
+const fn classify_edit_intent(
     edits: &[TextEdit],
     selection_before: Selection,
     selection_after: Selection,
@@ -760,10 +760,12 @@ const DIFF_BLOCK_BYTES: usize = 64;
 /// Whole blocks are compared first. The first unequal or partial block holds
 /// the end of the shared run, so the byte comparison reads at most one block.
 fn shared_prefix(left: &[u8], right: &[u8]) -> usize {
-    let equal_blocks = left
-        .chunks_exact(DIFF_BLOCK_BYTES)
-        .zip(right.chunks_exact(DIFF_BLOCK_BYTES))
-        .take_while(|(a, b)| a == b)
+    let (left_blocks, _) = left.as_chunks::<DIFF_BLOCK_BYTES>();
+    let (right_blocks, _) = right.as_chunks::<DIFF_BLOCK_BYTES>();
+    let equal_blocks = left_blocks
+        .iter()
+        .zip(right_blocks)
+        .take_while(|(left_block, right_block)| left_block == right_block)
         .count();
     let shared = equal_blocks * DIFF_BLOCK_BYTES;
     shared
@@ -778,10 +780,15 @@ fn shared_prefix(left: &[u8], right: &[u8]) -> usize {
 /// Returns how many trailing bytes `left` and `right` share, reading blocks
 /// from the end as [`shared_prefix`] reads them from the start.
 fn shared_suffix(left: &[u8], right: &[u8]) -> usize {
-    let equal_blocks = left
-        .rchunks_exact(DIFF_BLOCK_BYTES)
-        .zip(right.rchunks_exact(DIFF_BLOCK_BYTES))
-        .take_while(|(a, b)| a == b)
+    // `as_rchunks` keeps trailing blocks in forward order. Reverse them so
+    // the comparison still starts at the end, as `rchunks_exact` did.
+    let (_, left_blocks) = left.as_rchunks::<DIFF_BLOCK_BYTES>();
+    let (_, right_blocks) = right.as_rchunks::<DIFF_BLOCK_BYTES>();
+    let equal_blocks = left_blocks
+        .iter()
+        .rev()
+        .zip(right_blocks.iter().rev())
+        .take_while(|(left_block, right_block)| left_block == right_block)
         .count();
     let shared = equal_blocks * DIFF_BLOCK_BYTES;
     shared
