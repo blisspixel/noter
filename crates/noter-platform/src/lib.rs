@@ -12,10 +12,15 @@ use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
 
+mod local_time;
+mod terminal_text;
 #[cfg(unix)]
 mod unix_recovery_namespace;
 #[cfg(windows)]
 mod windows_recovery_namespace;
+
+pub use local_time::local_short_time;
+pub use terminal_text::is_terminal_unsafe;
 
 #[cfg(unix)]
 pub use unix_recovery_namespace::{UnixRecoveryDirectory, UnixRecoveryNamespace};

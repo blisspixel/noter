@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use eframe::egui::TextBuffer as _;
@@ -675,6 +675,9 @@ pub struct NoterApp {
     error_msg: Option<String>,
     /// Follow-up after a committed save. It is not a failed save.
     save_follow_up: Option<String>,
+    /// Quiet receipt after a file-and-directory sync with no warning.
+    /// It replaces `Saved` for [`crate::save_status::SAVE_RECEIPT_LIFETIME`].
+    save_receipt: Option<crate::save_status::SaveReceipt>,
     recovery_off: RecoveryOffNotice,
     /// Durable recovery note for a path launch or a restore that needs an explanation.
     recovery_notice: Option<String>,
@@ -748,6 +751,7 @@ impl NoterApp {
             status_cache: None,
             error_msg: None,
             save_follow_up: None,
+            save_receipt: None,
             recovery_off: RecoveryOffNotice::new(),
             recovery_notice: None,
             save_recoveries: Vec::new(),
@@ -883,6 +887,8 @@ impl NoterApp {
     }
 
     fn install_prepared_document(&mut self, document: Document) {
+        // The receipt names one save. Another document must not display it.
+        self.save_receipt = None;
         self.text = String::from(document.rope());
         self.observe_glyphs_in_text();
         self.document = document;
@@ -1145,8 +1151,16 @@ impl NoterApp {
             destination_label,
             mut message,
         } = reservation;
+        // A new save replaces any earlier receipt. Only a clean
+        // file-and-directory sync stores a new one.
+        self.save_receipt = None;
         self.error_msg = match result {
-            Ok(SaveOutcome::Committed { ref warnings, .. }) if warnings.is_empty() => {
+            Ok(SaveOutcome::Committed {
+                durability,
+                observation,
+                ref warnings,
+                ..
+            }) if warnings.is_empty() => {
                 self.reset_external_conflict_state();
                 self.retained_save_siblings.clear();
                 self.confirm_retained_sibling_removal = None;
@@ -1154,6 +1168,15 @@ impl NoterApp {
                 self.save_follow_up = None;
                 self.crash_recovery
                     .on_committed_save(self.document.revision());
+                self.save_receipt = noter_platform::local_short_time().and_then(|time| {
+                    crate::save_status::durable_receipt_text(
+                        durability,
+                        warnings,
+                        observation.length(),
+                        &time,
+                    )
+                    .map(|text| crate::save_status::SaveReceipt::new(text, Instant::now()))
+                });
                 None
             }
             Ok(SaveOutcome::Committed { warnings, .. }) => {
@@ -1320,6 +1343,8 @@ impl NoterApp {
     }
 
     fn start_new_document_unchecked(&mut self) {
+        // The receipt names one save. A new document must not display it.
+        self.save_receipt = None;
         self.text.clear();
         self.document = Document::new();
         self.save_durability = SaveDurabilityRisk::Clear;
@@ -3340,10 +3365,8 @@ impl NoterApp {
             column,
             selected_characters,
         } = self.status_snapshot();
-        let modified_label = persistence_status_label(
-            &self.document,
-            self.external_memory_at_risk || self.save_durability.is_at_risk(),
-        );
+        let now = Instant::now();
+        let persistence = self.persistence_text(now);
         egui::Frame::NONE
             .fill(ui.visuals().panel_fill)
             .stroke(egui::Stroke::new(1.0, ui.visuals().window_stroke.color))
@@ -3381,7 +3404,18 @@ impl NoterApp {
                             ui.label(format!("Selected: {selected_characters}"));
                             ui.separator();
                         }
-                        ui.label(modified_label);
+                        match persistence {
+                            PersistenceText::Steady(label) => {
+                                ui.label(label);
+                            }
+                            PersistenceText::Receipt { text, remaining } => {
+                                ui.ctx().request_repaint_after(remaining);
+                                ui.colored_label(
+                                    theme::save_receipt_color(self.theme, ui.visuals()),
+                                    text,
+                                );
+                            }
+                        }
                         ui.separator();
                         if let Some(issue_count) = markdown_issue_count {
                             let label = if issue_count == 0 {
@@ -3416,6 +3450,25 @@ impl NoterApp {
                     });
                 });
             });
+    }
+
+    /// The persistence cell. A fresh receipt replaces `Saved` and nothing else.
+    fn persistence_text(&self, now: Instant) -> PersistenceText {
+        let label = persistence_status_label(
+            &self.document,
+            self.external_memory_at_risk || self.save_durability.is_at_risk(),
+        );
+        if label == "Saved"
+            && let Some(receipt) = &self.save_receipt
+            && let Some(remaining) = receipt.remaining(now)
+        {
+            PersistenceText::Receipt {
+                text: receipt.text().to_owned(),
+                remaining,
+            }
+        } else {
+            PersistenceText::Steady(label)
+        }
     }
 
     fn status_snapshot(&mut self) -> StatusSnapshot {
@@ -4756,6 +4809,11 @@ const fn document_input_event_survives_modal_transition(event: &egui::Event) -> 
     )
 }
 
+enum PersistenceText {
+    Steady(&'static str),
+    Receipt { text: String, remaining: Duration },
+}
+
 fn persistence_status_label(document: &Document, external_memory_at_risk: bool) -> &'static str {
     if document.is_dirty() || external_memory_at_risk {
         "Modified"
@@ -5184,6 +5242,48 @@ mod tests {
         let mut labels = Vec::new();
         visit(root, &nodes, &mut labels);
         labels
+    }
+
+    /// Names a screen reader can reach. egui stores a label widget's text as
+    /// the node value and a control's text as the node label.
+    fn accesskit_names(output: &egui::FullOutput) -> Vec<String> {
+        fn visit(
+            id: egui::accesskit::NodeId,
+            nodes: &HashMap<egui::accesskit::NodeId, &egui::accesskit::Node>,
+            names: &mut Vec<String>,
+        ) {
+            let node = nodes
+                .get(&id)
+                .unwrap_or_else(|| panic!("missing AccessKit node {id:?}"));
+            if let Some(label) = node.label() {
+                names.push(label.to_owned());
+            }
+            if let Some(value) = node.value() {
+                names.push(value.to_owned());
+            }
+            for child in node.children() {
+                visit(*child, nodes, names);
+            }
+        }
+
+        let update = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit must produce an update when enabled");
+        let root = update
+            .tree
+            .as_ref()
+            .expect("the first AccessKit update must include a tree")
+            .root;
+        let nodes = update
+            .nodes
+            .iter()
+            .map(|(id, node)| (*id, node))
+            .collect::<HashMap<_, _>>();
+        let mut names = Vec::new();
+        visit(root, &nodes, &mut names);
+        names
     }
 
     fn accesskit_bounds(output: &egui::FullOutput, label: &str) -> egui::accesskit::Rect {
@@ -6110,6 +6210,211 @@ mod tests {
         fs::write(&path, "hello").expect("fixture file");
         let saved = Document::from_path(&path).expect("open fixture");
         assert_eq!(persistence_status_label(&saved, false), "Saved");
+    }
+
+    #[test]
+    fn a_fully_durable_save_shows_the_receipt_and_a_file_sync_does_not() {
+        use noter::core::save::{
+            ContentFingerprint, Durability, FileChangeToken, FileIdentity, FileObservation,
+            SaveStage, SaveWarnings, StorageError,
+        };
+
+        let observation = FileObservation::new(
+            FileIdentity::new(1, 2),
+            ContentFingerprint::from_bytes(b"hello"),
+            664,
+            1,
+            FileChangeToken::new(3, 4),
+        );
+        let mut app = NoterApp::default();
+        let file_only = app
+            .reserve_save_recovery_slot(SaveAttempt::Current(PathBuf::from("note.txt")))
+            .expect("reservation");
+        app.handle_save_result(
+            Ok(SaveOutcome::Committed {
+                revision: Revision::INITIAL,
+                durability: Durability::FileSynced,
+                observation,
+                warnings: SaveWarnings::default(),
+            }),
+            file_only,
+        );
+        assert!(app.save_receipt.is_none());
+
+        let synced = app
+            .reserve_save_recovery_slot(SaveAttempt::Current(PathBuf::from("note.txt")))
+            .expect("reservation");
+        app.handle_save_result(
+            Ok(SaveOutcome::Committed {
+                revision: Revision::INITIAL,
+                durability: Durability::FileAndDirectorySynced,
+                observation,
+                warnings: SaveWarnings::default(),
+            }),
+            synced,
+        );
+        let receipt = app
+            .save_receipt
+            .as_ref()
+            .expect("file and directory sync")
+            .text()
+            .to_owned();
+        assert!(
+            receipt.starts_with("Saved 664 B, synced to disk "),
+            "{receipt}"
+        );
+        assert!(!receipt.contains("Wrote"), "{receipt}");
+
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("notes.txt");
+        fs::write(&path, "hello").expect("fixture");
+        app.document = Document::from_path(&path).expect("open");
+        assert!(matches!(
+            app.persistence_text(Instant::now()),
+            PersistenceText::Receipt { ref text, .. } if text == &receipt
+        ));
+        app.document.replace_text("edited").expect("edit");
+        assert!(matches!(
+            app.persistence_text(Instant::now()),
+            PersistenceText::Steady("Modified")
+        ));
+        app.document = Document::from_path(&path).expect("reopen");
+        let later = Instant::now() + crate::save_status::SAVE_RECEIPT_LIFETIME;
+        assert!(matches!(
+            app.persistence_text(later),
+            PersistenceText::Steady("Saved")
+        ));
+
+        let warned = app
+            .reserve_save_recovery_slot(SaveAttempt::Current(PathBuf::from("note.txt")))
+            .expect("reservation");
+        app.handle_save_result(
+            Ok(SaveOutcome::Committed {
+                revision: Revision::INITIAL,
+                durability: Durability::FileAndDirectorySynced,
+                observation,
+                warnings: SaveWarnings::new(
+                    vec![StorageError::new(SaveStage::Cleanup, "kept a sibling")],
+                    Vec::new(),
+                ),
+            }),
+            warned,
+        );
+        assert!(app.save_receipt.is_none());
+        assert!(matches!(
+            app.persistence_text(Instant::now()),
+            PersistenceText::Steady("Saved")
+        ));
+    }
+
+    #[test]
+    fn a_new_or_reloaded_document_does_not_keep_the_previous_receipt() {
+        use noter::core::save::{
+            ContentFingerprint, Durability, FileChangeToken, FileIdentity, FileObservation,
+            SaveWarnings,
+        };
+
+        let observation = FileObservation::new(
+            FileIdentity::new(1, 2),
+            ContentFingerprint::from_bytes(b"hello"),
+            664,
+            1,
+            FileChangeToken::new(3, 4),
+        );
+        let mut app = NoterApp::default();
+        let synced = app
+            .reserve_save_recovery_slot(SaveAttempt::Current(PathBuf::from("note.txt")))
+            .expect("reservation");
+        app.handle_save_result(
+            Ok(SaveOutcome::Committed {
+                revision: Revision::INITIAL,
+                durability: Durability::FileAndDirectorySynced,
+                observation,
+                warnings: SaveWarnings::default(),
+            }),
+            synced,
+        );
+        assert!(app.save_receipt.is_some());
+        app.start_new_document_unchecked();
+        assert!(app.save_receipt.is_none());
+        assert!(matches!(
+            app.persistence_text(Instant::now()),
+            PersistenceText::Steady("Unsaved")
+        ));
+
+        let synced = app
+            .reserve_save_recovery_slot(SaveAttempt::Current(PathBuf::from("note.txt")))
+            .expect("reservation");
+        app.handle_save_result(
+            Ok(SaveOutcome::Committed {
+                revision: Revision::INITIAL,
+                durability: Durability::FileAndDirectorySynced,
+                observation,
+                warnings: SaveWarnings::default(),
+            }),
+            synced,
+        );
+        let previous = app
+            .save_receipt
+            .as_ref()
+            .expect("file and directory sync")
+            .text()
+            .to_owned();
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("other.txt");
+        fs::write(&path, "hello").expect("fixture");
+        app.document = Document::from_path(&path).expect("open");
+        assert!(app.save_receipt.is_some());
+        app.reload_current_path_unchecked();
+        assert!(app.save_receipt.is_none(), "{previous}");
+        assert!(matches!(
+            app.persistence_text(Instant::now()),
+            PersistenceText::Steady("Saved")
+        ));
+    }
+
+    #[test]
+    fn the_receipt_uses_the_theme_color_and_the_same_accessible_sentence() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("notes.txt");
+        fs::write(&path, "hello").expect("fixture");
+        let sentence = "Saved 5 B, synced to disk 14:02";
+        let mut app = NoterApp {
+            document: Document::from_path(&path).expect("open"),
+            save_receipt: Some(crate::save_status::SaveReceipt::new(
+                sentence.to_owned(),
+                Instant::now(),
+            )),
+            ..NoterApp::default()
+        };
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        theme::configure_styles(&context);
+
+        for theme in [AppTheme::Light, AppTheme::GreenScreen] {
+            app.theme = theme;
+            theme.apply(&context);
+            let output = context.run_ui(ui_input(1_200.0, 760.0, 0.0), |ui| {
+                app.show_status(ui);
+            });
+            let egui_theme = if theme == AppTheme::Light {
+                egui::Theme::Light
+            } else {
+                egui::Theme::Dark
+            };
+            let expected = theme::save_receipt_color(theme, &context.style_of(egui_theme).visuals);
+            let actual = output
+                .shapes
+                .iter()
+                .find_map(|shape| text_shape_color(&shape.shape, sentence));
+            assert_eq!(actual, Some(expected), "{theme:?}");
+            let names = accesskit_names(&output);
+            assert!(names.iter().any(|name| name == sentence), "{names:?}");
+            assert!(!names.iter().any(|name| name == "Saved"), "{names:?}");
+            if theme == AppTheme::GreenScreen {
+                assert_eq!(expected, egui::Color32::from_rgb(174, 255, 181));
+            }
+        }
     }
 
     #[test]
