@@ -10,7 +10,6 @@ expectation. Pass the binary to test, for example `target/debug/noter`.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import re
@@ -24,9 +23,11 @@ import time
 from pathlib import Path
 
 try:
+    import fcntl
     import pty
     import termios
-except ImportError:  # pragma: no cover - Windows has neither module.
+except ImportError:  # pragma: no cover - Windows has none of these modules.
+    fcntl = None
     pty = None
     termios = None
 
@@ -34,7 +35,7 @@ except ImportError:  # pragma: no cover - Windows has neither module.
 def set_window_size(fd: int, columns: int, rows: int) -> None:
     """Set the pseudo-terminal size before the child starts."""
 
-    if termios is None:
+    if fcntl is None or termios is None:
         raise RuntimeError("terminal size is unavailable")
     # winsize is row, column, x pixels, y pixels.
     size = struct.pack("HHHH", rows, columns, 0, 0)
