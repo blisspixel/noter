@@ -246,9 +246,12 @@ noter update
 | A Linux or BSD display is missing, or the named display cannot be opened | 1 | A short explanation and `noter --tui`. The terminal interface does not open by itself |
 | FILE missing, a directory, or unreadable | 2 | `noter: cannot open ...` on one line; no help block |
 
-`--theme system|light|dark|green|amber` and `--view text|markdown` select the
-startup theme and view. Their values are accepted in any letter case. `--` ends
-option parsing so a document path may begin with `-`.
+`--theme system|light|dark|green|amber` selects the window's startup theme.
+The terminal interface ignores it and uses the terminal's own colors. A
+non-empty `NO_COLOR` turns terminal color off. `--view text|markdown` selects
+the startup view for the window and the terminal. Their values are accepted
+in any letter case. `--` ends option parsing so a document path may begin
+with `-`.
 
 Without `--gui` or `--tui`, Noter opens a window. On Linux, the BSDs, and other
 non-macOS Unix systems, where windows need an X11 or Wayland display server, a

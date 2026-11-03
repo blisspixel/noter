@@ -1,6 +1,7 @@
 //! Latest-save diagnostics, using the core's exact retained-artifact messages.
 
-use super::{TuiPalette, TuiSession, push_bar};
+use super::TuiSession;
+use super::paint::{Paint, Role, push_bar};
 use noter::core::terminal_text::{cell_width, sanitize_line};
 
 pub(super) fn append_diagnostic(lines: &mut Vec<String>, message: &str, columns: usize) {
@@ -68,7 +69,7 @@ pub(super) fn lines(session: &TuiSession, columns: usize) -> Vec<String> {
     lines
 }
 
-pub(super) fn render(session: &TuiSession, cols: u16, rows: u16, palette: &TuiPalette) -> String {
+pub(super) fn render(session: &TuiSession, cols: u16, rows: u16, paint: Paint) -> String {
     let columns = usize::from(cols);
     let height = usize::from(rows);
     let mut out = String::with_capacity(columns * height * 4);
@@ -77,9 +78,8 @@ pub(super) fn render(session: &TuiSession, cols: u16, rows: u16, palette: &TuiPa
         &mut out,
         " Latest save warnings ",
         columns,
-        palette.bar_bg,
-        palette.bar_fg,
-        true,
+        paint,
+        Role::BarStrong,
     );
     out.push_str("\r\n");
     let lines = lines(session, columns);
@@ -92,9 +92,8 @@ pub(super) fn render(session: &TuiSession, cols: u16, rows: u16, palette: &TuiPa
             &mut out,
             lines.get(start + row).map_or("", String::as_str),
             columns,
-            palette.bg,
-            palette.fg,
-            false,
+            paint,
+            Role::Warning,
         );
         out.push_str("\r\n");
     }
@@ -103,13 +102,6 @@ pub(super) fn render(session: &TuiSession, cols: u16, rows: u16, palette: &TuiPa
     } else {
         " Closing does not remove files | x x removes verified sibling | Esc cancels "
     };
-    push_bar(
-        &mut out,
-        hint,
-        columns,
-        palette.bar_bg,
-        palette.bar_fg,
-        true,
-    );
+    push_bar(&mut out, hint, columns, paint, Role::BarStrong);
     out
 }
