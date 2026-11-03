@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn only_unloadable_requirements_are_reported() {
         let everything = missing(DisplayBackend::X11, |_| true);
-        assert!(everything.is_empty());
+        assert_eq!(everything, Vec::new());
 
         let without_x11_keyboard = missing(DisplayBackend::X11, |sonames| {
             !sonames.contains(&"libxkbcommon-x11.so.0")
@@ -162,7 +162,7 @@ mod tests {
         let glx_only = missing(DisplayBackend::X11, |sonames| {
             sonames != OPENGL.sonames || sonames.contains(&"libGL.so.1")
         });
-        assert!(glx_only.is_empty());
+        assert_eq!(glx_only, Vec::new());
     }
 
     #[test]
