@@ -20,7 +20,9 @@ const TIME_BUFFER_BYTES: usize = 128;
 pub fn local_short_time() -> Option<String> {
     #[cfg(windows)]
     {
-        platform_local_short_time()
+        // `windows_` is the Linux mutation exclude. This body is compiled
+        // only on Windows, and the Windows exclude does not match that prefix.
+        windows_local_short_time()
     }
     #[cfg(unix)]
     {
@@ -50,7 +52,7 @@ fn windows_clock_units(buffer: &[u16], written: i32) -> Option<&[u16]> {
 }
 
 #[cfg(windows)]
-fn platform_local_short_time() -> Option<String> {
+fn windows_local_short_time() -> Option<String> {
     use windows_sys::Win32::Globalization::{GetTimeFormatEx, TIME_NOSECONDS};
 
     let mut buffer = [0_u16; TIME_BUFFER_BYTES];
