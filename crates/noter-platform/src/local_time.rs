@@ -1,0 +1,316 @@
+//! Locale short time for the quiet save receipt.
+//!
+//! The application crate does not format clocks. Windows asks the user locale
+//! for the time without seconds. Unix reads `T_FMT` from the environment's
+//! time locale and removes the seconds field. Neither path calls `setlocale`,
+//! so the process locale stays as it was. `None` means the caller must not
+//! invent a time.
+
+/// Upper bound passed to the locale formatter. A short time fits well inside it.
+const TIME_BUFFER_BYTES: usize = 128;
+
+/// Returns the user locale's short local time, without seconds.
+///
+/// `None` means the operating system could not format a time. Callers show
+/// the ordinary save status instead of guessing a clock reading.
+#[must_use]
+pub fn local_short_time() -> Option<String> {
+    platform_local_short_time()
+}
+
+#[cfg(windows)]
+fn platform_local_short_time() -> Option<String> {
+    use windows_sys::Win32::Globalization::{GetTimeFormatEx, TIME_NOSECONDS};
+
+    let mut buffer = [0_u16; TIME_BUFFER_BYTES];
+    let capacity = i32::try_from(buffer.len()).expect("the time buffer fits in a Win32 length");
+    // SAFETY: `buffer` is writable for the length passed in. A null locale
+    // selects the user locale, a null `SYSTEMTIME` selects the current local
+    // time, and a null format selects that locale's default time pattern.
+    // `TIME_NOSECONDS` is the documented flag for the short time.
+    #[allow(unsafe_code)]
+    let written = unsafe {
+        GetTimeFormatEx(
+            std::ptr::null(),
+            TIME_NOSECONDS,
+            std::ptr::null(),
+            std::ptr::null(),
+            buffer.as_mut_ptr(),
+            capacity,
+        )
+    };
+    let count = usize::try_from(written).ok()?;
+    if count <= 1 || count > buffer.len() {
+        return None;
+    }
+    let text = String::from_utf16(&buffer[..count - 1]).ok()?;
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_owned())
+    }
+}
+
+#[cfg(unix)]
+fn platform_local_short_time() -> Option<String> {
+    let locale = TimeLocale::from_environment()?;
+    let format = locale.short_format()?;
+    let broken = local_tm()?;
+    locale.format(&broken, &format)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn platform_local_short_time() -> Option<String> {
+    None
+}
+
+/// Removes seconds from a POSIX `T_FMT` string.
+///
+/// `%T` becomes `%H:%M` and `%r` becomes `%I:%M %p`. A seconds conversion,
+/// including flags, a width, and an `E` or `O` modifier, is dropped with one
+/// preceding separator. `%X` and `%c` include an opaque time, so they produce
+/// no format rather than a guess. The result is trimmed and empty input
+/// produces `None`.
+///
+/// Unix calls this before `strftime_l`. Windows uses `GetTimeFormatEx` and
+/// does not. The function still compiles into every test build so the scanner
+/// is checked on Windows.
+#[cfg(any(unix, test))]
+fn locale_short_time_format(format: &str) -> Option<String> {
+    let bytes = format.as_bytes();
+    let mut out = String::with_capacity(format.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            let character = format[index..].chars().next()?;
+            out.push(character);
+            index += character.len_utf8();
+            continue;
+        }
+        let start = index;
+        index += 1;
+        if index >= bytes.len() {
+            return None;
+        }
+        if bytes[index] == b'%' {
+            out.push('%');
+            out.push('%');
+            index += 1;
+            continue;
+        }
+        while index < bytes.len() && matches!(bytes[index], b'-' | b'_' | b'0' | b'^' | b'#' | b'+')
+        {
+            index += 1;
+        }
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index < bytes.len() && matches!(bytes[index], b'E' | b'O') {
+            index += 1;
+        }
+        if index >= bytes.len() || !bytes[index].is_ascii_alphabetic() {
+            return None;
+        }
+        let conversion = bytes[index];
+        index += 1;
+        match conversion {
+            b'S' => {
+                if out.ends_with([':', '.', ',', '-']) {
+                    out.pop();
+                }
+            }
+            b'T' => out.push_str("%H:%M"),
+            b'r' => out.push_str("%I:%M %p"),
+            b'X' | b'c' => return None,
+            _ => out.push_str(&format[start..index]),
+        }
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
+#[cfg(unix)]
+struct TimeLocale(libc::locale_t);
+
+#[cfg(unix)]
+impl TimeLocale {
+    fn from_environment() -> Option<Self> {
+        // SAFETY: `LC_TIME_MASK` limits the locale object to time formatting.
+        // An empty locale name reads the environment for that category only.
+        // A null base creates a new object. Failure returns a null pointer and
+        // does not change the process locale.
+        #[allow(unsafe_code)]
+        let locale =
+            unsafe { libc::newlocale(libc::LC_TIME_MASK, c"".as_ptr(), std::ptr::null_mut()) };
+        if locale.is_null() {
+            None
+        } else {
+            Some(Self(locale))
+        }
+    }
+
+    fn short_format(&self) -> Option<String> {
+        // SAFETY: `self.0` came from `newlocale` and this guard has not freed
+        // it. The returned pointer is valid until the next `nl_langinfo_l` on
+        // this object or until `freelocale`. The copy below finishes first.
+        #[allow(unsafe_code)]
+        let pointer = unsafe { nl_langinfo_l(libc::T_FMT, self.0) };
+        if pointer.is_null() {
+            return None;
+        }
+        // SAFETY: the pointer was non-null and points at a C string owned by
+        // the locale object. `CStr::from_ptr` only reads until the terminator.
+        #[allow(unsafe_code)]
+        let format = unsafe { std::ffi::CStr::from_ptr(pointer) };
+        locale_short_time_format(format.to_str().ok()?)
+    }
+
+    fn format(&self, broken: &libc::tm, format: &str) -> Option<String> {
+        let format = std::ffi::CString::new(format).ok()?;
+        let mut buffer = [0_u8; TIME_BUFFER_BYTES];
+        // SAFETY: `buffer` is writable for its full length. `broken` is a
+        // complete `tm` from `localtime_r`. `format` is a terminated C string
+        // with no interior null. `self.0` is the live locale object.
+        #[allow(unsafe_code)]
+        let written = unsafe {
+            libc::strftime_l(
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                format.as_ptr(),
+                broken,
+                self.0,
+            )
+        };
+        if written == 0 || written >= buffer.len() {
+            return None;
+        }
+        let text = std::str::from_utf8(&buffer[..written]).ok()?;
+        let text = text.trim();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text.to_owned())
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TimeLocale {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        // SAFETY: the pointer came from `newlocale` and this is the only free.
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::freelocale(self.0);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn local_tm() -> Option<libc::tm> {
+    // SAFETY: a null pointer asks for the current calendar time. `-1` is the
+    // documented failure value and leaves no output to read.
+    #[allow(unsafe_code)]
+    let now = unsafe { libc::time(std::ptr::null_mut()) };
+    if now == -1 {
+        return None;
+    }
+    let mut broken = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: `now` is a live `time_t`. `broken` is writable. On success the
+    // function initializes every field of that `tm`.
+    #[allow(unsafe_code)]
+    let filled = unsafe { libc::localtime_r(&now, broken.as_mut_ptr()) };
+    if filled.is_null() {
+        return None;
+    }
+    // SAFETY: `localtime_r` returned the same pointer it was given, which is
+    // the contract that `broken` is fully initialized.
+    #[allow(unsafe_code)]
+    Some(unsafe { broken.assume_init() })
+}
+
+/// libc 0.2.189 binds this on Linux and FreeBSD, but not on macOS.
+/// libSystem, glibc, and the BSDs all provide the symbol.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+unsafe extern "C" {
+    fn nl_langinfo_l(item: libc::nl_item, locale: libc::locale_t) -> *mut libc::c_char;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::locale_short_time_format;
+
+    #[test]
+    fn locale_short_time_formats_drop_seconds() {
+        assert_eq!(
+            locale_short_time_format("%H:%M:%S").as_deref(),
+            Some("%H:%M")
+        );
+        assert_eq!(
+            locale_short_time_format("%I:%M:%S %p").as_deref(),
+            Some("%I:%M %p")
+        );
+        assert_eq!(locale_short_time_format("%T").as_deref(), Some("%H:%M"));
+        assert_eq!(locale_short_time_format("%r").as_deref(), Some("%I:%M %p"));
+        assert_eq!(locale_short_time_format("%H:%M").as_deref(), Some("%H:%M"));
+        assert_eq!(
+            locale_short_time_format("%OH:%OM:%OS").as_deref(),
+            Some("%OH:%OM")
+        );
+        assert_eq!(
+            locale_short_time_format("%H.%M.%S").as_deref(),
+            Some("%H.%M")
+        );
+        assert_eq!(
+            locale_short_time_format("%H:%M:%S %Z").as_deref(),
+            Some("%H:%M %Z")
+        );
+        assert_eq!(
+            locale_short_time_format("%H:%M:%-S").as_deref(),
+            Some("%H:%M")
+        );
+        assert_eq!(
+            locale_short_time_format("%H:%M:%9S").as_deref(),
+            Some("%H:%M")
+        );
+        assert_eq!(
+            locale_short_time_format("%H %M %S").as_deref(),
+            Some("%H %M")
+        );
+        assert_eq!(locale_short_time_format("%%S").as_deref(), Some("%%S"));
+        assert_eq!(locale_short_time_format("%EY").as_deref(), Some("%EY"));
+        assert_eq!(locale_short_time_format("%X"), None);
+        assert_eq!(locale_short_time_format("%c"), None);
+        assert_eq!(locale_short_time_format("%EX"), None);
+        assert_eq!(locale_short_time_format(""), None);
+        assert_eq!(locale_short_time_format("%"), None);
+        assert_eq!(locale_short_time_format("%S"), None);
+        assert_eq!(
+            locale_short_time_format("午後 %H:%M:%S").as_deref(),
+            Some("午後 %H:%M")
+        );
+    }
+
+    #[test]
+    fn the_local_short_time_is_a_short_readable_clock() {
+        let time = super::local_short_time().expect("the locale short time");
+        assert!(
+            time.chars().any(|character| character.is_ascii_digit()),
+            "{time}"
+        );
+        assert!(time.chars().count() <= 64, "{time}");
+        assert!(
+            time.chars().all(|character| !character.is_control()),
+            "{time}"
+        );
+        assert!(!time.contains('\n'), "{time}");
+    }
+}

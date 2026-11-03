@@ -83,6 +83,30 @@ class ReadUntilTests(unittest.TestCase):
             os.close(reader)
             os.close(writer)
 
+    def test_read_until_any_accepts_either_committed_sentence(self) -> None:
+        reader, writer = os.pipe()
+        try:
+            os.write(writer, b"Saved 4 B, synced to disk 14:02")
+            found = check_tui_pty.read_until_any(
+                reader, (b"Wrote", b"synced to disk"), 5.0
+            )
+            self.assertIn(b"synced to disk", found)
+            os.write(writer, b"Wrote 4 bytes")
+            wrote = check_tui_pty.read_until_any(
+                reader, (b"Wrote", b"synced to disk"), 5.0
+            )
+            self.assertIn(b"Wrote", wrote)
+            self.assertNotIn(b"synced to disk", wrote)
+            self.assertEqual(
+                check_tui_pty.read_until_any(
+                    reader, (b"Wrote", b"synced to disk"), 0.1
+                ),
+                b"",
+            )
+        finally:
+            os.close(reader)
+            os.close(writer)
+
     def test_expect_raises_with_the_message(self) -> None:
         with self.assertRaisesRegex(AssertionError, "broken"):
             check_tui_pty.expect(False, "broken")

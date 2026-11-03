@@ -12,6 +12,10 @@ const TEXT_CONTRAST: f64 = 4.5;
 const CONTROL_CONTRAST: f64 = 3.0;
 const LIGHT_ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(179, 38, 30);
 const DARK_ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 180, 171);
+/// Deep green on the light panel. Checked at 7:1 against that panel.
+const LIGHT_SUCCESS_COLOR: egui::Color32 = egui::Color32::from_rgb(0, 90, 35);
+/// Green on the dark panel. Checked at 7:1 against that panel.
+const DARK_SUCCESS_COLOR: egui::Color32 = egui::Color32::from_rgb(120, 200, 140);
 const CRT_SCANLINE_SPACING: f32 = 4.0;
 const CRT_MAX_SCANLINES: usize = 1_024;
 const CRT_VIGNETTE_WIDTH: f32 = 10.0;
@@ -563,6 +567,28 @@ fn apply_terminal_palette(visuals: &mut egui::Visuals, palette: TerminalPalette)
     }
 }
 
+/// Color for the quiet save receipt.
+///
+/// Light and Dark use a green that clears the enhanced contrast bar on their
+/// panels. Green Screen and Amber Screen use the phosphor text color already
+/// in the palette. System follows whichever of Light or Dark is active.
+pub fn save_receipt_color(theme: AppTheme, visuals: &egui::Visuals) -> egui::Color32 {
+    match theme {
+        AppTheme::GreenScreen | AppTheme::AmberScreen => visuals
+            .override_text_color
+            .unwrap_or(visuals.widgets.noninteractive.fg_stroke.color),
+        AppTheme::Light => LIGHT_SUCCESS_COLOR,
+        AppTheme::Dark => DARK_SUCCESS_COLOR,
+        AppTheme::System => {
+            if visuals.dark_mode {
+                DARK_SUCCESS_COLOR
+            } else {
+                LIGHT_SUCCESS_COLOR
+            }
+        }
+    }
+}
+
 fn contrast_ratio(first: egui::Color32, second: egui::Color32) -> f64 {
     let brighter = relative_luminance(first).max(relative_luminance(second));
     let darker = relative_luminance(first).min(relative_luminance(second));
@@ -941,5 +967,45 @@ mod tests {
         AppTheme::System.apply(&context);
         assert_eq!(context.style_of(egui::Theme::Dark).visuals, standard_dark);
         assert!(crt_overlay(AppTheme::System).is_none());
+    }
+
+    #[test]
+    fn save_receipt_color_meets_contrast_and_keeps_phosphor_text() {
+        assert_eq!(
+            green_screen_palette().text,
+            egui::Color32::from_rgb(174, 255, 181)
+        );
+        assert_eq!(
+            amber_screen_palette().text,
+            egui::Color32::from_rgb(255, 215, 137)
+        );
+        assert_eq!(green_screen_palette().strong_text, egui::Color32::WHITE);
+        assert_eq!(amber_screen_palette().strong_text, egui::Color32::WHITE);
+
+        let context = egui::Context::default();
+        configure_styles(&context);
+        for (theme, egui_theme) in [
+            (AppTheme::Light, egui::Theme::Light),
+            (AppTheme::Dark, egui::Theme::Dark),
+        ] {
+            theme.apply(&context);
+            let visuals = &context.style_of(egui_theme).visuals;
+            let color = save_receipt_color(theme, visuals);
+            assert!(contrast_ratio(color, visuals.panel_fill) >= ENHANCED_TEXT_CONTRAST);
+            assert!(contrast_ratio(color, visuals.window_fill) >= ENHANCED_TEXT_CONTRAST);
+            assert_eq!(save_receipt_color(AppTheme::System, visuals), color);
+        }
+
+        for theme in [AppTheme::GreenScreen, AppTheme::AmberScreen] {
+            theme.apply(&context);
+            let visuals = &context.style_of(egui::Theme::Dark).visuals;
+            let color = save_receipt_color(theme, visuals);
+            let phosphor = visuals
+                .override_text_color
+                .expect("phosphor themes set an exact text color");
+            assert_eq!(color, phosphor);
+            assert!(contrast_ratio(color, visuals.panel_fill) >= ENHANCED_TEXT_CONTRAST);
+            assert_eq!(visuals.strong_text_color(), egui::Color32::WHITE);
+        }
     }
 }

@@ -99,7 +99,7 @@ pub(super) enum Role {
     Warning,
     /// Red failed save. Plain when color is off.
     Error,
-    /// Green committed-save receipt. Plain when color is off.
+    /// Green committed save. Plain when color is off.
     Success,
     /// Italic quotation. Italic is not a color.
     Quote,
