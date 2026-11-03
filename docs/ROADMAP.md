@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-10-26
+**Updated:** 2026-11-02
 
 **Current checkpoint:** published `0.1.0-beta.2.2` on 2026-10-13 from
 `e835efb9a7efd2f3d417d6e8558d90c59bed8259`.
@@ -1157,9 +1157,11 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 The published checkpoint remains beta.2.2. PR #86 integrated repository hygiene
 and the scoped dependency-audit policy. Its main CI passed lint, native tests,
 coverage, and thirteen mutation partitions; Windows partition 3 exceeded the
-90-minute job limit. The resumed work expands Windows to twelve complete
-partitions with the same scope and time bound. Exact-head CI must establish
-the result; the cancelled run is not green evidence.
+90-minute job limit. Later main CI used twelve Windows partitions. Run
+41408493226 then cancelled partition 4 at that same ceiling after the other
+partitions passed. The worker count is now sixteen, with the same mutant scope
+and the same ceiling. Exact-head CI must establish the result; a cancelled
+run is not green evidence.
 
 - Current-editor correctness and safety remain first: visible RTL caret and
   hit-testing (#69), accessible source mapping (#60), recovery discoverability
