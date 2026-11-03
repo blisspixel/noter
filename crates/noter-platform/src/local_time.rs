@@ -221,7 +221,7 @@ fn local_tm() -> Option<libc::tm> {
     // SAFETY: `now` is a live `time_t`. `broken` is writable and already
     // initialized to zero. On success the function writes every field.
     #[allow(unsafe_code)]
-    let filled = unsafe { libc::localtime_r(&now, broken.as_mut_ptr()) };
+    let filled = unsafe { libc::localtime_r(&raw const now, broken.as_mut_ptr()) };
     if filled.is_null() {
         return None;
     }
@@ -248,8 +248,9 @@ fn clock_text_for_receipt(raw: &str) -> Option<String> {
     }
 }
 
-/// libc 0.2.189 binds this on Linux and FreeBSD, but not on macOS.
-/// libSystem, glibc, and the BSDs all provide the symbol.
+// libc 0.2.189 binds this on Linux and FreeBSD, but not on macOS.
+// libSystem, glibc, and the BSDs all provide the symbol. Rustdoc does not
+// attach a doc comment to an extern block.
 #[cfg(unix)]
 #[allow(unsafe_code)]
 unsafe extern "C" {
