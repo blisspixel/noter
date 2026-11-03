@@ -15,6 +15,7 @@ import os
 import re
 import select
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -22,11 +23,23 @@ import time
 from pathlib import Path
 
 try:
+    import fcntl
     import pty
     import termios
-except ImportError:  # pragma: no cover - Windows has neither module.
+except ImportError:  # pragma: no cover - Windows has none of these modules.
+    fcntl = None
     pty = None
     termios = None
+
+
+def set_window_size(fd: int, columns: int, rows: int) -> None:
+    """Set the pseudo-terminal size before the child starts."""
+
+    if fcntl is None or termios is None:
+        raise RuntimeError("terminal size is unavailable")
+    # winsize is row, column, x pixels, y pixels.
+    size = struct.pack("HHHH", rows, columns, 0, 0)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, size)
 
 
 def terminal_environment(state_directory: str) -> dict[str, str]:
@@ -194,6 +207,9 @@ def check_hangup_recovery(binary: str, state_directory: str) -> None:
     process.wait(timeout=10)
 
     master, slave = pty.openpty()
+    # The offer keeps restore, discard, and later on an 80-column bar. Pin
+    # that width so a narrow inherited size cannot hide the label.
+    set_window_size(slave, 80, 24)
     process = subprocess.Popen(
         [binary, "--tui"],
         stdin=slave,
@@ -202,10 +218,9 @@ def check_hangup_recovery(binary: str, state_directory: str) -> None:
         env=terminal_environment(state_directory),
         close_fds=True,
     )
-    screen = read_until(master, b"was kept after Noter closed")
-    expect(
-        b"was kept after Noter closed" in screen, "no recovery offer after the hangup"
-    )
+    offer = b"(r)estore, (d)iscard, (l)ater. Unsaved text from Untitled"
+    screen = read_until(master, offer)
+    expect(offer in screen, "no recovery offer after the hangup")
     os.write(master, b"r")
     screen = read_until(master, unsaved.encode())
     expect(unsaved.encode() in screen, "the restored text is not on screen")

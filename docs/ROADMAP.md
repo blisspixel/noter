@@ -1,6 +1,6 @@
 # Noter Roadmap
 
-**Updated:** 2026-11-02
+**Updated:** 2026-11-03
 
 **Current checkpoint:** published `0.1.0-beta.2.2` on 2026-10-13 from
 `e835efb9a7efd2f3d417d6e8558d90c59bed8259`.
@@ -1152,31 +1152,26 @@ its non-Cargo runtime and ship the corresponding notices and SBOM evidence.
 - Two people, including one non-primary developer and one non-Windows user, use
   the candidate for at least 14 days without data loss.
 
-## Resumed backlog review (2026-10-26)
+## Resumed backlog review (2026-11-03)
 
 The published checkpoint remains beta.2.2. PR #86 integrated repository hygiene
-and the scoped dependency-audit policy. Its main CI passed lint, native tests,
-coverage, and thirteen mutation partitions; Windows partition 3 exceeded the
-90-minute job limit. Later main CI used twelve Windows partitions. Run
-41408493226 then cancelled partition 4 at that same ceiling after the other
-partitions passed. The worker count is now sixteen, with the same mutant scope
-and the same ceiling. Exact-head CI must establish the result; a cancelled
-run is not green evidence.
+and the scoped dependency-audit policy. Windows mutation testing is sixteen
+complete partitions, with the same mutant scope and the same 90-minute ceiling.
+That split is on main at `8d9fbb0`. Main push CI run
+[41560720786](https://github.com/blisspixel/noter/actions/runs/41560720786)
+completed with every required job successful.
 
-- Current-editor correctness and safety remain first: visible RTL caret and
-  hit-testing (#69), accessible source mapping (#60), recovery discoverability
-  (#70), and persistent readable warnings (#68).
-- `SIGTERM` restores the terminal (#72). The terminal shortcut bar and help
-  overlay fit an 80-column terminal (#89, #74). A missing or unreachable
-  display prints a plain explanation, and `noter update` prints its status
-  without a window (#73). A failed save names the folder and keeps the open
-  text (#75).
-- The terminal offers reload, keep editing, Save As, and overwrite after a
-  second confirmation when a save finds a disk change. A metadata-only change
-  says the text still matches. The open text stays recoverable until reload,
-  a committed save, or an explicit discard (#71).
-- Installer guidance (#76) and concise CLI help/errors (#81) are implemented in
-  the resumed work; exact-head CI and review are required before integration.
+- Current-editor correctness remains first. A path launch that has a private
+  recovery copy for that exact file shows a dismissible note and leaves the
+  copy in place. The offer names the parent folder and the recorded time.
+  Restore returns to an existing regular file and stays dirty until Save
+  (#70). Persistent readable warnings (#68) are next. Visible RTL caret and
+  hit-testing (#69) and accessible source mapping (#60) stay open.
+- Landed on main in this review: terminal restore on `SIGTERM` (#72), the
+  80-column shortcut bar and help overlay (#89, #74), a plain message for a
+  missing display (#73), a failed save that names the folder (#75), terminal
+  disk-change decisions (#71), installer guidance (#76), and concise CLI help
+  (#81).
 - Toolchain maintenance (#77) and the interface plan (#83, with #78 through #82)
   remain open. Theme and receipt proposals need contract alignment and their
   own tests and native visual evidence.

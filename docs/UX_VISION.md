@@ -26,10 +26,15 @@ When recovery and conflict UI are fully wired, they follow calm system-dialog
 patterns rather than toast spam or silent auto-restore:
 
 - **Startup recovery** appears before a normal untitled document: short plain
-  language, optional original path label (never full content preview by
-  default), primary action Restore, Later to keep the private copy without
-  opening it, Discard, and an explicit note that restore does not overwrite the
-  file on disk until Save. Escape is Later, never Discard.
+  language, a label with the parent folder and recorded time (never full
+  content preview by default), primary action Restore, Later to keep the
+  private copy without opening it, Discard, and an explicit note that restore
+  does not overwrite the file on disk until Save. Escape is Later, never
+  Discard. A path launch does not auto-restore and does not delete records.
+  When a private copy stores that exact path, a dismissible note says to start
+  Noter without a file. Restore returns to that path when it is still a
+  regular file and leaves the text unsaved. Otherwise the document stays
+  untitled and the note says why, without quoting the path.
 - **Damaged recovery** uses quarantine language: what failed (checksum, schema,
   truncated), that the original document was not modified, and that the damaged
   record was set aside when possible.

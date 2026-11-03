@@ -20,6 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use getrandom::fill as fill_random;
 use noter::core::document::Document;
 use noter::core::edit::Selection;
+use noter::core::file_observation::inspect_target;
 use noter::core::recovery::{
     RecoveryClock, RecoveryDocumentId, RecoveryInstanceId, RecoveryLineageGeneration,
     RecoveryOfferDecision, RecoveryOfferState, RecoveryScheduleCommand, RecoveryScheduleEffect,
@@ -34,6 +35,8 @@ use noter::core::recovery_store::{
 };
 use noter::core::revision::Revision;
 use noter::core::save::SaveWarnings;
+use noter::core::save::{SaveStage, TargetState};
+use noter::core::terminal_text::sanitize_line;
 
 #[cfg(test)]
 const RECOVERY_TEST_STATE_SUBDIR: &str = "state";
@@ -182,24 +185,79 @@ impl StartupRecoveryOffer {
         self.offer.is_open()
     }
 
-    /// Short label for UI without full paths when the original path is non-UTF-8.
+    /// Short label naming the file, its parent folder when it has one, and the
+    /// recorded time. Control characters are replaced so the label is safe in
+    /// the terminal and the window.
     pub fn original_path_label(&self) -> String {
+        let when = format_recovery_wall_time(self.metadata().updated_at());
         let bytes = self.metadata().original_path();
-        if bytes.is_empty() {
-            return "Untitled".to_owned();
-        }
-        std::str::from_utf8(bytes).map_or_else(
-            |_| "Recovered document (non-UTF-8 path)".to_owned(),
-            |text| {
-                let name = Path::new(text)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(text);
-                truncate_for_ui(name, 96)
-            },
-        )
+        let place = if bytes.is_empty() {
+            "Untitled".to_owned()
+        } else {
+            std::str::from_utf8(bytes).map_or_else(
+                |_| "Recovered document (non-UTF-8 path)".to_owned(),
+                recovery_place_label,
+            )
+        };
+        truncate_for_ui(&sanitize_line(&format!("{place}, {when}")), 96)
     }
 }
+
+/// How many private recovery copies match the file a path launch just opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathRecoveryHint {
+    /// One open offer stores this path.
+    One,
+    /// More than one open offer stores this path.
+    Many,
+}
+
+impl PathRecoveryHint {
+    /// Window text for the durable, non-modal hint.
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::One => {
+                "A private recovery copy for this file is waiting. Start Noter without a file to review it."
+            }
+            Self::Many => {
+                "Private recovery copies for this file are waiting. Start Noter without a file to review them."
+            }
+        }
+    }
+
+    /// Terminal text for the same hint, including how to hide it.
+    ///
+    /// The status bar is one line. At 80 columns the leading space leaves 79
+    /// characters, so both sentences fit without hiding the review instruction.
+    pub const fn terminal_message(self) -> &'static str {
+        match self {
+            Self::One => {
+                "One copy is waiting. Start Noter with no file to review it. Esc hides this."
+            }
+            Self::Many => {
+                "Copies are waiting. Start Noter with no file to review them. Esc hides this."
+            }
+        }
+    }
+}
+
+/// Status after restore when the original path can take a later Save.
+pub const RESTORED_BOUND: &str = "Restored unsaved text. Save writes it back to that file.";
+
+/// Status after restore when the record had no original path.
+pub const RESTORED_UNTITLED: &str = "Restored unsaved text. Save it to keep it.";
+
+/// Status after restore when the original file is no longer there.
+pub const RESTORED_MISSING: &str =
+    "Restored unsaved text. The original file is missing, so Save asks where to put it.";
+
+/// Status after restore when the original path is not a regular file.
+pub const RESTORED_NOT_REGULAR: &str =
+    "Restored unsaved text. The original path is not a regular file, so Save asks where to put it.";
+
+/// Status after restore when the original path cannot be checked safely.
+pub const RESTORED_UNCHECKED: &str =
+    "Restored unsaved text. The original path could not be checked, so Save asks where to put it.";
 
 /// Process-owned recovery session for one editor window.
 #[derive(Default)]
@@ -512,6 +570,27 @@ impl CrashRecoverySession {
         self.active_offer_index
             .and_then(|index| self.startup_offers.get(index))
             .filter(|offer| offer.is_open())
+    }
+
+    /// Reports open recovery copies whose stored path is exactly `path`.
+    ///
+    /// This does not restore, defer, or delete those copies. A path launch uses
+    /// it before hiding the startup offer.
+    pub fn path_recovery_hint(&self, path: &Path) -> Option<PathRecoveryHint> {
+        let bytes = path_to_bytes(path);
+        if bytes.is_empty() {
+            return None;
+        }
+        let matches = self
+            .startup_offers
+            .iter()
+            .filter(|offer| offer.is_open() && offer.metadata().original_path() == bytes)
+            .count();
+        match matches {
+            0 => None,
+            1 => Some(PathRecoveryHint::One),
+            _ => Some(PathRecoveryHint::Many),
+        }
     }
 
     /// Whether an older Roaming copy of the restored local record awaits an
@@ -1321,6 +1400,95 @@ fn persist_worker_loop(
     }
 }
 
+/// Points recovered text at `path_bytes` when that path is still a regular file.
+///
+/// A missing path, a directory, a symbolic link, or a path that cannot be
+/// checked leaves the document untitled. The returned sentence is fixed and
+/// does not quote the path or a storage diagnostic.
+pub fn bind_recovered_destination(document: &mut Document, path_bytes: &[u8]) -> &'static str {
+    if path_bytes.is_empty() {
+        return RESTORED_UNTITLED;
+    }
+    let Some(path) = path_from_recovery_bytes(path_bytes) else {
+        return RESTORED_UNCHECKED;
+    };
+    match inspect_target(&path, SaveStage::InspectInitial) {
+        Ok(TargetState::Regular(observation)) => {
+            document.attach_recovered_destination(path, observation);
+            RESTORED_BOUND
+        }
+        Ok(TargetState::Missing) => RESTORED_MISSING,
+        Ok(TargetState::Special(_)) => RESTORED_NOT_REGULAR,
+        Err(_) => RESTORED_UNCHECKED,
+    }
+}
+
+fn recovery_place_label(path: &str) -> String {
+    let parsed = Path::new(path);
+    let Some(name) = parsed.file_name().and_then(|name| name.to_str()) else {
+        return path.to_owned();
+    };
+    match parsed
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|folder| folder.to_str())
+    {
+        Some(folder) if !folder.is_empty() => format!("{folder}/{name}"),
+        _ => name.to_owned(),
+    }
+}
+
+fn format_recovery_wall_time(time: RecoveryWallTime) -> String {
+    let (year, month, day, hour, minute) = civil_from_unix_millis(time.unix_millis());
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
+}
+
+fn civil_from_unix_millis(millis: u64) -> (i32, u32, u32, u32, u32) {
+    let secs = millis / 1000;
+    let days = i64::try_from(secs / 86_400).unwrap_or(i64::MAX);
+    let minute_of_day = u32::try_from(secs % 86_400).unwrap_or(0);
+    let hour = minute_of_day / 3600;
+    let minute = (minute_of_day % 3600) / 60;
+    // Howard Hinnant's civil_from_days, shifted so day 0 is 1970-01-01.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = u64::try_from(z - era * 146_097).unwrap_or(0);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let year = i64::try_from(yoe).unwrap_or(0) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let month_index = (5 * doy + 2) / 153;
+    let day = doy - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = if month <= 2 { year + 1 } else { year };
+    (
+        i32::try_from(year).unwrap_or(i32::MAX),
+        u32::try_from(month).unwrap_or(0),
+        u32::try_from(day).unwrap_or(0),
+        hour,
+        minute,
+    )
+}
+
+fn path_from_recovery_bytes(bytes: &[u8]) -> Option<PathBuf> {
+    if bytes.is_empty() || bytes.contains(&0) {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        Some(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
+    }
+    #[cfg(not(unix))]
+    {
+        let text = std::str::from_utf8(bytes).ok()?;
+        Some(PathBuf::from(text))
+    }
+}
+
 fn path_to_bytes(path: &Path) -> Vec<u8> {
     #[cfg(unix)]
     {
@@ -1390,7 +1558,8 @@ mod tests {
         validate_recovery_record,
     };
     use noter::core::revision::Revision;
-    use noter::core::save::ContentFingerprint;
+    use noter::core::save::{ContentFingerprint, SaveOutcome};
+    use noter::core::terminal_text::is_terminal_unsafe;
     use noter::core::text_format::{Bom, Encoding};
     use tempfile::tempdir;
 
@@ -1854,7 +2023,10 @@ mod tests {
         assert!(!session.is_unavailable());
         let offer = session.active_offer().expect("offer");
         assert_eq!(offer.metadata().content_len(), b"hello recovery".len());
-        assert_eq!(offer.original_path_label(), "notes.txt");
+        assert_eq!(
+            offer.original_path_label(),
+            "notes.txt, 1970-01-01 00:00 UTC"
+        );
 
         let (document, selection) = session.restore_active_offer().expect("restore");
         assert!(document.is_dirty());
@@ -1862,6 +2034,196 @@ mod tests {
         assert_eq!(selection, Selection::caret(0));
         assert!(session.active_offer().is_none());
         assert!(store.scan_startup().expect("rescan").is_empty());
+    }
+
+    #[test]
+    fn recovery_wall_time_labels_use_utc_minutes() {
+        assert_eq!(
+            format_recovery_wall_time(RecoveryWallTime::from_unix_millis(0)),
+            "1970-01-01 00:00 UTC"
+        );
+        assert_eq!(
+            format_recovery_wall_time(RecoveryWallTime::from_unix_millis(86_400_000)),
+            "1970-01-02 00:00 UTC"
+        );
+        assert_eq!(
+            format_recovery_wall_time(RecoveryWallTime::from_unix_millis(1_793_631_840_000)),
+            "2026-11-02 15:04 UTC"
+        );
+    }
+
+    fn snapshot_at(instance: u8, path: &[u8], updated_at: u64, content: &[u8]) -> RecoverySnapshot {
+        RecoverySnapshot::try_new(RecoverySnapshotParts {
+            document_id: RecoveryDocumentId::new([instance; 16]),
+            instance_id: RecoveryInstanceId::new([instance; 16]),
+            revision: Revision::new(1),
+            created_at: RecoveryWallTime::from_unix_millis(1),
+            updated_at: RecoveryWallTime::from_unix_millis(updated_at),
+            original_path: path.to_vec(),
+            bom: Bom::Absent,
+            encoding: Encoding::Utf8,
+            selection: Selection::caret(0),
+            content: content.to_vec(),
+        })
+        .expect("snapshot")
+    }
+
+    #[test]
+    fn offer_label_names_the_parent_folder_and_replaces_controls() {
+        let dir = tempdir().expect("tempdir");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        store
+            .persist(&snapshot_at(
+                4,
+                b"notes/\x1b[31mdraft notes.md",
+                1_793_631_840_000,
+                b"kept",
+            ))
+            .expect("persist");
+        let label = CrashRecoverySession::open_at(dir.path())
+            .active_offer()
+            .expect("offer")
+            .original_path_label();
+        assert_eq!(
+            label,
+            "notes/\u{FFFD}[31mdraft notes.md, 2026-11-02 15:04 UTC"
+        );
+    }
+
+    #[test]
+    fn path_open_hint_matches_the_stored_path_and_keeps_the_record() {
+        let dir = tempdir().expect("tempdir");
+        let notes = dir.path().join("notes");
+        fs::create_dir(&notes).expect("folder");
+        let draft = notes.join("draft notes.md");
+        let other = dir.path().join("draft notes.md");
+        fs::write(&draft, b"disk").expect("draft");
+        fs::write(&other, b"other").expect("other");
+        let store = RecoveryStore::open(dir.path()).expect("store");
+        store
+            .persist(&snapshot_at(
+                4,
+                &path_to_bytes(&draft),
+                1_793_631_840_000,
+                b"recovered",
+            ))
+            .expect("persist");
+        store
+            .persist(&snapshot_at(
+                5,
+                &path_to_bytes(&draft),
+                1_793_631_840_000,
+                b"also recovered",
+            ))
+            .expect("second persist");
+        let session = CrashRecoverySession::open_at(dir.path());
+        assert_eq!(
+            session.path_recovery_hint(&draft),
+            Some(PathRecoveryHint::Many)
+        );
+        assert_eq!(session.path_recovery_hint(&other), None);
+        assert_eq!(
+            store.scan_startup().expect("still stored").len(),
+            2,
+            "a hint must not delete the recovery records"
+        );
+        for hint in [PathRecoveryHint::One, PathRecoveryHint::Many] {
+            let terminal = hint.terminal_message();
+            assert!(terminal.len() <= 79, "{terminal}");
+            assert!(terminal.contains("no file"));
+            assert!(terminal.contains("Esc hides this."));
+            assert!(!terminal.chars().any(is_terminal_unsafe));
+            assert!(!hint.message().contains("Esc"));
+        }
+    }
+
+    #[test]
+    fn restore_binds_an_existing_file_and_explains_every_other_path() {
+        let dir = tempdir().expect("tempdir");
+        let draft = dir.path().join("draft notes.md");
+        fs::write(&draft, b"disk").expect("disk");
+        let missing = dir.path().join("gone.md");
+        let folder = dir.path().join("not-a-file");
+        fs::create_dir(&folder).expect("folder");
+        let mut instance = 20_u8;
+
+        let mut bind = |path_bytes: &[u8], content: &[u8]| {
+            instance += 1;
+            // Restore writes a dirty successor record. A fresh store keeps
+            // that successor from becoming the next case's offer.
+            let case_dir = tempdir().expect("case");
+            let store = RecoveryStore::open(case_dir.path()).expect("store");
+            let snapshot = RecoverySnapshot::try_new(RecoverySnapshotParts {
+                document_id: RecoveryDocumentId::new([instance; 16]),
+                instance_id: RecoveryInstanceId::new([instance; 16]),
+                revision: Revision::new(1),
+                created_at: RecoveryWallTime::from_unix_millis(1),
+                updated_at: RecoveryWallTime::from_unix_millis(2),
+                original_path: path_bytes.to_vec(),
+                bom: Bom::Absent,
+                encoding: Encoding::Utf8,
+                selection: Selection::caret(0),
+                content: content.to_vec(),
+            })
+            .expect("snapshot");
+            store.persist(&snapshot).expect("persist");
+            let mut session = CrashRecoverySession::open_at(case_dir.path());
+            let (mut document, _) = session.restore_active_offer().expect("restore");
+            assert_eq!(
+                String::from(document.rope()),
+                std::str::from_utf8(content).expect("fixture text")
+            );
+            let notice = bind_recovered_destination(&mut document, snapshot.original_path());
+            assert!(
+                !notice.contains("draft notes") && !notice.contains("not-a-file"),
+                "the explanation must not quote the path: {notice}"
+            );
+            (document, notice)
+        };
+
+        let (mut restored, notice) = bind(&path_to_bytes(&draft), b"recovered text");
+        assert_eq!(notice, RESTORED_BOUND);
+        assert_eq!(restored.path(), Some(draft.as_path()));
+        assert!(restored.is_dirty());
+        assert!(matches!(
+            restored.save().expect("save"),
+            SaveOutcome::Committed { .. }
+        ));
+        assert_eq!(fs::read(&draft).expect("written"), b"recovered text");
+
+        let (missing_document, notice) = bind(&path_to_bytes(&missing), b"held");
+        assert_eq!(notice, RESTORED_MISSING);
+        assert!(missing_document.path().is_none());
+        assert!(missing_document.is_dirty());
+
+        let (folder_document, notice) = bind(&path_to_bytes(&folder), b"held elsewhere");
+        assert_eq!(notice, RESTORED_NOT_REGULAR);
+        assert!(folder_document.path().is_none());
+        assert_eq!(
+            fs::read(&draft).expect("regular file stays"),
+            b"recovered text"
+        );
+
+        let (untitled, notice) = bind(b"", b"no path");
+        assert_eq!(notice, RESTORED_UNTITLED);
+        assert!(untitled.path().is_none());
+
+        let (unchecked, notice) = bind(b"has\0nul", b"unchecked");
+        assert_eq!(notice, RESTORED_UNCHECKED);
+        assert!(unchecked.path().is_none());
+
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.md");
+            std::os::unix::fs::symlink(&draft, &link).expect("symlink");
+            let (linked, notice) = bind(&path_to_bytes(&link), b"through the link");
+            assert_eq!(notice, RESTORED_NOT_REGULAR);
+            assert!(linked.path().is_none());
+            assert_eq!(
+                fs::read(&draft).expect("symlink target stays"),
+                b"recovered text"
+            );
+        }
     }
 
     #[test]
