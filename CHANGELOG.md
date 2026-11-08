@@ -9,6 +9,14 @@ that candidate is frozen for publication.
 - Pin Rust 1.99.1 in the repository toolchain, both package manifests, and CI.
   Release Linux binaries stay on Ubuntu 22.04, so the published glibc floor
   remains 2.35 (#77).
+- The terminal follows the host terminal's colors. Headings, Markdown markers,
+  and the current mode are cyan. Line numbers and shortcut labels are dim.
+  Find matches, the position line, prompts, and the shortcut bars are reverse
+  video. A committed save is green, a durability or storage warning is yellow,
+  and a failed save is red. Those save lines are not reverse video. A
+  non-empty `NO_COLOR` turns those colors off and keeps bold, dim, italic, and
+  reverse. `--theme` still selects the window theme. Ctrl+T no longer switches
+  a terminal palette (#80).
 - Show a long save or recovery warning in full. It wraps at word boundaries,
   and Dismiss stays in the window. A committed save that keeps a sibling says
   the save happened and names the follow-up. When recovery is off, the reason
