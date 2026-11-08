@@ -196,12 +196,10 @@ pub fn list_retained_save_siblings(parent: &Path) -> io::Result<Vec<PathBuf>> {
         let name = entry.file_name();
         if is_retained_save_sibling_name(&name) {
             siblings.push(entry.path());
-            if siblings.len() >= MAX_ENUMERATED_RETAINED_SIBLINGS {
-                break;
-            }
         }
     }
     siblings.sort();
+    siblings.truncate(MAX_ENUMERATED_RETAINED_SIBLINGS);
     Ok(siblings)
 }
 
