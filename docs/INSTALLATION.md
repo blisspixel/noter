@@ -9,7 +9,9 @@ This guide describes beta.2.2 source and its
 Beta.2.2 is a scoped follow-up to the published
 [beta.2.1](https://github.com/blisspixel/noter/releases/tag/v0.1.0-beta.2.1)
 prerelease. It bounds retained save siblings and removes one only after a
-fresh identity and single-link check. Unix keeps that file. It does not
+fresh identity and single-link check. Unix keeps that file. On Linux and macOS
+each in-place save keeps the displaced previous version beside the destination,
+and pauses after eight until removed. It does not
 complete the recovery matrix, the measured editor gate, or continuous Markdown
 editing. Keep backups during evaluation.
 Windows and macOS artifacts are not yet platform-signed, and no self-updating

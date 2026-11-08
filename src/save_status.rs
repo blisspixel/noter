@@ -23,13 +23,28 @@ const MAX_RECEIPT_TIME_CHARS: usize = 64;
 /// The status for [`noter::core::save::SaveOutcome::NotCommitted`].
 ///
 /// `destination` is the path the user asked to write. The folder in the
-/// sentence is its parent. A cleanup failure is appended so a private
-/// artifact that could not be removed stays visible.
-pub fn not_committed_status(destination: &Path, cleanup_error: Option<&StorageError>) -> String {
-    let mut message = format!(
-        "Not saved: could not write in {}. This text is still open, and the file on disk was not changed. Choose another location.",
-        folder_label(destination)
-    );
+/// sentence is its parent. When saving is refused due to the retained-sibling
+/// limit, the status explains that earlier versions were kept and how to
+/// proceed. A cleanup failure is appended so a private artifact that could
+/// not be removed stays visible.
+pub fn not_committed_status(
+    destination: &Path,
+    error: &StorageError,
+    cleanup_error: Option<&StorageError>,
+) -> String {
+    let is_retained_bound = error.message().contains("retained .noter-save siblings");
+    let mut message = if is_retained_bound {
+        format!(
+            "Not saved. {} already has {} earlier versions kept by Noter (.noter-save-*.tmp). Check them and delete the ones you do not need, or use Save As.",
+            folder_subject_label(destination),
+            noter::core::save::MAX_RETAINED_SAVE_SIBLINGS,
+        )
+    } else {
+        format!(
+            "Not saved: could not write in {}. This text is still open, and the file on disk was not changed. Choose another location.",
+            folder_label(destination)
+        )
+    };
     append_cleanup_warning(&mut message, cleanup_error);
     message
 }
@@ -137,6 +152,15 @@ fn folder_label(destination: &Path) -> String {
     }
 }
 
+fn folder_subject_label(destination: &Path) -> String {
+    match destination.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => {
+            format!("Folder `{}`", escaped_cli_path(parent))
+        }
+        _ => "The current directory".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -151,7 +175,11 @@ mod tests {
     #[test]
     fn a_failed_save_names_the_folder_and_hides_the_engine_diagnostic() {
         let destination = Path::new("readonly").join("note.txt");
-        let status = not_committed_status(&destination, None);
+        let error = StorageError::new(
+            SaveStage::CreateTemporary,
+            "Permission denied (os error 13)",
+        );
+        let status = not_committed_status(&destination, &error, None);
 
         assert_eq!(
             status,
@@ -165,7 +193,11 @@ mod tests {
 
     #[test]
     fn a_bare_file_name_names_the_current_directory() {
-        let status = not_committed_status(Path::new("note.txt"), None);
+        let error = StorageError::new(
+            SaveStage::CreateTemporary,
+            "Permission denied (os error 13)",
+        );
+        let status = not_committed_status(Path::new("note.txt"), &error, None);
 
         assert!(status.contains("could not write in the current directory"));
         assert!(!status.contains("PermissionDenied"));
@@ -174,10 +206,36 @@ mod tests {
     #[test]
     fn a_control_character_in_the_folder_is_escaped() {
         let destination = PathBuf::from("read\nonly").join("note.txt");
-        let status = not_committed_status(&destination, None);
+        let error = StorageError::new(
+            SaveStage::CreateTemporary,
+            "Permission denied (os error 13)",
+        );
+        let status = not_committed_status(&destination, &error, None);
 
         assert!(status.contains("read\\nonly"));
         assert!(!status.contains('\n'));
+    }
+
+    #[test]
+    fn retained_sibling_bound_names_folder_earlier_versions_and_actions() {
+        let destination = Path::new("my_docs").join("note.txt");
+        let error = StorageError::new(
+            SaveStage::CreateTemporary,
+            "the destination directory already holds 8 retained .noter-save siblings. The limit is 8.",
+        );
+        let status = not_committed_status(&destination, &error, None);
+
+        assert_eq!(
+            status,
+            "Not saved. Folder `my_docs` already has 8 earlier versions kept by Noter (.noter-save-*.tmp). Check them and delete the ones you do not need, or use Save As."
+        );
+
+        let bare = Path::new("note.txt");
+        let bare_status = not_committed_status(bare, &error, None);
+        assert_eq!(
+            bare_status,
+            "Not saved. The current directory already has 8 earlier versions kept by Noter (.noter-save-*.tmp). Check them and delete the ones you do not need, or use Save As."
+        );
     }
 
     #[test]
@@ -206,8 +264,13 @@ mod tests {
 
     #[test]
     fn a_cleanup_failure_stays_visible_after_the_plain_sentence() {
+        let error = StorageError::new(SaveStage::CreateTemporary, "write failed");
         let cleanup = StorageError::new(SaveStage::Cleanup, "private artifact was preserved");
-        let status = not_committed_status(&Path::new("readonly").join("note.txt"), Some(&cleanup));
+        let status = not_committed_status(
+            &Path::new("readonly").join("note.txt"),
+            &error,
+            Some(&cleanup),
+        );
 
         assert!(status.contains("could not write in `readonly`"));
         assert!(status.contains("Cleanup also failed and a private artifact may remain:"));

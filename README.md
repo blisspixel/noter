@@ -39,6 +39,8 @@ dossier.
     themes (`noter --tui`).
 - **Defensive Durability:** Atomic file replacement, BLAKE3 content hashing,
   sibling staging, verified permissions, and owner-restricted crash recovery.
+  On Linux and macOS each in-place save keeps the displaced previous version
+  beside the destination, and pauses after eight until removed.
 - **Quiet and Responsive:** Native rendering, an idle window that sleeps
   instead of repainting, and a rope-backed document core. The measured
   latency budgets and the virtualized large-file editor (target: 50 MiB) are

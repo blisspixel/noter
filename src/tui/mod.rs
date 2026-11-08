@@ -46,7 +46,8 @@ use noter::core::navigation::{
 };
 use noter::core::revision::Revision;
 use noter::core::save::{
-    FileObservation, SaveOutcome, SaveStage, SaveWarnings, TargetExpectation, TargetState,
+    Durability, FileObservation, SaveOutcome, SaveStage, SaveWarnings, TargetExpectation,
+    TargetState,
 };
 use noter::core::save_recovery::{
     MAX_SAVE_RECOVERY_DESTINATION_BYTES, MAX_SAVE_RECOVERY_MESSAGE_BYTES,
@@ -250,6 +251,8 @@ pub struct TuiSession {
     pending_clipboard: Option<String>,
     reconcile_scroll: usize,
     last_save_warnings: Option<SaveWarnings>,
+    pub(super) last_save_error: Option<String>,
+    pub(super) last_save_retained_paths: Option<Vec<PathBuf>>,
     retained_sibling_removal: RetainedSiblingRemoval,
     /// Decision state shared with the window. The terminal does not watch while idle.
     conflict: ConflictState,
@@ -323,6 +326,8 @@ impl TuiSession {
             pending_clipboard: None,
             reconcile_scroll: 0,
             last_save_warnings: None,
+            last_save_error: None,
+            last_save_retained_paths: None,
             retained_sibling_removal: RetainedSiblingRemoval::Idle,
             conflict: ConflictState::default(),
             reviewed_disk: None,
@@ -471,7 +476,9 @@ impl TuiSession {
     }
 
     fn set_save_error(&mut self, message: impl Into<String>) {
-        self.set_toned_status(message, StatusTone::Error);
+        let msg = message.into();
+        self.last_save_error = Some(msg.clone());
+        self.set_toned_status(msg, StatusTone::Error);
     }
 
     fn set_uncertain_guidance(&mut self) {
@@ -788,7 +795,10 @@ impl TuiSession {
 
     fn open_save_reconciliation(&mut self) {
         if self.save_recoveries.is_empty() {
-            if self.last_save_warnings.is_some() || self.recovery.is_unavailable() {
+            if self.last_save_warnings.is_some()
+                || self.last_save_error.is_some()
+                || self.recovery.is_unavailable()
+            {
                 self.prompt = PromptMode::SaveWarnings;
                 self.reconcile_scroll = 0;
                 self.retained_sibling_removal = RetainedSiblingRemoval::Idle;
@@ -1193,6 +1203,57 @@ impl TuiSession {
         self.set_status(disk_conflict::LOADED);
     }
 
+    fn report_committed_save(
+        &mut self,
+        observation: FileObservation,
+        warnings: SaveWarnings,
+        durability: Durability,
+    ) -> SaveStep {
+        self.external_retention = ExternalRetention::Clear;
+        self.dismiss_disk_conflict();
+        let warning_count = warnings.cleanup().len() + warnings.durability().len();
+        self.save_durability = SaveDurabilityRisk::from_warnings(&warnings);
+        if self.save_durability.is_at_risk() {
+            self.recovery
+                .on_retained(&self.document, Selection::caret(self.caret_byte));
+        } else {
+            self.recovery.on_committed_save(self.document.revision());
+            if self.recovery.active_offer().is_some() {
+                self.prompt = PromptMode::RecoveryOffer;
+            }
+        }
+        if self.save_durability.is_at_risk() {
+            self.set_toned_status(
+                "Saved with uncertain durability. Keep open and Save again. ^R details.",
+                StatusTone::Warning,
+            );
+        } else if let Some(receipt) = crate::save_status::durable_receipt_text(
+            durability,
+            &warnings,
+            observation.length(),
+            &noter_platform::local_short_time().unwrap_or_default(),
+        ) {
+            self.set_toned_status(receipt, StatusTone::Success);
+        } else if warning_count == 0 {
+            self.set_toned_status(
+                format!("Wrote {} bytes", observation.length()),
+                StatusTone::Success,
+            );
+        } else {
+            self.set_toned_status(
+                format!(
+                    "Wrote {} bytes with {warning_count} storage warning(s). ^R details.",
+                    observation.length()
+                ),
+                StatusTone::Warning,
+            );
+        }
+        self.last_save_warnings = (!warnings.is_empty()).then_some(warnings);
+        self.last_save_error = None;
+        self.last_save_retained_paths = None;
+        SaveStep::Committed
+    }
+
     /// Turns a save result into status text and the next step.
     fn report_save(
         &mut self,
@@ -1205,49 +1266,7 @@ impl TuiSession {
                 warnings,
                 durability,
                 ..
-            }) => {
-                self.external_retention = ExternalRetention::Clear;
-                self.dismiss_disk_conflict();
-                let warning_count = warnings.cleanup().len() + warnings.durability().len();
-                self.save_durability = SaveDurabilityRisk::from_warnings(&warnings);
-                if self.save_durability.is_at_risk() {
-                    self.recovery
-                        .on_retained(&self.document, Selection::caret(self.caret_byte));
-                } else {
-                    self.recovery.on_committed_save(self.document.revision());
-                    if self.recovery.active_offer().is_some() {
-                        self.prompt = PromptMode::RecoveryOffer;
-                    }
-                }
-                if self.save_durability.is_at_risk() {
-                    self.set_toned_status(
-                        "Saved with uncertain durability. Keep open and Save again. ^R details.",
-                        StatusTone::Warning,
-                    );
-                } else if let Some(receipt) = crate::save_status::durable_receipt_text(
-                    durability,
-                    &warnings,
-                    observation.length(),
-                    &noter_platform::local_short_time().unwrap_or_default(),
-                ) {
-                    self.set_toned_status(receipt, StatusTone::Success);
-                } else if warning_count == 0 {
-                    self.set_toned_status(
-                        format!("Wrote {} bytes", observation.length()),
-                        StatusTone::Success,
-                    );
-                } else {
-                    self.set_toned_status(
-                        format!(
-                            "Wrote {} bytes with {warning_count} storage warning(s). ^R details.",
-                            observation.length()
-                        ),
-                        StatusTone::Warning,
-                    );
-                }
-                self.last_save_warnings = (!warnings.is_empty()).then_some(warnings);
-                SaveStep::Committed
-            }
+            }) => self.report_committed_save(observation, warnings, durability),
             Ok(SaveOutcome::Conflict {
                 revision,
                 expected,
@@ -1257,12 +1276,28 @@ impl TuiSession {
                 self.begin_disk_conflict(revision, expected, actual, cleanup_error.is_some());
                 SaveStep::NotSaved
             }
-            Ok(SaveOutcome::NotCommitted { cleanup_error, .. }) => {
+            Ok(SaveOutcome::NotCommitted {
+                error,
+                cleanup_error,
+                ..
+            }) => {
                 // The engine diagnostic stays on the outcome for recovery.
                 // The status names the folder instead of that diagnostic.
                 self.dismiss_disk_conflict();
+                if error.message().contains("retained .noter-save siblings") {
+                    let parent = reservation
+                        .destination
+                        .parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .unwrap_or_else(|| std::path::Path::new("."));
+                    self.last_save_retained_paths =
+                        noter::core::save::list_retained_save_siblings(parent).ok();
+                } else {
+                    self.last_save_retained_paths = None;
+                }
                 self.set_save_error(crate::save_status::not_committed_status(
                     &reservation.destination,
+                    &error,
                     cleanup_error.as_ref(),
                 ));
                 SaveStep::NotSaved
@@ -2499,7 +2534,11 @@ fn handle_event(session: &mut TuiSession, event: TuiEvent, cols: u16, rows: u16)
                         session.scroll_save_details(MoveDirection::Backward, cols, rows);
                     }
                     TuiKey::Char('x') => {
-                        if session.retained_removal_is_armed() {
+                        if !cfg!(windows) {
+                            session.set_status(
+                                "Delete retained files by hand after checking: automatic removal is not supported on Unix",
+                            );
+                        } else if session.retained_removal_is_armed() {
                             session.remove_confirmed_retained_siblings();
                             session.retained_sibling_removal = RetainedSiblingRemoval::Idle;
                         } else {
@@ -3843,6 +3882,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn confirmed_retained_sibling_removal_keeps_a_replaced_name() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory
@@ -3883,6 +3923,101 @@ mod tests {
 
         assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
         assert_eq!(std::fs::read(&held).unwrap(), b"artifact");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn retained_sibling_removal_on_unix_informs_user_and_does_not_arm() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory
+            .path()
+            .join(".noter-save-11111111111111111111111111111111.tmp");
+        std::fs::write(&path, b"artifact").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let facts = noter_platform::file_facts(&file).unwrap();
+        let identity = match facts.identity().quality() {
+            noter_platform::IdentityQuality::Preferred => noter::core::save::FileIdentity::new(
+                facts.identity().volume(),
+                facts.identity().file(),
+            ),
+            noter_platform::IdentityQuality::Reduced => noter::core::save::FileIdentity::reduced(
+                facts.identity().volume(),
+                facts.identity().file(),
+            ),
+        };
+        drop(file);
+        let mut session = untitled();
+        session.last_save_warnings = Some(
+            SaveWarnings::new(vec![storage_error("kept")], Vec::new()).with_retained(vec![
+                noter::core::save::RetainedSaveSibling::new(path.clone(), identity),
+            ]),
+        );
+        session.prompt = PromptMode::SaveWarnings;
+        let frame = render_frame(&session, 100, 24);
+        assert!(frame.contains("Delete by hand after checking"));
+        assert!(!frame.contains("x x removes verified sibling"));
+
+        handle_event(&mut session, TuiEvent::Key(TuiKey::Char('x')), 80, 24);
+        assert!(!session.retained_removal_is_armed());
+        assert!(
+            session
+                .status_message
+                .as_ref()
+                .unwrap()
+                .0
+                .contains("automatic removal is not supported on Unix")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"artifact");
+    }
+
+    #[test]
+    fn save_refusal_at_retained_sibling_limit_records_error_and_retained_paths_for_ctrl_r() {
+        let directory = tempfile::tempdir().unwrap();
+        let note_path = directory.path().join("note.txt");
+        let sibling_name = ".noter-save-11111111111111111111111111111111.tmp";
+        let sibling_path = directory.path().join(sibling_name);
+        std::fs::write(&sibling_path, b"earlier version").unwrap();
+
+        let mut session = untitled();
+        let reservation = session.reserve_save_recovery(note_path.clone()).unwrap();
+        let limit_err = storage_error(
+            "the destination directory already holds 8 retained .noter-save siblings. The limit is 8.",
+        );
+        session.report_save(
+            reservation,
+            Ok(SaveOutcome::NotCommitted {
+                revision: Revision::INITIAL,
+                error: limit_err,
+                cleanup_error: None,
+            }),
+        );
+
+        assert!(session.last_save_error.is_some());
+        assert_eq!(
+            session.last_save_retained_paths.as_ref().unwrap(),
+            &[sibling_path]
+        );
+
+        // Open save details via Ctrl+R
+        key(&mut session, TuiKey::Ctrl('r'));
+        assert_eq!(session.prompt, PromptMode::SaveWarnings);
+        let frame = render_frame(&session, 120, 24);
+        assert!(frame.contains("already has 8 earlier versions kept by Noter"));
+        assert!(frame.contains(sibling_name));
+
+        // Subsequent committed save clears the error and retained paths
+        let reservation2 = session.reserve_save_recovery(note_path).unwrap();
+        session.report_save(
+            reservation2,
+            Ok(SaveOutcome::Committed {
+                revision: Revision::INITIAL,
+                observation: receipt_observation(),
+                warnings: SaveWarnings::default(),
+                durability: noter::core::save::Durability::FileSynced,
+            }),
+        );
+        assert!(session.last_save_error.is_none());
+        assert!(session.last_save_retained_paths.is_none());
     }
 
     #[test]
