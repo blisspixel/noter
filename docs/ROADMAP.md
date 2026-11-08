@@ -155,6 +155,16 @@ does not expand unsafe UI surface.
 
 ### Toward `0.1.0-beta.3`
 
+**Unix split terminal input (#104).** The decoder holds a lone ESC for 100 ms.
+A following arrow, mouse, or paste sequence completes instead of being
+inserted. The chunking property includes a cut after ESC. The Linux and macOS
+PTY check writes ESC and then `[A` as two reads and checks that the next
+typed character lands on the previous line. It also checks that a bare Escape
+closes help only after that idle deadline. Windows still resolves a trailing
+ESC immediately, because its console wait reports ready before a blocking
+read. #104 stays open until that adapter uses the same deadline or a console
+test shows one key cannot arrive split.
+
 9. **Complete M4-H1 recovery namespace binding:** verify and retain the state and
    recovery directory identities and access policy, route operations through
    held directory handles, reject unsupported roots before writing recovery

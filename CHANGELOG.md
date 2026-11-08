@@ -6,6 +6,11 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- On Unix, wait up to 100 ms before interpreting a lone terminal ESC as
+  Escape, so arrow, mouse, and paste sequences split immediately after ESC
+  can finish without inserting their suffix as text. Windows retains the
+  existing immediate-Escape behavior until its console adapter supports timed
+  reads; #104 is only partially addressed.
 - Clarify save refusal at the retained-sibling bound and terminal guidance on
   Unix. When in-place saves pause after eight retained `.noter-save-*.tmp` siblings,
   the status names the folder and explains that earlier versions were kept and to

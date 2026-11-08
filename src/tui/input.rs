@@ -3,7 +3,8 @@
 //! A read from the terminal can end anywhere: inside a UTF-8 character,
 //! inside a control sequence, or inside a bracketed paste. The decoder holds
 //! back an incomplete tail until the next read completes it, so no input is
-//! split, garbled, or mistaken for a different key.
+//! split or garbled. Timed adapters resolve a lone ESC after a short wait;
+//! adapters with blocking reads retain immediate Escape behavior.
 
 /// A parsed terminal key event.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -45,15 +46,19 @@ pub enum TuiEvent {
     Paste(String),
 }
 
+use std::time::{Duration, Instant};
+
 use noter::core::limits::MAX_DOCUMENT_BYTES;
 
 /// Bytes that open and close a bracketed paste.
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
-/// Longest control sequence kept waiting for its final byte. A terminal
-/// sends each sequence whole, so anything longer is noise and is dropped.
+/// Longest incomplete control sequence retained before treating it as noise.
 const MAX_SEQUENCE_BYTES: usize = 64;
+
+/// Time to distinguish a bare Escape key from a split control sequence.
+const ESCAPE_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Turns raw terminal input into events, holding back any character,
 /// control sequence, or paste that a read split in two.
@@ -61,6 +66,7 @@ const MAX_SEQUENCE_BYTES: usize = 64;
 pub struct InputDecoder {
     pending: Vec<u8>,
     paste: Option<Vec<u8>>,
+    escape_since: Option<Instant>,
 }
 
 /// The first complete item at the start of the pending bytes.
@@ -74,6 +80,10 @@ enum Decoded {
 impl InputDecoder {
     /// Decodes `bytes` after anything held back from earlier reads.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<TuiEvent> {
+        self.feed_at(bytes, Instant::now())
+    }
+
+    pub(super) fn feed_at(&mut self, bytes: &[u8], now: Instant) -> Vec<TuiEvent> {
         self.pending.extend_from_slice(bytes);
         let mut events = Vec::new();
         let mut index = 0;
@@ -108,7 +118,35 @@ impl InputDecoder {
             }
         }
         self.pending.drain(..index);
+        if self.paste.is_none() && self.pending == b"\x1b" {
+            if !bytes.is_empty() {
+                self.escape_since = Some(now);
+            }
+        } else {
+            self.escape_since = None;
+        }
         events
+    }
+
+    /// Remaining wait for a lone ESC; other incomplete input has no deadline.
+    pub fn escape_delay(&self, now: Instant) -> Option<Duration> {
+        self.escape_since
+            .map(|since| ESCAPE_TIMEOUT.saturating_sub(now.saturating_duration_since(since)))
+    }
+
+    /// Emits a bare Escape only after its ambiguity interval has elapsed.
+    pub fn expire_escape(&mut self, now: Instant) -> Option<TuiEvent> {
+        if self.escape_delay(now) != Some(Duration::ZERO) {
+            return None;
+        }
+        self.finish_escape()
+    }
+
+    /// Resolves a pending bare Escape for adapters without timed reads.
+    pub fn finish_escape(&mut self) -> Option<TuiEvent> {
+        self.escape_since.take()?;
+        self.pending.clear();
+        Some(TuiEvent::Key(TuiKey::Escape))
     }
 }
 
@@ -193,11 +231,11 @@ fn decode_escape(bytes: &[u8]) -> Decoded {
         Some(b'[') => decode_csi(bytes),
         // Alt with a printable key has no binding; the chord types nothing.
         Some(0x20..=0x7e) => Decoded::Ignored(2),
-        // A read that ends in ESC is the Escape key: terminals send every
-        // sequence in one write, so a lone trailing ESC starts nothing. ESC
-        // before a control or non-ASCII byte is also Escape, and that byte is
-        // decoded on its own.
-        None | Some(_) => Decoded::Event(TuiEvent::Key(TuiKey::Escape), 1),
+        // A read boundary does not distinguish Escape from a sequence prefix.
+        None => Decoded::Incomplete,
+        // ESC before a control or non-ASCII byte is Escape; decode that byte
+        // on its own, preserving the existing non-ASCII Alt behavior.
+        Some(_) => Decoded::Event(TuiEvent::Key(TuiKey::Escape), 1),
     }
 }
 
@@ -407,8 +445,143 @@ mod tests {
     }
 
     #[test]
-    fn a_trailing_escape_is_the_escape_key_and_alt_chords_type_nothing() {
-        assert_eq!(decode_all(b"\x1b"), vec![key(TuiKey::Escape)]);
+    fn every_sequence_split_including_after_escape_is_joined() {
+        let sequences: &[(&[u8], TuiEvent)] = &[
+            (b"\x1b[A", key(TuiKey::Up)),
+            (b"\x1b[B", key(TuiKey::Down)),
+            (b"\x1b[C", key(TuiKey::Right)),
+            (b"\x1b[D", key(TuiKey::Left)),
+            (b"\x1bOA", key(TuiKey::Up)),
+            (b"\x1bOB", key(TuiKey::Down)),
+            (b"\x1bOC", key(TuiKey::Right)),
+            (b"\x1bOD", key(TuiKey::Left)),
+            (b"\x1b[3~", key(TuiKey::Delete)),
+            (b"\x1b[1;5D", key(TuiKey::CtrlLeft)),
+            (b"\x1bOP", key(TuiKey::F(1))),
+            (
+                b"\x1b[<0;12;4M",
+                TuiEvent::Mouse(TuiMouseEvent::Press { col: 12, row: 4 }),
+            ),
+            (
+                b"\x1b[<64;12;4M",
+                TuiEvent::Mouse(TuiMouseEvent::ScrollUp { col: 12, row: 4 }),
+            ),
+            (
+                b"\x1b[<65;12;4M",
+                TuiEvent::Mouse(TuiMouseEvent::ScrollDown { col: 12, row: 4 }),
+            ),
+        ];
+        let now = Instant::now();
+        for (bytes, expected) in sequences {
+            for split in 1..bytes.len() {
+                let mut decoder = InputDecoder::default();
+                assert!(decoder.feed_at(&bytes[..split], now).is_empty());
+                assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT / 2), None);
+                assert_eq!(
+                    decoder.feed_at(&bytes[split..], now + ESCAPE_TIMEOUT / 2),
+                    vec![expected.clone()],
+                    "split {split} in {bytes:?}"
+                );
+                assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT), None);
+            }
+            let mut decoder = InputDecoder::default();
+            let mut events = Vec::new();
+            for byte in *bytes {
+                events.extend(decoder.feed_at(std::slice::from_ref(byte), now));
+            }
+            assert_eq!(events, vec![expected.clone()]);
+        }
+    }
+
+    #[test]
+    fn bare_escape_expires_once_and_empty_reads_do_not_restart_it() {
+        let mut decoder = InputDecoder::default();
+        let now = Instant::now();
+        assert!(decoder.feed_at(b"\x1b", now).is_empty());
+        assert_eq!(decoder.escape_delay(now), Some(ESCAPE_TIMEOUT));
+        assert!(decoder.feed_at(b"", now + ESCAPE_TIMEOUT / 2).is_empty());
+        assert_eq!(decoder.escape_delay(now + ESCAPE_TIMEOUT / 2), Some(ESCAPE_TIMEOUT / 2));
+        assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT - Duration::from_nanos(1)), None);
+        assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT), Some(key(TuiKey::Escape)));
+        assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT), None);
+        assert_eq!(decoder.escape_delay(now + ESCAPE_TIMEOUT), None);
+        assert_eq!(decoder.feed_at(b"x", now + ESCAPE_TIMEOUT), vec![key(TuiKey::Char('x'))]);
+    }
+
+    #[test]
+    fn escape_timeout_never_flushes_utf8_sequences_or_paste() {
+        let now = Instant::now();
+        for bytes in ["é世😀".as_bytes(), b"\x1b[200~a\x1b[201~"] {
+            let expected = decode_all(bytes);
+            for split in 1..bytes.len() {
+                let mut decoder = InputDecoder::default();
+                let mut events = decoder.feed_at(&bytes[..split], now);
+                // Only the bare ESC before a sequence has a deadline.
+                if split != 1 || bytes[0] != 0x1b {
+                    assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT), None);
+                }
+                let continuation = if split == 1 && bytes[0] == 0x1b {
+                    now + ESCAPE_TIMEOUT / 2
+                } else {
+                    now + ESCAPE_TIMEOUT * 2
+                };
+                events.extend(decoder.feed_at(&bytes[split..], continuation));
+                assert_eq!(events, expected, "split {split} in {bytes:?}");
+            }
+        }
+        let mut decoder = InputDecoder::default();
+        assert!(decoder.feed_at(b"\x1b[", now).is_empty());
+        assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT), None);
+        assert_eq!(decoder.feed_at(b"A", now + ESCAPE_TIMEOUT), vec![key(TuiKey::Up)]);
+    }
+
+    #[test]
+    fn a_new_trailing_escape_gets_its_own_deadline() {
+        let mut decoder = InputDecoder::default();
+        let now = Instant::now();
+        assert!(decoder.feed_at(b"\x1b", now).is_empty());
+        let later = now + ESCAPE_TIMEOUT / 2;
+        assert_eq!(decoder.feed_at(b"\x1b", later), vec![key(TuiKey::Escape)]);
+        assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT), None);
+        assert_eq!(
+            decoder.expire_escape(later + ESCAPE_TIMEOUT),
+            Some(key(TuiKey::Escape))
+        );
+    }
+
+    #[test]
+    fn ready_continuation_wins_over_expiry_but_idle_expiry_separates_keys() {
+        let now = Instant::now();
+        let deadline = now + ESCAPE_TIMEOUT;
+        let mut decoder = InputDecoder::default();
+        assert!(decoder.feed_at(b"\x1b", now).is_empty());
+        assert_eq!(decoder.feed_at(b"[A", deadline), vec![key(TuiKey::Up)]);
+        assert_eq!(decoder.expire_escape(deadline), None);
+
+        assert!(decoder.feed_at(b"\x1b", deadline).is_empty());
+        assert_eq!(
+            decoder.expire_escape(deadline + ESCAPE_TIMEOUT),
+            Some(key(TuiKey::Escape))
+        );
+        assert_eq!(
+            decoder.feed_at(b"x", deadline + ESCAPE_TIMEOUT),
+            vec![key(TuiKey::Char('x'))]
+        );
+    }
+
+    #[test]
+    fn untimed_adapter_can_preserve_immediate_escape() {
+        let mut decoder = InputDecoder::default();
+        assert!(decoder.feed(b"\x1b").is_empty());
+        assert_eq!(decoder.finish_escape(), Some(key(TuiKey::Escape)));
+        assert_eq!(decoder.finish_escape(), None);
+        assert!(decoder.feed(b"\x1b[").is_empty());
+        assert_eq!(decoder.finish_escape(), None);
+        assert_eq!(decoder.feed(b"A"), vec![key(TuiKey::Up)]);
+    }
+
+    #[test]
+    fn alt_chords_type_nothing() {
         assert_eq!(decode_all(b"\x1bxy"), vec![key(TuiKey::Char('y'))]);
         assert_eq!(
             decode_all(b"\x1bOxy"),
@@ -516,19 +689,12 @@ mod tests {
             let mut boundaries: Vec<usize> =
                 cuts.iter().map(|cut| cut % (bytes.len() + 1)).collect();
             boundaries.sort_unstable();
-            // A read that ends right after ESC reads it as the Escape key: the
-            // documented trade for never waiting on a bare Escape press.
-            let cuts_after_escape = boundaries
-                .iter()
-                .any(|&boundary| boundary > 0 && bytes[boundary - 1] == 0x1b);
             for boundary in boundaries {
                 pieces.extend(decoder.feed(&bytes[start..boundary]));
                 start = boundary;
             }
             pieces.extend(decoder.feed(&bytes[start..]));
-            if !cuts_after_escape {
-                proptest::prop_assert_eq!(pieces, whole);
-            }
+            proptest::prop_assert_eq!(pieces, whole);
         }
 
         #[test]

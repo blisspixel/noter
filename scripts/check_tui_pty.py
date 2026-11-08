@@ -148,6 +148,62 @@ def check_save_warning_review(master: int, document: Path, prior: bytes) -> byte
     return screen
 
 
+def check_split_escape(binary: str, state_directory: str) -> None:
+    """A sequence split after ESC moves the caret, and a bare ESC waits."""
+
+    workspace = tempfile.mkdtemp()
+    document = Path(workspace, "note.txt")
+    document.write_text("alpha\nbeta\n", encoding="utf-8")
+    master, slave = pty.openpty()
+    set_window_size(slave, 80, 24)
+    process = subprocess.Popen(
+        [binary, "--tui", str(document)],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        env=terminal_environment(state_directory),
+        close_fds=True,
+    )
+    next_frame(master)
+    # One write: this Down is not the split under test.
+    os.write(master, b"\x1b[B")
+    time.sleep(0.05)
+    # Under the 100 ms deadline, so the two writes must join into Up.
+    os.write(master, b"\x1b")
+    time.sleep(0.04)
+    os.write(master, b"[A")
+    time.sleep(0.05)
+    os.write(master, b"Q")
+    read_until(master, b"Q")
+    os.write(master, b"\x13")
+    read_until_any(master, (b"Wrote", b"synced to disk"))
+    expect(
+        document.read_text(encoding="utf-8") == "Qalpha\nbeta\n",
+        "a split Up arrow did not return to the first line before Q",
+    )
+
+    os.write(master, b"\x07")
+    read_until(master, b"closes this help")
+    os.write(master, b"\x1b")
+    time.sleep(0.03)
+    # Help is still open, so this press must not change the document.
+    os.write(master, b"Z")
+    time.sleep(0.15)
+    os.write(master, b"Z")
+    read_until(master, b"Z")
+    os.write(master, b"\x13")
+    read_until_any(master, (b"Wrote", b"synced to disk"))
+    os.write(master, b"\x18")
+    read_until(master, b"\x1b[?1049l")
+    expect(process.wait(timeout=10) == 0, "the split-escape session did not exit")
+    expect(
+        document.read_text(encoding="utf-8") == "ZQalpha\nbeta\n",
+        "bare Escape closed help immediately, or did not close it at all",
+    )
+    os.close(master)
+    os.close(slave)
+
+
 def check_editing_session(binary: str, state_directory: str) -> None:
     """Type split UTF-8 and a paste, save, exit, and check the terminal."""
 
@@ -413,6 +469,7 @@ def main(arguments: list[str] | None = None) -> int:
         return 2
     with tempfile.TemporaryDirectory() as state_directory:
         check_editing_session(options.binary, state_directory)
+        check_split_escape(options.binary, state_directory)
         check_hangup_recovery(options.binary, state_directory)
     with tempfile.TemporaryDirectory() as state_directory:
         check_sigterm_restores_the_terminal(options.binary, state_directory)

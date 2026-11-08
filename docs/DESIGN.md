@@ -1614,7 +1614,16 @@ Current state:
   horizontally, and columns are measured in terminal cells.
 - **Input:** `src/tui/input.rs` holds back an incomplete UTF-8 character,
   control sequence, or bracketed paste until the next read completes it, and
-  drops unbound control bytes instead of inserting them. A paste is one edit
+  drops unbound control bytes instead of inserting them. On Unix, a lone ESC
+  waits 100 ms for a continuation before becoming Escape. Only a lone ESC
+  expires; UTF-8 tails, recognized sequence prefixes, and bracketed paste
+  remain buffered. An interrupted or shorter recovery wait does not expire
+  Escape early. The loop resolves expiry at wait completion, before recovery
+  I/O can block while more terminal bytes arrive. Input already ready at the
+  deadline is decoded first.
+  Windows retains immediate Escape because its wait adapter cannot time out
+  a console read; split-after-ESC input there remains an open part of #104.
+  A paste is one edit
   whose line endings follow the document, through the core insertion policy.
 - **Terminal restoration:** the document loads before the terminal changes
   mode. A guard leaves the alternate screen, mouse reporting, and bracketed
