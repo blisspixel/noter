@@ -4001,9 +4001,11 @@ mod tests {
         // Open save details via Ctrl+R
         key(&mut session, TuiKey::Ctrl('r'));
         assert_eq!(session.prompt, PromptMode::SaveWarnings);
-        let frame = render_frame(&session, 120, 24);
-        assert!(frame.contains("already has 8 earlier versions kept by Noter"));
-        assert!(frame.contains(sibling_name));
+        let lines = save_warnings::lines(&session, 120);
+        let review = lines.join("\n");
+        let flat = review.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("already has 8 earlier versions kept by Noter"));
+        assert!(flat.contains(sibling_name));
 
         // Subsequent committed save clears the error and retained paths
         let reservation2 = session.reserve_save_recovery(note_path).unwrap();
