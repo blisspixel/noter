@@ -13,6 +13,10 @@
 //!   reload, a committed save, or an explicit discard, that open text stays recoverable.
 //! - The host terminal supplies the colors. A non-empty `NO_COLOR` turns color off.
 //!   `--theme` selects the window theme and does not change this interface.
+//!   A save that synced the file and its folder, with no warning, shows a
+//!   short green receipt for three seconds and then the position line.
+//!   A file-only sync, a best-effort sync, and any warning stay on the
+//!   existing status sentences. Windows file sync stays `Wrote N bytes`.
 //! - Fluid formatted Markdown viewing toggle (^E).
 //! - Terminal mouse support (click to set caret, scroll wheel to scroll lines, clickable legend).
 //! - Authoritative revision tracking, atomic safe save, and Undo/Redo history.
@@ -1199,6 +1203,7 @@ impl TuiSession {
             Ok(SaveOutcome::Committed {
                 observation,
                 warnings,
+                durability,
                 ..
             }) => {
                 self.external_retention = ExternalRetention::Clear;
@@ -1219,6 +1224,13 @@ impl TuiSession {
                         "Saved with uncertain durability. Keep open and Save again. ^R details.",
                         StatusTone::Warning,
                     );
+                } else if let Some(receipt) = crate::save_status::durable_receipt_text(
+                    durability,
+                    &warnings,
+                    observation.length(),
+                    &noter_platform::local_short_time().unwrap_or_default(),
+                ) {
+                    self.set_toned_status(receipt, StatusTone::Success);
                 } else if warning_count == 0 {
                     self.set_toned_status(
                         format!("Wrote {} bytes", observation.length()),
@@ -5501,6 +5513,112 @@ mod tests {
             assert!(!plain.contains("\x1b[32m"));
             assert!(!plain.contains("\x1b[36m"));
         }
+    }
+
+    fn receipt_observation() -> FileObservation {
+        use noter::core::save::{ContentFingerprint, FileChangeToken, FileIdentity};
+
+        FileObservation::new(
+            FileIdentity::new(1, 2),
+            ContentFingerprint::from_bytes(b"hello"),
+            664,
+            1,
+            FileChangeToken::new(3, 4),
+        )
+    }
+
+    fn report_committed_status(
+        session: &mut TuiSession,
+        durability: noter::core::save::Durability,
+        warnings: SaveWarnings,
+    ) -> String {
+        let reservation = session
+            .reserve_save_recovery(PathBuf::from("note.txt"))
+            .expect("reservation");
+        assert_eq!(
+            session.report_save(
+                reservation,
+                Ok(SaveOutcome::Committed {
+                    revision: Revision::INITIAL,
+                    observation: receipt_observation(),
+                    durability,
+                    warnings,
+                })
+            ),
+            SaveStep::Committed
+        );
+        session
+            .status_message
+            .as_ref()
+            .expect("save status")
+            .0
+            .clone()
+    }
+
+    #[test]
+    fn a_fully_durable_save_uses_a_green_receipt() {
+        use noter::core::save::Durability;
+
+        assert_eq!(crate::save_status::SAVE_RECEIPT_LIFETIME, STATUS_LIFETIME);
+        let mut session = untitled();
+        session.terminal_color = TerminalColor::Host;
+        let receipt = report_committed_status(
+            &mut session,
+            Durability::FileAndDirectorySynced,
+            SaveWarnings::default(),
+        );
+        assert!(
+            receipt.starts_with("Saved 664 B, synced to disk "),
+            "{receipt}"
+        );
+        assert!(!receipt.contains("Wrote"), "{receipt}");
+        assert!(
+            !receipt
+                .chars()
+                .any(noter::core::terminal_text::is_terminal_unsafe)
+        );
+        let frame = render_frame(&session, 80, 24);
+        assert!(frame.contains("\x1b[32m"), "{frame}");
+        assert!(!paint::contains_truecolor(&frame));
+        assert!(strip_own_sequences(&frame).contains(&receipt));
+
+        session.terminal_color = TerminalColor::Off;
+        let plain = render_frame(&session, 80, 24);
+        assert!(!paint::contains_color_sgr(&plain));
+        assert!(!plain.contains("\x1b[32m"));
+        assert!(strip_own_sequences(&plain).contains(&receipt));
+    }
+
+    #[test]
+    fn a_partial_or_warned_save_does_not_say_synced_to_disk() {
+        use noter::core::save::{Durability, FileIdentity, RetainedSaveSibling};
+
+        for durability in [Durability::FileSynced, Durability::BestEffort] {
+            let status =
+                report_committed_status(&mut untitled(), durability, SaveWarnings::default());
+            assert_eq!(status, "Wrote 664 bytes", "{durability:?}");
+            assert!(!status.contains("synced to disk"));
+        }
+
+        let warning = report_committed_status(
+            &mut untitled(),
+            Durability::FileAndDirectorySynced,
+            SaveWarnings::new(vec![storage_error("kept a sibling")], Vec::new()),
+        );
+        assert!(warning.contains("^R details"), "{warning}");
+        assert!(!warning.contains("synced to disk"), "{warning}");
+
+        let retained = report_committed_status(
+            &mut untitled(),
+            Durability::FileAndDirectorySynced,
+            SaveWarnings::new(Vec::new(), Vec::new()).with_retained(vec![
+                RetainedSaveSibling::new(
+                    PathBuf::from(".noter-save-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tmp"),
+                    FileIdentity::new(1, 2),
+                ),
+            ]),
+        );
+        assert_eq!(retained, "Wrote 664 bytes");
     }
 
     #[test]
