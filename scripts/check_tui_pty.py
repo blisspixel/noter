@@ -148,6 +148,17 @@ def check_save_warning_review(master: int, document: Path, prior: bytes) -> byte
     return screen
 
 
+def wait_for_document(document: Path, expected: str) -> None:
+    """Poll `document` until it equals `expected`."""
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if document.read_text(encoding="utf-8") == expected:
+            return
+        time.sleep(0.05)
+    expect(False, f"document stayed {document.read_text(encoding='utf-8')!r}")
+
+
 def check_split_escape(binary: str, state_directory: str) -> None:
     """A sequence split after ESC moves the caret, and a bare ESC waits."""
 
@@ -176,30 +187,26 @@ def check_split_escape(binary: str, state_directory: str) -> None:
     os.write(master, b"Q")
     read_until(master, b"Q")
     os.write(master, b"\x13")
-    read_until_any(master, (b"Wrote", b"synced to disk"))
-    expect(
-        document.read_text(encoding="utf-8") == "Qalpha\nbeta\n",
-        "a split Up arrow did not return to the first line before Q",
-    )
+    wait_for_document(document, "Qalpha\nbeta\n")
 
     os.write(master, b"\x07")
-    read_until(master, b"closes this help")
+    opened = read_until(master, b"closes this help")
+    expect(b"closes this help" in opened, "help did not open")
+    # A following byte before the deadline would be Alt+that key, not a
+    # separate press. Hold the ESC alone and require no redraw yet.
     os.write(master, b"\x1b")
-    time.sleep(0.03)
-    # Help is still open, so this press must not change the document.
-    os.write(master, b"Z")
-    time.sleep(0.15)
+    early = read_until(master, FRAME_END, 0.05)
+    expect(FRAME_END not in early, "bare Escape closed help before the deadline")
+    time.sleep(0.12)
+    closed = read_until(master, FRAME_END, 1.0)
+    expect(FRAME_END in closed, "bare Escape did not close help after the deadline")
     os.write(master, b"Z")
     read_until(master, b"Z")
     os.write(master, b"\x13")
-    read_until_any(master, (b"Wrote", b"synced to disk"))
+    wait_for_document(document, "QZalpha\nbeta\n")
     os.write(master, b"\x18")
     read_until(master, b"\x1b[?1049l")
     expect(process.wait(timeout=10) == 0, "the split-escape session did not exit")
-    expect(
-        document.read_text(encoding="utf-8") == "ZQalpha\nbeta\n",
-        "bare Escape closed help immediately, or did not close it at all",
-    )
     os.close(master)
     os.close(slave)
 

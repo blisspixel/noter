@@ -500,12 +500,24 @@ mod tests {
         assert!(decoder.feed_at(b"\x1b", now).is_empty());
         assert_eq!(decoder.escape_delay(now), Some(ESCAPE_TIMEOUT));
         assert!(decoder.feed_at(b"", now + ESCAPE_TIMEOUT / 2).is_empty());
-        assert_eq!(decoder.escape_delay(now + ESCAPE_TIMEOUT / 2), Some(ESCAPE_TIMEOUT / 2));
-        assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT - Duration::from_nanos(1)), None);
-        assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT), Some(key(TuiKey::Escape)));
+        assert_eq!(
+            decoder.escape_delay(now + ESCAPE_TIMEOUT / 2),
+            Some(ESCAPE_TIMEOUT / 2)
+        );
+        assert_eq!(
+            decoder.expire_escape(now + ESCAPE_TIMEOUT - Duration::from_nanos(1)),
+            None
+        );
+        assert_eq!(
+            decoder.expire_escape(now + ESCAPE_TIMEOUT),
+            Some(key(TuiKey::Escape))
+        );
         assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT), None);
         assert_eq!(decoder.escape_delay(now + ESCAPE_TIMEOUT), None);
-        assert_eq!(decoder.feed_at(b"x", now + ESCAPE_TIMEOUT), vec![key(TuiKey::Char('x'))]);
+        assert_eq!(
+            decoder.feed_at(b"x", now + ESCAPE_TIMEOUT),
+            vec![key(TuiKey::Char('x'))]
+        );
     }
 
     #[test]
@@ -532,7 +544,10 @@ mod tests {
         let mut decoder = InputDecoder::default();
         assert!(decoder.feed_at(b"\x1b[", now).is_empty());
         assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT), None);
-        assert_eq!(decoder.feed_at(b"A", now + ESCAPE_TIMEOUT), vec![key(TuiKey::Up)]);
+        assert_eq!(
+            decoder.feed_at(b"A", now + ESCAPE_TIMEOUT),
+            vec![key(TuiKey::Up)]
+        );
     }
 
     #[test]
