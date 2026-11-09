@@ -148,15 +148,76 @@ def check_save_warning_review(master: int, document: Path, prior: bytes) -> byte
     return screen
 
 
-def wait_for_document(document: Path, expected: str) -> None:
-    """Poll `document` until it equals `expected`."""
+def plain_terminal(screen: bytes) -> bytes:
+    """Drop ANSI control sequences so a later assertion sees the drawn text."""
 
+    return re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", screen)
+
+
+def read_ready(master: int, seconds: float) -> bytes:
+    """Read output that arrives within `seconds`.
+
+    A stopped reader fills the terminal buffer. macOS delivers only a few
+    kilobytes before the editor blocks in its next write, so every wait has
+    to keep draining or a following key is never read. `seconds` of zero
+    drains what is already buffered and does not wait.
+    """
+
+    output = b""
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if seconds != 0 and remaining <= 0:
+            break
+        ready, _, _ = select.select(
+            [master], [], [], 0 if seconds == 0 else min(0.05, remaining)
+        )
+        if not ready:
+            break
+        try:
+            chunk = os.read(master, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        output += chunk
+    return output
+
+
+def wait_for_drawn_text(master: int, marker: bytes, seconds: float = 5.0) -> bytes:
+    """Drain until `marker` is on screen and the frame that drew it finished."""
+
+    screen = b""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if marker in plain_terminal(screen):
+            marker_at = screen.rfind(marker)
+            if marker_at != -1 and FRAME_END in screen[marker_at:]:
+                screen += read_ready(master, 0)
+                return screen
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        screen += read_ready(master, min(0.05, remaining))
+    plain = plain_terminal(screen)
+    expect(False, f"{marker!r} was not drawn; screen ended {plain[-400:]!r}")
+
+
+def wait_for_document(master: int, document: Path, expected: str) -> None:
+    """Drain terminal output until `document` equals `expected`."""
+
+    screen = b""
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         if document.read_text(encoding="utf-8") == expected:
             return
-        time.sleep(0.05)
-    expect(False, f"document stayed {document.read_text(encoding='utf-8')!r}")
+        screen += read_ready(master, 0.05)
+    plain = plain_terminal(screen)
+    expect(
+        False,
+        f"document stayed {document.read_text(encoding='utf-8')!r}; "
+        f"screen ended {plain[-400:]!r}",
+    )
 
 
 def check_split_escape(binary: str, state_directory: str) -> None:
@@ -175,40 +236,45 @@ def check_split_escape(binary: str, state_directory: str) -> None:
         env=terminal_environment(state_directory),
         close_fds=True,
     )
-    next_frame(master)
-    # One write: this Down is not the split under test.
-    os.write(master, b"\x1b[B")
-    time.sleep(0.05)
-    # Under the 100 ms deadline, so the two writes must join into Up.
-    os.write(master, b"\x1b")
-    time.sleep(0.04)
-    os.write(master, b"[A")
-    time.sleep(0.05)
-    os.write(master, b"Q")
-    read_until(master, b"Q")
-    os.write(master, b"\x13")
-    wait_for_document(document, "Qalpha\nbeta\n")
+    try:
+        next_frame(master)
+        # One write: this Down is not the split under test.
+        os.write(master, b"\x1b[B")
+        time.sleep(0.05)
+        # Under the 100 ms deadline, so the two writes must join into Up.
+        os.write(master, b"\x1b")
+        time.sleep(0.04)
+        os.write(master, b"[A")
+        time.sleep(0.05)
+        os.write(master, b"Q")
+        wait_for_drawn_text(master, b"Qalpha")
+        os.write(master, b"\x13")
+        wait_for_document(master, document, "Qalpha\nbeta\n")
 
-    os.write(master, b"\x07")
-    opened = read_until(master, b"closes this help")
-    expect(b"closes this help" in opened, "help did not open")
-    # A following byte before the deadline would be Alt+that key, not a
-    # separate press. Hold the ESC alone and require no redraw yet.
-    os.write(master, b"\x1b")
-    early = read_until(master, FRAME_END, 0.05)
-    expect(FRAME_END not in early, "bare Escape closed help before the deadline")
-    time.sleep(0.12)
-    closed = read_until(master, FRAME_END, 1.0)
-    expect(FRAME_END in closed, "bare Escape did not close help after the deadline")
-    os.write(master, b"Z")
-    read_until(master, b"Z")
-    os.write(master, b"\x13")
-    wait_for_document(document, "QZalpha\nbeta\n")
-    os.write(master, b"\x18")
-    read_until(master, b"\x1b[?1049l")
-    expect(process.wait(timeout=10) == 0, "the split-escape session did not exit")
-    os.close(master)
-    os.close(slave)
+        os.write(master, b"\x07")
+        opened = read_until(master, b"closes this help")
+        expect(b"closes this help" in opened, "help did not open")
+        # A following byte before the deadline would be Alt+that key, not a
+        # separate press. Hold the ESC alone and require no redraw yet.
+        os.write(master, b"\x1b")
+        early = read_until(master, FRAME_END, 0.05)
+        expect(FRAME_END not in early, "bare Escape closed help before the deadline")
+        time.sleep(0.12)
+        closed = read_until(master, FRAME_END, 1.0)
+        expect(FRAME_END in closed, "bare Escape did not close help after the deadline")
+        os.write(master, b"Z")
+        wait_for_drawn_text(master, b"QZalpha")
+        os.write(master, b"\x13")
+        wait_for_document(master, document, "QZalpha\nbeta\n")
+        os.write(master, b"\x18")
+        read_until(master, b"\x1b[?1049l")
+        expect(process.wait(timeout=10) == 0, "the split-escape session did not exit")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        os.close(master)
+        os.close(slave)
 
 
 def check_editing_session(binary: str, state_directory: str) -> None:
