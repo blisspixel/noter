@@ -475,7 +475,7 @@ mod tests {
         for (bytes, expected) in sequences {
             for split in 1..bytes.len() {
                 let mut decoder = InputDecoder::default();
-                assert!(decoder.feed_at(&bytes[..split], now).is_empty());
+                assert_eq!(decoder.feed_at(&bytes[..split], now), Vec::new());
                 assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT / 2), None);
                 assert_eq!(
                     decoder.feed_at(&bytes[split..], now + ESCAPE_TIMEOUT / 2),
@@ -497,15 +497,19 @@ mod tests {
     fn bare_escape_expires_once_and_empty_reads_do_not_restart_it() {
         let mut decoder = InputDecoder::default();
         let now = Instant::now();
-        assert!(decoder.feed_at(b"\x1b", now).is_empty());
+        assert_eq!(decoder.feed_at(b"\x1b", now), Vec::new());
         assert_eq!(decoder.escape_delay(now), Some(ESCAPE_TIMEOUT));
-        assert!(decoder.feed_at(b"", now + ESCAPE_TIMEOUT / 2).is_empty());
+        assert_eq!(decoder.feed_at(b"", now + ESCAPE_TIMEOUT / 2), Vec::new());
         assert_eq!(
             decoder.escape_delay(now + ESCAPE_TIMEOUT / 2),
             Some(ESCAPE_TIMEOUT / 2)
         );
         assert_eq!(
-            decoder.expire_escape(now + ESCAPE_TIMEOUT - Duration::from_nanos(1)),
+            decoder.expire_escape(
+                (now + ESCAPE_TIMEOUT)
+                    .checked_sub(Duration::from_nanos(1))
+                    .expect("one nanosecond fits in the timeout"),
+            ),
             None
         );
         assert_eq!(
@@ -542,7 +546,7 @@ mod tests {
             }
         }
         let mut decoder = InputDecoder::default();
-        assert!(decoder.feed_at(b"\x1b[", now).is_empty());
+        assert_eq!(decoder.feed_at(b"\x1b[", now), Vec::new());
         assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT), None);
         assert_eq!(
             decoder.feed_at(b"A", now + ESCAPE_TIMEOUT),
@@ -554,7 +558,7 @@ mod tests {
     fn a_new_trailing_escape_gets_its_own_deadline() {
         let mut decoder = InputDecoder::default();
         let now = Instant::now();
-        assert!(decoder.feed_at(b"\x1b", now).is_empty());
+        assert_eq!(decoder.feed_at(b"\x1b", now), Vec::new());
         let later = now + ESCAPE_TIMEOUT / 2;
         assert_eq!(decoder.feed_at(b"\x1b", later), vec![key(TuiKey::Escape)]);
         assert_eq!(decoder.expire_escape(now + ESCAPE_TIMEOUT), None);
@@ -569,11 +573,11 @@ mod tests {
         let now = Instant::now();
         let deadline = now + ESCAPE_TIMEOUT;
         let mut decoder = InputDecoder::default();
-        assert!(decoder.feed_at(b"\x1b", now).is_empty());
+        assert_eq!(decoder.feed_at(b"\x1b", now), Vec::new());
         assert_eq!(decoder.feed_at(b"[A", deadline), vec![key(TuiKey::Up)]);
         assert_eq!(decoder.expire_escape(deadline), None);
 
-        assert!(decoder.feed_at(b"\x1b", deadline).is_empty());
+        assert_eq!(decoder.feed_at(b"\x1b", deadline), Vec::new());
         assert_eq!(
             decoder.expire_escape(deadline + ESCAPE_TIMEOUT),
             Some(key(TuiKey::Escape))
@@ -587,10 +591,10 @@ mod tests {
     #[test]
     fn untimed_adapter_can_preserve_immediate_escape() {
         let mut decoder = InputDecoder::default();
-        assert!(decoder.feed(b"\x1b").is_empty());
+        assert_eq!(decoder.feed(b"\x1b"), Vec::new());
         assert_eq!(decoder.finish_escape(), Some(key(TuiKey::Escape)));
         assert_eq!(decoder.finish_escape(), None);
-        assert!(decoder.feed(b"\x1b[").is_empty());
+        assert_eq!(decoder.feed(b"\x1b["), Vec::new());
         assert_eq!(decoder.finish_escape(), None);
         assert_eq!(decoder.feed(b"A"), vec![key(TuiKey::Up)]);
     }

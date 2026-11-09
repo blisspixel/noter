@@ -3007,7 +3007,7 @@ mod tests {
         let started = Instant::now();
         let clock = std::cell::Cell::new(started + Duration::from_millis(20));
         let mut decoder = InputDecoder::default();
-        assert!(decoder.feed_at(b"\x1b", started).is_empty());
+        assert_eq!(decoder.feed_at(b"\x1b", started), Vec::new());
 
         let (events, redraw) = finish_idle_input_wait(
             &mut decoder,
@@ -3018,7 +3018,7 @@ mod tests {
                 true
             },
         );
-        assert!(events.is_empty());
+        assert_eq!(events, Vec::new());
         assert!(redraw);
         // The next ready poll reads the suffix instead of expiring ESC.
         assert_eq!(
@@ -3033,7 +3033,7 @@ mod tests {
         let started = Instant::now();
         let maintained = std::cell::Cell::new(false);
         let mut decoder = InputDecoder::default();
-        assert!(decoder.feed_at(b"\x1b", started).is_empty());
+        assert_eq!(decoder.feed_at(b"\x1b", started), Vec::new());
         let (events, redraw) = finish_idle_input_wait(
             &mut decoder,
             || started + Duration::from_millis(100),
