@@ -7,6 +7,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::revision::Revision;
+pub use crate::core::fs_storage::{MAX_RETAINED_SAVE_SIBLINGS, list_retained_save_siblings};
 
 /// Strength of the platform-provided file identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

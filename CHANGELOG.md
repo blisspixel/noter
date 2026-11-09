@@ -6,6 +6,14 @@ that candidate is frozen for publication.
 
 ## Unreleased
 
+- Clarify save refusal at the retained-sibling bound and terminal guidance on
+  Unix. When in-place saves pause after eight retained `.noter-save-*.tmp` siblings,
+  the status names the folder and explains that earlier versions were kept and to
+  check and delete unneeded ones or use Save As. On Unix, the terminal review
+  pane does not offer automatic removal that cannot succeed; it lists retained
+  siblings and directs the user to check and delete them by hand. Ctrl+R opens
+  save warnings and lists retained siblings even when no save succeeded in the
+  current session (#59).
 - Pin Rust 1.99.1 in the repository toolchain, both package manifests, and CI.
   Release Linux binaries stay on Ubuntu 22.04, so the published glibc floor
   remains 2.35 (#77).

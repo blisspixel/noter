@@ -2,7 +2,7 @@
 
 use super::TuiSession;
 use super::paint::{Paint, Role, push_bar};
-use noter::core::terminal_text::{cell_width, sanitize_line};
+use noter::core::terminal_text::{cell_width, escaped_cli_path, sanitize_line};
 
 pub(super) fn append_diagnostic(lines: &mut Vec<String>, message: &str, columns: usize) {
     let text = sanitize_line(message);
@@ -60,11 +60,49 @@ pub(super) fn lines(session: &TuiSession, columns: usize) -> Vec<String> {
         append_diagnostic(&mut lines, &session.recovery.unavailable_message(), columns);
         lines.push(String::new());
     }
+    if let Some(error) = &session.last_save_error {
+        append_diagnostic(&mut lines, error, columns);
+        lines.push(String::new());
+    }
     if let Some(warnings) = &session.last_save_warnings {
         for warning in warnings.cleanup().iter().chain(warnings.durability()) {
             append_diagnostic(&mut lines, warning.message(), columns);
             lines.push(String::new());
         }
+        if !cfg!(windows) {
+            for sibling in warnings.retained() {
+                append_diagnostic(
+                    &mut lines,
+                    &format!("Retained sibling: {}", escaped_cli_path(sibling.path())),
+                    columns,
+                );
+                append_diagnostic(
+                    &mut lines,
+                    "Delete by hand after checking: automatic removal is not supported on Unix.",
+                    columns,
+                );
+                lines.push(String::new());
+            }
+        }
+    }
+    if let Some(retained_paths) = session
+        .last_save_retained_paths
+        .as_deref()
+        .filter(|paths| !paths.is_empty())
+    {
+        append_diagnostic(
+            &mut lines,
+            "Retained .noter-save-*.tmp files in directory (delete unneeded files by hand):",
+            columns,
+        );
+        for path in retained_paths {
+            append_diagnostic(
+                &mut lines,
+                &format!("  {}", escaped_cli_path(path)),
+                columns,
+            );
+        }
+        lines.push(String::new());
     }
     lines
 }
@@ -97,10 +135,14 @@ pub(super) fn render(session: &TuiSession, cols: u16, rows: u16, paint: Paint) -
         );
         out.push_str("\r\n");
     }
-    let hint = if session.retained_removal_is_armed() {
-        " x again removes the verified sibling | Esc cancels "
+    let hint = if cfg!(windows) {
+        if session.retained_removal_is_armed() {
+            " x again removes the verified sibling | Esc cancels "
+        } else {
+            " Closing does not remove files | x x removes verified sibling | Esc cancels "
+        }
     } else {
-        " Closing does not remove files | x x removes verified sibling | Esc cancels "
+        " Closing does not remove files | Delete by hand after checking | Esc cancels "
     };
     push_bar(&mut out, hint, columns, paint, Role::BarStrong);
     out

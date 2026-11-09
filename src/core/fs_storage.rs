@@ -18,7 +18,9 @@ const MAX_CREATE_ATTEMPTS: usize = 16;
 ///
 /// The next save refuses before creating another sibling. Refusal does not
 /// delete an existing sibling, because a name is not authority for removal.
-pub(crate) const MAX_RETAINED_SAVE_SIBLINGS: usize = 8;
+pub const MAX_RETAINED_SAVE_SIBLINGS: usize = 8;
+/// Maximum retained `.noter-save-*.tmp` entries enumerated when reporting directory contents.
+pub const MAX_ENUMERATED_RETAINED_SIBLINGS: usize = 16;
 const TEMPORARY_PREFIX: &str = ".noter-save-";
 const TEMPORARY_SUFFIX: &str = ".tmp";
 #[cfg(windows)]
@@ -179,6 +181,26 @@ fn count_retained_save_siblings(parent: &Path) -> io::Result<usize> {
         }
     }
     Ok(count)
+}
+
+/// Lists up to [`MAX_ENUMERATED_RETAINED_SIBLINGS`] `.noter-save-*.tmp` entries
+/// currently in `parent`.
+///
+/// # Errors
+///
+/// Returns an [`io::Error`] if reading the `parent` directory fails.
+pub fn list_retained_save_siblings(parent: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut siblings = Vec::new();
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if is_retained_save_sibling_name(&name) {
+            siblings.push(entry.path());
+        }
+    }
+    siblings.sort();
+    siblings.truncate(MAX_ENUMERATED_RETAINED_SIBLINGS);
+    Ok(siblings)
 }
 
 fn retained_sibling_bound(destination: &Path) -> Result<(), StorageError> {
@@ -3660,6 +3682,40 @@ mod tests {
             .expect("a non-matching name must not consume the retention bound");
         assert!(temporary.path().exists());
         assert_eq!(fs::read(&destination)?, b"original");
+        Ok(())
+    }
+
+    #[test]
+    fn list_retained_save_siblings_returns_sorted_and_bounded_matching_entries() -> io::Result<()> {
+        let directory = tempdir()?;
+        assert_eq!(
+            list_retained_save_siblings(directory.path())?,
+            Vec::<PathBuf>::new()
+        );
+
+        let total = MAX_ENUMERATED_RETAINED_SIBLINGS + 5;
+        let mut expected_all = Vec::new();
+        for index in 0..total {
+            let mut name = [0_u8; RANDOM_NAME_BYTES];
+            name[0] = u8::try_from(index).expect("fits in u8");
+            let file_path = directory.path().join(candidate_name(&name));
+            fs::write(&file_path, b"artifact")?;
+            expected_all.push(file_path);
+        }
+        fs::write(directory.path().join("normal.txt"), b"doc")?;
+        fs::write(directory.path().join(".noter-save-short.tmp"), b"short")?;
+        fs::write(
+            directory.path().join(".noter-save-ZZZZZZZZZZZZZZZZ.tmp"),
+            b"invalid hex",
+        )?;
+
+        expected_all.sort();
+        let listed = list_retained_save_siblings(directory.path())?;
+        assert_eq!(listed.len(), MAX_ENUMERATED_RETAINED_SIBLINGS);
+        assert_eq!(listed, expected_all[..MAX_ENUMERATED_RETAINED_SIBLINGS]);
+
+        let nonexistent = directory.path().join("missing_dir");
+        assert!(list_retained_save_siblings(&nonexistent).is_err());
         Ok(())
     }
 

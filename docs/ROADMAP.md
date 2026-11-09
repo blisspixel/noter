@@ -196,7 +196,10 @@ in a scrollable Ctrl+R view; exact native Linux sibling names are regression
 tested. A destination directory refuses a new save at eight exact retained
 sibling names. That refusal leaves the open document unreplaced, does not
 delete by name, and leaves Save As available. A confirmed action deletes only
-a re-verified single-link sibling by handle. Unix still cannot delete that object, so #59 remains open.
+a re-verified single-link sibling by handle. On Unix where handle deletion is
+unsupported, the terminal explains manual inspection and removal and lists
+retained paths, while refusal explains the eight-sibling limit and names the
+folder. Automated Unix cleanup remains open for design (#59).
 Neither dismissing that view nor a later clean save deletes an earlier artifact.
 
 The bounded buffers also preserve all source bytes when RTL shaping exposes

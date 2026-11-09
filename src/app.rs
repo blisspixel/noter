@@ -1217,12 +1217,15 @@ impl NoterApp {
                 crate::save_status::append_cleanup_warning(&mut message, cleanup_error.as_ref());
                 Some(message)
             }
-            Ok(SaveOutcome::NotCommitted { cleanup_error, .. }) => {
-                Some(crate::save_status::not_committed_status(
-                    attempt.destination(),
-                    cleanup_error.as_ref(),
-                ))
-            }
+            Ok(SaveOutcome::NotCommitted {
+                error,
+                cleanup_error,
+                ..
+            }) => Some(crate::save_status::not_committed_status(
+                attempt.destination(),
+                &error,
+                cleanup_error.as_ref(),
+            )),
             Ok(SaveOutcome::CommitStateUnknown {
                 error,
                 recovery_artifact,
