@@ -2455,19 +2455,37 @@ fn event_loop(session: &mut TuiSession) -> io::Result<()> {
         let wait = session
             .recovery_delay()
             .map_or(IDLE_TICK, |delay| delay.min(IDLE_TICK));
-        if !noter_platform::wait_for_terminal_input(wait)? {
-            let reported = session.tick_recovery();
-            if session.expire_status() || reported {
-                needs_frame = true;
+        let wait = decoder
+            .escape_delay(Instant::now())
+            .map_or(wait, |delay| delay.min(wait));
+        let events = if noter_platform::wait_for_terminal_input(wait)? {
+            let read = stdin.read(&mut buffer)?;
+            if read == 0 {
+                // The terminal hung up.
+                break;
             }
+            let events = decoder.feed(&buffer[..read]);
+            // These adapters still block in read, so preserve their existing
+            // immediate Escape behavior until they support timed input.
+            #[cfg(not(unix))]
+            let events = {
+                let mut events = events;
+                events.extend(decoder.finish_escape());
+                events
+            };
+            events
+        } else {
+            let (events, redraw) = finish_idle_input_wait(&mut decoder, Instant::now, || {
+                let reported = session.tick_recovery();
+                session.expire_status() || reported
+            });
+            needs_frame |= redraw;
+            events
+        };
+        if events.is_empty() {
             continue;
         }
-        let read = stdin.read(&mut buffer)?;
-        if read == 0 {
-            // The terminal hung up.
-            break;
-        }
-        for event in decoder.feed(&buffer[..read]) {
+        for event in events {
             handle_event(session, event, cols, rows);
             if session.should_exit {
                 break;
@@ -2480,6 +2498,19 @@ fn event_loop(session: &mut TuiSession) -> io::Result<()> {
         needs_frame = true;
     }
     Ok(())
+}
+
+/// Resolves the completed wait before maintenance can block on recovery I/O.
+/// A short or interrupted wait must not become an Escape timeout merely
+/// because recovery takes time while a continuation arrives in the terminal.
+fn finish_idle_input_wait(
+    decoder: &mut InputDecoder,
+    now: impl FnOnce() -> Instant,
+    maintenance: impl FnOnce() -> bool,
+) -> (Vec<TuiEvent>, bool) {
+    let events = decoder.expire_escape(now()).into_iter().collect();
+    let redraw = maintenance();
+    (events, redraw)
 }
 
 /// Encodes an explicit path-copy request without putting path bytes into a
@@ -2962,6 +2993,7 @@ fn trigger_exit(session: &mut TuiSession) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use noter::core::recovery::{
         RecoveryDocumentId, RecoveryInstanceId, RecoveryLineageGeneration, RecoverySnapshot,
         RecoverySnapshotParts, RecoveryWallTime,
@@ -2969,6 +3001,51 @@ mod tests {
     use noter::core::recovery_store::RecoveryStore;
     use noter::core::revision::Revision;
     use noter::core::text_format::{Bom, Encoding};
+
+    #[test]
+    fn idle_input_wait_resolves_escape_before_slow_recovery() {
+        let started = Instant::now();
+        let clock = std::cell::Cell::new(started + Duration::from_millis(20));
+        let mut decoder = InputDecoder::default();
+        assert_eq!(decoder.feed_at(b"\x1b", started), Vec::new());
+
+        let (events, redraw) = finish_idle_input_wait(
+            &mut decoder,
+            || clock.get(),
+            || {
+                // The suffix arrives at 50 ms while this recovery work runs.
+                clock.set(started + Duration::from_millis(110));
+                true
+            },
+        );
+        assert_eq!(events, Vec::new());
+        assert!(redraw);
+        // The next ready poll reads the suffix instead of expiring ESC.
+        assert_eq!(
+            decoder.feed_at(b"[A", clock.get()),
+            vec![TuiEvent::Key(TuiKey::Up)]
+        );
+        assert_eq!(decoder.expire_escape(clock.get()), None);
+    }
+
+    #[test]
+    fn idle_input_wait_delivers_due_escape_and_still_runs_maintenance() {
+        let started = Instant::now();
+        let maintained = std::cell::Cell::new(false);
+        let mut decoder = InputDecoder::default();
+        assert_eq!(decoder.feed_at(b"\x1b", started), Vec::new());
+        let (events, redraw) = finish_idle_input_wait(
+            &mut decoder,
+            || started + Duration::from_millis(100),
+            || {
+                maintained.set(true);
+                false
+            },
+        );
+        assert_eq!(events, vec![TuiEvent::Key(TuiKey::Escape)]);
+        assert!(!redraw);
+        assert!(maintained.get());
+    }
 
     #[cfg(unix)]
     #[test]
